@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mailclient — Main Page Prototype</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --background: #ffffff;
+      --surface: #f9fafb;
+      --text: #111827;
+      --muted-text: #4b5563;
+      --primary: #3b82f6;
+      --primary-fg: #ffffff;
+      --border: #e5e7eb;
+      --amber: #f59e0b;
+      --green: #10b981;
+      --destructive: #dc2626;
+      --ring: #3b82f6;
+      --hover: #eff6ff;
+      --selected: #eff6ff;
+      --ribbon-bg: #ffffff;
+      --ribbon-border: #e5e7eb;
+
+      --header-h: 40px;
+      --ribbon-h: 44px;
+      --tool-w: 44px;
+      --folder-w: 240px;
+      --list-w: 360px;
+      --status-h: 24px;
+      --pane-header-h: 32px;
+      --row-h: 28px;
+      --font-ui: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-serif: "Source Serif 4", Georgia, serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    }
+
+    html.dark {
+      --background: #111827;
+      --surface: #1f2937;
+      --text: #f9fafb;
+      --muted-text: #9ca3af;
+      --primary: #60a5fa;
+      --primary-fg: #111827;
+      --border: #374151;
+      --amber: #fbbf24;
+      --green: #34d399;
+      --destructive: #f87171;
+      --ring: #60a5fa;
+      --hover: #1e3a8a;
+      --selected: #1e3a8a;
+      --ribbon-bg: #1f2937;
+      --ribbon-border: #374151;
+    }
+
+    html.comfortable {
+      --row-h: 40px;
+      --pane-header-h: 40px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: var(--font-ui);
+      font-size: 14px;
+      color: var(--text);
+      background: var(--background);
+    }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: inherit;
+    }
+
+    /* Hugeicons-style SVG base */
+    .hi {
+      width: 20px;
+      height: 20px;
+      flex: 0 0 auto;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      stroke: currentColor;
+    }
+
+    .hi--sm {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* App shell */
+    .app {
+      display: grid;
+      grid-template-rows: var(--header-h) var(--ribbon-h) 1fr var(--status-h);
+      grid-template-columns: var(--tool-w) 1fr;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    /* Header */
+    .header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header__brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 13px;
+      min-width: 120px;
+    }
+
+    .header__search {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+    }
+
+    .search-field {
+      width: min(480px, 50vw);
+      height: 28px;
+      padding: 0 12px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--background);
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+
+    .search-field:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--ring);
+    }
+
+    .header__actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .btn--primary {
+      background: var(--primary);
+      color: var(--primary-fg);
+    }
+
+    .btn--ghost {
+      color: var(--muted-text);
+    }
+
+    .btn--ghost:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      color: var(--muted-text);
+    }
+
+    .icon-btn:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    /* Ribbon / menubar */
+    .ribbon {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: stretch;
+      padding: 0 8px;
+      gap: 4px;
+      background: var(--ribbon-bg);
+      border-bottom: 1px solid var(--ribbon-border);
+      overflow: hidden;
+    }
+
+    .ribbon-group {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 6px;
+      border-right: 1px solid var(--ribbon-border);
+    }
+
+    .ribbon-group:last-child {
+      border-right: none;
+    }
+
+    .ribbon-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 30px;
+      padding: 0 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .ribbon-btn:hover {
+      background: var(--hover);
+    }
+
+    .ribbon-btn .hi {
+      width: 18px;
+      height: 18px;
+    }
+
+    .ribbon-btn--primary {
+      background: var(--primary);
+      color: var(--primary-fg);
+    }
+
+    .ribbon-btn--primary:hover {
+      filter: brightness(1.05);
+    }
+
+    .ribbon-btn--split {
+      padding-right: 4px;
+    }
+
+    .ribbon-btn__arrow {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      margin-left: 2px;
+    }
+
+    /* Tool window bar */
+    .tool-window {
+      grid-row: 3;
+      grid-column: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 8px;
+      gap: 4px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+    }
+
+    .tool-btn {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      color: var(--muted-text);
+    }
+
+    .tool-btn:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .tool-btn.active {
+      color: var(--primary);
+      background: var(--selected);
+    }
+
+    .tool-btn.active::before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 10px;
+      bottom: 10px;
+      width: 3px;
+      border-radius: 0 2px 2px 0;
+      background: var(--primary);
+    }
+
+    /* Workspace */
+    .workspace {
+      grid-row: 3;
+      grid-column: 2;
+      display: flex;
+      overflow: hidden;
+      background: var(--background);
+    }
+
+    /* Panes */
+    .pane {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      min-width: 0;
+    }
+
+    .pane:last-child {
+      border-right: none;
+    }
+
+    .pane__header {
+      flex: 0 0 auto;
+      height: var(--pane-header-h);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .pane__title {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pane__body {
+      flex: 1;
+      overflow: auto;
+    }
+
+    .resizer {
+      flex: 0 0 5px;
+      cursor: col-resize;
+      background: transparent;
+      position: relative;
+      z-index: 1;
+    }
+
+    .resizer:hover::after,
+    .resizer.dragging::after {
+      content: "";
+      position: absolute;
+      inset: 0 2px;
+      background: var(--primary);
+    }
+
+    /* Folder pane */
+    .folder-pane {
+      width: var(--folder-w);
+      transition: width 150ms ease-out;
+    }
+
+    .folder-pane.collapsed {
+      width: 44px;
+    }
+
+    .folder-pane.collapsed .pane__body,
+    .folder-pane.collapsed .collapse-btn span {
+      display: none;
+    }
+
+    .folder-group {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .folder-group__title {
+      padding: 0 12px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted-text);
+    }
+
+    .folder-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 28px;
+      padding: 0 12px;
+      font-size: 13px;
+      color: var(--muted-text);
+      cursor: pointer;
+    }
+
+    .folder-row:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .folder-row.active {
+      background: var(--selected);
+      color: var(--primary);
+    }
+
+    .folder-row svg {
+      flex: 0 0 auto;
+    }
+
+    .folder-row__name {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .folder-row:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .folder-row.active {
+      background: var(--selected);
+      color: var(--primary);
+    }
+
+    .folder-row__name {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .folder-row__count {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--border);
+      color: var(--text);
+    }
+
+    .folder-row.active .folder-row__count {
+      background: var(--primary);
+      color: var(--primary-fg);
+    }
+
+    /* Message list */
+    .message-list {
+      width: var(--list-w);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 4px 2px;
+    }
+
+    .tab {
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted-text);
+    }
+
+    .tab.active {
+      background: var(--selected);
+      color: var(--primary);
+    }
+
+    .message-group {
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .message-group__label {
+      padding: 4px 12px 6px;
+      margin: 0;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted-text);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .message-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: var(--row-h);
+      padding: 8px 12px 8px 0;
+      cursor: pointer;
+      border-bottom: 1px solid transparent;
+    }
+
+    html.comfortable .message-row {
+      padding: 12px 12px 12px 0;
+    }
+
+    .message-row:hover {
+      background: var(--hover);
+    }
+
+    .message-row.selected {
+      background: var(--selected);
+    }
+
+    .message-row.unread .message-row__sender,
+    .message-row.unread .message-row__subject {
+      font-weight: 600;
+    }
+
+    /* Thread ribbon */
+    .thread-ribbon {
+      flex: 0 0 auto;
+      width: 3px;
+      align-self: stretch;
+      min-height: 100%;
+      background: var(--border);
+      border-radius: 0 2px 2px 0;
+    }
+
+    .thread-ribbon.unread {
+      background: var(--primary);
+    }
+
+    .thread-ribbon.flagged {
+      background: var(--amber);
+    }
+
+    .thread-ribbon.vip {
+      background: var(--green);
+    }
+
+    .message-row__avatar {
+      flex: 0 0 auto;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--border);
+      display: grid;
+      place-items: center;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--muted-text);
+    }
+
+    html.comfortable .message-row__avatar {
+      width: 32px;
+      height: 32px;
+      font-size: 11px;
+    }
+
+    .message-row__content {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 3px;
+    }
+
+    .message-row__line {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .message-row__line:first-child {
+      justify-content: space-between;
+    }
+
+    .message-row__sender {
+      flex: 0 1 auto;
+      min-width: 0;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .message-row__subject {
+      font-size: 13px;
+      color: var(--muted-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .message-row__snippet {
+      font-size: 12px;
+      color: var(--muted-text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .message-row__time {
+      flex: 0 0 auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted-text);
+    }
+
+    /* Reading pane */
+    .reading-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .reading-pane__header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .reading-pane__subject-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .reading-pane__subject {
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      font-family: var(--font-serif);
+      font-size: 22px;
+      font-weight: 600;
+      line-height: 1.25;
+      color: var(--text);
+    }
+
+    .reading-pane__shortcuts {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex: 0 0 auto;
+      margin-top: 2px;
+    }
+
+    .shortcut-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      color: var(--muted-text);
+    }
+
+    .shortcut-btn:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .reading-pane__meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted-text);
+    }
+
+    .reading-pane__avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: var(--border);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted-text);
+    }
+
+    .reading-pane__from {
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .reading-pane__toolbar {
+      display: flex;
+      gap: 4px;
+      padding: 8px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .reading-pane__body {
+      flex: 1;
+      padding: 20px;
+      overflow: auto;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    .reading-pane__body p {
+      margin: 0 0 1em;
+    }
+
+    /* Status bar */
+    .status-bar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted-text);
+    }
+
+    .status-bar__left,
+    .status-bar__right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Bottom layout variant */
+    html.reading-bottom .workspace {
+      flex-direction: column;
+    }
+
+    html.reading-bottom .message-list {
+      width: 100%;
+      height: 40%;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+
+    html.reading-bottom .reading-pane {
+      height: 60%;
+    }
+
+    html.reading-off .reading-pane {
+      display: none;
+    }
+
+    html.reading-off .message-list {
+      flex: 1;
+    }
+
+    /* Demo controls */
+    .demo-controls {
+      position: fixed;
+      top: 96px;
+      right: 12px;
+      display: flex;
+      gap: 6px;
+      padding: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      z-index: 100;
+    }
+
+    .demo-controls button {
+      padding: 4px 8px;
+      font-size: 11px;
+      border-radius: 4px;
+      color: var(--muted-text);
+    }
+
+    .demo-controls button:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    /* Animations */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .tool-btn.ai-thinking {
+      color: var(--primary);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes bounce-subtle {
+      0%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-4px); }
+      60% { transform: translateY(-2px); }
+    }
+
+    .tool-btn.new-mail svg {
+      animation: bounce-subtle 0.6s ease-in-out;
+    }
+  </style>
+</head>
+<body>
+  <div class="demo-controls">
+    <button id="themeToggle" title="Toggle theme">🌙</button>
+    <button id="densityToggle" title="Toggle density">⇅</button>
+    <button id="folderToggle" title="Toggle folder pane">📁</button>
+    <button id="readingToggle" title="Cycle reading pane">📖</button>
+    <button id="aiToggle" title="Toggle AI thinking">✨</button>
+  </div>
+
+  <div class="app">
+    <header class="header">
+      <div class="header__brand">
+        <button class="icon-btn" aria-label="Menu">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <span>Mailclient</span>
+      </div>
+      <div class="header__search">
+        <input class="search-field" type="text" placeholder="Search mail…" />
+      </div>
+      <div class="header__actions">
+        <button class="btn btn--ghost" aria-label="Notifications">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </button>
+        <button class="icon-btn" aria-label="Settings">
+          <svg class="hi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button class="icon-btn" aria-label="Profile">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <nav class="ribbon" aria-label="Command ribbon">
+      <div class="ribbon-group">
+        <button class="ribbon-btn ribbon-btn--primary ribbon-btn--split">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          New mail
+          <span class="ribbon-btn__arrow">
+            <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </span>
+        </button>
+      </div>
+      <div class="ribbon-group">
+        <button class="ribbon-btn" title="Delete">
+          <svg class="hi" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          Delete
+        </button>
+        <button class="ribbon-btn" title="Archive">
+          <svg class="hi" viewBox="0 0 24 24"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+          Archive
+        </button>
+        <button class="ribbon-btn ribbon-btn--split" title="Move">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v16"/><polyline points="14 2 14 8 20 8"/><path d="M8 12h8M12 16l4-4-4-4"/></svg>
+          Move
+          <span class="ribbon-btn__arrow">
+            <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </span>
+        </button>
+      </div>
+      <div class="ribbon-group">
+        <button class="ribbon-btn ribbon-btn--split" title="Categorize">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 0 1 0 2.828l-7 7a2 2 0 0 1-2.828 0l-7-7A1.994 1.994 0 0 1 3 12V7a4 4 0 0 1 4-4z"/></svg>
+          Categorize
+          <span class="ribbon-btn__arrow">
+            <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </span>
+        </button>
+        <button class="ribbon-btn ribbon-btn--split" title="Quick steps">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          Quick steps
+          <span class="ribbon-btn__arrow">
+            <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </span>
+        </button>
+      </div>
+      <div class="ribbon-group">
+        <button class="ribbon-btn ribbon-btn--split" title="Read/Unread">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+          Read/Unread
+          <span class="ribbon-btn__arrow">
+            <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </span>
+        </button>
+        <button class="ribbon-btn" title="Flag">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          Flag
+        </button>
+        <button class="ribbon-btn" title="Pin">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M12 2l-5.5 9h11z"/><circle cx="12" cy="19" r="3"/></svg>
+          Pin
+        </button>
+      </div>
+      <div class="ribbon-group">
+        <button class="ribbon-btn" title="Undo">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+        </button>
+        <button class="ribbon-btn" title="Redo">
+          <svg class="hi" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
+        </button>
+        <button class="ribbon-btn" title="More">
+          <svg class="hi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+        </button>
+      </div>
+    </nav>
+
+    <nav class="tool-window" aria-label="Tool windows">
+      <button class="tool-btn active" data-tip="Mail" aria-label="Mail">
+        <svg class="hi" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      </button>
+      <button class="tool-btn" data-tip="Calendar" aria-label="Calendar">
+        <svg class="hi" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      </button>
+      <button class="tool-btn" data-tip="Contacts" aria-label="Contacts">
+        <svg class="hi" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </button>
+      <button class="tool-btn" data-tip="Tasks" aria-label="Tasks">
+        <svg class="hi" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      </button>
+      <button class="tool-btn" data-tip="AI Assistant" aria-label="AI Assistant" id="aiToolBtn">
+        <svg class="hi" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 1 7 7c0 4.418-3 7-7 13-4-6-7-8.582-7-13a7 7 0 0 1 7-7z"/><circle cx="12" cy="9" r="2"/></svg>
+      </button>
+    </nav>
+
+    <main class="workspace">
+      <section class="pane folder-pane" id="folderPane">
+        <div class="pane__header">
+          <button class="icon-btn collapse-btn" id="collapseFolders" aria-label="Collapse folders">
+            <svg class="hi hi--sm" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+            <span>Folders</span>
+          </button>
+        </div>
+        <div class="pane__body">
+          <div class="folder-group">
+            <div class="folder-group__title">Favorites</div>
+            <div class="folder-row active">
+              <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              <span class="folder-row__name">Inbox</span>
+              <span class="folder-row__count">9</span>
+            </div>
+            <div class="folder-row">
+              <svg class="hi hi--sm" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              <span class="folder-row__name">Sent</span>
+            </div>
+            <div class="folder-row">
+              <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+              <span class="folder-row__name">Drafts</span>
+              <span class="folder-row__count">2</span>
+            </div>
+          </div>
+          <div class="folder-group">
+            <div class="folder-group__title">kevin@example.com</div>
+            <div class="folder-row">
+              <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              <span class="folder-row__name">Inbox</span>
+              <span class="folder-row__count">142</span>
+            </div>
+            <div class="folder-row">
+              <svg class="hi hi--sm" viewBox="0 0 24 24"><path d="M22 17H2a3 3 0 0 0 3-3V9a7 7 0 0 1 14 0v5a3 3 0 0 0 3 3zm-8.27 4a2 2 0 0 1-3.46 0"/></svg>
+              <span class="folder-row__name">Spam</span>
+            </div>
+            <div class="folder-row">
+              <svg class="hi hi--sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              <span class="folder-row__name">Trash</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="resizer" id="resizer1" aria-hidden="true"></div>
+
+      <section class="pane message-list">
+        <div class="pane__header">
+          <div class="tabs">
+            <button class="tab active">Focused</button>
+            <button class="tab">Other</button>
+          </div>
+        </div>
+        <div class="pane__body">
+          <div class="message-group">
+            <div class="message-group__label">Today</div>
+            <div class="message-row unread selected">
+              <div class="thread-ribbon unread"></div>
+              <div class="message-row__avatar">KS</div>
+              <div class="message-row__content">
+                <div class="message-row__line">
+                  <span class="message-row__sender">Kevin Sturgis</span>
+                  <span class="message-row__time">9:30 AM</span>
+                </div>
+                <div class="message-row__line">
+                  <span class="message-row__subject">Coral Gables project — revised timeline</span>
+                </div>
+              </div>
+            </div>
+            <div class="message-row vip">
+              <div class="thread-ribbon vip"></div>
+              <div class="message-row__avatar">CF</div>
+              <div class="message-row__content">
+                <div class="message-row__line">
+                  <span class="message-row__sender">Cecil Folk</span>
+                  <span class="message-row__time">1:23 PM</span>
+                </div>
+                <div class="message-row__line">
+                  <span class="message-row__subject">Security review passed</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="message-group">
+            <div class="message-group__label">Yesterday</div>
+            <div class="message-row unread flagged">
+              <div class="thread-ribbon flagged"></div>
+              <div class="message-row__avatar">LB</div>
+              <div class="message-row__content">
+                <div class="message-row__line">
+                  <span class="message-row__sender">Lydia Bauer</span>
+                  <span class="message-row__time">12:55 PM</span>
+                </div>
+                <div class="message-row__line">
+                  <span class="message-row__subject">Follow-up: Q3 budget draft</span>
+                </div>
+              </div>
+            </div>
+            <div class="message-row">
+              <div class="thread-ribbon"></div>
+              <div class="message-row__avatar">DR</div>
+              <div class="message-row__content">
+                <div class="message-row__line">
+                  <span class="message-row__sender">Design Review</span>
+                  <span class="message-row__time">11:20 AM</span>
+                </div>
+                <div class="message-row__line">
+                  <span class="message-row__subject">Notes from yesterday's session</span>
+                </div>
+              </div>
+            </div>
+            <div class="message-row">
+              <div class="thread-ribbon"></div>
+              <div class="message-row__avatar">MN</div>
+              <div class="message-row__content">
+                <div class="message-row__line">
+                  <span class="message-row__sender">Mina Nichols</span>
+                  <span class="message-row__time">9:04 AM</span>
+                </div>
+                <div class="message-row__line">
+                  <span class="message-row__subject">Lunch next week?</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="resizer" id="resizer2" aria-hidden="true"></div>
+
+      <section class="reading-pane">
+        <div class="reading-pane__header">
+          <div class="reading-pane__subject-row">
+            <h1 class="reading-pane__subject">Coral Gables project — revised timeline</h1>
+            <div class="reading-pane__shortcuts">
+              <button class="shortcut-btn" title="React">
+                <svg class="hi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+              </button>
+              <button class="shortcut-btn" title="Reply">
+                <svg class="hi" viewBox="0 0 24 24"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+              </button>
+              <button class="shortcut-btn" title="Reply all">
+                <svg class="hi" viewBox="0 0 24 24"><polyline points="7 17 2 12 7 7"/><polyline points="12 17 7 12 12 7"/><path d="M22 18v-4a5 5 0 0 0-5-5h-9"/></svg>
+              </button>
+              <button class="shortcut-btn" title="Forward">
+                <svg class="hi" viewBox="0 0 24 24"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg>
+              </button>
+              <button class="shortcut-btn" title="More">
+                <svg class="hi" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="reading-pane__meta">
+            <div class="reading-pane__avatar">KS</div>
+            <div>
+              <div class="reading-pane__from">Kevin Sturgis &lt;kevin@example.com&gt;</div>
+              <div>To: you · Today, 9:30 AM</div>
+            </div>
+          </div>
+        </div>
+        <div class="reading-pane__toolbar">
+          <button class="btn btn--ghost">Reply</button>
+          <button class="btn btn--ghost">Forward</button>
+          <button class="btn btn--ghost">Archive</button>
+          <button class="btn btn--ghost" style="color: var(--destructive);">Delete</button>
+        </div>
+        <div class="reading-pane__body">
+          <p>Hi,</p>
+          <p>After yesterday's standup I moved the foundation milestone out by two weeks. The structural drawings should be ready by Friday, but we need sign-off from the city before we can pour.</p>
+          <p>I've attached the updated Gantt chart. Let me know if the new dates work on your end.</p>
+          <p>— Kevin</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="status-bar">
+      <div class="status-bar__left">
+        <span>Synced · 3 accounts</span>
+        <span id="selectionStatus">1 selected</span>
+      </div>
+      <div class="status-bar__right">
+        <span>Compact</span>
+        <span id="readingStatus">Reading pane right</span>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    const html = document.documentElement;
+    let readingMode = 'right'; // right | bottom | off
+
+    document.getElementById('themeToggle').addEventListener('click', () => {
+      html.classList.toggle('dark');
+    });
+
+    document.getElementById('densityToggle').addEventListener('click', () => {
+      html.classList.toggle('comfortable');
+      document.querySelector('.status-bar__right span:first-child').textContent =
+        html.classList.contains('comfortable') ? 'Comfortable' : 'Compact';
+    });
+
+    document.getElementById('folderToggle').addEventListener('click', () => {
+      document.getElementById('folderPane').classList.toggle('collapsed');
+    });
+
+    document.getElementById('collapseFolders').addEventListener('click', () => {
+      document.getElementById('folderPane').classList.toggle('collapsed');
+    });
+
+    document.getElementById('readingToggle').addEventListener('click', () => {
+      html.classList.remove('reading-bottom', 'reading-off');
+      if (readingMode === 'right') readingMode = 'bottom';
+      else if (readingMode === 'bottom') readingMode = 'off';
+      else readingMode = 'right';
+
+      if (readingMode === 'bottom') html.classList.add('reading-bottom');
+      if (readingMode === 'off') html.classList.add('reading-off');
+
+      const labels = { right: 'Reading pane right', bottom: 'Reading pane bottom', off: 'Reading pane off' };
+      document.getElementById('readingStatus').textContent = labels[readingMode];
+    });
+
+    document.getElementById('aiToggle').addEventListener('click', () => {
+      document.getElementById('aiToolBtn').classList.toggle('ai-thinking');
+    });
+
+    document.querySelectorAll('.message-row').forEach(row => {
+      row.addEventListener('click', () => {
+        document.querySelectorAll('.message-row').forEach(r => r.classList.remove('selected'));
+        row.classList.add('selected');
+      });
+    });
+
+    // Simple resizer interaction (visual only for prototype)
+    let activeResizer = null;
+    document.querySelectorAll('.resizer').forEach(r => {
+      r.addEventListener('mousedown', () => {
+        activeResizer = r;
+        r.classList.add('dragging');
+      });
+    });
+    window.addEventListener('mouseup', () => {
+      if (activeResizer) activeResizer.classList.remove('dragging');
+      activeResizer = null;
+    });
+  </script>
+</body>
+</html>
