@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "mailclient",
+  "version": "0.1.0",
+  "identifier": "com.mailclient.app",
+  "build": {
+    "beforeDevCommand": "cd ../kylins.client.frontend && npm run dev",
+    "beforeBuildCommand": "cd ../kylins.client.frontend && npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../kylins.client.frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "splashscreen",
+        "url": "/splashscreen",
+        "width": 400,
+        "height": 300,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "center": true,
+        "visible": true
+      },
+      {
+        "label": "main",
+        "title": "Mailclient",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' data: blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self'",
+        "connect-src": "'self' https:",
+        "frame-src": "'self'",
+        "font-src": "'self'"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
