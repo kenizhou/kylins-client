@@ -3,38 +3,45 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use rand::RngCore;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-static KEY: OnceLock<[u8; 32]> = OnceLock::new();
+static KEY: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 
-fn get_or_create_key() -> Result<&'static [u8; 32], String> {
-    KEY.get_or_try_init(|| {
-        let entry = keyring::Entry::new("mailclient", "master-key")
-            .map_err(|e| format!("keyring entry: {e}"))?;
-        match entry.get_password() {
-            Ok(hex_key) => {
-                let mut key = [0u8; 32];
-                hex::decode_to_slice(hex_key, &mut key)
-                    .map_err(|e| format!("decode key: {e}"))?;
-                Ok(key)
-            }
-            Err(keyring::Error::NoEntry) => {
-                let mut key = [0u8; 32];
-                rand::thread_rng().fill_bytes(&mut key);
-                let hex_key = hex::encode(key);
-                entry
-                    .set_password(&hex_key)
-                    .map_err(|e| format!("store key: {e}"))?;
-                Ok(key)
-            }
-            Err(e) => Err(format!("keyring read: {e}")),
+fn get_or_create_key() -> Result<[u8; 32], String> {
+    let mut guard = KEY.lock().map_err(|e| format!("key mutex poisoned: {e}"))?;
+    if let Some(key) = *guard {
+        return Ok(key);
+    }
+
+    let entry = keyring::Entry::new("mailclient", "master-key")
+        .map_err(|e| format!("keyring entry: {e}"))?;
+
+    let key = match entry.get_password() {
+        Ok(hex_key) => {
+            let mut key = [0u8; 32];
+            hex::decode_to_slice(hex_key, &mut key)
+                .map_err(|e| format!("decode key: {e}"))?;
+            key
         }
-    })
+        Err(keyring::Error::NoEntry) => {
+            let mut key = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut key);
+            let hex_key = hex::encode(key);
+            entry
+                .set_password(&hex_key)
+                .map_err(|e| format!("store key: {e}"))?;
+            key
+        }
+        Err(e) => return Err(format!("keyring read: {e}")),
+    };
+
+    *guard = Some(key);
+    Ok(key)
 }
 
 pub fn encrypt(plaintext: &str) -> Result<String, String> {
     let key = get_or_create_key()?;
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
 
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
@@ -51,7 +58,7 @@ pub fn encrypt(plaintext: &str) -> Result<String, String> {
 
 pub fn decrypt(ciphertext_hex: &str) -> Result<String, String> {
     let key = get_or_create_key()?;
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
 
     let combined = hex::decode(ciphertext_hex).map_err(|e| e.to_string())?;
     if combined.len() < 12 {

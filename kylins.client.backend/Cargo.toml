@@ -2,33 +2,73 @@
 name = "kylins-client-backend"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.77.2"
 
 [lib]
 name = "kylins_client_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.2.0", features = [] }
+tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
-tauri = { version = "2.5.0", features = ["tray-icon"] }
-tauri-plugin-single-instance = "2.2.0"
-tauri-plugin-autostart = "2.3.0"
-tauri-plugin-deep-link = "2.2.0"
-tauri-plugin-global-shortcut = "2.3.0"
-tauri-plugin-notification = "2.2.0"
-tauri-plugin-sql = { version = "2.2.0", features = ["sqlite"] }
-tauri-plugin-log = "2.3.0"
-tauri-plugin-os = "2.2.0"
-tauri-plugin-process = "2.2.0"
-tauri-plugin-opener = "2.2.0"
-tauri-plugin-fs = "2.2.0"
-tauri-plugin-dialog = "2.2.0"
+# Tauri core — upgraded from 2.5 to 2.10 to match velo upstream
+tauri = { version = "2.10", features = ["tray-icon", "devtools"] }
+
+# Tauri plugins — loosened to "2" per velo convention for easier upgrades
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+tauri-plugin-log = "2"
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-http = "2"
+tauri-plugin-updater = "2"
+
+# Async runtime — union of kylins (macros, rt) and velo (net, io-util, sync, time)
+tokio = { version = "1", features = ["net", "io-util", "sync", "macros", "rt", "time"] }
+futures = "0.3"
+
+# Serialization / logging
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4"
-tokio = { version = "1", features = ["macros", "rt"] }
+
+# Mail protocol (ported from velo)
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+mail-parser = "0.9"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-native-tls", "builder"] }
+base64 = "0.22"
+utf7-imap = "0.3"
+socket2 = "0.5"
+
+# HTTP for OAuth token exchange + EAS transport
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+
+# Secrets (kylins original — AES-256-GCM via OS keyring)
 aes-gcm = "0.10"
 rand = "0.8"
 keyring = { version = "3", features = ["async-secret-service"] }
 hex = "0.4"
+
+# Error handling for EAS client
+thiserror = "1"
+
+[dev-dependencies]
+# WBXML codec + EAS command fixture tests
+tokio-test = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_UI_Shell"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tray-item = { version = "0.10.0", default-features = false, features = ["ksni"] }

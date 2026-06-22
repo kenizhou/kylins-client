@@ -5,14 +5,20 @@ import { getSetting } from './services/settings';
 import { ThemeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { useUIStore } from './stores/uiStore';
-import { invoke } from '@tauri-apps/api/core';
 
 const themeManager = new ThemeManager();
 
-async function discoverPlugins(): Promise<string[]> {
-  // In a real app this scans the plugins/ directory via Tauri fs API.
-  // For the skeleton, return an empty list; the example plugin is loaded manually in dev.
-  return [];
+const isTauri =
+  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
 }
 
 export default function App() {
@@ -22,28 +28,29 @@ export default function App() {
   const setTheme = useUIStore((s) => s.setTheme);
 
   useEffect(() => {
+    isMounted.current = true;
     async function init() {
       try {
-        await runMigrations();
+        if (isTauri) {
+          await runMigrations();
 
-        const savedTheme = await getSetting('theme');
-        if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
-          if (isMounted.current) setTheme(savedTheme);
-          themeManager.applyTheme(savedTheme);
+          const savedTheme = await getSetting('theme');
+          if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
+            if (isMounted.current) setTheme(savedTheme);
+            themeManager.applyTheme(savedTheme);
+          }
+
+          // Plugin discovery: empty for the skeleton. Real implementation will
+          // scan the plugins/ directory via the Tauri fs API.
+          await pluginManager.loadPlugins([]);
+          await pluginManager.activatePlugins();
         }
-
-        const pluginPaths = await discoverPlugins();
-        await pluginManager.loadPlugins(pluginPaths);
-        await pluginManager.activatePlugins();
-
-        // Close splash screen if running in Tauri
-        invoke('close_splashscreen').catch(() => {});
 
         if (isMounted.current) setReady(true);
       } catch (err) {
         console.error('App initialization failed:', err);
         if (isMounted.current) {
-          setError(err instanceof Error ? err.message : 'Initialization failed');
+          setError(describeError(err));
         }
       }
     }
@@ -60,7 +67,7 @@ export default function App() {
         <div className="mb-4 text-lg font-semibold">Something went wrong</div>
         <div className="mb-6 max-w-md text-center text-sm opacity-80">{error}</div>
         <button
-          className="rounded bg-[var(--color-accent)] px-4 py-2 text-white"
+          className="rounded bg-[var(--primary)] px-4 py-2 text-[var(--primary-fg)]"
           onClick={() => window.location.reload()}
         >
           Reload

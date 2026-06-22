@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mailclient</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        display: grid;
+        place-items: center;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: oklch(0.141 0.005 285.823);
+        color: oklch(0.985 0.001 247.839);
+      }
+      .spinner {
+        width: 32px;
+        height: 32px;
+        border: 3px solid oklch(0.37 0.077 264.155);
+        border-top-color: oklch(0.707 0.165 254.624);
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div class="spinner"></div>
+  </body>
+</html>

@@ -1,5 +1,8 @@
+// Ported from velo (https://github.com/avihaymenahem/velo)
+// Licensed under Apache-2.0. See ATTRIBUTIONS.md.
+
 import { getDb } from './db/connection';
-import type { Account, DbAccountRow } from '../types';
+import type { Account, DbAccountRow, MailProvider, SecurityMode, AuthMethod } from '../types';
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -10,56 +13,117 @@ function rowToAccount(row: DbAccountRow): Account {
     id: row.id,
     email: row.email,
     displayName: row.display_name ?? undefined,
-    provider: row.provider as Account['provider'],
-    providerConfig: row.provider_config ? JSON.parse(row.provider_config) : undefined,
+    avatarUrl: row.avatar_url ?? undefined,
+    provider: row.provider as MailProvider,
     accessToken: row.access_token ?? undefined,
     refreshToken: row.refresh_token ?? undefined,
     tokenExpiresAt: row.token_expires_at ?? undefined,
+    historyId: row.history_id ?? undefined,
+    lastSyncAt: row.last_sync_at ?? undefined,
     isActive: row.is_active === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // IMAP/SMTP
+    imapHost: row.imap_host ?? undefined,
+    imapPort: row.imap_port ?? undefined,
+    imapSecurity: (row.imap_security as SecurityMode) ?? undefined,
+    smtpHost: row.smtp_host ?? undefined,
+    smtpPort: row.smtp_port ?? undefined,
+    smtpSecurity: (row.smtp_security as SecurityMode) ?? undefined,
+    authMethod: (row.auth_method as AuthMethod) ?? undefined,
+    imapPassword: row.imap_password ?? undefined,
+    imapUsername: row.imap_username ?? undefined,
+    oauthProvider: row.oauth_provider ?? undefined,
+    oauthClientId: row.oauth_client_id ?? undefined,
+    oauthClientSecret: row.oauth_client_secret ?? undefined,
+    acceptInvalidCerts: row.accept_invalid_certs === 1,
+    // EAS
+    easUrl: row.eas_url ?? undefined,
+    easProtocolVersion: row.eas_protocol_version ?? undefined,
+    easDeviceId: row.eas_device_id ?? undefined,
+    easPolicyKey: row.eas_policy_key ?? undefined,
+    easUserAgent: row.eas_user_agent ?? undefined,
   };
 }
 
-export async function createAccount(
-  input: Pick<Account, 'email' | 'provider'> & Partial<Account>,
-): Promise<Account> {
+export interface CreateAccountInput {
+  email: string;
+  displayName?: string;
+  provider: MailProvider;
+  accessToken?: string;
+  refreshToken?: string;
+  tokenExpiresAt?: number;
+  isActive?: boolean;
+  // IMAP
+  imapHost?: string;
+  imapPort?: number;
+  imapSecurity?: SecurityMode;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecurity?: SecurityMode;
+  authMethod?: AuthMethod;
+  imapPassword?: string;
+  imapUsername?: string;
+  oauthProvider?: string;
+  oauthClientId?: string;
+  oauthClientSecret?: string;
+  acceptInvalidCerts?: boolean;
+  // EAS
+  easUrl?: string;
+  easProtocolVersion?: string;
+  easDeviceId?: string;
+}
+
+export async function createAccount(input: CreateAccountInput): Promise<Account> {
   const db = await getDb();
+  const id = generateId();
   const now = Math.floor(Date.now() / 1000);
-  const account: Account = {
-    id: generateId(),
-    email: input.email,
-    displayName: input.displayName,
-    provider: input.provider,
-    providerConfig: input.providerConfig,
-    accessToken: input.accessToken,
-    refreshToken: input.refreshToken,
-    tokenExpiresAt: input.tokenExpiresAt,
-    isActive: input.isActive ?? true,
-    createdAt: now,
-    updatedAt: now,
-  };
 
   await db.execute(
-    `INSERT INTO accounts
-      (id, email, display_name, provider, provider_config, access_token, refresh_token, token_expires_at, is_active, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    `INSERT INTO accounts (
+      id, email, display_name, provider,
+      access_token, refresh_token, token_expires_at,
+      is_active, created_at, updated_at,
+      imap_host, imap_port, imap_security,
+      smtp_host, smtp_port, smtp_security,
+      auth_method, imap_password, imap_username,
+      oauth_provider, oauth_client_id, oauth_client_secret,
+      accept_invalid_certs,
+      eas_url, eas_protocol_version, eas_device_id
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
     [
-      account.id,
-      account.email,
-      account.displayName ?? null,
-      account.provider,
-      account.providerConfig ? JSON.stringify(account.providerConfig) : null,
-      account.accessToken ?? null,
-      account.refreshToken ?? null,
-      account.tokenExpiresAt ?? null,
-      account.isActive ? 1 : 0,
-      account.createdAt,
-      account.updatedAt,
+      id,
+      input.email,
+      input.displayName ?? null,
+      input.provider,
+      input.accessToken ?? null,
+      input.refreshToken ?? null,
+      input.tokenExpiresAt ?? null,
+      (input.isActive ?? true) ? 1 : 0,
+      now,
+      now,
+      input.imapHost ?? null,
+      input.imapPort ?? null,
+      input.imapSecurity ?? null,
+      input.smtpHost ?? null,
+      input.smtpPort ?? null,
+      input.smtpSecurity ?? null,
+      input.authMethod ?? null,
+      input.imapPassword ?? null,
+      input.imapUsername ?? null,
+      input.oauthProvider ?? null,
+      input.oauthClientId ?? null,
+      input.oauthClientSecret ?? null,
+      input.acceptInvalidCerts ? 1 : 0,
+      input.easUrl ?? null,
+      input.easProtocolVersion ?? null,
+      input.easDeviceId ?? null,
     ],
   );
 
-  return account;
+  const created = await getAccountById(id);
+  if (!created) throw new Error('Failed to read back created account');
+  return created;
 }
 
 export async function getAllAccounts(): Promise<Account[]> {
@@ -74,23 +138,51 @@ export async function getAccountById(id: string): Promise<Account | null> {
   return rows[0] ? rowToAccount(rows[0]) : null;
 }
 
-export async function updateAccount(
-  id: string,
-  updates: Partial<Omit<Account, 'id' | 'createdAt'>>,
-): Promise<void> {
+export type AccountUpdates = Partial<Omit<Account, 'id' | 'createdAt'>>;
+
+export async function updateAccount(id: string, updates: AccountUpdates): Promise<void> {
   const db = await getDb();
   const fields: string[] = [];
-  const values: (string | number | boolean | null)[] = [];
+  const values: (string | number | null)[] = [];
   let idx = 1;
 
-  if (updates.email !== undefined) fields.push(`email = $${idx++}`), values.push(updates.email);
-  if (updates.displayName !== undefined) fields.push(`display_name = $${idx++}`), values.push(updates.displayName);
-  if (updates.provider !== undefined) fields.push(`provider = $${idx++}`), values.push(updates.provider);
-  if (updates.providerConfig !== undefined) fields.push(`provider_config = $${idx++}`), values.push(JSON.stringify(updates.providerConfig));
-  if (updates.accessToken !== undefined) fields.push(`access_token = $${idx++}`), values.push(updates.accessToken);
-  if (updates.refreshToken !== undefined) fields.push(`refresh_token = $${idx++}`), values.push(updates.refreshToken);
-  if (updates.tokenExpiresAt !== undefined) fields.push(`token_expires_at = $${idx++}`), values.push(updates.tokenExpiresAt);
-  if (updates.isActive !== undefined) fields.push(`is_active = $${idx++}`), values.push(updates.isActive ? 1 : 0);
+  const map: Array<[keyof AccountUpdates, string, (v: unknown) => string | number | null]> = [
+    ['email', 'email', (v) => v as string],
+    ['displayName', 'display_name', (v) => v as string],
+    ['provider', 'provider', (v) => v as string],
+    ['accessToken', 'access_token', (v) => v as string],
+    ['refreshToken', 'refresh_token', (v) => v as string],
+    ['tokenExpiresAt', 'token_expires_at', (v) => v as number],
+    ['historyId', 'history_id', (v) => v as string],
+    ['lastSyncAt', 'last_sync_at', (v) => v as number],
+    ['isActive', 'is_active', (v) => (v ? 1 : 0)],
+    ['imapHost', 'imap_host', (v) => v as string],
+    ['imapPort', 'imap_port', (v) => v as number],
+    ['imapSecurity', 'imap_security', (v) => v as string],
+    ['smtpHost', 'smtp_host', (v) => v as string],
+    ['smtpPort', 'smtp_port', (v) => v as number],
+    ['smtpSecurity', 'smtp_security', (v) => v as string],
+    ['authMethod', 'auth_method', (v) => v as string],
+    ['imapPassword', 'imap_password', (v) => v as string],
+    ['imapUsername', 'imap_username', (v) => v as string],
+    ['oauthProvider', 'oauth_provider', (v) => v as string],
+    ['oauthClientId', 'oauth_client_id', (v) => v as string],
+    ['oauthClientSecret', 'oauth_client_secret', (v) => v as string],
+    ['acceptInvalidCerts', 'accept_invalid_certs', (v) => (v ? 1 : 0)],
+    ['easUrl', 'eas_url', (v) => v as string],
+    ['easProtocolVersion', 'eas_protocol_version', (v) => v as string],
+    ['easDeviceId', 'eas_device_id', (v) => v as string],
+    ['easPolicyKey', 'eas_policy_key', (v) => v as string],
+    ['easUserAgent', 'eas_user_agent', (v) => v as string],
+  ];
+
+  for (const [key, column, transform] of map) {
+    const value = updates[key];
+    if (value !== undefined) {
+      fields.push(`${column} = $${idx++}`);
+      values.push(transform(value));
+    }
+  }
 
   fields.push(`updated_at = $${idx++}`);
   values.push(Math.floor(Date.now() / 1000));

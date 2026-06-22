@@ -9,6 +9,9 @@ build/
 target/
 *.tsbuildinfo
 
+# Tauri generated schemas (tauri-build writes them on every build)
+kylins.client.backend/gen/
+
 # Logs
 npm-debug.log*
 yarn-debug.log*

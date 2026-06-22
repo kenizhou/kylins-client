@@ -20,6 +20,20 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-surface: var(--surface);
+  --color-text: var(--text);
+  --color-muted-text: var(--muted-text);
+  --color-hover: var(--hover);
+  --color-selected: var(--selected);
+  --color-selected-text: var(--selected-text);
+  --color-primary-fg: var(--primary-fg);
+  --color-amber: var(--amber);
+  --color-green: var(--green);
+
+  --font-sans: var(--font-ui);
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -29,7 +43,22 @@
   * {
     @apply border-border;
   }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    overflow: hidden;
+  }
+  button {
+    font: inherit;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: inherit;
   }
 }

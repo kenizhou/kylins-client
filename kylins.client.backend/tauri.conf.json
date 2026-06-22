@@ -1,47 +1,37 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "mailclient",
+  "productName": "Kylins Mail",
   "version": "0.1.0",
   "identifier": "com.mailclient.app",
   "build": {
-    "beforeDevCommand": "cd ../kylins.client.frontend && npm run dev",
-    "beforeBuildCommand": "cd ../kylins.client.frontend && npm run build",
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": "../kylins.client.frontend"
+    },
+    "beforeBuildCommand": {
+      "script": "npm run build",
+      "cwd": "../kylins.client.frontend"
+    },
     "devUrl": "http://localhost:5173",
     "frontendDist": "../kylins.client.frontend/dist"
   },
   "app": {
     "windows": [
       {
-        "label": "splashscreen",
-        "url": "/splashscreen",
-        "width": 400,
-        "height": 300,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "center": true,
-        "visible": true
-      },
-      {
         "label": "main",
-        "title": "Mailclient",
+        "title": "Kylins Mail",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
         "minHeight": 600,
-        "visible": false
+        "visible": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": {
-        "default-src": "'self'",
-        "img-src": "'self' data: blob:",
-        "style-src": "'self' 'unsafe-inline'",
-        "script-src": "'self'",
-        "connect-src": "'self' https:",
-        "frame-src": "'self'",
-        "font-src": "'self'"
-      }
-    }
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http://localhost:11434 http://localhost:1234 http://127.0.0.1:11434 http://127.0.0.1:1234; img-src 'self' data: blob: https:; font-src 'self' data:; frame-src 'self'"
+    },
+    "trayIcon": null
   },
   "bundle": {
     "active": true,
@@ -53,5 +43,20 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "sql": {
+      "preload": [
+        "sqlite:mailclient.db"
+      ]
+    },
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": [
+          "mailto"
+        ]
+      }
+    }
   }
 }

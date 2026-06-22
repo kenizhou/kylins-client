@@ -1,12 +1,23 @@
 import Database from '@tauri-apps/plugin-sql';
 
 let db: Database | null = null;
+let pending: Promise<Database> | null = null;
 
 export async function getDb(): Promise<Database> {
-  if (!db) {
-    db = await Database.load('sqlite:mailclient.db');
-  }
-  return db;
+  if (db) return db;
+  if (pending) return pending;
+
+  pending = (async () => {
+    try {
+      const instance = await Database.load('sqlite:mailclient.db');
+      db = instance;
+      return instance;
+    } finally {
+      pending = null;
+    }
+  })();
+
+  return pending;
 }
 
 let txQueue: Promise<void> = Promise.resolve();

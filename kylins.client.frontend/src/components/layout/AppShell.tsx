@@ -13,21 +13,20 @@ export function AppShell() {
       <HeaderBar />
       <CommandRibbon />
       <div className="flex flex-1 overflow-hidden">
-        <ToolWindowBar position="left" />
+        <ToolWindowBar />
         <Group orientation="horizontal" className="flex-1">
-          <Panel defaultSize={20} minSize={15} maxSize={35}>
+          <Panel defaultSize="18%" minSize="12%" maxSize="25%">
             <FolderPane />
           </Panel>
-          <Separator className="w-1 hover:bg-[var(--ring)] transition-colors" />
-          <Panel defaultSize={30} minSize={20} maxSize={50}>
+          <Separator className="w-[5px] hover:bg-[var(--ring)] transition-colors data-[dragging=true]:bg-[var(--ring)]" />
+          <Panel defaultSize="27%" minSize="18%" maxSize="40%">
             <MessageList />
           </Panel>
-          <Separator className="w-1 hover:bg-[var(--ring)] transition-colors" />
-          <Panel defaultSize={50} minSize={25}>
+          <Separator className="w-[5px] hover:bg-[var(--ring)] transition-colors data-[dragging=true]:bg-[var(--ring)]" />
+          <Panel defaultSize="55%" minSize="30%">
             <ReadingPane />
           </Panel>
         </Group>
-        <ToolWindowBar position="right" />
       </div>
       <StatusBar />
     </div>
