@@ -24,7 +24,10 @@ export function InjectedComponentSet({
     <>
       {components.map((Component, index) =>
         containersRequired ? (
-          <div key={Component.displayName || Component.name || String(index)} className="inline-flex">
+          <div
+            key={Component.displayName || Component.name || String(index)}
+            className="inline-flex"
+          >
             <Component {...props} />
           </div>
         ) : (

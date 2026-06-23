@@ -266,7 +266,8 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 5,
-    description: 'Pin support, AI cache, thread categories, calendar events, contact enrichment, attachment caching',
+    description:
+      'Pin support, AI cache, thread categories, calendar events, contact enrichment, attachment caching',
     sql: `
       ALTER TABLE threads ADD COLUMN is_pinned INTEGER DEFAULT 0;
       CREATE INDEX idx_threads_pinned ON threads(account_id, is_pinned DESC, last_message_at DESC);
@@ -328,7 +329,8 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 6,
-    description: 'Follow-up reminders, smart notifications, unsubscribe manager, newsletter bundling',
+    description:
+      'Follow-up reminders, smart notifications, unsubscribe manager, newsletter bundling',
     sql: `
       CREATE TABLE IF NOT EXISTS follow_up_reminders (
         id TEXT PRIMARY KEY,
@@ -749,7 +751,8 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 25,
-    description: 'kylins: ActiveSync sync state — EAS uses sync keys per collection, not IMAP UIDVALIDITY',
+    description:
+      'kylins: ActiveSync sync state — EAS uses sync keys per collection, not IMAP UIDVALIDITY',
     sql: `
       CREATE TABLE IF NOT EXISTS eas_sync_state (
         account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -772,6 +775,14 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE accounts ADD COLUMN eas_device_id TEXT;
       ALTER TABLE accounts ADD COLUMN eas_policy_key TEXT;
       ALTER TABLE accounts ADD COLUMN eas_user_agent TEXT;
+    `,
+  },
+  {
+    version: 27,
+    description: 'kylins: Default view settings',
+    sql: `
+      INSERT OR IGNORE INTO settings (key, value) VALUES
+        ('view.state', '{"readingPanePosition":"right","folderPaneVisible":true,"commandRibbonVisible":true,"statusBarVisible":true,"conversationView":false,"messageListDensity":"normal","visibleColumnIds":["flag","from","subject","received"]}');
     `,
   },
 ];
@@ -864,9 +875,7 @@ async function doRunMigrations(): Promise<void> {
   for (const migration of MIGRATIONS) {
     if (appliedVersions.has(migration.version)) continue;
 
-    console.log(
-      `Running migration v${migration.version}: ${migration.description}`,
-    );
+    console.log(`Running migration v${migration.version}: ${migration.description}`);
 
     const statements = splitStatements(migration.sql);
 
@@ -885,10 +894,10 @@ async function doRunMigrations(): Promise<void> {
         }
       }
 
-      await db.execute(
-        'INSERT OR IGNORE INTO _migrations (version, description) VALUES ($1, $2)',
-        [migration.version, migration.description],
-      );
+      await db.execute('INSERT OR IGNORE INTO _migrations (version, description) VALUES ($1, $2)', [
+        migration.version,
+        migration.description,
+      ]);
       await db.execute('COMMIT');
     } catch (err) {
       await db.execute('ROLLBACK').catch(() => {});

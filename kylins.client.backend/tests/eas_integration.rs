@@ -23,8 +23,8 @@ fn load_dominated_config() -> Option<EasConfig> {
         .or_else(|_| std::env::var("EAS_TEST_USER_DOMINATED"))
         .ok()?;
     let password = std::env::var("EAS_TEST_USER_DOMINATED_PASSWORD").ok()?;
-    let protocol_version = std::env::var("EAS_TEST_PROTOCOL_VERSION")
-        .unwrap_or_else(|_| "16.1".to_string());
+    let protocol_version =
+        std::env::var("EAS_TEST_PROTOCOL_VERSION").unwrap_or_else(|_| "16.1".to_string());
 
     Some(EasConfig {
         url,
@@ -45,8 +45,8 @@ fn load_paired_config() -> Option<EasConfig> {
         .or_else(|_| std::env::var("EAS_TEST_USER_PAIRED"))
         .ok()?;
     let password = std::env::var("EAS_TEST_USER_PAIRED_PASSWORD").ok()?;
-    let protocol_version = std::env::var("EAS_TEST_PROTOCOL_VERSION")
-        .unwrap_or_else(|_| "16.1".to_string());
+    let protocol_version =
+        std::env::var("EAS_TEST_PROTOCOL_VERSION").unwrap_or_else(|_| "16.1".to_string());
 
     Some(EasConfig {
         url,
@@ -124,7 +124,11 @@ async fn dump_eas_request_state() {
     if let Some(cfg) = load_dominated_config() {
         println!("\n=== EasConfig ===");
         println!("  url = {:?}", cfg.url);
-        println!("  username = {:?} (bytes: {:?})", cfg.username, cfg.username.as_bytes());
+        println!(
+            "  username = {:?} (bytes: {:?})",
+            cfg.username,
+            cfg.username.as_bytes()
+        );
         println!("  password bytes (len) = {}", cfg.password.len());
         println!("  protocol_version = {:?}", cfg.protocol_version);
         println!("  device_id = {:?}", cfg.device_id);
@@ -146,12 +150,16 @@ async fn dump_eas_request_state() {
         let req = kylins_client_lib::eas::commands::build_folder_sync_request("0");
         let bytes = kylins_client_lib::eas::wbxml::serialize_tree(&req).expect("serialize");
         println!("\n=== WBXML request bytes ({}) ===", bytes.len());
-        let hex: String = bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+        let hex: String = bytes
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
         println!("{}", hex);
 
         // Build the Basic auth header
         let auth_pair = format!("{}:{}", cfg.username, cfg.password);
-        let auth_b64 = base64_encode(&auth_pair.as_bytes());
+        let auth_b64 = base64_encode(auth_pair.as_bytes());
         println!("\n=== Authorization header ===");
         println!("  pair bytes: {:?}", auth_pair.as_bytes());
         println!("  Basic {}", auth_b64);
@@ -213,8 +221,14 @@ async fn folder_sync_steady_state() {
         Err(e) => panic!("second FolderSync: {e}"),
     };
 
-    assert!(second.changes.is_empty(), "steady-state FolderSync should have no changes");
-    assert!(second.deletions.is_empty(), "steady-state FolderSync should have no deletions");
+    assert!(
+        second.changes.is_empty(),
+        "steady-state FolderSync should have no changes"
+    );
+    assert!(
+        second.deletions.is_empty(),
+        "steady-state FolderSync should have no deletions"
+    );
 }
 
 /// FolderSync the second account to verify multi-account support.
@@ -234,8 +248,11 @@ async fn folder_sync_paired_account() {
         }
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("status 126") || msg.contains("status 142") || msg.contains("provision") {
-                println!("Paired account reached Exchange — server requires Provision (status 126/142).");
+            if msg.contains("status 126") || msg.contains("status 142") || msg.contains("provision")
+            {
+                println!(
+                    "Paired account reached Exchange — server requires Provision (status 126/142)."
+                );
                 return;
             }
             panic!("Paired FolderSync failed for unexpected reason: {msg}");
@@ -277,10 +294,7 @@ async fn ping_returns_ok_or_timeout() {
         Err(e) => panic!("FolderSync: {e}"),
     };
 
-    let email_folder = folders
-        .changes
-        .iter()
-        .find(|f| f.class == "Email");
+    let email_folder = folders.changes.iter().find(|f| f.class == "Email");
     let Some(email_folder) = email_folder else {
         println!("Skipping Ping — no Email folder in FolderSync response");
         return;
@@ -329,10 +343,13 @@ async fn folder_create_and_delete_round_trip() {
         .map(|f| f.server_id.clone())
         .unwrap_or_else(|| "0".to_string());
 
-    let test_name = format!("KylinsTest-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs());
+    let test_name = format!(
+        "KylinsTest-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
 
     let (create_status, new_id) = client
         .folder_create(&FolderCreateRequest {
@@ -343,7 +360,10 @@ async fn folder_create_and_delete_round_trip() {
         .await
         .expect("FolderCreate");
 
-    assert_eq!(create_status, 1, "FolderCreate should return status 1 (success)");
+    assert_eq!(
+        create_status, 1,
+        "FolderCreate should return status 1 (success)"
+    );
     let new_id = new_id.expect("FolderCreate should return new server id");
     assert!(!new_id.is_empty(), "new server id must not be empty");
 

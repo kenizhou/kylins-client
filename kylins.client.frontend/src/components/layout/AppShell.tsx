@@ -1,34 +1,39 @@
-import { Panel, Group, Separator } from 'react-resizable-panels';
-import { HeaderBar } from './HeaderBar';
+import { useMemo } from 'react';
+import { useViewStore } from '../../features/view/viewStore';
+import { TitleBar } from './TitleBar';
 import { CommandRibbon } from './CommandRibbon';
 import { ToolWindowBar } from './ToolWindowBar';
 import { FolderPane } from './FolderPane';
 import { MessageList } from './MessageList';
 import { ReadingPane } from './ReadingPane';
 import { StatusBar } from './StatusBar';
+import { ReadingPaneLayout } from '../../features/view/components/ReadingPaneLayout';
 
 export function AppShell() {
+  const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
+  const commandRibbonVisible = useViewStore((s) => s.commandRibbonVisible);
+  const statusBarVisible = useViewStore((s) => s.statusBarVisible);
+  const readingPanePosition = useViewStore((s) => s.readingPanePosition);
+
+  const folderPane = useMemo(() => <FolderPane />, []);
+  const messageList = useMemo(() => <MessageList />, []);
+  const readingPane = useMemo(() => <ReadingPane />, []);
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
-      <HeaderBar />
-      <CommandRibbon />
+      <TitleBar />
+      {commandRibbonVisible && <CommandRibbon />}
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
-        <Group orientation="horizontal" className="flex-1">
-          <Panel defaultSize="18%" minSize="12%" maxSize="25%">
-            <FolderPane />
-          </Panel>
-          <Separator className="w-[5px] hover:bg-[var(--ring)] transition-colors data-[dragging=true]:bg-[var(--ring)]" />
-          <Panel defaultSize="27%" minSize="18%" maxSize="40%">
-            <MessageList />
-          </Panel>
-          <Separator className="w-[5px] hover:bg-[var(--ring)] transition-colors data-[dragging=true]:bg-[var(--ring)]" />
-          <Panel defaultSize="55%" minSize="30%">
-            <ReadingPane />
-          </Panel>
-        </Group>
+        <ReadingPaneLayout
+          position={readingPanePosition}
+          folderPaneVisible={folderPaneVisible}
+          folderPane={folderPane}
+          messageList={messageList}
+          readingPane={readingPane}
+        />
       </div>
-      <StatusBar />
+      {statusBarVisible && <StatusBar />}
     </div>
   );
 }

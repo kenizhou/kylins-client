@@ -20,6 +20,6 @@ export function InjectedComponent({ role, fallback: Fallback, ...props }: Inject
     return Fallback ? <Fallback /> : null;
   }
 
-  const Component = components[0] as React.ComponentType<any>;
+  const Component = components[0]!;
   return <Component {...props} />;
 }

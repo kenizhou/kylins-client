@@ -49,11 +49,7 @@ export class AIService {
     return result;
   }
 
-  async summarize(
-    accountId: string | undefined,
-    threadId: string,
-    text: string,
-  ): Promise<string> {
+  async summarize(accountId: string | undefined, threadId: string, text: string): Promise<string> {
     const cached = await this.getCachedResult(accountId, threadId, 'summary');
     if (cached !== null) return cached;
 

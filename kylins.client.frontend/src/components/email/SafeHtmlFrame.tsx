@@ -40,7 +40,27 @@ export function SafeHtmlFrame({ html, className }: SafeHtmlFrameProps) {
     if (!iframe || !iframe.contentDocument) return;
 
     const clean = DOMPurify.sanitize(html, {
-      ALLOWED_TAGS: ['p', 'br', 'a', 'b', 'i', 'em', 'strong', 'ul', 'ol', 'li', 'img', 'div', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
+      ALLOWED_TAGS: [
+        'p',
+        'br',
+        'a',
+        'b',
+        'i',
+        'em',
+        'strong',
+        'ul',
+        'ol',
+        'li',
+        'img',
+        'div',
+        'span',
+        'h1',
+        'h2',
+        'h3',
+        'h4',
+        'h5',
+        'h6',
+      ],
       ALLOWED_ATTR: ['href', 'title', 'alt', 'src'],
     });
 

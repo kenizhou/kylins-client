@@ -146,12 +146,7 @@ impl Serializer {
     }
 
     /// Write a tag containing an inline string value.
-    pub fn data<S: AsRef<str>>(
-        &mut self,
-        page: u8,
-        token: u8,
-        value: S,
-    ) -> WbxmlResult<&mut Self> {
+    pub fn data<S: AsRef<str>>(&mut self, page: u8, token: u8, value: S) -> WbxmlResult<&mut Self> {
         self.start(page, token)?;
         self.text(value)?;
         self.end()?;
@@ -294,13 +289,15 @@ mod tests {
     #[test]
     fn text_tag_sets_content_bit() {
         let mut s = Serializer::new();
-        s.start(0, 0x0B).unwrap().text("abc").unwrap().end().unwrap();
+        s.start(0, 0x0B)
+            .unwrap()
+            .text("abc")
+            .unwrap()
+            .end()
+            .unwrap();
         let bytes = s.done().unwrap();
         // token 0x0B | 0x40 = 0x4B, STR_I 0x03, "abc", 0x00, END 0x01
-        assert_eq!(
-            &bytes[4..],
-            &[0x4B, STR_I, b'a', b'b', b'c', 0x00, END]
-        );
+        assert_eq!(&bytes[4..], &[0x4B, STR_I, b'a', b'b', b'c', 0x00, END]);
     }
 
     #[test]

@@ -28,10 +28,7 @@ pub async fn eas_sync(config: EasConfig, request: SyncRequest) -> Result<SyncRes
 }
 
 #[tauri::command]
-pub async fn eas_send_mail(
-    config: EasConfig,
-    request: SendMailRequest,
-) -> Result<u32, String> {
+pub async fn eas_send_mail(config: EasConfig, request: SendMailRequest) -> Result<u32, String> {
     let client = EasClient::new(config);
     client.send_mail(&request).await.map_err(to_display)
 }
@@ -46,10 +43,7 @@ pub async fn eas_smart_forward(
 }
 
 #[tauri::command]
-pub async fn eas_smart_reply(
-    config: EasConfig,
-    request: SmartReplyRequest,
-) -> Result<u32, String> {
+pub async fn eas_smart_reply(config: EasConfig, request: SmartReplyRequest) -> Result<u32, String> {
     let client = EasClient::new(config);
     client.smart_reply(&request).await.map_err(to_display)
 }
@@ -132,7 +126,10 @@ mod tests {
 
     #[test]
     fn unexpected_root_error_stringifies() {
-        let e = EasError::UnexpectedRoot { page: 5, token: 0x10 };
+        let e = EasError::UnexpectedRoot {
+            page: 5,
+            token: 0x10,
+        };
         let s = to_display(e);
         assert!(s.contains("page 5"));
         assert!(s.contains("token 16"));

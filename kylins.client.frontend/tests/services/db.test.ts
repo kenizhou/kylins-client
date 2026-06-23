@@ -23,8 +23,8 @@ describe('runMigrations', () => {
     const db = await getDb();
     await runMigrations();
     const calls = vi.mocked(db.execute).mock.calls;
-    const migrationsCreateCall = calls.find(([sql]) =>
-      typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS _migrations'),
+    const migrationsCreateCall = calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS _migrations'),
     );
     expect(migrationsCreateCall).toBeDefined();
   });
@@ -33,8 +33,8 @@ describe('runMigrations', () => {
     const db = await getDb();
     await runMigrations();
     const calls = vi.mocked(db.execute).mock.calls;
-    const accountsTableCall = calls.find(([sql]) =>
-      typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS accounts'),
+    const accountsTableCall = calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS accounts'),
     );
     expect(accountsTableCall).toBeDefined();
   });
@@ -43,8 +43,10 @@ describe('runMigrations', () => {
     const db = await getDb();
     await runMigrations();
     const calls = vi.mocked(db.execute).mock.calls;
-    const ftsCall = calls.find(([sql]) =>
-      typeof sql === 'string' && sql.includes('CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5'),
+    const ftsCall = calls.find(
+      ([sql]) =>
+        typeof sql === 'string' &&
+        sql.includes('CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5'),
     );
     expect(ftsCall).toBeDefined();
   });
@@ -53,18 +55,19 @@ describe('runMigrations', () => {
     const db = await getDb();
     await runMigrations();
     const calls = vi.mocked(db.execute).mock.calls;
-    const pluginStateCall = calls.find(([sql]) =>
-      typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS plugin_state'),
+    const pluginStateCall = calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS plugin_state'),
     );
     expect(pluginStateCall).toBeDefined();
 
-    const easSyncStateCall = calls.find(([sql]) =>
-      typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS eas_sync_state'),
+    const easSyncStateCall = calls.find(
+      ([sql]) =>
+        typeof sql === 'string' && sql.includes('CREATE TABLE IF NOT EXISTS eas_sync_state'),
     );
     expect(easSyncStateCall).toBeDefined();
 
-    const easUrlCall = calls.find(([sql]) =>
-      typeof sql === 'string' && sql.includes('ALTER TABLE accounts ADD COLUMN eas_url'),
+    const easUrlCall = calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('ALTER TABLE accounts ADD COLUMN eas_url'),
     );
     expect(easUrlCall).toBeDefined();
   });
@@ -73,8 +76,8 @@ describe('runMigrations', () => {
     const db = await getDb();
     await runMigrations();
     const calls = vi.mocked(db.execute).mock.calls;
-    const insertCalls = calls.filter(([sql]) =>
-      typeof sql === 'string' && sql.includes('INSERT OR IGNORE INTO _migrations'),
+    const insertCalls = calls.filter(
+      ([sql]) => typeof sql === 'string' && sql.includes('INSERT OR IGNORE INTO _migrations'),
     );
     // Should have at least one insert per applied migration (26 in total)
     expect(insertCalls.length).toBeGreaterThan(0);

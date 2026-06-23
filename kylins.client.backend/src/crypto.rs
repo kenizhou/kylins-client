@@ -19,8 +19,7 @@ fn get_or_create_key() -> Result<[u8; 32], String> {
     let key = match entry.get_password() {
         Ok(hex_key) => {
             let mut key = [0u8; 32];
-            hex::decode_to_slice(hex_key, &mut key)
-                .map_err(|e| format!("decode key: {e}"))?;
+            hex::decode_to_slice(hex_key, &mut key).map_err(|e| format!("decode key: {e}"))?;
             key
         }
         Err(keyring::Error::NoEntry) => {

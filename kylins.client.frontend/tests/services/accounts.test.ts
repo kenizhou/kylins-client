@@ -2,8 +2,15 @@
 // Licensed under Apache-2.0. See ATTRIBUTIONS.md.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createAccount, getAllAccounts, getAccountById, updateAccount, deleteAccount } from '../../src/services/accounts';
+import {
+  createAccount,
+  getAllAccounts,
+  getAccountById,
+  updateAccount,
+  deleteAccount,
+} from '../../src/services/accounts';
 import { getDb } from '../../src/services/db/connection';
+import type Database from '@tauri-apps/plugin-sql';
 
 vi.mock('../../src/services/db/connection', () => ({
   getDb: vi.fn(),
@@ -15,7 +22,7 @@ const mockDb = {
 };
 
 beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as any);
+  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
   mockDb.select.mockReset();
   mockDb.execute.mockReset();
 });

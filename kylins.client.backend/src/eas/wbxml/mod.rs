@@ -58,11 +58,7 @@ mod round_trip_tests {
                 WbxmlElement::empty(page, tok),
                 WbxmlElement::text(page, tok, format!("page={} tag={}", page, name)),
                 WbxmlElement::opaque(page, tok, vec![page, tok, 0xAA, 0xBB]),
-                WbxmlElement::container(
-                    page,
-                    tok,
-                    vec![WbxmlElement::text(page, tok, "nested")],
-                ),
+                WbxmlElement::container(page, tok, vec![WbxmlElement::text(page, tok, "nested")]),
             ],
         );
 

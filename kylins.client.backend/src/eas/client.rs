@@ -5,10 +5,10 @@
 // Sync, SendMail, etc.) has its own high-level method that delegates to the
 // pure marshalers in `commands.rs`.
 
-use base64::Engine;
 use crate::eas::commands;
 use crate::eas::types::*;
 use crate::eas::wbxml::{deserialize_to_tree, serialize_tree, WbxmlElement, WbxmlError};
+use base64::Engine;
 
 const PAGE_FOLDER: u8 = 7;
 const PAGE_COMPOSE: u8 = 21;
@@ -129,7 +129,11 @@ impl EasClient {
             .unwrap_or("")
             .to_string();
 
-        log::debug!("EAS response: status={}, content-type={}", status, content_type);
+        log::debug!(
+            "EAS response: status={}, content-type={}",
+            status,
+            content_type
+        );
 
         if status != 200 {
             let body = response.text().await.unwrap_or_default();
@@ -176,10 +180,7 @@ impl EasClient {
     }
 
     /// FolderSync — full folder hierarchy sync.
-    pub async fn folder_sync(
-        &self,
-        sync_key: &str,
-    ) -> Result<FolderSyncResult, EasError> {
+    pub async fn folder_sync(&self, sync_key: &str) -> Result<FolderSyncResult, EasError> {
         let req = commands::build_folder_sync_request(sync_key);
         let resp = self.send_command("FolderSync", &req).await?;
         expect_root(&resp, PAGE_FOLDER, FH_FOLDER_SYNC)?;

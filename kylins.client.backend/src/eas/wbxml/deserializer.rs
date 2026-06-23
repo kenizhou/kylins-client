@@ -124,6 +124,11 @@ impl<'a> Deserializer<'a> {
     }
 
     /// Advance to the next event. Returns `Done` when the document is exhausted.
+    //
+    // Intentionally named `next` to mirror a pull-parser cursor. It returns a
+    // `Result<DeserializerEvent>`, not `Option<Item>`, so it is not an
+    // `Iterator::next`; renaming would churn every call site for no gain.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> WbxmlResult<DeserializerEvent> {
         // Clear scratch state.
         self.text.clear();
@@ -261,7 +266,8 @@ impl<'a> Deserializer<'a> {
         if self.pos + length > self.input.len() {
             return Err(WbxmlError::UnexpectedEof);
         }
-        self.opaque_bytes.extend_from_slice(&self.input[self.pos..self.pos + length]);
+        self.opaque_bytes
+            .extend_from_slice(&self.input[self.pos..self.pos + length]);
         self.pos += length;
         Ok(())
     }
@@ -396,11 +402,7 @@ mod tests {
             END,
         ];
         let root = deserialize_to_tree(&bytes).unwrap();
-        let expected = WbxmlElement::container(
-            0,
-            0x05,
-            vec![WbxmlElement::text(0, 0x0B, "abc")],
-        );
+        let expected = WbxmlElement::container(0, 0x05, vec![WbxmlElement::text(0, 0x0B, "abc")]);
         assert_eq!(root, expected);
     }
 

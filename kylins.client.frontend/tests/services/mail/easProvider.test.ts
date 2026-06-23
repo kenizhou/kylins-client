@@ -49,16 +49,12 @@ describe('easConfigFromAccount', () => {
   });
 
   it('falls back to email when imapUsername is absent', () => {
-    const cfg = easConfigFromAccount(
-      makeAccount({ imapUsername: undefined, imapPassword: 'pw' }),
-    );
+    const cfg = easConfigFromAccount(makeAccount({ imapUsername: undefined, imapPassword: 'pw' }));
     expect(cfg.username).toBe('administrator@kylins.com');
   });
 
   it('throws when eas_url is missing', () => {
-    expect(() => easConfigFromAccount(makeAccount({ easUrl: undefined }))).toThrow(
-      /no eas_url/,
-    );
+    expect(() => easConfigFromAccount(makeAccount({ easUrl: undefined }))).toThrow(/no eas_url/);
   });
 
   it('throws when eas_device_id is missing', () => {
@@ -93,7 +89,9 @@ describe('EasProvider', () => {
     const provider = new EasProvider(makeAccount());
     await provider.connect();
     expect(invoke).toHaveBeenCalledWith('eas_folder_sync', {
-      config: expect.objectContaining({ url: expect.stringContaining('Microsoft-Server-ActiveSync') }),
+      config: expect.objectContaining({
+        url: expect.stringContaining('Microsoft-Server-ActiveSync'),
+      }),
       syncKey: '0',
     });
   });

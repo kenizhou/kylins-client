@@ -4,7 +4,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   Account,
-  ImapConfig,
   ImapFolder,
   ImapFetchResult,
   ImapFolderSearchResult,
@@ -190,6 +189,6 @@ export class ImapProvider implements MailProvider {
   }
 }
 
-export function imapConfigFromAccount(account: Account): ImapConfig {
+export function imapConfigFromAccount(account: Account): RustImapConfig {
   return toRustConfig(account);
 }

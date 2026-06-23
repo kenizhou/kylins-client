@@ -22,9 +22,7 @@ export async function getDb(): Promise<Database> {
 
 let txQueue: Promise<void> = Promise.resolve();
 
-export async function withTransaction(
-  fn: (db: Database) => Promise<void>,
-): Promise<void> {
+export async function withTransaction(fn: (db: Database) => Promise<void>): Promise<void> {
   const prev = txQueue;
   let resolve!: () => void;
   txQueue = new Promise<void>((r) => {

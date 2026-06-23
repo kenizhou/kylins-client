@@ -220,7 +220,9 @@ export class EasProvider implements MailProvider {
     });
   }
 
-  async itemOperations(request: EasItemOperationsFetchRequest): Promise<EasItemOperationsFetchResult> {
+  async itemOperations(
+    request: EasItemOperationsFetchRequest,
+  ): Promise<EasItemOperationsFetchResult> {
     return invoke<EasItemOperationsFetchResult>('eas_item_operations', {
       config: this.cfg,
       request,

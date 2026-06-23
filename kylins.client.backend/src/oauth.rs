@@ -37,13 +37,10 @@ pub async fn start_oauth_server(port: u16, state: String) -> Result<OAuthResult,
     log::info!("OAuth callback server listening on port {}", actual_port);
 
     // Wait for exactly one connection (the redirect from the IdP) with 5-minute timeout
-    let (mut stream, _) = tokio::time::timeout(
-        Duration::from_secs(300),
-        listener.accept(),
-    )
-    .await
-    .map_err(|_| "OAuth timed out — please try again".to_string())?
-    .map_err(|e| format!("Failed to accept: {}", e))?;
+    let (mut stream, _) = tokio::time::timeout(Duration::from_secs(300), listener.accept())
+        .await
+        .map_err(|_| "OAuth timed out — please try again".to_string())?
+        .map_err(|e| format!("Failed to accept: {}", e))?;
 
     let mut buf = vec![0u8; 4096];
     let n = stream
@@ -80,7 +77,10 @@ pub async fn start_oauth_server(port: u16, state: String) -> Result<OAuthResult,
 
     drop(listener);
 
-    Ok(OAuthResult { code, state: returned_state })
+    Ok(OAuthResult {
+        code,
+        state: returned_state,
+    })
 }
 
 fn parse_auth_code_and_state(request: &str) -> Result<(String, String), String> {
@@ -230,7 +230,8 @@ mod tests {
 
     #[test]
     fn parse_auth_code_and_state_happy_path() {
-        let request = "GET /cb?code=AUTH_CODE_123&state=CSRF_456 HTTP/1.1\r\nHost: localhost:1420\r\n\r\n";
+        let request =
+            "GET /cb?code=AUTH_CODE_123&state=CSRF_456 HTTP/1.1\r\nHost: localhost:1420\r\n\r\n";
         let (code, state) = parse_auth_code_and_state(request).expect("parse");
         assert_eq!(code, "AUTH_CODE_123");
         assert_eq!(state, "CSRF_456");
@@ -252,7 +253,8 @@ mod tests {
 
     #[test]
     fn parse_auth_code_and_state_server_error() {
-        let request = "GET /cb?error=access_denied&error_description=user+cancelled HTTP/1.1\r\n\r\n";
+        let request =
+            "GET /cb?error=access_denied&error_description=user+cancelled HTTP/1.1\r\n\r\n";
         let result = parse_auth_code_and_state(request);
         assert!(result.is_err());
         let err = result.unwrap_err();

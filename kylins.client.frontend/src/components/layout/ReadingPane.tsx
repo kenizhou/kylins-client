@@ -42,15 +42,25 @@ export function ReadingPane() {
         </div>
       </div>
       <div className="flex gap-1 px-5 py-2 border-b border-[var(--border)]">
-        <button className="h-7 px-3 rounded text-[13px] text-[var(--text)] hover:bg-[var(--hover)]">Reply</button>
-        <button className="h-7 px-3 rounded text-[13px] text-[var(--text)] hover:bg-[var(--hover)]">Forward</button>
-        <button className="h-7 px-3 rounded text-[13px] text-[var(--text)] hover:bg-[var(--hover)]">Archive</button>
-        <button className="h-7 px-3 rounded text-[13px] text-[var(--destructive)] hover:bg-[var(--hover)]">Delete</button>
+        <button className="h-7 px-3 rounded text-[13px] text-[var(--text)] hover:bg-[var(--hover)]">
+          Reply
+        </button>
+        <button className="h-7 px-3 rounded text-[13px] text-[var(--text)] hover:bg-[var(--hover)]">
+          Forward
+        </button>
+        <button className="h-7 px-3 rounded text-[13px] text-[var(--text)] hover:bg-[var(--hover)]">
+          Archive
+        </button>
+        <button className="h-7 px-3 rounded text-[13px] text-[var(--destructive)] hover:bg-[var(--hover)]">
+          Delete
+        </button>
       </div>
       <main className="flex-1 overflow-auto p-5 leading-[1.6] text-[var(--text)]">
         <p className="mb-4">Hi,</p>
         <p className="mb-4">
-          After yesterday's standup I moved the foundation milestone out by two weeks. The structural drawings should be ready by Friday, but we need sign-off from the city before we can pour.
+          After yesterday's standup I moved the foundation milestone out by two weeks. The
+          structural drawings should be ready by Friday, but we need sign-off from the city before
+          we can pour.
         </p>
         <p className="mb-4">
           I've attached the updated Gantt chart. Let me know if the new dates work on your end.

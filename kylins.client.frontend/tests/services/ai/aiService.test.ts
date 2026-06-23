@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AIService } from '../../../src/services/ai/aiService';
 import { getDb } from '../../../src/services/db/connection';
+import type Database from '@tauri-apps/plugin-sql';
+import type { ChatMessage, ChatOptions } from '../../../src/services/ai/providers/base';
 
 vi.mock('../../../src/services/db/connection', () => ({
   getDb: vi.fn(),
@@ -12,18 +14,24 @@ const mockDb = {
 };
 
 beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as any);
+  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
   mockDb.select.mockReset();
   mockDb.execute.mockReset();
 });
 
-function createMockProvider(overrides?: Partial<{
-  chat: (messages: any[], options?: any) => AsyncIterable<string>;
-  summarize: (text: string) => Promise<string>;
-}>) {
+function createMockProvider(
+  overrides?: Partial<{
+    chat: (messages: ChatMessage[], options?: ChatOptions) => AsyncIterable<string>;
+    summarize: (text: string) => Promise<string>;
+  }>,
+) {
   return {
     id: 'mock',
-    chat: overrides?.chat ?? (async function* () { yield 'mock response'; }),
+    chat:
+      overrides?.chat ??
+      async function* () {
+        yield 'mock response';
+      },
     summarize: overrides?.summarize ?? (async () => 'mock summary'),
   };
 }
@@ -75,25 +83,27 @@ describe('AIService', () => {
     const service = new AIService(provider);
     const result = await service.chat('acc-1', 'thread-1', [{ role: 'user', content: 'hi' }]);
     expect(result).toBe('cached chat');
-    expect(mockDb.select).toHaveBeenCalledWith(
-      expect.any(String),
-      ['acc-1', 'thread-1', 'chat'],
-    );
+    expect(mockDb.select).toHaveBeenCalledWith(expect.any(String), ['acc-1', 'thread-1', 'chat']);
   });
 
   it('chat delegates to provider and caches result on miss', async () => {
     mockDb.select.mockResolvedValue([]);
     mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
     const provider = createMockProvider({
-      chat: async function* () { yield 'hello '; yield 'world'; },
+      chat: async function* () {
+        yield 'hello ';
+        yield 'world';
+      },
     });
     const service = new AIService(provider);
     const result = await service.chat('acc-1', 'thread-1', [{ role: 'user', content: 'hi' }]);
     expect(result).toBe('hello world');
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      expect.any(String),
-      ['acc-1', 'thread-1', 'chat', 'hello world'],
-    );
+    expect(mockDb.execute).toHaveBeenCalledWith(expect.any(String), [
+      'acc-1',
+      'thread-1',
+      'chat',
+      'hello world',
+    ]);
   });
 
   it('summarize returns cached result when available', async () => {
@@ -102,10 +112,11 @@ describe('AIService', () => {
     const service = new AIService(provider);
     const result = await service.summarize('acc-1', 'thread-1', 'long text');
     expect(result).toBe('cached summary');
-    expect(mockDb.select).toHaveBeenCalledWith(
-      expect.any(String),
-      ['acc-1', 'thread-1', 'summary'],
-    );
+    expect(mockDb.select).toHaveBeenCalledWith(expect.any(String), [
+      'acc-1',
+      'thread-1',
+      'summary',
+    ]);
   });
 
   it('summarize delegates to provider and caches result on miss', async () => {
@@ -117,9 +128,11 @@ describe('AIService', () => {
     const service = new AIService(provider);
     const result = await service.summarize('acc-1', 'thread-1', 'long text');
     expect(result).toBe('short summary');
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      expect.any(String),
-      ['acc-1', 'thread-1', 'summary', 'short summary'],
-    );
+    expect(mockDb.execute).toHaveBeenCalledWith(expect.any(String), [
+      'acc-1',
+      'thread-1',
+      'summary',
+      'short summary',
+    ]);
   });
 });

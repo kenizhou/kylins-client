@@ -177,7 +177,10 @@ fn folder_sync_status_message(status: u32) -> &'static str {
     }
 }
 
-fn parse_folder_changes(changes: &WbxmlElement, result: &mut FolderSyncResult) -> Result<(), WbxmlError> {
+fn parse_folder_changes(
+    changes: &WbxmlElement,
+    result: &mut FolderSyncResult,
+) -> Result<(), WbxmlError> {
     for child in &changes.children {
         match (child.page, child.token) {
             (PAGE_FOLDER, FH_ADD) => {
@@ -206,11 +209,14 @@ fn parse_folder_changes(changes: &WbxmlElement, result: &mut FolderSyncResult) -
 
 /// Find the first child with the given token on the same page and return its text value.
 fn find_child_text(el: &WbxmlElement, token: u8) -> Option<String> {
-    el.children.iter().find(|c| c.token == token).and_then(|c| match &c.value {
-        WbxmlValue::Text(t) => Some(t.clone()),
-        WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
-        WbxmlValue::Empty => None,
-    })
+    el.children
+        .iter()
+        .find(|c| c.token == token)
+        .and_then(|c| match &c.value {
+            WbxmlValue::Text(t) => Some(t.clone()),
+            WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
+            WbxmlValue::Empty => None,
+        })
 }
 
 fn parse_folder_element(folder_el: &WbxmlElement) -> Result<EasFolder, WbxmlError> {
@@ -264,11 +270,7 @@ pub fn build_sync_request(req: &SyncRequest) -> WbxmlElement {
         ));
     }
 
-    let mut collection = WbxmlElement::container(
-        PAGE_AIRSYNC,
-        AS_COLLECTION,
-        collection_children,
-    );
+    let mut collection = WbxmlElement::container(PAGE_AIRSYNC, AS_COLLECTION, collection_children);
 
     if !req.class.is_empty() {
         collection = WbxmlElement::container(
@@ -311,15 +313,12 @@ pub fn parse_sync_response(root: &WbxmlElement) -> Result<SyncResult, WbxmlError
 
     let mut result = SyncResult::default();
     for child in &root.children {
-        match (child.page, child.token) {
-            (PAGE_AIRSYNC, AS_COLLECTIONS) => {
-                for col_el in &child.children {
-                    if col_el.page == PAGE_AIRSYNC && col_el.token == AS_COLLECTION {
-                        parse_sync_collection(col_el, &mut result)?;
-                    }
+        if let (PAGE_AIRSYNC, AS_COLLECTIONS) = (child.page, child.token) {
+            for col_el in &child.children {
+                if col_el.page == PAGE_AIRSYNC && col_el.token == AS_COLLECTION {
+                    parse_sync_collection(col_el, &mut result)?;
                 }
             }
-            _ => {}
         }
     }
     Ok(result)
@@ -517,7 +516,9 @@ pub fn build_item_operations_request(req: &ItemOperationsFetchRequest) -> WbxmlE
 }
 
 /// Parse an ItemOperations Fetch response.
-pub fn parse_item_operations_response(root: &WbxmlElement) -> Result<ItemOperationsFetchResult, WbxmlError> {
+pub fn parse_item_operations_response(
+    root: &WbxmlElement,
+) -> Result<ItemOperationsFetchResult, WbxmlError> {
     let mut result = ItemOperationsFetchResult::default();
     for child in &root.children {
         if child.page == PAGE_ITEM_OPS && child.token == IO_RESPONSE {
@@ -535,9 +536,7 @@ pub fn parse_item_operations_response(root: &WbxmlElement) -> Result<ItemOperati
                                         (PAGE_ITEM_OPS, IO_DATA) => {
                                             result.data = match &prop.value {
                                                 WbxmlValue::Text(t) => Some(t.clone()),
-                                                WbxmlValue::Opaque(b) => {
-                                                    Some(base64_encode(b))
-                                                }
+                                                WbxmlValue::Opaque(b) => Some(base64_encode(b)),
                                                 WbxmlValue::Empty => None,
                                             };
                                         }
@@ -593,11 +592,7 @@ pub fn build_get_item_estimate_request(req: &GetItemEstimateRequest) -> WbxmlEle
             WbxmlElement::text(PAGE_GIE, GIE_CLASS, req.class.clone()),
             WbxmlElement::text(PAGE_GIE, GIE_SYNC_KEY, req.sync_key.clone()),
             WbxmlElement::text(PAGE_GIE, GIE_COLLECTION_ID, req.collection_id.clone()),
-            WbxmlElement::text(
-                PAGE_GIE,
-                GIE_FILTER_TYPE,
-                req.filter_age_days.to_string(),
-            ),
+            WbxmlElement::text(PAGE_GIE, GIE_FILTER_TYPE, req.filter_age_days.to_string()),
         ],
     );
 
@@ -612,7 +607,9 @@ pub fn build_get_item_estimate_request(req: &GetItemEstimateRequest) -> WbxmlEle
     )
 }
 
-pub fn parse_get_item_estimate_response(root: &WbxmlElement) -> Result<GetItemEstimateResult, WbxmlError> {
+pub fn parse_get_item_estimate_response(
+    root: &WbxmlElement,
+) -> Result<GetItemEstimateResult, WbxmlError> {
     const PAGE_GIE: u8 = 6;
     const GIE_RESPONSE: u8 = 0x06;
     const GIE_COLLECTION: u8 = 0x08;
@@ -717,10 +714,18 @@ pub fn build_folder_update_request(req: &FolderUpdateRequest) -> WbxmlElement {
         req.server_id.clone(),
     )];
     if let Some(parent_id) = &req.parent_id {
-        children.push(WbxmlElement::text(PAGE_FOLDER, FH_PARENT_ID, parent_id.clone()));
+        children.push(WbxmlElement::text(
+            PAGE_FOLDER,
+            FH_PARENT_ID,
+            parent_id.clone(),
+        ));
     }
     if let Some(name) = &req.display_name {
-        children.push(WbxmlElement::text(PAGE_FOLDER, FH_DISPLAY_NAME, name.clone()));
+        children.push(WbxmlElement::text(
+            PAGE_FOLDER,
+            FH_DISPLAY_NAME,
+            name.clone(),
+        ));
     }
     WbxmlElement::container(PAGE_FOLDER, FH_FOLDER_UPDATE, children)
 }
@@ -729,7 +734,11 @@ pub fn build_folder_delete_request(req: &FolderDeleteRequest) -> WbxmlElement {
     WbxmlElement::container(
         PAGE_FOLDER,
         FH_FOLDER_DELETE,
-        vec![WbxmlElement::text(PAGE_FOLDER, FH_SERVER_ID, req.server_id.clone())],
+        vec![WbxmlElement::text(
+            PAGE_FOLDER,
+            FH_SERVER_ID,
+            req.server_id.clone(),
+        )],
     )
 }
 
@@ -752,7 +761,7 @@ pub fn parse_folder_op_response(root: &WbxmlElement) -> Result<(u32, Option<Stri
 
 fn class_to_folder_type(class: &str) -> String {
     match class {
-        "Email" => "2".to_string(),  // default mail folder
+        "Email" => "2".to_string(), // default mail folder
         "Calendar" => "8".to_string(),
         "Contacts" => "9".to_string(),
         "Tasks" => "7".to_string(),
@@ -779,12 +788,9 @@ fn expect_tag(el: &WbxmlElement, expected_page: u8, expected_token: u8) -> Resul
 fn text_value(el: &WbxmlElement) -> Result<String, WbxmlError> {
     match &el.value {
         WbxmlValue::Text(t) => Ok(t.clone()),
-        WbxmlValue::Opaque(b) => {
-            String::from_utf8(b.clone()).map_err(|_| WbxmlError::InvalidContent(format!(
-                "tag {} had non-UTF-8 opaque value",
-                el.tag_name()
-            )))
-        }
+        WbxmlValue::Opaque(b) => String::from_utf8(b.clone()).map_err(|_| {
+            WbxmlError::InvalidContent(format!("tag {} had non-UTF-8 opaque value", el.tag_name()))
+        }),
         WbxmlValue::Empty => Ok(String::new()),
     }
 }

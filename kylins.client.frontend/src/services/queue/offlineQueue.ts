@@ -8,6 +8,15 @@ export interface PendingOperation {
   params: Record<string, unknown>;
 }
 
+/** Raw shape of a `pending_operations` row as returned by SQLite. */
+interface PendingOperationRow {
+  id: string;
+  account_id: string;
+  operation_type: string;
+  resource_id: string;
+  params: string;
+}
+
 export class OfflineQueue {
   async enqueue(op: PendingOperation): Promise<void> {
     const db = await getDb();
@@ -22,7 +31,7 @@ export class OfflineQueue {
 
   async dequeuePending(limit = 50): Promise<PendingOperation[]> {
     const db = await getDb();
-    const rows = await db.select<any[]>(
+    const rows = await db.select<PendingOperationRow[]>(
       `SELECT * FROM pending_operations
        WHERE status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= unixepoch())
        ORDER BY created_at ASC LIMIT $1`,

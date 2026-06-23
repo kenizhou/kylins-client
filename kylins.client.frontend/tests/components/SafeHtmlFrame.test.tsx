@@ -29,7 +29,7 @@ describe('SafeHtmlFrame', () => {
 
   it('strips script tags from the iframe body', () => {
     const { container } = render(
-      <SafeHtmlFrame html="<p>Hello</p><script>alert('xss')</script>" />
+      <SafeHtmlFrame html="<p>Hello</p><script>alert('xss')</script>" />,
     );
     const iframe = container.querySelector('iframe') as HTMLIFrameElement;
     const body = iframe.contentDocument?.body;
@@ -38,9 +38,7 @@ describe('SafeHtmlFrame', () => {
   });
 
   it('adds target="_blank" and rel="noopener noreferrer" to links', () => {
-    const { container } = render(
-      <SafeHtmlFrame html='<a href="https://example.com">Link</a>' />
-    );
+    const { container } = render(<SafeHtmlFrame html='<a href="https://example.com">Link</a>' />);
     const iframe = container.querySelector('iframe') as HTMLIFrameElement;
     const body = iframe.contentDocument?.body;
     const link = body?.querySelector('a');
@@ -49,9 +47,7 @@ describe('SafeHtmlFrame', () => {
   });
 
   it('resets iframe src to about:blank on unmount', () => {
-    const { container, unmount } = render(
-      <SafeHtmlFrame html="<p>Hello</p>" />
-    );
+    const { container, unmount } = render(<SafeHtmlFrame html="<p>Hello</p>" />);
     const iframe = container.querySelector('iframe') as HTMLIFrameElement;
     unmount();
     expect(iframe.src).toBe('about:blank');

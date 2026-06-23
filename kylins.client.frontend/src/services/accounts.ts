@@ -128,7 +128,10 @@ export async function createAccount(input: CreateAccountInput): Promise<Account>
 
 export async function getAllAccounts(): Promise<Account[]> {
   const db = await getDb();
-  const rows = await db.select<DbAccountRow[]>('SELECT * FROM accounts ORDER BY created_at DESC', []);
+  const rows = await db.select<DbAccountRow[]>(
+    'SELECT * FROM accounts ORDER BY created_at DESC',
+    [],
+  );
   return rows.map(rowToAccount);
 }
 
@@ -188,10 +191,7 @@ export async function updateAccount(id: string, updates: AccountUpdates): Promis
   values.push(Math.floor(Date.now() / 1000));
   values.push(id);
 
-  await db.execute(
-    `UPDATE accounts SET ${fields.join(', ')} WHERE id = $${idx}`,
-    values,
-  );
+  await db.execute(`UPDATE accounts SET ${fields.join(', ')} WHERE id = $${idx}`, values);
 }
 
 export async function deleteAccount(id: string): Promise<void> {

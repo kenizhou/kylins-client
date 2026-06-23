@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { pluginManager } from '../../../src/services/plugins/pluginManager';
+import type { LoadedPlugin } from '../../../src/services/plugins/pluginAPI';
 
 const TestComponent = () => null;
-const TestComponent2 = () => null;
 
 beforeEach(() => {
-  pluginManager.getComponentsForRole('test-role').forEach((c) =>
-    pluginManager.api.unregisterComponent('test-role', c),
-  );
+  pluginManager
+    .getComponentsForRole('test-role')
+    .forEach((c) => pluginManager.api.unregisterComponent('test-role', c));
 });
 
 describe('PluginManager', () => {
@@ -70,7 +70,8 @@ describe('PluginManager', () => {
     const deactivate1 = vi.fn();
     const deactivate2 = vi.fn();
     // Manually push loaded plugins for testing
-    (pluginManager as any).plugins.push(
+    const internals = pluginManager as unknown as { plugins: LoadedPlugin[] };
+    internals.plugins.push(
       { name: 'plugin1', path: '/p1', main: { deactivate: deactivate1 } },
       { name: 'plugin2', path: '/p2', main: { deactivate: deactivate2 } },
     );
@@ -78,7 +79,7 @@ describe('PluginManager', () => {
     expect(deactivate1).toHaveBeenCalled();
     expect(deactivate2).toHaveBeenCalled();
     // Clean up
-    (pluginManager as any).plugins.length = 0;
+    internals.plugins.length = 0;
   });
 
   it('loadPlugins reports loaded and failed plugins', async () => {

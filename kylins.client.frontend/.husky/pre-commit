@@ -1,0 +1,1 @@
+cd kylins.client.frontend && npx lint-staged

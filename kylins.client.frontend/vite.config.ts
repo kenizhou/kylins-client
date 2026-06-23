@@ -25,9 +25,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     host: host || false,
-    hmr: host
-      ? { protocol: 'ws', host, port: 5174 }
-      : undefined,
+    hmr: host ? { protocol: 'ws', host, port: 5174 } : undefined,
     watch: {
       ignored: ['**/kylins.client.backend/**'],
     },

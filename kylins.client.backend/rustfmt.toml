@@ -1,0 +1,5 @@
+# rustfmt configuration for the Kylins backend.
+# Matches edition 2021 (see Cargo.toml) and a 100-column limit consistent with
+# the frontend's Prettier printWidth.
+edition = "2021"
+max_width = 100

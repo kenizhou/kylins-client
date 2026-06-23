@@ -29,6 +29,10 @@ import {
   TickDoubleIcon,
   AiChat02Icon,
   Alert01Icon,
+  MinusSignIcon,
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
+  Cancel01Icon,
 } from '@hugeicons/core-free-icons';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
@@ -38,14 +42,7 @@ export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
 
 function makeIcon(iconData: Parameters<typeof HugeiconsIcon>[0]['icon']) {
   return function Icon({ size = 16, strokeWidth = 1.5, ...rest }: IconProps) {
-    return (
-      <HugeiconsIcon
-        icon={iconData}
-        size={size}
-        strokeWidth={strokeWidth}
-        {...rest}
-      />
-    );
+    return <HugeiconsIcon icon={iconData} size={size} strokeWidth={strokeWidth} {...rest} />;
   };
 }
 
@@ -77,3 +74,7 @@ export const TasksIcon = makeIcon(TickDoubleIcon);
 export const AiIcon = makeIcon(AiChat02Icon);
 export const BellIcon = makeIcon(Alert01Icon);
 export const TrashIcon = makeIcon(Delete02Icon);
+export const MinimizeIcon = makeIcon(MinusSignIcon);
+export const MaximizeIcon = makeIcon(ArrowExpand01Icon);
+export const RestoreIcon = makeIcon(ArrowShrink01Icon);
+export const CloseIcon = makeIcon(Cancel01Icon);

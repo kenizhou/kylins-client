@@ -18,9 +18,7 @@ fn decode_base64url(input: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("Base64 decode error: {}", e))
 }
 
-fn build_transport(
-    config: &SmtpConfig,
-) -> Result<AsyncSmtpTransport<Tokio1Executor>, String> {
+fn build_transport(config: &SmtpConfig) -> Result<AsyncSmtpTransport<Tokio1Executor>, String> {
     let credentials = Credentials::new(config.username.clone(), config.password.clone());
 
     let auth_mechanisms = if config.auth_method == "oauth2" {
@@ -66,13 +64,11 @@ fn build_transport(
 
             builder.build()
         }
-        _ => {
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.host)
-                .port(config.port)
-                .credentials(credentials)
-                .authentication(auth_mechanisms)
-                .build()
-        }
+        _ => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.host)
+            .port(config.port)
+            .credentials(credentials)
+            .authentication(auth_mechanisms)
+            .build(),
     };
 
     Ok(transport)

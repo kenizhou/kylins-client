@@ -161,13 +161,14 @@ pub fn run() {
                 let app_handle = app.handle().clone();
 
                 std::thread::spawn(move || {
-                    let mut tray = match TrayItem::new("Kylins Mail", IconSource::Resource("mail-read")) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            log::warn!("Failed to create system tray: {e}");
-                            return;
-                        }
-                    };
+                    let mut tray =
+                        match TrayItem::new("Kylins Mail", IconSource::Resource("mail-read")) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::warn!("Failed to create system tray: {e}");
+                                return;
+                            }
+                        };
 
                     let app_handle_show = app_handle.clone();
                     if let Err(e) = tray.add_menu_item("Show Kylins Mail", move || {

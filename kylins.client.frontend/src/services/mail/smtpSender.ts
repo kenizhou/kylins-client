@@ -26,7 +26,10 @@ export function smtpConfigFromAccount(account: Account): RustSmtpConfig {
   };
 }
 
-export async function sendEmail(account: Account, rawEmailBase64url: string): Promise<SmtpSendResult> {
+export async function sendEmail(
+  account: Account,
+  rawEmailBase64url: string,
+): Promise<SmtpSendResult> {
   return invoke<SmtpSendResult>('smtp_send_email', {
     config: smtpConfigFromAccount(account),
     rawEmail: rawEmailBase64url,

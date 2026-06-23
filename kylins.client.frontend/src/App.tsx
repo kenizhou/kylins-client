@@ -5,11 +5,11 @@ import { getSetting } from './services/settings';
 import { ThemeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { useUIStore } from './stores/uiStore';
+import { useViewSettings } from './features/view/hooks/useViewSettings';
 
 const themeManager = new ThemeManager();
 
-const isTauri =
-  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -26,6 +26,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const isMounted = useRef(true);
   const setTheme = useUIStore((s) => s.setTheme);
+  useViewSettings();
 
   useEffect(() => {
     isMounted.current = true;

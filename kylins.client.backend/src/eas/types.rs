@@ -267,7 +267,11 @@ pub struct EasError {
 
 impl std::fmt::Display for EasError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EAS {} status {}: {}", self.command, self.status, self.message)
+        write!(
+            f,
+            "EAS {} status {}: {}",
+            self.command, self.status, self.message
+        )
     }
 }
 

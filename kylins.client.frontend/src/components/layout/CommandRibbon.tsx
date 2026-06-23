@@ -1,7 +1,27 @@
-import { DeleteIcon, ArchiveIcon, MoveIcon, TagIcon, LightningIcon, MailIcon, FlagIcon, PinIcon, UndoIcon, RedoIcon, MoreIcon } from '../icons';
+import {
+  DeleteIcon,
+  ArchiveIcon,
+  MoveIcon,
+  TagIcon,
+  LightningIcon,
+  MailIcon,
+  FlagIcon,
+  PinIcon,
+  UndoIcon,
+  RedoIcon,
+  MoreIcon,
+  PlusIcon,
+  NotificationIcon,
+  SettingsIcon,
+  UserIcon,
+} from '../icons';
 
 function RibbonGroup({ children }: { children: React.ReactNode }) {
-  return <div className="flex items-stretch px-1 border-r border-[var(--border)] last:border-r-0">{children}</div>;
+  return (
+    <div className="flex items-stretch px-1 border-r border-[var(--border)] last:border-r-0">
+      {children}
+    </div>
+  );
 }
 
 interface RibbonButtonProps {
@@ -29,29 +49,52 @@ function RibbonButton({ children, icon, primary, split }: RibbonButtonProps) {
 
 export function CommandRibbon() {
   return (
-    <nav className="h-11 flex items-stretch px-2 border-b bg-[var(--background)] border-[var(--border)]" aria-label="Command ribbon">
-      <RibbonGroup>
-        <RibbonButton primary split>New mail</RibbonButton>
-      </RibbonGroup>
-      <RibbonGroup>
-        <RibbonButton icon={<DeleteIcon />}>Delete</RibbonButton>
-        <RibbonButton icon={<ArchiveIcon />}>Archive</RibbonButton>
-        <RibbonButton icon={<MoveIcon />} split>Move</RibbonButton>
-      </RibbonGroup>
-      <RibbonGroup>
-        <RibbonButton icon={<TagIcon />} split>Categorize</RibbonButton>
-        <RibbonButton icon={<LightningIcon />} split>Quick steps</RibbonButton>
-      </RibbonGroup>
-      <RibbonGroup>
-        <RibbonButton icon={<MailIcon />} split>Read/Unread</RibbonButton>
-        <RibbonButton icon={<FlagIcon />}>Flag</RibbonButton>
-        <RibbonButton icon={<PinIcon />}>Pin</RibbonButton>
-      </RibbonGroup>
-      <RibbonGroup>
-        <RibbonButton icon={<UndoIcon />} />
-        <RibbonButton icon={<RedoIcon />} />
-        <RibbonButton icon={<MoreIcon />} />
-      </RibbonGroup>
+    <nav
+      className="h-11 flex items-stretch justify-between px-2 border-b bg-[var(--background)] border-[var(--border)]"
+      aria-label="Command ribbon"
+    >
+      <div className="flex items-stretch">
+        <RibbonGroup>
+          <RibbonButton primary icon={<PlusIcon />} split>
+            New mail
+          </RibbonButton>
+        </RibbonGroup>
+        <RibbonGroup>
+          <RibbonButton icon={<DeleteIcon />}>Delete</RibbonButton>
+          <RibbonButton icon={<ArchiveIcon />}>Archive</RibbonButton>
+          <RibbonButton icon={<MoveIcon />} split>
+            Move
+          </RibbonButton>
+        </RibbonGroup>
+        <RibbonGroup>
+          <RibbonButton icon={<TagIcon />} split>
+            Categorize
+          </RibbonButton>
+          <RibbonButton icon={<LightningIcon />} split>
+            Quick steps
+          </RibbonButton>
+        </RibbonGroup>
+        <RibbonGroup>
+          <RibbonButton icon={<MailIcon />} split>
+            Read/Unread
+          </RibbonButton>
+          <RibbonButton icon={<FlagIcon />}>Flag</RibbonButton>
+          <RibbonButton icon={<PinIcon />}>Pin</RibbonButton>
+        </RibbonGroup>
+        <RibbonGroup>
+          <RibbonButton icon={<UndoIcon />} />
+          <RibbonButton icon={<RedoIcon />} />
+          <RibbonButton icon={<MoreIcon />} />
+        </RibbonGroup>
+      </div>
+
+      <div className="flex items-stretch">
+        <RibbonGroup>
+          <RibbonButton icon={<NotificationIcon />} />
+          <RibbonButton icon={<SettingsIcon />} />
+          <RibbonButton icon={<UserIcon />} />
+        </RibbonGroup>
+      </div>
     </nav>
   );
 }

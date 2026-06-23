@@ -13,9 +13,11 @@ function FolderRow({ icon, name, count, active }: FolderRowProps) {
     <div
       className={`
         flex items-center gap-2 h-7 px-3 text-[13px] cursor-pointer
-        ${active
-          ? 'bg-[var(--selected)] text-[var(--primary)]'
-          : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--text)]'}
+        ${
+          active
+            ? 'bg-[var(--selected)] text-[var(--primary)]'
+            : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--text)]'
+        }
       `}
     >
       <span className="shrink-0">{icon}</span>

@@ -1,4 +1,12 @@
-import { MailIcon, CalendarIcon, ContactsIcon, TasksIcon, AiIcon } from '../icons';
+import {
+  MailIcon,
+  CalendarIcon,
+  ContactsIcon,
+  TasksIcon,
+  AiIcon,
+  SettingsIcon,
+  UserIcon,
+} from '../icons';
 import { useUIStore } from '../../stores/uiStore';
 
 interface ToolWindowItem {
@@ -8,11 +16,11 @@ interface ToolWindowItem {
 }
 
 const TOOLS: ToolWindowItem[] = [
-  { id: 'mail', label: 'Mail', icon: <MailIcon size={20} /> },
-  { id: 'calendar', label: 'Calendar', icon: <CalendarIcon size={20} /> },
-  { id: 'contacts', label: 'Contacts', icon: <ContactsIcon size={20} /> },
-  { id: 'tasks', label: 'Tasks', icon: <TasksIcon size={20} /> },
-  { id: 'ai', label: 'AI Assistant', icon: <AiIcon size={20} /> },
+  { id: 'mail', label: 'Mail', icon: <MailIcon size={22} /> },
+  { id: 'calendar', label: 'Calendar', icon: <CalendarIcon size={22} /> },
+  { id: 'contacts', label: 'Contacts', icon: <ContactsIcon size={22} /> },
+  { id: 'tasks', label: 'Tasks', icon: <TasksIcon size={22} /> },
+  { id: 'ai', label: 'AI Assistant', icon: <AiIcon size={22} /> },
 ];
 
 export function ToolWindowBar() {
@@ -21,30 +29,54 @@ export function ToolWindowBar() {
 
   return (
     <nav
-      aria-label="Tool windows"
-      className="flex flex-col items-center gap-1 pt-2 w-11 shrink-0 bg-[var(--surface)] border-r border-[var(--border)]"
+      aria-label="Activity bar"
+      className="flex flex-col justify-between items-center w-12 shrink-0 bg-[var(--surface)] border-r border-[var(--border)] py-2"
     >
-      {TOOLS.map((tool) => {
-        const active = activeToolWindow === tool.id;
-        return (
-          <button
-            key={tool.id}
-            aria-label={tool.label}
-            title={tool.label}
-            onClick={() => setActiveToolWindow(active ? null : tool.id)}
-            className={`
-              relative grid place-items-center w-9 h-9 rounded-md transition-colors
-              ${active
-                ? 'text-[var(--primary)] bg-[var(--selected)]'
-                : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--text)]'}
-              before:absolute before:left-[-5px] before:top-[10px] before:bottom-[10px] before:w-[3px] before:rounded-r-sm
-              ${active ? 'before:bg-[var(--primary)]' : 'before:bg-transparent'}
-            `}
-          >
-            {tool.icon}
-          </button>
-        );
-      })}
+      <div className="flex flex-col items-center gap-2">
+        {TOOLS.map((tool) => {
+          const active = activeToolWindow === tool.id;
+          return (
+            <button
+              key={tool.id}
+              aria-label={tool.label}
+              title={tool.label}
+              onClick={() => setActiveToolWindow(active ? null : tool.id)}
+              className={`
+                relative grid place-items-center w-10 h-10 rounded-md transition-colors
+                ${
+                  active
+                    ? 'text-[var(--primary)] bg-[var(--selected)]'
+                    : 'text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)]'
+                }
+              `}
+            >
+              {active && (
+                <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-[var(--primary)]" />
+              )}
+              {tool.icon}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-col items-center gap-2">
+        <button
+          type="button"
+          aria-label="Settings"
+          title="Settings"
+          className="grid place-items-center w-10 h-10 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+        >
+          <SettingsIcon size={20} />
+        </button>
+        <button
+          type="button"
+          aria-label="Account"
+          title="Account"
+          className="grid place-items-center w-10 h-10 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+        >
+          <UserIcon size={20} />
+        </button>
+      </div>
     </nav>
   );
 }

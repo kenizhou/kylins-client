@@ -1,4 +1,4 @@
-import type { PluginAPI, LoadedPlugin } from './pluginAPI';
+import type { PluginAPI, LoadedPlugin, InjectedComponentType } from './pluginAPI';
 
 export interface LoadPluginsResult {
   loaded: string[];
@@ -7,7 +7,7 @@ export interface LoadPluginsResult {
 
 export class PluginManager {
   private plugins: LoadedPlugin[] = [];
-  private components = new Map<string, Set<React.ComponentType<any>>>();
+  private components = new Map<string, Set<InjectedComponentType>>();
   private eventHandlers = new Map<string, Set<(payload: unknown) => void>>();
   private actions = new Map<string, () => void>();
 
@@ -67,7 +67,7 @@ export class PluginManager {
     }
   }
 
-  getComponentsForRole(role: string): React.ComponentType<any>[] {
+  getComponentsForRole(role: string): InjectedComponentType[] {
     return Array.from(this.components.get(role) ?? []);
   }
 
