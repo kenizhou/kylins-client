@@ -59,4 +59,18 @@ describe('userInfo', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
+
+  it('falls back to the typed email when a microsoft id_token is malformed', async () => {
+    const cfg = getProvider('outlook');
+    const tokens: TokenExchangeResult = {
+      access_token: 'tok',
+      refresh_token: null,
+      expires_in: 3600,
+      token_type: 'Bearer',
+      scope: null,
+      id_token: 'not.a.valid.jwt',
+    };
+    const info = await fetchUserInfo(cfg, tokens, 'fallback@x.com');
+    expect(info.email).toBe('fallback@x.com');
+  });
 });

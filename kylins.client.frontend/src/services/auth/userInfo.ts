@@ -28,7 +28,15 @@ export async function fetchUserInfo(
 ): Promise<ProviderUserInfo> {
   if (config.oauthProvider === 'microsoft') {
     if (!tokens.id_token) return { email: fallbackEmail };
-    const claims = decodeIdTokenClaims(tokens.id_token);
+    // decodeIdTokenClaims throws on a malformed id_token; degrade gracefully
+    // to the fallback email so the caller never has to defend against throws
+    // (matches the Google branch's contract).
+    let claims: Record<string, unknown>;
+    try {
+      claims = decodeIdTokenClaims(tokens.id_token);
+    } catch {
+      return { email: fallbackEmail };
+    }
     const email =
       (claims.email as string) || (claims.preferred_username as string) || fallbackEmail;
     return {
