@@ -8,12 +8,19 @@ import {
   getAccountById,
   updateAccount,
   deleteAccount,
+  type CreateAccountInput,
 } from '../../src/services/accounts';
 import { getDb } from '../../src/services/db/connection';
+import { encryptSecret, decryptSecret } from '../../src/services/crypto';
 import type Database from '@tauri-apps/plugin-sql';
 
 vi.mock('../../src/services/db/connection', () => ({
   getDb: vi.fn(),
+}));
+
+vi.mock('../../src/services/crypto', () => ({
+  encryptSecret: vi.fn((plain: string) => Promise.resolve(`enc:${plain}`)),
+  decryptSecret: vi.fn((cipher: string) => Promise.resolve(cipher.replace(/^enc:/, ''))),
 }));
 
 const mockDb = {
@@ -28,6 +35,59 @@ beforeEach(() => {
 });
 
 describe('accounts', () => {
+  it('encrypts secret fields on create', async () => {
+    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    mockDb.select.mockResolvedValue([
+      {
+        id: 'a',
+        email: 'e@x.com',
+        provider: 'imap',
+        is_active: 1,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+    await createAccount({
+      email: 'e@x.com',
+      provider: 'imap',
+      authMethod: 'password',
+      imapPassword: 'secret',
+      accessToken: 'tok',
+      refreshToken: 'ref',
+      oauthClientSecret: 'cs',
+    } satisfies CreateAccountInput);
+    const params = mockDb.execute.mock.calls[0][1] as unknown[];
+    // encrypted values written, never plaintext
+    expect(params).toContain('enc:secret');
+    expect(params).toContain('enc:tok');
+    expect(params).toContain('enc:ref');
+    expect(params).toContain('enc:cs');
+    expect(params).not.toContain('secret');
+    expect(encryptSecret).toHaveBeenCalledWith('secret');
+  });
+
+  it('decrypts secret fields on read', async () => {
+    mockDb.select.mockResolvedValue([
+      {
+        id: 'a',
+        email: 'e@x.com',
+        provider: 'imap',
+        auth_method: 'password',
+        imap_password: 'enc:secret',
+        access_token: 'enc:tok',
+        refresh_token: 'enc:ref',
+        is_active: 1,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+    const account = await getAccountById('a');
+    expect(account!.imapPassword).toBe('secret');
+    expect(account!.accessToken).toBe('tok');
+    expect(account!.refreshToken).toBe('ref');
+    expect(decryptSecret).toHaveBeenCalledWith('enc:secret');
+  });
+
   it('creates an account', async () => {
     mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
     mockDb.select.mockResolvedValue([
@@ -179,8 +239,8 @@ describe('accounts', () => {
       'new@example.com',
       'New Name',
       'imap',
-      'new-tok',
-      'new-ref',
+      'enc:new-tok',
+      'enc:new-ref',
       9999999999,
       0,
       expect.any(Number),

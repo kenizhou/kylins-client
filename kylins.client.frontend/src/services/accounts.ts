@@ -2,21 +2,34 @@
 // Licensed under Apache-2.0. See ATTRIBUTIONS.md.
 
 import { getDb } from './db/connection';
+import { encryptSecret, decryptSecret } from './crypto';
 import type { Account, DbAccountRow, MailProvider, SecurityMode, AuthMethod } from '../types';
 
 function generateId(): string {
   return crypto.randomUUID();
 }
 
-function rowToAccount(row: DbAccountRow): Account {
+async function decryptField(value: string | null | undefined): Promise<string | undefined> {
+  if (!value) return undefined;
+  return decryptSecret(value);
+}
+
+async function rowToAccount(row: DbAccountRow): Promise<Account> {
+  // Decrypt the 4 secret fields concurrently; each is an independent IPC round-trip.
+  const [accessToken, refreshToken, imapPassword, oauthClientSecret] = await Promise.all([
+    decryptField(row.access_token),
+    decryptField(row.refresh_token),
+    decryptField(row.imap_password),
+    decryptField(row.oauth_client_secret),
+  ]);
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name ?? undefined,
     avatarUrl: row.avatar_url ?? undefined,
     provider: row.provider as MailProvider,
-    accessToken: row.access_token ?? undefined,
-    refreshToken: row.refresh_token ?? undefined,
+    accessToken,
+    refreshToken,
     tokenExpiresAt: row.token_expires_at ?? undefined,
     historyId: row.history_id ?? undefined,
     lastSyncAt: row.last_sync_at ?? undefined,
@@ -31,11 +44,11 @@ function rowToAccount(row: DbAccountRow): Account {
     smtpPort: row.smtp_port ?? undefined,
     smtpSecurity: (row.smtp_security as SecurityMode) ?? undefined,
     authMethod: (row.auth_method as AuthMethod) ?? undefined,
-    imapPassword: row.imap_password ?? undefined,
+    imapPassword,
     imapUsername: row.imap_username ?? undefined,
     oauthProvider: row.oauth_provider ?? undefined,
     oauthClientId: row.oauth_client_id ?? undefined,
-    oauthClientSecret: row.oauth_client_secret ?? undefined,
+    oauthClientSecret,
     acceptInvalidCerts: row.accept_invalid_certs === 1,
     // EAS
     easUrl: row.eas_url ?? undefined,
@@ -96,8 +109,8 @@ export async function createAccount(input: CreateAccountInput): Promise<Account>
       input.email,
       input.displayName ?? null,
       input.provider,
-      input.accessToken ?? null,
-      input.refreshToken ?? null,
+      input.accessToken ? await encryptSecret(input.accessToken) : null,
+      input.refreshToken ? await encryptSecret(input.refreshToken) : null,
       input.tokenExpiresAt ?? null,
       (input.isActive ?? true) ? 1 : 0,
       now,
@@ -109,11 +122,11 @@ export async function createAccount(input: CreateAccountInput): Promise<Account>
       input.smtpPort ?? null,
       input.smtpSecurity ?? null,
       input.authMethod ?? null,
-      input.imapPassword ?? null,
+      input.imapPassword ? await encryptSecret(input.imapPassword) : null,
       input.imapUsername ?? null,
       input.oauthProvider ?? null,
       input.oauthClientId ?? null,
-      input.oauthClientSecret ?? null,
+      input.oauthClientSecret ? await encryptSecret(input.oauthClientSecret) : null,
       input.acceptInvalidCerts ? 1 : 0,
       input.easUrl ?? null,
       input.easProtocolVersion ?? null,
@@ -132,13 +145,13 @@ export async function getAllAccounts(): Promise<Account[]> {
     'SELECT * FROM accounts ORDER BY created_at DESC',
     [],
   );
-  return rows.map(rowToAccount);
+  return Promise.all(rows.map(rowToAccount));
 }
 
 export async function getAccountById(id: string): Promise<Account | null> {
   const db = await getDb();
   const rows = await db.select<DbAccountRow[]>('SELECT * FROM accounts WHERE id = $1', [id]);
-  return rows[0] ? rowToAccount(rows[0]) : null;
+  return rows[0] ? await rowToAccount(rows[0]) : null;
 }
 
 export type AccountUpdates = Partial<Omit<Account, 'id' | 'createdAt'>>;
@@ -149,12 +162,18 @@ export async function updateAccount(id: string, updates: AccountUpdates): Promis
   const values: (string | number | null)[] = [];
   let idx = 1;
 
-  const map: Array<[keyof AccountUpdates, string, (v: unknown) => string | number | null]> = [
+  const map: Array<
+    [
+      keyof AccountUpdates,
+      string,
+      (v: unknown) => Promise<string | number | null> | string | number | null,
+    ]
+  > = [
     ['email', 'email', (v) => v as string],
     ['displayName', 'display_name', (v) => v as string],
     ['provider', 'provider', (v) => v as string],
-    ['accessToken', 'access_token', (v) => v as string],
-    ['refreshToken', 'refresh_token', (v) => v as string],
+    ['accessToken', 'access_token', (v) => encryptSecret(v as string)],
+    ['refreshToken', 'refresh_token', (v) => encryptSecret(v as string)],
     ['tokenExpiresAt', 'token_expires_at', (v) => v as number],
     ['historyId', 'history_id', (v) => v as string],
     ['lastSyncAt', 'last_sync_at', (v) => v as number],
@@ -166,11 +185,11 @@ export async function updateAccount(id: string, updates: AccountUpdates): Promis
     ['smtpPort', 'smtp_port', (v) => v as number],
     ['smtpSecurity', 'smtp_security', (v) => v as string],
     ['authMethod', 'auth_method', (v) => v as string],
-    ['imapPassword', 'imap_password', (v) => v as string],
+    ['imapPassword', 'imap_password', (v) => encryptSecret(v as string)],
     ['imapUsername', 'imap_username', (v) => v as string],
     ['oauthProvider', 'oauth_provider', (v) => v as string],
     ['oauthClientId', 'oauth_client_id', (v) => v as string],
-    ['oauthClientSecret', 'oauth_client_secret', (v) => v as string],
+    ['oauthClientSecret', 'oauth_client_secret', (v) => encryptSecret(v as string)],
     ['acceptInvalidCerts', 'accept_invalid_certs', (v) => (v ? 1 : 0)],
     ['easUrl', 'eas_url', (v) => v as string],
     ['easProtocolVersion', 'eas_protocol_version', (v) => v as string],
@@ -183,7 +202,7 @@ export async function updateAccount(id: string, updates: AccountUpdates): Promis
     const value = updates[key];
     if (value !== undefined) {
       fields.push(`${column} = $${idx++}`);
-      values.push(transform(value));
+      values.push(await transform(value));
     }
   }
 
