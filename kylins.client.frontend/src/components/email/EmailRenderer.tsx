@@ -78,6 +78,7 @@ export function EmailRenderer({
   const rafRef = useRef<number>(0);
   const [overrideShow, setOverrideShow] = useState(false);
   const [pendingLink, setPendingLink] = useState<PendingLink | null>(null);
+  const [zoom, setZoom] = useState(1);
 
   const theme = useUIStore((s) => s.theme);
   const isDark =
@@ -138,7 +139,7 @@ export function EmailRenderer({
     body {
       margin: 0; padding: 16px;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-      font-size: 14px; line-height: 1.6;
+      font-size: ${14 * zoom}px; line-height: 1.6;
       color: ${plainTextDark ? '#e5e7eb' : '#1f2937'};
       background: ${htmlDark ? '#f8f9fa' : 'transparent'};
       word-wrap: break-word; overflow-wrap: break-word; overflow: hidden;
@@ -190,7 +191,7 @@ export function EmailRenderer({
       observerRef.current?.disconnect();
       cancelAnimationFrame(rafRef.current);
     };
-  }, [bodyHtml, isDark, isPlainText, isMessageSuspicious]);
+  }, [bodyHtml, isDark, isPlainText, isMessageSuspicious, zoom]);
 
   const handleLoadImages = useCallback(() => setOverrideShow(true), []);
 
@@ -238,6 +239,25 @@ export function EmailRenderer({
           Known tracking pixels were blocked.
         </div>
       )}
+      <div className="flex items-center justify-end gap-1 px-1 py-1 text-xs text-[var(--muted-text)]">
+        <button
+          onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(1)))}
+          aria-label="Zoom out"
+          className="rounded px-1 hover:bg-[var(--hover)]"
+        >
+          −
+        </button>
+        <button onClick={() => setZoom(1)} className="rounded px-1 hover:bg-[var(--hover)]">
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          onClick={() => setZoom((z) => Math.min(2, +(z + 0.1).toFixed(1)))}
+          aria-label="Zoom in"
+          className="rounded px-1 hover:bg-[var(--hover)]"
+        >
+          +
+        </button>
+      </div>
       <iframe
         ref={iframeRef}
         sandbox="allow-same-origin"

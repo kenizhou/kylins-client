@@ -101,7 +101,11 @@ export async function insertCalendarEvent(input: UpsertCalendarEventInput): Prom
     [
       id,
       input.accountId,
-      input.googleEventId ?? null,
+      // google_event_id is NOT NULL (Google-shaped schema). Provider-agnostic
+      // events (CalDAV/EAS/local) carry no Google id; fall back to uid/id. The
+      // proper fix (nullable column + UNIQUE(account_id, uid)) is migration work
+      // landed with EAS calendar sync — see plan §6/Phase 5.
+      input.googleEventId ?? input.uid ?? id,
       input.calendarId ?? null,
       input.remoteEventId ?? null,
       input.uid ?? null,

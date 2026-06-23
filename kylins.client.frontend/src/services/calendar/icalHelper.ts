@@ -70,6 +70,8 @@ export interface ParsedEvent {
 
 export interface Occurrence {
   uid: string;
+  /** Display title carried from the master event for rendering. */
+  summary?: string;
   /** Set when this is a specific instance of a recurring series. */
   recurrenceId?: Date;
   start: Date;
@@ -270,6 +272,7 @@ export const IcalHelper = {
         if (!e.startDate) continue;
         out.push({
           uid: ev.uid,
+          summary: ev.summary,
           start: e.startDate.toJSDate(),
           end: e.endDate ? e.endDate.toJSDate() : undefined,
           allDay: e.startDate.isDate,
@@ -278,6 +281,7 @@ export const IcalHelper = {
       for (const o of res.occurrences) {
         out.push({
           uid: ev.uid,
+          summary: ev.summary,
           start: o.startDate.toJSDate(),
           end: o.endDate ? o.endDate.toJSDate() : undefined,
           allDay: o.startDate.isDate,

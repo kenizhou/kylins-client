@@ -17,6 +17,10 @@ import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Image from '@tiptap/extension-image';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
+import Highlight from '@tiptap/extension-highlight';
+import FontFamily from '@tiptap/extension-font-family';
 
 import { AddressInput } from './AddressInput';
 import { EditorToolbar } from './EditorToolbar';
@@ -93,6 +97,10 @@ export function Composer() {
       }),
       Placeholder.configure({ placeholder: 'Write your message...' }),
       Image.configure({ inline: true, allowBase64: true }),
+      TextStyle,
+      Color,
+      Highlight.configure({ multicolor: true }),
+      FontFamily,
     ],
     content: useComposerStore.getState().bodyHtml,
     onUpdate: ({ editor: ed }) => {

@@ -80,6 +80,26 @@ export function EditorToolbar({
         () => editor.chain().focus().toggleStrike().run(),
         'Strikethrough',
       )}
+      {btn('A̲', editor.isActive('highlight'), () => editor.chain().focus().toggleHighlight().run())}
+      <input
+        type="color"
+        title="Text color"
+        onChange={(e) => editor.chain().focus().setColor(e.target.value).run()}
+        className="h-5 w-5 cursor-pointer rounded border border-[var(--border)] bg-transparent"
+        aria-label="Text color"
+      />
+      <select
+        defaultValue=""
+        title="Font"
+        aria-label="Font family"
+        onChange={(e) => editor.chain().focus().setFontFamily(e.target.value).run()}
+        className="rounded border border-[var(--border)] bg-transparent px-1 py-0.5 text-xs text-[var(--muted-text)]"
+      >
+        <option value="">Font</option>
+        <option value="var(--font-ui)">Sans</option>
+        <option value="var(--font-serif)">Serif</option>
+        <option value="var(--font-mono)">Mono</option>
+      </select>
 
       <div className="mx-1 h-4 w-px bg-[var(--border)]" />
 
