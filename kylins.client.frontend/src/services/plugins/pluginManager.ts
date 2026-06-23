@@ -1,4 +1,5 @@
 import type { PluginAPI, LoadedPlugin, InjectedComponentType } from './pluginAPI';
+import type { ComposerExtension, MessageViewExtension } from './extensions';
 
 export interface LoadPluginsResult {
   loaded: string[];
@@ -10,6 +11,8 @@ export class PluginManager {
   private components = new Map<string, Set<InjectedComponentType>>();
   private eventHandlers = new Map<string, Set<(payload: unknown) => void>>();
   private actions = new Map<string, () => void>();
+  private messageViewExtensions: { ext: MessageViewExtension; priority: number }[] = [];
+  private composerExtensions: { ext: ComposerExtension; priority: number }[] = [];
 
   get api(): PluginAPI {
     return {
@@ -32,6 +35,16 @@ export class PluginManager {
       },
       unregisterAction: (id) => {
         this.actions.delete(id);
+      },
+      registerMessageViewExtension: (ext, priority = 0) => {
+        this.messageViewExtensions.push({ ext, priority });
+        this.messageViewExtensions.sort((a, b) => b.priority - a.priority);
+        this.emitEvent('__registry_changed__', { type: 'messageViewExtension' });
+      },
+      registerComposerExtension: (ext, priority = 0) => {
+        this.composerExtensions.push({ ext, priority });
+        this.composerExtensions.sort((a, b) => b.priority - a.priority);
+        this.emitEvent('__registry_changed__', { type: 'composerExtension' });
       },
     };
   }
@@ -69,6 +82,14 @@ export class PluginManager {
 
   getComponentsForRole(role: string): InjectedComponentType[] {
     return Array.from(this.components.get(role) ?? []);
+  }
+
+  getMessageViewExtensions(): MessageViewExtension[] {
+    return this.messageViewExtensions.map((e) => e.ext);
+  }
+
+  getComposerExtensions(): ComposerExtension[] {
+    return this.composerExtensions.map((e) => e.ext);
   }
 
   invokeAction(id: string): void {

@@ -8,6 +8,8 @@ import { MessageList } from './MessageList';
 import { ReadingPane } from './ReadingPane';
 import { StatusBar } from './StatusBar';
 import { ReadingPaneLayout } from '../../features/view/components/ReadingPaneLayout';
+import { Composer } from '../composer/Composer';
+import { UndoSendToast } from '../composer/UndoSendToast';
 
 export function AppShell() {
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
@@ -34,6 +36,8 @@ export function AppShell() {
         />
       </div>
       {statusBarVisible && <StatusBar />}
+      <Composer />
+      <UndoSendToast />
     </div>
   );
 }
