@@ -43,3 +43,6 @@ coverage/
 
 # Misc
 *.local
+
+# Large reference docs — Microsoft Open Specifications PDFs kept local, not tracked (258 MB)
+docs/Exchange/*.pdf

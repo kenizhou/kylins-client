@@ -1,0 +1,295 @@
+https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxproto/274e83d0-155e-43cf-ba50-592a5714eb3f
+
+Section Title​	Subcategory (if applicable)​	Document Identifiers​
+Directory/Profile Services	—	[MS-OXDISCO], [MS-OXDSLI]
+MAPI Properties and Data Structures	—	[MS-OXCDATA], [MS-OXPROPS]
+Message Processing	Journaling:	[MS-OXJRNL]
+	Sharing messages:	[MS-OXSHRMG]
+	Filtering:	[MS-OXFILT], [MS-OXPHISH]
+Name Service Provider Interface and MAPI Extensions for HTTP	—	[MS-OXABREF], [MS-OXCMAPIHTTP], [MS-OXCPRPT], [MS-OXDAV], [MS-OXDRK], [MS-OXDSA]
+ActiveSync	Primer documents:	[MS-ASCMD], [MS-ASHDATA], [MS-ASHTTP]
+	Other documents:	[MS-ASCAL], [MS-ASCON], [MS-ASDOC], [MS-ASMAPI], [MS-ASNOTE], [MS-ASRSP], [MS-ASTASK], [MS-ASUPLOAD]
+Remote Procedure Call (RPC) and MAPI Extensions for HTTP	Primer documents:	[MS-OXCMAPIHTTP], [MS-OXCRPC], [MS-OXOCNTL], [MS-OXODST], [MS-OXOCNR], [MS-OXODLVR], [MS-OXOFOLD], [MS-OXOSFLD], [MS-OXOTABL]
+	Storage and retrieval:	[MS-OXOCNTL], [MS-OXODOC], [MS-OXOFLG], [MS-OXONOTE], [MS-OXOPOST], [MS-OXORMDR], [MS-OXORCPT], [MS-OXORULE], [MS-OXOSRC], [MS-OXOSTS], [MS-OXOTASK], [MS-OXOTCP], [MS-OXOXCSTOR], [MS-OXOXCFERR], [MS-OXOXCHUL]
+Web Distributed Authoring and Versioning (WebDAV)	—	[MS-XWDSCAL], [MS-XWDSSVC]
+Web Services	—	[MS-OXWALLS], [MS-OXWSATT], [MS-OXWAVMT], [MS-OXWOVT], [MS-OXWPUB], [MS-OXWSATTACH], [MS-OXWSBTRF], [MS-OXWSCVT], [MS-OXWSDATA], [MS-OXWSEXT], [MS-OXWSFOL], [MS-OXWSRULES], [MS-OXWSRM], [MS-OXWSSYNC], [MS-OXWSTASK], [MS-OXWSUSRCFG], [MS-OXWSUSRINFO], [MS-OXWSTHRD], [MS-OXWSTIMEZ], [MS-OXWSLGS], [MS-OXWSVID], [MS-OXWSWHTS], [MS-OXWSWHTTR], [MS-OXWSPROF], [MS-OXWSRES], [MS-OXWSRSTR], [MS-OXWSRSSUBSCRIBE], [MS-OXWSRSSITEM], [MS-OXWSSUPLD], [MS-OXWSCORE], [MS-OXWSSYNC], [MS-OXWSTASK], [MS-OXWSUSRCFG], [MS-OXWSUSRINFO], [MS-OXWSTHRD], [MS-OXWSTIMEZ], [MS-OXWSLGS]
+Content Conversion	—	[MS-OXCICAL], [MS-OXCMSG], [MS-OXTNEF], [MS-OXVARD], [MS-OXVCARD]
+	File name formats:	[MS-MCI], [MS-PATCH]
+Standards Support Protocols	Extensions:	[MS-OXAPI], [MS-OXOPOP3], [MS-OXOSMTP], [MS-OXSLOGIN], [MS-OXAUTH]
+	Compliance:	[MS-STANDMAP], [MS-STANDPOPS], [MS-STANDSS], [MS-STANDXMLPOP3]
+
+
+
+[MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol".
+
+[MS-ASCAL] Microsoft Corporation, "Exchange ActiveSync: Calendar Class Protocol".
+
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol".
+
+[MS-ASCNTC] Microsoft Corporation, "Exchange ActiveSync: Contact Class Protocol".
+
+[MS-ASCON] Microsoft Corporation, "Exchange ActiveSync: Conversations Protocol".
+
+[MS-ASDOC] Microsoft Corporation, "Exchange ActiveSync: Document Class Protocol".
+
+[MS-ASDTYPE] Microsoft Corporation, "Exchange ActiveSync: Data Types".
+
+[MS-ASEMAIL] Microsoft Corporation, "Exchange ActiveSync: Email Class Protocol".
+
+[MS-ASHTTP] Microsoft Corporation, "Exchange ActiveSync: HTTP Protocol".
+
+[MS-ASMS] Microsoft Corporation, "Exchange ActiveSync: Short Message Service (SMS) Protocol".
+
+[MS-ASNOTE] Microsoft Corporation, "Exchange ActiveSync: Notes Class Protocol".
+
+[MS-ASPROV] Microsoft Corporation, "Exchange ActiveSync: Provisioning Protocol".
+
+[MS-ASRM] Microsoft Corporation, "Exchange ActiveSync: Rights Management Protocol".
+
+[MS-ASTASK] Microsoft Corporation, "Exchange ActiveSync: Tasks Class Protocol".
+
+[MS-ASWBXML] Microsoft Corporation, "Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm".
+
+[MS-MCI] Microsoft Corporation, "Microsoft ZIP (MSZIP) Compression and Decompression Data Structure".
+
+[MS-NSPI] Microsoft Corporation, "Name Service Provider Interface (NSPI) Protocol".
+
+[MS-OXABREF] Microsoft Corporation, "Address Book Name Service Provider Interface (NSPI) Referral Protocol".
+
+[MS-OXBBODY] Microsoft Corporation, "Best Body Retrieval Algorithm".
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures".
+
+[MS-OXCEXT] Microsoft Corporation, "Client Extension Message Object Protocol".
+
+[MS-OXCFOLD] Microsoft Corporation, "Folder Object Protocol".
+
+[MS-OXCFXICS] Microsoft Corporation, "Bulk Data Transfer Protocol".
+
+[MS-OXCICAL] Microsoft Corporation, "iCalendar to Appointment Object Conversion Algorithm".
+
+[MS-OXCMAIL] Microsoft Corporation, "RFC 2822 and MIME to Email Object Conversion Algorithm".
+
+[MS-OXCMAPIHTTP] Microsoft Corporation, "Messaging Application Programming Interface (MAPI) Extensions for HTTP".
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol".
+
+[MS-OXCNOTIF] Microsoft Corporation, "Core Notifications Protocol".
+
+[MS-OXCPERM] Microsoft Corporation, "Exchange Access and Operation Permissions Protocol".
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol".
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol".
+
+[MS-OXCRPC] Microsoft Corporation, "Wire Format Protocol".
+
+[MS-OXCSPAM] Microsoft Corporation, "Spam Confidence Level Protocol".
+
+[MS-OXCSTOR] Microsoft Corporation, "Store Object Protocol".
+
+[MS-OXCTABL] Microsoft Corporation, "Table Object Protocol".
+
+[MS-OXDISCO] Microsoft Corporation, "Autodiscover HTTP Service Protocol".
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol".
+
+[MS-OXIMAP4] Microsoft Corporation, "Internet Message Access Protocol Version 4 (IMAP4) Extensions".
+
+[MS-OXLDAP] Microsoft Corporation, "Lightweight Directory Access Protocol (LDAP) Version 3 Extensions".
+
+[MS-OXMSG] Microsoft Corporation, "Outlook Item (.msg) File Format".
+
+[MS-OXNSPI] Microsoft Corporation, "Exchange Server Name Service Provider Interface (NSPI) Protocol".
+
+[MS-OXOABKT] Microsoft Corporation, "Address Book User Interface Templates Protocol".
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol".
+
+[MS-OXOAB] Microsoft Corporation, "Offline Address Book (OAB) File Format and Schema".
+
+[MS-OXOCAL] Microsoft Corporation, "Appointment and Meeting Object Protocol".
+
+[MS-OXOCFG] Microsoft Corporation, "Configuration Information Protocol".
+
+[MS-OXOCNTC] Microsoft Corporation, "Contact Object Protocol".
+
+[MS-OXODLGT] Microsoft Corporation, "Delegate Access Configuration Protocol".
+
+[MS-OXODOC] Microsoft Corporation, "Document Object Protocol".
+
+[MS-OXOFLAG] Microsoft Corporation, "Informational Flagging Protocol".
+
+[MS-OXOJRNL] Microsoft Corporation, "Journal Object Protocol".
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol".
+
+[MS-OXONOTE] Microsoft Corporation, "Note Object Protocol".
+
+[MS-OXOPFFB] Microsoft Corporation, "Public Folder-Based Free/Busy Protocol".
+
+[MS-OXOPOST] Microsoft Corporation, "Post Object Protocol".
+
+[MS-OXORMDR] Microsoft Corporation, "Reminder Settings Protocol".
+
+[MS-OXORMMS] Microsoft Corporation, "Rights-Managed Email Object Protocol".
+
+[MS-OXORSS] Microsoft Corporation, "RSS Object Protocol".
+
+[MS-OXORULE] Microsoft Corporation, "Email Rules Protocol".
+
+[MS-OXOSFLD] Microsoft Corporation, "Special Folders Protocol".
+
+[MS-OXOSMIME] Microsoft Corporation, "S/MIME Email Object Algorithm".
+
+[MS-OXOSMMS] Microsoft Corporation, "Short Message Service (SMS) and Multimedia Messaging Service (MMS) Object Protocol".
+
+[MS-OXOSRCH] Microsoft Corporation, "Search Folder List Configuration Protocol".
+
+[MS-OXOTASK] Microsoft Corporation, "Task-Related Objects Protocol".
+
+[MS-OXOUM] Microsoft Corporation, "Voice Mail and Fax Objects Protocol".
+
+[MS-OXPFOAB] Microsoft Corporation, "Offline Address Book (OAB) Public Folder Retrieval Protocol".
+
+[MS-OXPHISH] Microsoft Corporation, "Phishing Warning Protocol".
+
+[MS-OXPOP3] Microsoft Corporation, "Post Office Protocol Version 3 (POP3) Extensions".
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List".
+
+[MS-OXPSVAL] Microsoft Corporation, "Email Postmark Validation Algorithm".
+
+[MS-OXRTFCP] Microsoft Corporation, "Rich Text Format (RTF) Compression Algorithm".
+
+[MS-OXRTFEX] Microsoft Corporation, "Rich Text Format (RTF) Extensions Algorithm".
+
+[MS-OXSHARE] Microsoft Corporation, "Sharing Message Object Protocol".
+
+[MS-OXSHRMSG] Microsoft Corporation, "Sharing Message Attachment Schema".
+
+[MS-OXSMTP] Microsoft Corporation, "Simple Mail Transfer Protocol (SMTP) Extensions".
+
+[MS-OXTNEF] Microsoft Corporation, "Transport Neutral Encapsulation Format (TNEF) Data Algorithm".
+
+[MS-OXVCARD] Microsoft Corporation, "vCard to Contact Object Conversion Algorithm".
+
+[MS-OXWAVLS] Microsoft Corporation, "Availability Web Service Protocol".
+
+[MS-OXWCONFIG] Microsoft Corporation, "Web Service Configuration Protocol".
+
+[MS-OXWMT] Microsoft Corporation, "Mail Tips Web Service Extensions".
+
+[MS-OXWOAB] Microsoft Corporation, "Offline Address Book (OAB) Retrieval File Format".
+
+[MS-OXWOOF] Microsoft Corporation, "Out of Office (OOF) Web Service Protocol".
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web Service Protocol".
+
+[MS-OXWSARCH] Microsoft Corporation, "Archiving Web Service Protocol".
+
+[MS-OXWSATT] Microsoft Corporation, "Attachment Handling Web Service Protocol".
+
+[MS-OXWSBTRF] Microsoft Corporation, "Bulk Transfer Web Service Protocol".
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types".
+
+[MS-OXWSCEXT] Microsoft Corporation, "Client Extension Web Service Protocol".
+
+[MS-OXWSCONT] Microsoft Corporation, "Contacts Web Service Protocol".
+
+[MS-OXWSCONV] Microsoft Corporation, "Conversations Web Service Protocol".
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol".
+
+[MS-OXWSCOS] Microsoft Corporation, "Unified Contact Store Web Service Protocol".
+
+[MS-OXWSCVTID] Microsoft Corporation, "Convert Item Identifier Web Service Protocol".
+
+[MS-OXWSDLGM] Microsoft Corporation, "Delegate Access Management Web Service Protocol".
+
+[MS-OXWSDLIST] Microsoft Corporation, "Distribution List Creation and Usage Web Service Protocol".
+
+[MS-OXWSEDISC] Microsoft Corporation, "Electronic Discovery (eDiscovery) Web Service Protocol".
+
+[MS-OXWSFOLD] Microsoft Corporation, "Folders and Folder Permissions Web Service Protocol".
+
+[MS-OXWSGNI] Microsoft Corporation, "Nonindexable Item Web Service Protocol".
+
+[MS-OXWSGTRM] Microsoft Corporation, "Get Rooms List Web Service Protocol".
+
+[MS-OXWSGTZ] Microsoft Corporation, "Get Server Time Zone Web Service Protocol".
+
+[MS-OXWSITEMID] Microsoft Corporation, "Web Service Item ID Algorithm".
+
+[MS-OXWSLVID] Microsoft Corporation, "Federated Internet Authentication Web Service Protocol".
+
+[MS-OXWSMSG] Microsoft Corporation, "Email Message Types Web Service Protocol".
+
+[MS-OXWSMSHR] Microsoft Corporation, "Folder Sharing Web Service Protocol".
+
+[MS-OXWSMTGS] Microsoft Corporation, "Calendaring Web Service Protocol".
+
+[MS-OXWSMTRK] Microsoft Corporation, "Message Tracking Web Service Protocol".
+
+[MS-OXWSNTIF] Microsoft Corporation, "Notifications Web Service Protocol".
+
+[MS-OXWSOLPS] Microsoft Corporation, "Online Personal Search Web Service Protocol".
+
+[MS-OXWSPED] Microsoft Corporation, "Password Expiration Date Web Service Protocol".
+
+[MS-OXWSPERS] Microsoft Corporation, "Persona Web Service Protocol".
+
+[MS-OXWSPHOTO] Microsoft Corporation, "Photo Web Service Protocol".
+
+[MS-OXWSPOST] Microsoft Corporation, "Post Items Web Service Protocol".
+
+[MS-OXWSPSNTIF] Microsoft Corporation, "Push Notifications Web Service Protocol".
+
+[MS-OXWSRSLNM] Microsoft Corporation, "Resolve Recipient Names Web Service Protocol".
+
+[MS-OXWSRULES] Microsoft Corporation, "Inbox Rules Web Service Protocol".
+
+[MS-OXWSSMBX] Microsoft Corporation, "Site Mailbox Web Service Protocol".
+
+[MS-OXWSSRCH] Microsoft Corporation, "Mailbox Search Web Service Protocol".
+
+[MS-OXWSSYNC] Microsoft Corporation, "Mailbox Contents Synchronization Web Service Protocol".
+
+[MS-OXWSTASK] Microsoft Corporation, "Tasks Web Service Protocol".
+
+[MS-OXWSURPT] Microsoft Corporation, "Retention Tag Web Service Protocol".
+
+[MS-OXWSUSRCFG] Microsoft Corporation, "User Configuration Web Service Protocol".
+
+[MS-OXWSXPROP] Microsoft Corporation, "Extended Properties Structure".
+
+[MS-OXWUMS] Microsoft Corporation, "Voice Mail Settings Web Service Protocol".
+
+[MS-PATCH] Microsoft Corporation, "LZX DELTA Compression and Decompression".
+
+[MS-SMTPNTLM] Microsoft Corporation, "NT LAN Manager (NTLM) Authentication: Simple Mail Transfer Protocol (SMTP) Extension".
+
+[MS-STANOICAL] Microsoft Corporation, "Outlook iCalendar Standards Support Version 2".
+
+[MS-STANOIMAP] Microsoft Corporation, "Outlook Internet Message Access Protocol (IMAP) Standards Support".
+
+[MS-STANOPOP3] Microsoft Corporation, "Outlook Post Office Protocol Version 3 (POP3) Standards Support".
+
+[MS-STANXICAL] Microsoft Corporation, "Exchange iCalendar Standards Support Version 2".
+
+[MS-STANXIMAP] Microsoft Corporation, "Exchange Internet Message Access Protocol (IMAP) Standards Support".
+
+[MS-STANXPOP3] Microsoft Corporation, "Exchange Post Office Protocol Version 3 (POP3) Standards Support".
+
+[MS-WDVSE] Microsoft Corporation, "Web Distributed Authoring and Versioning (WebDAV) Protocol: Server Extensions".
+
+[MS-XJRNL] Microsoft Corporation, "Journal Record Message File Format".
+
+[MS-XLOGIN] Microsoft Corporation, "Simple Mail Transfer Protocol (SMTP) AUTH LOGIN Extension".
+
+[MS-XOAUTH] Microsoft Corporation, "OAuth 2.0 Authorization Protocol Extensions".
+
+[MS-XWDCAL] Microsoft Corporation, "Web Distributed Authoring and Versioning (WebDAV) Extensions for Calendar Support".
+
+[MS-XWDVSEC] Microsoft Corpora
