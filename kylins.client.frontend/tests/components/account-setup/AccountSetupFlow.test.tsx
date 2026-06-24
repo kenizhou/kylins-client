@@ -15,9 +15,9 @@ describe('AccountSetupFlow', () => {
     const { getByText, queryByText } = render(
       <AccountSetupFlow variant="modal" onComplete={onComplete} />,
     );
-    expect(getByText('Add an account')).toBeInTheDocument();
+    expect(getByText('Welcome to Kylins Mail')).toBeInTheDocument();
     fireEvent.click(getByText('Yahoo'));
     // gateway visible (password field shown for yahoo)
-    expect(queryByText(/Add your Yahoo account/i)).toBeInTheDocument();
+    expect(queryByText(/Add your account/i)).toBeInTheDocument();
   });
 });

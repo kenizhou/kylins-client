@@ -1,3 +1,5 @@
+import { SetupCard, SetupButton, SetupBackButton } from './setup-ui';
+
 export interface VerifyStepProps {
   error?: string | null;
   onRetry?: () => void;
@@ -6,38 +8,45 @@ export interface VerifyStepProps {
 
 export function VerifyStep({ error, onRetry, onBack }: VerifyStepProps) {
   return (
-    <div className="flex w-full max-w-md flex-col items-center gap-4 text-center">
-      {error ? (
-        <>
-          <h1 className="text-xl font-semibold text-[var(--destructive)]">Couldn’t connect</h1>
-          <p className="text-sm text-[var(--muted-text)]">{error}</p>
-          <div className="flex gap-3">
-            {onBack && (
-              <button
-                type="button"
-                onClick={onBack}
-                className="rounded border border-[var(--border)] px-4 py-2 text-sm"
+    <SetupCard>
+      <div className="flex flex-col items-center gap-5 py-6 text-center">
+        {error ? (
+          <>
+            <div className="success-pop grid h-14 w-14 place-items-center rounded-full bg-red-500/10">
+              <svg
+                width="28"
+                height="28"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                className="text-[var(--destructive)]"
               >
-                Back
-              </button>
-            )}
-            {onRetry && (
-              <button
-                type="button"
-                onClick={onRetry}
-                className="rounded bg-[var(--primary)] px-4 py-2 text-sm text-[var(--primary-foreground)]"
-              >
-                Retry
-              </button>
-            )}
-          </div>
-        </>
-      ) : (
-        <>
-          <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[var(--primary)] border-t-transparent" />
-          <p className="text-sm text-[var(--muted-text)]">Connecting…</p>
-        </>
-      )}
-    </div>
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </div>
+            <div className="flex flex-col gap-1">
+              <h1 className="text-xl font-semibold text-[var(--destructive)]">Couldn’t connect</h1>
+              <p className="max-w-xs text-sm text-[var(--muted-text)]">{error}</p>
+            </div>
+            <div className="mt-2 flex items-center gap-3">
+              {onBack && <SetupBackButton onClick={onBack} />}
+              {onRetry && <SetupButton onClick={onRetry}>Retry</SetupButton>}
+            </div>
+          </>
+        ) : (
+          <>
+            <span className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-[var(--primary)] border-t-transparent" />
+            <div className="flex flex-col gap-1">
+              <h1 className="text-xl font-semibold text-[var(--foreground)]">Connecting…</h1>
+              <p className="text-sm text-[var(--muted-text)]">
+                Verifying your credentials and syncing folders.
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+    </SetupCard>
   );
 }

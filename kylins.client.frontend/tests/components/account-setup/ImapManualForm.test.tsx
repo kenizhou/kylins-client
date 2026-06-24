@@ -23,7 +23,7 @@ describe('ImapManualForm', () => {
     );
     fireEvent.change(getByDisplayValue('imap.x.com'), { target: { value: 'new.imap.com' } });
     expect(onChange).toHaveBeenCalledWith({ imapHost: 'new.imap.com' });
-    fireEvent.click(getByText(/sign in/i));
+    fireEvent.click(getByText(/connect/i));
     expect(onSubmit).toHaveBeenCalled();
   });
 });

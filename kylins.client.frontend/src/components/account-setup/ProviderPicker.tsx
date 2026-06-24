@@ -1,4 +1,6 @@
+import { useMemo } from 'react';
 import { PROVIDERS, type SetupProviderId } from '../../services/auth/providers';
+import { SetupCard, SetupHeader, ProviderTile } from './setup-ui';
 
 const TILE_ORDER: SetupProviderId[] = [
   'gmail',
@@ -13,32 +15,33 @@ export interface ProviderPickerProps {
   onPick: (id: SetupProviderId) => void;
 }
 
-function ProviderButton({ name, onClick }: { name: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex flex-col items-center justify-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-4 py-5 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-    >
-      <span className="grid h-8 w-8 place-items-center rounded-md bg-[var(--muted)] text-xs font-bold">
-        {name.charAt(0)}
-      </span>
-      {name}
-    </button>
-  );
-}
-
 export function ProviderPicker({ onPick }: ProviderPickerProps) {
+  const tiles = useMemo(
+    () =>
+      TILE_ORDER.map((id, index) => (
+        <ProviderTile
+          key={id}
+          id={id}
+          name={PROVIDERS[id].name}
+          onClick={() => onPick(id)}
+          style={{ animationDelay: `${index * 40}ms` }}
+        />
+      )),
+    [onPick],
+  );
+
   return (
-    <div className="flex w-full max-w-3xl flex-col gap-6">
-      <h1 className="text-center text-2xl font-semibold text-[var(--foreground)]">
-        Add an account
-      </h1>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {TILE_ORDER.map((id) => (
-          <ProviderButton key={id} name={PROVIDERS[id].name} onClick={() => onPick(id)} />
-        ))}
-      </div>
-    </div>
+    <SetupCard width="lg">
+      <SetupHeader
+        title="Welcome to Kylins Mail"
+        subtitle="Choose your email provider to get started. You can add more accounts later."
+      />
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{tiles}</div>
+
+      <p className="mt-6 text-center text-xs text-[var(--muted-text)]">
+        Don’t see your provider? Use Other (IMAP/SMTP) or Exchange.
+      </p>
+    </SetupCard>
   );
 }

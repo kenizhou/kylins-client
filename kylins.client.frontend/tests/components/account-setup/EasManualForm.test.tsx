@@ -16,7 +16,7 @@ describe('EasManualForm', () => {
       />,
     );
     expect(getByDisplayValue('DEV-1')).toBeInTheDocument();
-    fireEvent.click(getByText(/sign in/i));
+    fireEvent.click(getByText(/connect/i));
     expect(onSubmit).toHaveBeenCalled();
   });
 });

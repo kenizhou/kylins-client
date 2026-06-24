@@ -11,7 +11,8 @@ describe('OAuthPendingScreen', () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(getByText(/Sign in with Google in your browser/i)).toBeInTheDocument();
+    expect(getByText('Sign in with your browser')).toBeInTheDocument();
+    expect(getByText('Google')).toBeInTheDocument();
     expect(getByDisplayValue(/client_id=CID/)).toBeInTheDocument();
   });
 
@@ -20,7 +21,7 @@ describe('OAuthPendingScreen', () => {
     const { getByText } = render(
       <OAuthPendingScreen providerName="Google" fallbackUrl="u" onCancel={onCancel} />,
     );
-    fireEvent.click(getByText('Cancel'));
+    fireEvent.click(getByText('Back'));
     expect(onCancel).toHaveBeenCalled();
   });
 });

@@ -19,7 +19,7 @@ describe('WelcomeScreen', () => {
   it('fires onDone', () => {
     const onDone = vi.fn();
     const { getByText } = render(<WelcomeScreen onDone={onDone} />);
-    fireEvent.click(getByText(/looks good/i));
+    fireEvent.click(getByText(/open inbox/i));
     expect(onDone).toHaveBeenCalled();
   });
 });

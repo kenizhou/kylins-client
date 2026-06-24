@@ -75,8 +75,8 @@ describe('App', () => {
   it('shows the AccountSetupFlow when there are no accounts (first-run)', async () => {
     vi.mocked(getAllAccounts).mockResolvedValue([]);
     render(<App />);
-    // AccountSetupFlow renders the picker with "Add an account" heading.
-    expect(await screen.findByText('Add an account')).toBeInTheDocument();
+    // AccountSetupFlow renders the picker with the new welcome heading.
+    expect(await screen.findByText('Welcome to Kylins Mail')).toBeInTheDocument();
   });
 
   it('shows AppShell with an Add-account trigger once an account exists', async () => {
@@ -91,8 +91,8 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('AppShell');
     fireEvent.click(screen.getByText('add-account-trigger'));
-    // Modal overlay renders a second AccountSetupFlow instance ("Add an account").
-    const pickers = await screen.findAllByText('Add an account');
+    // Modal overlay renders a second AccountSetupFlow instance.
+    const pickers = await screen.findAllByText('Welcome to Kylins Mail');
     expect(pickers.length).toBeGreaterThanOrEqual(1);
   });
 });
