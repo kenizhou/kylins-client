@@ -1,15 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { AppShell } from './components/layout/AppShell';
+import { AccountSetupFlow } from './components/account-setup/AccountSetupFlow';
 import { runMigrations } from './services/db/migrations';
 import { getSetting } from './services/settings';
+import { getAllAccounts } from './services/accounts';
 import { ThemeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { useUIStore } from './stores/uiStore';
+import { useAccountStore } from './stores/accountStore';
 import { useViewSettings } from './features/view/hooks/useViewSettings';
 
 const themeManager = new ThemeManager();
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+/** Re-fetch all accounts from the DB and push them into the store. Module-level
+ *  so it isn't recreated each render and can be shared by every call site. */
+async function refreshAccounts(): Promise<void> {
+  const refreshed = await getAllAccounts();
+  useAccountStore.getState().setAccounts(refreshed);
+}
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -24,8 +34,10 @@ function describeError(err: unknown): string {
 export default function App() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const isMounted = useRef(true);
   const setTheme = useUIStore((s) => s.setTheme);
+  const accounts = useAccountStore((st) => st.accounts);
   useViewSettings();
 
   useEffect(() => {
@@ -45,6 +57,12 @@ export default function App() {
           // scan the plugins/ directory via the Tauri fs API.
           await pluginManager.loadPlugins([]);
           await pluginManager.activatePlugins();
+
+          // Load existing accounts so the store knows whether to show the
+          // first-run setup flow or the main shell.
+          if (isMounted.current) {
+            await refreshAccounts();
+          }
         }
 
         if (isMounted.current) setReady(true);
@@ -85,5 +103,31 @@ export default function App() {
     );
   }
 
-  return <AppShell />;
+  async function handleSetupComplete(): Promise<void> {
+    await refreshAccounts();
+    setAdding(false);
+  }
+
+  // First-run: no accounts configured yet — show the fullscreen setup flow.
+  if (accounts.length === 0) {
+    return <AccountSetupFlow variant="fullscreen" onComplete={handleSetupComplete} />;
+  }
+
+  return (
+    <>
+      <AppShell onAddAccount={() => setAdding(true)} />
+      {adding && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Add account"
+        >
+          <div className="h-[640px] w-[680px] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)] shadow-xl">
+            <AccountSetupFlow variant="modal" onComplete={handleSetupComplete} />
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
