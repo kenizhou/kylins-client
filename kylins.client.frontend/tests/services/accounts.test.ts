@@ -125,6 +125,43 @@ describe('accounts', () => {
     expect(accounts[0].email).toBe('test@example.com');
   });
 
+  it('getAllAccounts skips a row whose secret fails to decrypt', async () => {
+    // One corrupt row (undecryptable access_token) must not sink the rest.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(decryptSecret).mockImplementation((cipher: string) => {
+      if (cipher === 'CORRUPT') return Promise.reject(new Error('decrypt failed'));
+      return Promise.resolve(cipher.replace(/^enc:/, ''));
+    });
+    mockDb.select.mockResolvedValue([
+      {
+        id: 'good',
+        email: 'good@example.com',
+        provider: 'imap',
+        access_token: 'enc:tok',
+        is_active: 1,
+        created_at: 1,
+        updated_at: 1,
+      },
+      {
+        id: 'bad',
+        email: 'bad@example.com',
+        provider: 'imap',
+        access_token: 'CORRUPT',
+        is_active: 1,
+        created_at: 2,
+        updated_at: 2,
+      },
+    ]);
+    const accounts = await getAllAccounts();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]!.id).toBe('good');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[accounts] skipping corrupt row'),
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
+  });
+
   it('gets an account by id', async () => {
     mockDb.select.mockResolvedValue([
       {

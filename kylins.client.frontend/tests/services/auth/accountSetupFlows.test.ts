@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.mock is hoisted above all imports, so the mock fn must be created via
 // vi.hoisted to be available inside the factory.
@@ -6,7 +6,8 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, args?: unknown) => invokeMock(cmd, args),
 }));
-vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn(() => Promise.resolve()) }));
+const { openerMock } = vi.hoisted(() => ({ openerMock: vi.fn() }));
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: (url: string) => openerMock(url) }));
 
 import {
   buildOAuthImapAccount,
@@ -18,6 +19,12 @@ import {
 import { getProvider } from '../../../src/services/auth/providers';
 
 describe('accountSetupFlows', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openerMock.mockReset();
+    openerMock.mockResolvedValue(undefined);
+  });
+
   // Stubs the two invoke commands every OAuth flow hits. `idToken` is the
   // only thing that varies between tests, so it's the lone knob.
   function mockOAuthCommands(idToken: string | null = null) {
@@ -123,5 +130,35 @@ describe('accountSetupFlows', () => {
       updatedAt: 0,
     };
     await expect(testImapConnection(account)).rejects.toThrow();
+  });
+
+  it('runOAuthFlow opens the browser BEFORE binding the loopback listener', async () => {
+    // If the opener throws, no listener should be started (no leaked port).
+    mockOAuthCommands();
+    openerMock.mockRejectedValueOnce(new Error('opener failed'));
+    await expect(
+      runOAuthFlow(getProvider('gmail'), { email: 'g@x.com', clientId: 'CID' }),
+    ).rejects.toThrow('opener failed');
+    const cmds = invokeMock.mock.calls.map((c) => c[0]);
+    expect(cmds).not.toContain('start_oauth_server');
+  });
+
+  it('runOAuthFlow surfaces the real auth URL via onStarted', async () => {
+    mockOAuthCommands();
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ email: 'g@x.com' }), { status: 200 }));
+    let startedUrl = '';
+    await runOAuthFlow(getProvider('gmail'), {
+      email: 'g@x.com',
+      clientId: 'CID',
+      onStarted: (url) => {
+        startedUrl = url;
+      },
+    });
+    expect(startedUrl).toContain('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(startedUrl).toContain('client_id=CID');
+    expect(startedUrl).toContain('login_hint=g%40x.com');
+    fetchSpy.mockRestore();
   });
 });

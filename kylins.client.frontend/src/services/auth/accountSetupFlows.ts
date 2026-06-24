@@ -26,7 +26,13 @@ export function newDeviceId(): string {
 
 export async function runOAuthFlow(
   config: OAuthProviderConfig,
-  opts: { email: string; clientId?: string; clientSecret?: string },
+  opts: {
+    email: string;
+    clientId?: string;
+    clientSecret?: string;
+    /** Invoked after the browser is opened with the auth URL the user should visit. */
+    onStarted?: (authUrl: string) => void;
+  },
 ): Promise<{ tokens: TokenExchangeResult; userInfo: ProviderUserInfo }> {
   const clientId = opts.clientId || config.bundledClientId;
   if (!clientId) {
@@ -46,9 +52,13 @@ export async function runOAuthFlow(
     email: opts.email,
   });
 
-  const serverPromise = startOAuthServer(OAUTH_CALLBACK_PORT, state);
+  // Open the browser BEFORE binding the loopback listener. If the opener throws
+  // we leak no port (previously a retry would cascade 17249 -> 17250 -> ...).
+  // The sub-millisecond race (redirect arriving before the TCP bind) is
+  // negligible because a human cannot complete OAuth consent that fast.
   await openExternalUrl(authUrl);
-  const { code } = await serverPromise;
+  opts.onStarted?.(authUrl);
+  const { code } = await startOAuthServer(OAUTH_CALLBACK_PORT, state);
 
   const tokens = await exchangeToken({
     tokenUrl: config.tokenUrl,

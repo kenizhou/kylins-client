@@ -145,7 +145,24 @@ export async function getAllAccounts(): Promise<Account[]> {
     'SELECT * FROM accounts ORDER BY created_at DESC',
     [],
   );
-  return Promise.all(rows.map(rowToAccount));
+  // Use allSettled so a single corrupt row (e.g. undecryptable ciphertext, or a
+  // locked keyring) does not brick startup by rejecting the whole list. Bad
+  // rows are warned and skipped; only fulfilled accounts are returned.
+  const results = await Promise.allSettled(rows.map((row) => rowToAccount(row)));
+  const accounts: Account[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]!;
+    if (r.status === 'fulfilled') {
+      accounts.push(r.value);
+    } else {
+      const row = rows[i]!;
+      console.warn(
+        `[accounts] skipping corrupt row id=${row.id} email=${row.email ?? '<unknown>'}:`,
+        r.reason,
+      );
+    }
+  }
+  return accounts;
 }
 
 export async function getAccountById(id: string): Promise<Account | null> {

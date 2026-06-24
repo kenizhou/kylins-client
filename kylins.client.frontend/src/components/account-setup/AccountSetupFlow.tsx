@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useAccountSetupStore } from '../../stores/accountSetupStore';
 import { ProviderPicker } from './ProviderPicker';
 import { CredentialsGate } from './CredentialsGate';
@@ -69,16 +70,28 @@ async function runWithVerification(
 
 export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps) {
   const s = useAccountSetupStore();
+  // Auth URL shown on the oauth-pending screen as a copyable fallback. Populated
+  // from runOAuthFlow's onStarted callback right after the browser opens.
+  const [oauthAuthUrl, setOauthAuthUrl] = useState<string>('');
 
   async function handleOAuth(): Promise<void> {
     if (!s.config || s.config.authType !== 'oauth2') return;
     const config = s.config;
-    await runWithVerification(s, async () => {
+    // OAuth has its own transition sequence (oauth-pending -> verifying ->
+    // welcome/error) because it must show a cancellable pending screen while
+    // the user completes sign-in in their browser. runWithVerification skips
+    // straight to `verifying`, which would render OAuthPendingScreen dead.
+    s.setError(null);
+    s.setStep('oauth-pending');
+    setOauthAuthUrl('');
+    try {
       const { tokens, userInfo } = await runOAuthFlow(config, {
         email: s.email,
         clientId: s.advancedClientId || undefined,
         clientSecret: s.advancedClientSecret || undefined,
+        onStarted: (authUrl) => setOauthAuthUrl(authUrl),
       });
+      s.setStep('verifying');
       const input = buildOAuthImapAccount(
         config,
         userInfo,
@@ -86,7 +99,11 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         s.advancedClientId || config.bundledClientId,
       );
       await createAccount(input);
-    });
+      s.setStep('welcome');
+    } catch (e) {
+      s.setError((e as Error).message);
+      s.setStep('error');
+    }
   }
 
   async function handleImapPassword(useManual: boolean): Promise<void> {
@@ -110,7 +127,20 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
   async function handleEas(): Promise<void> {
     if (!s.config) return;
     const deviceId = s.deviceId || newDeviceId();
-    const server = s.easServer || `https://${s.email.split('@')[1]}/Microsoft-Server-ActiveSync`;
+    // Derive the EAS server from the email domain unless the user overrode it.
+    // Guard against an email with no `@` — under noUncheckedIndexedAccess
+    // `split('@')[1]` is `string | undefined`, which would otherwise build
+    // `https://undefined/Microsoft-Server-ActiveSync`.
+    let server = s.easServer;
+    if (!server) {
+      const domain = s.email.split('@')[1];
+      if (!domain) {
+        s.setError('Enter a valid email address');
+        s.setStep('error');
+        return;
+      }
+      server = `https://${domain}/Microsoft-Server-ActiveSync`;
+    }
     await runWithVerification(s, async () => {
       const input = buildEasAccount(s.email, s.password, server, deviceId);
       await testEasConnection(toTestAccount(input, s.email));
@@ -157,7 +187,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
       {s.step === 'oauth-pending' && s.config && (
         <OAuthPendingScreen
           providerName={s.config.name}
-          fallbackUrl={`http://127.0.0.1:17249?state=…`}
+          fallbackUrl={oauthAuthUrl}
           onCancel={() => s.setStep('gateway')}
         />
       )}
