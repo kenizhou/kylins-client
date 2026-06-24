@@ -7,6 +7,17 @@ export interface MailMessage {
   subject: string;
   from: { name: string; address: string };
   to: { name: string; address: string }[];
+  // Optional participants/providers do not yet populate these (EAS/IMAP stubs).
+  // Reply-AllCc resolution and forward re-attach degrade gracefully when absent.
+  cc?: { name: string; address: string }[];
+  replyTo?: { name: string; address: string }[];
+  attachments?: {
+    id: string;
+    filename: string;
+    mimeType: string;
+    size: number;
+    cid?: string | null;
+  }[];
   date: string;
   preview: string;
   html: string | null;

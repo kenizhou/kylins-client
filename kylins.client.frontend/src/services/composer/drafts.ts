@@ -8,6 +8,7 @@
 
 import { getDb, buildDynamicUpdate, selectFirstBy } from '@/services/db/connection';
 import { getCurrentUnixTimestamp } from '@/utils/timestamp';
+import { formatRecipients, type Recipient } from '@/features/composer/contacts';
 
 /**
  * Serializable attachment shape stored in `local_drafts.attachments` as JSON.
@@ -24,9 +25,10 @@ export interface StoredAttachment {
 /** Editable draft fields, matching the composer store shape. */
 export interface DraftInput {
   accountId: string;
-  to: string[];
-  cc?: string[];
-  bcc?: string[];
+  to: Recipient[];
+  cc?: Recipient[];
+  bcc?: Recipient[];
+  replyTo?: Recipient[];
   subject: string;
   bodyHtml: string;
   fromEmail?: string | null;
@@ -59,9 +61,17 @@ export interface DbDraft {
 /** Map a DraftInput to [column, value] tuples for UPDATE SET clauses. */
 function inputToColumns(input: DraftInput): [string, unknown][] {
   return [
-    ['to_addresses', JSON.stringify(input.to ?? [])],
-    ['cc_addresses', input.cc && input.cc.length > 0 ? JSON.stringify(input.cc) : null],
-    ['bcc_addresses', input.bcc && input.bcc.length > 0 ? JSON.stringify(input.bcc) : null],
+    // Recipients are stored as JSON-encoded RFC address strings ("Name <email>")
+    // so the column stays a string[] regardless of the in-memory Recipient[] model.
+    ['to_addresses', JSON.stringify(formatRecipients(input.to ?? []))],
+    [
+      'cc_addresses',
+      input.cc && input.cc.length > 0 ? JSON.stringify(formatRecipients(input.cc)) : null,
+    ],
+    [
+      'bcc_addresses',
+      input.bcc && input.bcc.length > 0 ? JSON.stringify(formatRecipients(input.bcc)) : null,
+    ],
     ['subject', input.subject ?? ''],
     ['body_html', input.bodyHtml ?? ''],
     ['from_email', input.fromEmail ?? null],

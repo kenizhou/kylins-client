@@ -16,6 +16,7 @@ export interface EmailDraft {
   to: string[];
   cc?: string[];
   bcc?: string[];
+  replyTo?: string[];
   subject: string;
   htmlBody: string;
   inReplyTo?: string;
@@ -107,6 +108,9 @@ export function buildRawEmail(draft: EmailDraft): string {
   }
   if (draft.bcc && draft.bcc.length > 0) {
     lines.push(`Bcc: ${draft.bcc.join(', ')}`);
+  }
+  if (draft.replyTo && draft.replyTo.length > 0) {
+    lines.push(`Reply-To: ${draft.replyTo.join(', ')}`);
   }
 
   lines.push(`Date: ${new Date().toUTCString()}`);

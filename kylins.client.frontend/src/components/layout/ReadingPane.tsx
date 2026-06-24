@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import {
   SmileIcon,
@@ -9,9 +9,10 @@ import {
   ArchiveIcon,
   DeleteIcon,
 } from '../icons';
-import { useViewStore, type MailMessage } from '../../features/view/viewStore';
-import { useComposerStore } from '../../stores/composerStore';
+import { useViewStore } from '../../features/view/viewStore';
+import { useAccountStore } from '../../stores/accountStore';
 import { EmailRenderer } from '../email/EmailRenderer';
+import { InlineReply } from '../email/InlineReply';
 import { formatMessageDate } from '../../data/demoMessages';
 
 function hashString(str: string): number {
@@ -26,45 +27,6 @@ function hashString(str: string): number {
 function senderGradient(name: string): string {
   const hue = hashString(name) % 360;
   return `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 40) % 360} 70% 45%))`;
-}
-
-function quotedBodyHtml(message: MailMessage | null): string {
-  if (!message) return '';
-  const original = message.html ?? `<pre>${escapeHtml(message.text ?? '')}</pre>`;
-  return `
-    <p>&nbsp;</p>
-    <blockquote style="margin:0 0 0 8px;padding-left:12px;border-left:3px solid var(--border);color:var(--muted-text);">
-      <p>On ${formatMessageDate(message.date)}, ${escapeHtml(message.from.name)} &lt;${escapeHtml(message.from.address)}&gt; wrote:</p>
-      ${original}
-    </blockquote>
-  `;
-}
-
-function forwardedBodyHtml(message: MailMessage | null): string {
-  if (!message) return '';
-  const original = message.html ?? `<pre>${escapeHtml(message.text ?? '')}</pre>`;
-  const toList = message.to
-    .map((t) => `${escapeHtml(t.name)} &lt;${escapeHtml(t.address)}&gt;`)
-    .join(', ');
-  return `
-    <p>&nbsp;</p>
-    <p>---------- Forwarded message ----------</p>
-    <p><strong>From:</strong> ${escapeHtml(message.from.name)} &lt;${escapeHtml(message.from.address)}&gt;</p>
-    <p><strong>To:</strong> ${toList}</p>
-    <p><strong>Subject:</strong> ${escapeHtml(message.subject)}</p>
-    <p><strong>Date:</strong> ${formatMessageDate(message.date)}</p>
-    <br/>
-    ${original}
-  `;
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 }
 
 function recipientList(recipients: { name: string; address: string }[]): string {
@@ -112,7 +74,18 @@ function SubjectActionButton({
 
 export function ReadingPane() {
   const message = useViewStore((s) => s.selectedMessage);
-  const openComposer = useComposerStore((s) => s.openComposer);
+  const activeAccountId = useAccountStore((s) => s.activeAccountId);
+  const accounts = useAccountStore((s) => s.accounts);
+  const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
+  const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
+  // Reset the inline composer when the selected message changes. Uses the
+  // prev-value render pattern (setState-during-render to correct stale state)
+  // rather than setState-in-effect.
+  const [activeMsgId, setActiveMsgId] = useState<string | undefined>(message?.id);
+  if (message?.id !== activeMsgId) {
+    setActiveMsgId(message?.id);
+    setComposeMode(null);
+  }
 
   if (!message) {
     return (
@@ -129,40 +102,25 @@ export function ReadingPane() {
     );
   }
 
-  const handleReply = () => {
-    openComposer({
-      mode: 'reply',
-      to: [message.from.address],
-      subject: `Re: ${message.subject}`,
-      bodyHtml: quotedBodyHtml(message),
-      threadId: message.threadId ?? null,
-      inReplyToMessageId: message.messageId ?? null,
-    });
-  };
+  // Inline reply / forward (Outlook-style) takes over the reading pane.
+  if (composeMode) {
+    return (
+      <InlineReply
+        message={message}
+        mode={composeMode}
+        accountId={activeAccountId}
+        accountEmail={accountEmail}
+        onClose={() => setComposeMode(null)}
+        onSent={() => setComposeMode(null)}
+      />
+    );
+  }
 
-  const handleReplyAll = () => {
-    const to = [
-      message.from.address,
-      ...message.to.filter((t) => t.address !== 'you@kylins.local').map((t) => t.address),
-    ];
-    openComposer({
-      mode: 'replyAll',
-      to,
-      subject: `Re: ${message.subject}`,
-      bodyHtml: quotedBodyHtml(message),
-      threadId: message.threadId ?? null,
-      inReplyToMessageId: message.messageId ?? null,
-    });
-  };
+  const handleReply = () => setComposeMode('reply');
 
-  const handleForward = () => {
-    openComposer({
-      mode: 'forward',
-      subject: `Fwd: ${message.subject}`,
-      bodyHtml: forwardedBodyHtml(message),
-      threadId: message.threadId ?? null,
-    });
-  };
+  const handleReplyAll = () => setComposeMode('replyAll');
+
+  const handleForward = () => setComposeMode('forward');
 
   const isSuspicious = message.subject.toLowerCase().includes('verify your account');
 

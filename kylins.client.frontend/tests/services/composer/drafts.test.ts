@@ -35,8 +35,8 @@ const mockDb = {
 
 const baseInput: DraftInput = {
   accountId: 'acc-1',
-  to: ['alice@example.com'],
-  cc: ['bob@example.com'],
+  to: [{ name: 'alice@example.com', email: 'alice@example.com' }],
+  cc: [{ name: 'bob@example.com', email: 'bob@example.com' }],
   bcc: [],
   subject: 'Hello',
   bodyHtml: '<p>Hi</p>',

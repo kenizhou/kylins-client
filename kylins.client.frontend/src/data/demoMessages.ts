@@ -1,4 +1,5 @@
 import type { MailMessage } from '@/features/view/viewStore';
+import { formatFullDate } from '@/utils/formatDate';
 
 export const DEMO_MESSAGES: MailMessage[] = [
   {
@@ -133,13 +134,7 @@ export function formatMessageTime(isoDate: string): string {
 }
 
 export function formatMessageDate(isoDate: string): string {
-  const date = new Date(isoDate);
-  return date.toLocaleString(undefined, {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  // Delegate to the shared util so the composer (and other non-demo code) and
+  // demo data share one date-formatting implementation.
+  return formatFullDate(isoDate);
 }

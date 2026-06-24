@@ -2,6 +2,7 @@
 // See ATTRIBUTIONS.md. Adapted for Kylins Client.
 
 import { create } from 'zustand';
+import { parseRecipients, type Recipient } from '@/features/composer/contacts';
 
 export type ComposerMode = 'new' | 'reply' | 'replyAll' | 'forward';
 export type ComposerViewMode = 'modal' | 'fullpage';
@@ -15,12 +16,30 @@ export interface ComposerAttachment {
   content: string; // base64
 }
 
+/**
+ * Recipient values may arrive as structured `Recipient[]` (reply pre-fill, the
+ * RecipientField chips) or as raw `string[]` (legacy AddressInput, URL params on
+ * pop-out, scheduled-email restore). Normalize everything to `Recipient[]` at
+ * the store boundary so the rest of the app deals with one shape.
+ */
+export type RecipientInput = Recipient[] | string[];
+
+function normalizeRecipients(value: RecipientInput | undefined): Recipient[] {
+  if (!value || value.length === 0) return [];
+  // Distinguish a string[] from a Recipient[] by the first element's type.
+  if (typeof value[0] === 'string') {
+    return parseRecipients((value as string[]).join(', '));
+  }
+  return [...(value as Recipient[])];
+}
+
 export interface ComposerState {
   isOpen: boolean;
   mode: ComposerMode;
-  to: string[];
-  cc: string[];
-  bcc: string[];
+  to: Recipient[];
+  cc: Recipient[];
+  bcc: Recipient[];
+  replyTo: Recipient[];
   subject: string;
   bodyHtml: string;
   threadId: string | null;
@@ -39,9 +58,11 @@ export interface ComposerState {
 
   openComposer: (opts?: {
     mode?: ComposerMode;
-    to?: string[];
-    cc?: string[];
-    bcc?: string[];
+    fromEmail?: string | null;
+    to?: RecipientInput;
+    cc?: RecipientInput;
+    bcc?: RecipientInput;
+    replyTo?: RecipientInput;
     subject?: string;
     bodyHtml?: string;
     threadId?: string | null;
@@ -49,12 +70,13 @@ export interface ComposerState {
     draftId?: string | null;
   }) => void;
   closeComposer: () => void;
-  setTo: (to: string[]) => void;
-  setCc: (cc: string[]) => void;
-  setBcc: (bcc: string[]) => void;
+  setTo: (to: RecipientInput) => void;
+  setCc: (cc: RecipientInput) => void;
+  setBcc: (bcc: RecipientInput) => void;
+  setReplyTo: (replyTo: RecipientInput) => void;
   setSubject: (subject: string) => void;
   setBodyHtml: (bodyHtml: string) => void;
-  setShowCcBcc: (show: boolean) => void;
+  setShowCcBcc: (showCcBcc: boolean) => void;
   setDraftId: (id: string | null) => void;
   setUndoSendTimer: (timer: ReturnType<typeof setTimeout> | null) => void;
   setUndoSendVisible: (visible: boolean) => void;
@@ -63,9 +85,9 @@ export interface ComposerState {
   clearAttachments: () => void;
   setLastSavedAt: (ts: number | null) => void;
   setIsSaving: (saving: boolean) => void;
-  setFromEmail: (email: string | null) => void;
+  setFromEmail: (fromEmail: string | null) => void;
   setViewMode: (mode: ComposerViewMode) => void;
-  setSignatureHtml: (html: string) => void;
+  setSignatureHtml: (signatureHtml: string) => void;
   setSignatureId: (id: string | null) => void;
 }
 
@@ -75,6 +97,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   to: [],
   cc: [],
   bcc: [],
+  replyTo: [],
   subject: '',
   bodyHtml: '',
   threadId: null,
@@ -95,9 +118,10 @@ export const useComposerStore = create<ComposerState>((set) => ({
     set({
       isOpen: true,
       mode: opts?.mode ?? 'new',
-      to: opts?.to ?? [],
-      cc: opts?.cc ?? [],
-      bcc: opts?.bcc ?? [],
+      to: normalizeRecipients(opts?.to),
+      cc: normalizeRecipients(opts?.cc),
+      bcc: normalizeRecipients(opts?.bcc),
+      replyTo: normalizeRecipients(opts?.replyTo),
       subject: opts?.subject ?? '',
       bodyHtml: opts?.bodyHtml ?? '',
       threadId: opts?.threadId ?? null,
@@ -105,7 +129,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
       showCcBcc: (opts?.cc?.length ?? 0) > 0 || (opts?.bcc?.length ?? 0) > 0,
       draftId: opts?.draftId ?? null,
       viewMode: 'modal',
-      fromEmail: null,
+      fromEmail: opts?.fromEmail ?? null,
       attachments: [],
       lastSavedAt: null,
       isSaving: false,
@@ -119,6 +143,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
       to: [],
       cc: [],
       bcc: [],
+      replyTo: [],
       subject: '',
       bodyHtml: '',
       threadId: null,
@@ -133,9 +158,10 @@ export const useComposerStore = create<ComposerState>((set) => ({
       signatureHtml: '',
       signatureId: null,
     }),
-  setTo: (to) => set({ to }),
-  setCc: (cc) => set({ cc }),
-  setBcc: (bcc) => set({ bcc }),
+  setTo: (to) => set({ to: normalizeRecipients(to) }),
+  setCc: (cc) => set({ cc: normalizeRecipients(cc) }),
+  setBcc: (bcc) => set({ bcc: normalizeRecipients(bcc) }),
+  setReplyTo: (replyTo) => set({ replyTo: normalizeRecipients(replyTo) }),
   setSubject: (subject) => set({ subject }),
   setBodyHtml: (bodyHtml) => set({ bodyHtml }),
   setShowCcBcc: (showCcBcc) => set({ showCcBcc }),
@@ -145,9 +171,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   addAttachment: (attachment) =>
     set((state) => ({ attachments: [...state.attachments, attachment] })),
   removeAttachment: (id) =>
-    set((state) => ({
-      attachments: state.attachments.filter((a) => a.id !== id),
-    })),
+    set((state) => ({ attachments: state.attachments.filter((a) => a.id !== id) })),
   clearAttachments: () => set({ attachments: [] }),
   setLastSavedAt: (lastSavedAt) => set({ lastSavedAt }),
   setIsSaving: (isSaving) => set({ isSaving }),

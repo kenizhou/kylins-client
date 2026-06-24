@@ -21,6 +21,8 @@ import { OfflineQueue } from '@/services/queue/offlineQueue';
 import { sendEmail as smtpSendEmail } from '@/services/mail/smtpSender';
 import { ImapProvider } from '@/services/mail/imapProvider';
 import { EasProvider } from '@/services/mail/easProvider';
+import { formatRecipients } from '@/features/composer/contacts';
+import { stripSignature } from '@/features/composer/signaturePlacement';
 
 export interface SendResult {
   success: boolean;
@@ -63,14 +65,20 @@ function inputToEmailDraft(input: DraftInput, fallbackFrom: string) {
     mimeType: a.mimeType,
     content: a.content,
   }));
+  // Recipient[] → RFC address strings at the MIME boundary. Reply-To only when set.
+  const replyTo =
+    input.replyTo && input.replyTo.length > 0 ? formatRecipients(input.replyTo) : undefined;
   return {
     from: input.fromEmail ?? fallbackFrom,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
+    to: formatRecipients(input.to),
+    cc: input.cc && input.cc.length > 0 ? formatRecipients(input.cc) : undefined,
+    bcc: input.bcc && input.bcc.length > 0 ? formatRecipients(input.bcc) : undefined,
+    replyTo,
     subject: input.subject,
-    // Inline <style> blocks into element-level styles for email-client fidelity.
-    htmlBody: inlineCss(input.bodyHtml),
+    // Inline <style> blocks for email-client fidelity, then unwrap any baked-in
+    // <signature> tag so recipients see the signature content without the
+    // non-standard wrapper element.
+    htmlBody: stripSignature(inlineCss(input.bodyHtml)),
     inReplyTo: input.inReplyToMessageId ?? undefined,
     threadId: input.threadId ?? undefined,
     attachments: attachments.length > 0 ? attachments : undefined,

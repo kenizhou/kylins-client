@@ -14,15 +14,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
-import Image from '@tiptap/extension-image';
-import { TextStyle } from '@tiptap/extension-text-style';
-import { Color } from '@tiptap/extension-color';
-import Highlight from '@tiptap/extension-highlight';
-import FontFamily from '@tiptap/extension-font-family';
 
-import { AddressInput } from './AddressInput';
+import { RecipientField } from '@/features/composer/RecipientField';
+import { buildComposerExtensions } from '@/features/composer/editorExtensions';
 import { EditorToolbar } from './EditorToolbar';
 import { AttachmentPicker } from './AttachmentPicker';
 import { ScheduleSendDialog } from './ScheduleSendDialog';
@@ -47,7 +41,8 @@ import {
 } from '@/services/db/sendAsAliases';
 import { getTemplatesForAccount, type DbTemplate } from '@/services/db/templates';
 import { interpolateVariables } from '@/utils/templateVariables';
-import { sanitizeHtml } from '@/utils/sanitize';
+import { formatRecipients } from '@/features/composer/contacts';
+import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { readFileAsBase64 } from '@/utils/fileUtils';
 import { MaximizeIcon, RestoreIcon, ClockIcon, CloseIcon, PopOutIcon, PlusIcon } from '../icons';
 import { InputDialog } from '@/components/ui/InputDialog';
@@ -64,6 +59,7 @@ export function Composer() {
   const fromEmail = useComposerStore((s) => s.fromEmail);
   const viewMode = useComposerStore((s) => s.viewMode);
   const signatureHtml = useComposerStore((s) => s.signatureHtml);
+  const signatureId = useComposerStore((s) => s.signatureId);
   const isSaving = useComposerStore((s) => s.isSaving);
   const lastSavedAt = useComposerStore((s) => s.lastSavedAt);
   // bodyHtml is intentionally NOT subscribed — TipTap owns editor state.
@@ -90,18 +86,7 @@ export function Composer() {
   const dragCounterRef = useRef(0);
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        heading: { levels: [1, 2, 3] },
-        link: { openOnClick: false },
-      }),
-      Placeholder.configure({ placeholder: 'Write your message...' }),
-      Image.configure({ inline: true, allowBase64: true }),
-      TextStyle,
-      Color,
-      Highlight.configure({ multicolor: true }),
-      FontFamily,
-    ],
+    extensions: buildComposerExtensions('Write your message...'),
     content: useComposerStore.getState().bodyHtml,
     onUpdate: ({ editor: ed }) => {
       useComposerStore.getState().setBodyHtml(ed.getHTML());
@@ -122,7 +107,7 @@ export function Composer() {
               .getState()
               .accounts.find((a) => a.id === useAccountStore.getState().activeAccountId);
             interpolateVariables(tmpl.body_html, {
-              recipientEmail: state.to[0],
+              recipientEmail: state.to[0]?.email,
               senderEmail: account?.email,
               senderName: account?.displayName ?? undefined,
               subject: state.subject || undefined,
@@ -158,6 +143,28 @@ export function Composer() {
       },
     },
   });
+
+  // Place the account signature above the quoted original (or at the end for a
+  // new compose). useEditor reads `content` only at mount, so when the signature
+  // loads — or the user picks a different one — we push it into the editor via
+  // setContent. Guarded by lastSigIdRef so it runs once per signature and never
+  // clobbers the user's typing on unrelated renders.
+  const lastSigIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!editor) return;
+    const sigId = signatureId ?? 'none';
+    if (lastSigIdRef.current === sigId) return;
+    const prev = lastSigIdRef.current;
+    lastSigIdRef.current = sigId;
+    // Skip the very first run before a signature has loaded — the editor was
+    // already seeded with bodyHtml at mount (which carries a signature already
+    // when popped out of the inline composer).
+    if (prev === undefined && signatureId === null) return;
+    const sig = signatureHtml ? { id: signatureId ?? 'sig', html: signatureHtml } : null;
+    editor.commands.setContent(applySignatureAboveQuote(editor.getHTML(), sig), {
+      emitUpdate: false,
+    });
+  }, [editor, signatureId, signatureHtml]);
 
   // Load signature, aliases, and templates when the composer opens.
   useEffect(() => {
@@ -242,11 +249,10 @@ export function Composer() {
     [addAttachment],
   );
 
-  const getFullHtml = useCallback(() => {
-    const editorHtml = editor?.getHTML() ?? '';
-    if (!signatureHtml) return editorHtml;
-    return `${editorHtml}<div style="margin-top:16px;border-top:1px solid #e5e7eb;padding-top:12px">${sanitizeHtml(signatureHtml)}</div>`;
-  }, [editor, signatureHtml]);
+  // The signature now lives in the editor body (above the quoted original), so
+  // the full HTML is just the editor's content. The <signature> wrapper is
+  // unwrapped at the send boundary (services/composer/send strips it).
+  const getFullHtml = useCallback(() => editor?.getHTML() ?? '', [editor]);
 
   const handleSend = useCallback(async () => {
     if (!activeAccountId || !activeAccount || sendingRef.current) return;
@@ -292,7 +298,9 @@ export function Composer() {
         // TODO: send-and-archive (needs viewer archiveThread) — when enabled,
         // archive the thread here if the setting is on and state.threadId is set.
         await Promise.all(
-          [...state.to, ...state.cc, ...state.bcc].map((addr) => upsertContact(addr, null)),
+          [...state.to, ...state.cc, ...state.bcc].map((r) =>
+            upsertContact(r.email, r.email !== r.name ? r.name : null),
+          ),
         );
       } catch (err) {
         console.error('Failed to send email:', err);
@@ -326,9 +334,9 @@ export function Composer() {
 
       await insertScheduledEmail({
         accountId: activeAccountId,
-        toAddresses: state.to.join(', '),
-        ccAddresses: state.cc.length > 0 ? state.cc.join(', ') : null,
-        bccAddresses: state.bcc.length > 0 ? state.bcc.join(', ') : null,
+        toAddresses: formatRecipients(state.to).join(', '),
+        ccAddresses: state.cc.length > 0 ? formatRecipients(state.cc).join(', ') : null,
+        bccAddresses: state.bcc.length > 0 ? formatRecipients(state.bcc).join(', ') : null,
         subject: state.subject,
         bodyHtml: html,
         replyToMessageId: state.inReplyToMessageId,
@@ -388,9 +396,9 @@ export function Composer() {
       const params = new URLSearchParams();
       params.set('compose', 'true');
       params.set('mode', state.mode);
-      if (state.to.length > 0) params.set('to', state.to.join(','));
-      if (state.cc.length > 0) params.set('cc', state.cc.join(','));
-      if (state.bcc.length > 0) params.set('bcc', state.bcc.join(','));
+      if (state.to.length > 0) params.set('to', formatRecipients(state.to).join(','));
+      if (state.cc.length > 0) params.set('cc', formatRecipients(state.cc).join(','));
+      if (state.bcc.length > 0) params.set('bcc', formatRecipients(state.bcc).join(','));
       if (state.subject) params.set('subject', state.subject);
       if (state.threadId) params.set('threadId', state.threadId);
       if (state.inReplyToMessageId) params.set('inReplyToMessageId', state.inReplyToMessageId);
@@ -499,11 +507,21 @@ export function Composer() {
             selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
             onChange={(alias) => setFromEmail(alias.email)}
           />
-          <AddressInput label="To" addresses={to} onChange={setTo} />
+          <RecipientField label="To" recipients={to} onChange={setTo} placeholder="Recipients" />
           {showCcBcc ? (
             <>
-              <AddressInput label="Cc" addresses={cc} onChange={setCc} />
-              <AddressInput label="Bcc" addresses={bcc} onChange={setBcc} />
+              <RecipientField
+                label="Cc"
+                recipients={cc}
+                onChange={setCc}
+                placeholder="Cc recipients"
+              />
+              <RecipientField
+                label="Bcc"
+                recipients={bcc}
+                onChange={setBcc}
+                placeholder="Bcc recipients"
+              />
             </>
           ) : (
             <button
@@ -535,12 +553,6 @@ export function Composer() {
         {/* Editor */}
         <div className="flex-1 overflow-y-auto">
           <EditorContent editor={editor} />
-          {signatureHtml && (
-            <div
-              className="border-t border-[var(--border)] px-4 py-2 text-xs text-[var(--muted-foreground)]"
-              dangerouslySetInnerHTML={{ __html: sanitizeHtml(signatureHtml) }}
-            />
-          )}
         </div>
 
         {/* Attachments */}
