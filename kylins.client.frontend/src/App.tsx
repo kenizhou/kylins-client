@@ -34,9 +34,10 @@ function describeError(err: unknown): string {
 export default function App() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
   const isMounted = useRef(true);
   const setTheme = useUIStore((s) => s.setTheme);
+  const accountSetupOpen = useUIStore((s) => s.accountSetupOpen);
+  const setAccountSetupOpen = useUIStore((s) => s.setAccountSetupOpen);
   useViewSettings();
 
   useEffect(() => {
@@ -104,13 +105,13 @@ export default function App() {
 
   async function handleSetupComplete(): Promise<void> {
     await refreshAccounts();
-    setAdding(false);
+    setAccountSetupOpen(false);
   }
 
   return (
     <>
-      <AppShell onAddAccount={() => setAdding(true)} />
-      {adding && (
+      <AppShell />
+      {accountSetupOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
           role="dialog"

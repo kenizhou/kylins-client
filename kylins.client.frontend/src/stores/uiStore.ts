@@ -11,8 +11,12 @@ export interface UIState {
   activeToolWindow: string | null;
   activeMenuCategory: string | null;
   activeApp: 'mail' | 'calendar';
+  accountSetupOpen: boolean;
+  readerZoom: number;
   setTheme: (theme: ThemeMode) => void;
   setActiveApp: (app: 'mail' | 'calendar') => void;
+  setAccountSetupOpen: (open: boolean) => void;
+  setReaderZoom: (zoom: number) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setFolderPaneWidth: (width: number) => void;
   setMessageListWidth: (width: number) => void;
@@ -30,8 +34,12 @@ export const useUIStore = create<UIState>((set) => ({
   activeToolWindow: null,
   activeMenuCategory: null,
   activeApp: 'mail',
+  accountSetupOpen: false,
+  readerZoom: 1,
   setTheme: (theme) => set({ theme }),
   setActiveApp: (activeApp) => set({ activeApp }),
+  setAccountSetupOpen: (accountSetupOpen) => set({ accountSetupOpen }),
+  setReaderZoom: (readerZoom) => set({ readerZoom }),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   setFolderPaneWidth: (folderPaneWidth) => set({ folderPaneWidth }),
   setMessageListWidth: (messageListWidth) => set({ messageListWidth }),

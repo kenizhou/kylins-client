@@ -9,7 +9,7 @@ vi.hoisted(() => {
 });
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 
 // Mock the services and stores App.tsx pulls in at module scope.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -33,16 +33,13 @@ vi.mock('../src/services/plugins/pluginManager', () => ({
 }));
 vi.mock('../src/features/view/hooks/useViewSettings', () => ({ useViewSettings: vi.fn() }));
 
-// Mock AppShell so we don't pull in the full layout (and its Tauri deps).
+// Mock AppShell so we don't pull in the full layout (and its Tauri deps). The
+// "+ Add account" affordance moved out of AppShell into the File menu, which
+// drives `uiStore.accountSetupOpen`; AppShell no longer takes an onAddAccount prop.
 vi.mock('../src/components/layout/AppShell', () => ({
-  AppShell: ({ onAddAccount }: { onAddAccount?: () => void }) => (
+  AppShell: () => (
     <div>
       <span>AppShell</span>
-      {onAddAccount && (
-        <button type="button" onClick={onAddAccount}>
-          add-account-trigger
-        </button>
-      )}
     </div>
   ),
 }));
@@ -50,6 +47,7 @@ vi.mock('../src/components/layout/AppShell', () => ({
 import App from '../src/App';
 import { getAllAccounts } from '../src/services/accounts';
 import { useAccountStore } from '../src/stores/accountStore';
+import { useUIStore } from '../src/stores/uiStore';
 
 function makeAccount(id: string) {
   return {
@@ -65,6 +63,7 @@ function makeAccount(id: string) {
 describe('App', () => {
   beforeEach(() => {
     useAccountStore.getState().setAccounts([]);
+    useUIStore.getState().setAccountSetupOpen(false);
     vi.clearAllMocks();
   });
 
@@ -76,22 +75,22 @@ describe('App', () => {
     vi.mocked(getAllAccounts).mockResolvedValue([]);
     render(<App />);
     expect(await screen.findByText('AppShell')).toBeInTheDocument();
-    expect(screen.getByText('add-account-trigger')).toBeInTheDocument();
   });
 
-  it('shows AppShell with an Add-account trigger once an account exists', async () => {
+  it('shows AppShell once an account exists', async () => {
     vi.mocked(getAllAccounts).mockResolvedValue([makeAccount('a1')]);
     render(<App />);
     expect(await screen.findByText('AppShell')).toBeInTheDocument();
-    expect(screen.getByText('add-account-trigger')).toBeInTheDocument();
   });
 
-  it('opens the modal setup flow when the Add-account trigger is clicked', async () => {
+  it('opens the modal setup flow when account setup is requested (File menu → uiStore)', async () => {
     vi.mocked(getAllAccounts).mockResolvedValue([makeAccount('a1')]);
     render(<App />);
     await screen.findByText('AppShell');
-    fireEvent.click(screen.getByText('add-account-trigger'));
-    // Modal overlay renders a second AccountSetupFlow instance.
+    // The File menu sets this flag; simulate it directly here (AppShell is
+    // mocked, so the real MenuBar isn't reachable in this test).
+    useUIStore.getState().setAccountSetupOpen(true);
+    // Modal overlay renders the AccountSetupFlow.
     const pickers = await screen.findAllByText('Welcome to Kylins Mail');
     expect(pickers.length).toBeGreaterThanOrEqual(1);
   });

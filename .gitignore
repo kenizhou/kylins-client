@@ -44,5 +44,7 @@ coverage/
 # Misc
 *.local
 
-# Large reference docs — Microsoft Open Specifications PDFs kept local, not tracked (258 MB)
+# Large reference docs — Microsoft Open Specifications kept local, not tracked
+# (PDFs/zip are 100MB+ — over GitHub's limit and would bloat the repo).
 docs/Exchange/*.pdf
+docs/Exchange/*.zip

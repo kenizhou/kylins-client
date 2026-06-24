@@ -57,6 +57,7 @@ import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
   ArrowUpRight01Icon,
+  Folder01Icon,
 } from '@hugeicons/core-free-icons';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
@@ -81,6 +82,7 @@ export const MoveIcon = makeIcon(Move02Icon);
 export const TagIcon = makeIcon(Tag01Icon);
 export const LightningIcon = makeIcon(FlashIcon);
 export const MailIcon = makeIcon(Mail01Icon);
+export const FolderIcon = makeIcon(Folder01Icon);
 export const FlagIcon = makeIcon(Flag02Icon);
 export const PinIcon = makeIcon(Pin02Icon);
 export const UndoIcon = makeIcon(ArrowTurnBackwardIcon);

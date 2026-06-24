@@ -1,5 +1,6 @@
-import { PaneHeader } from './PaneHeader';
-import { MailIcon, SendIcon, FileTextIcon, BellIcon, TrashIcon } from '../icons';
+import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
+import { MailIcon, SendIcon, FileTextIcon, BellIcon, TrashIcon, ArrowLeftIcon } from '../icons';
+import { useViewStore } from '../../features/view/viewStore';
 
 interface FolderRowProps {
   icon: React.ReactNode;
@@ -48,9 +49,24 @@ function FolderGroup({ title, children }: { title: string; children: React.React
 }
 
 export function FolderPane() {
+  const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
   return (
-    <div className="flex flex-col h-full bg-[var(--surface)] border border-[var(--series-300)] rounded-xl">
-      <PaneHeader title="Folders" role="folder-pane:header" />
+    <div className="flex flex-col h-full bg-[var(--surface)] rounded-xl">
+      <div className="flex h-8 shrink-0 items-center justify-between px-3">
+        <span className="text-sm font-semibold text-[var(--foreground)]">Folders</span>
+        <div className="flex items-center gap-1">
+          <InjectedComponentSet role="folder-pane:header" containersRequired={false} />
+          <button
+            type="button"
+            onClick={() => setFolderPaneVisible(false)}
+            aria-label="Collapse folder pane"
+            title="Collapse folder pane"
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+          >
+            <ArrowLeftIcon size={14} />
+          </button>
+        </div>
+      </div>
       <div className="flex-1 overflow-auto">
         <FolderGroup title="Favorites">
           <FolderRow icon={<MailIcon />} name="Inbox" count={9} active />

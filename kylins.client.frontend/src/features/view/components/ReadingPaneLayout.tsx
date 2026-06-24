@@ -1,5 +1,7 @@
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { ReadingPanePosition } from '../types';
+import { FolderIcon, ArrowRightIcon } from '@/components/icons';
+import { useViewStore } from '../viewStore';
 
 interface ReadingPaneLayoutProps {
   position: ReadingPanePosition;
@@ -7,6 +9,27 @@ interface ReadingPaneLayoutProps {
   folderPane: React.ReactNode;
   messageList: React.ReactNode;
   readingPane: React.ReactNode;
+}
+
+/**
+ * Slim expand strip shown at the left edge of the mail content when the folder
+ * pane is hidden. Click to restore the folder pane. (Auto-expand on hover is
+ * intentionally omitted — it would fire whenever the pointer nears the edge.)
+ */
+export function FolderExpandStrip() {
+  const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
+  return (
+    <button
+      type="button"
+      onClick={() => setFolderPaneVisible(true)}
+      aria-label="Show folder pane"
+      title="Show folder pane"
+      className="flex w-7 shrink-0 flex-col items-center gap-2 rounded-lg bg-[var(--surface)] pt-2 text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+    >
+      <ArrowRightIcon size={14} />
+      <FolderIcon size={18} />
+    </button>
+  );
 }
 
 function PanelCard({ children }: { children: React.ReactNode }) {
@@ -32,7 +55,13 @@ function PanelCard({ children }: { children: React.ReactNode }) {
  * drag hit region to at least 10px (fine pointer) regardless of visual width,
  * so the bar can stay slim-looking while remaining easy to grab.
  */
-function VDivider() {
+function VDivider({ hidden = false }: { hidden?: boolean }) {
+  if (hidden) {
+    // Thin and colored to match the folder pane's surface so it disappears
+    // against it. Still draggable — react-resizable-panels expands the hit
+    // region to ≥10px regardless of visual width.
+    return <Separator className="w-px bg-[var(--surface)]" />;
+  }
   return (
     <Separator className="mx-1 w-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />
   );
@@ -60,7 +89,7 @@ export function ReadingPaneLayout({
             {folderPane}
           </Panel>
         )}
-        {folderPaneVisible && <VDivider />}
+        {folderPaneVisible && <VDivider hidden />}
         <Panel key="message-list" defaultSize="80%" minSize="40%">
           <PanelCard>{messageList}</PanelCard>
         </Panel>
@@ -77,7 +106,7 @@ export function ReadingPaneLayout({
             {folderPane}
           </Panel>
         )}
-        {folderPaneVisible && <VDivider />}
+        {folderPaneVisible && <VDivider hidden />}
         <Panel key="message-list" defaultSize="30%" minSize="18%" maxSize="50%">
           <PanelCard>{messageList}</PanelCard>
         </Panel>

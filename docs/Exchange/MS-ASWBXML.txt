@@ -1,0 +1,1369 @@
+[MS-ASWBXML]:
+Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm
+Intellectual Property Rights Notice for Open Specifications Documentation
+ Technical Documentation. Microsoft publishes Open Specifications documentation ("this documentation") for protocols, file formats, data portability, computer languages, and standards support. Additionally, overview documents cover inter-protocol relationships and interactions.
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other terms that are contained in the terms of use for the Microsoft website that hosts this documentation, you can make copies of it in order to develop implementations of the technologies that are described in this documentation and can distribute portions of it in your implementations that use these technologies or in your documentation as necessary to properly document the implementation. You can also distribute in your implementation, with or without modification, any schemas, IDLs, or code samples that are included in the documentation. This permission also applies to any documents that are referenced in the Open Specifications documentation.
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  Patents. Microsoft has patents that might cover your implementations of the technologies
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of this documentation grants any licenses under those patents or any other Microsoft patents. However, a given Open Specifications document might be covered by the Microsoft Open Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, or if the technologies described in this documentation are not covered by the Open Specifications Promise or Community Promise, as applicable, patent licenses are available by contacting iplg@microsoft.com.  License Programs. To see all of the protocols in scope under a specific license program and the associated patents, visit the Patent Map.  Trademarks. The names of companies and products contained in this documentation might be covered by trademarks or similar intellectual property rights. This notice does not grant any licenses under those rights. For a list of Microsoft trademarks, visit www.microsoft.com/trademarks.  Fictitious Names. The example companies, organizations, products, domain names, email addresses, logos, people, places, and events that are depicted in this documentation are fictitious. No association with any real company, organization, product, domain name, email address, logo, person, place, or event is intended or should be inferred.
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other than as specifically described above, whether by implication, estoppel, or otherwise.
+Tools. The Open Specifications documentation does not require the use of Microsoft programming tools or programming environments in order for you to develop an implementation. If you have access to Microsoft programming tools and environments, you are free to take advantage of them. Certain Open Specifications documents are intended for use in conjunction with publicly available standards specifications and network programming art and, as such, assume that the reader either is familiar with the aforementioned material or has immediate access to it.
+Support. For questions and support, please contact dochelp@microsoft.com.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+1 / 43
+
+Revision Summary
+
+Date 12/3/2008 4/10/2009 7/15/2009 11/4/2009 2/10/2010 5/5/2010 8/4/2010 11/3/2010 3/18/2011 8/5/2011 10/7/2011 1/20/2012 4/27/2012 7/16/2012 10/8/2012
+
+Revision History 1.0.0 2.0.0 3.0.0 4.0.0 5.0.0 6.0.0 7.0 8.0 8.1 9.0 10.0 11.0 11.1 12.0 12.1
+
+2/11/2013 12.1
+
+7/26/2013 13.0
+
+11/18/2013 13.0
+
+2/10/2014 13.0
+
+4/30/2014 14.0
+
+7/31/2014 14.0
+
+10/30/2014 14.1
+
+5/26/2015 15.0
+
+6/30/2015 16.0
+
+9/14/2015 17.0
+
+6/9/2016
+
+18.0
+
+2/28/2017 19.0
+
+6/20/2017 20.0
+
+Revision Class Major Major Major Major Major Major Major Major Minor Major Major Major Minor Major Minor
+None
+Major
+None
+None
+Major
+None
+Minor Major Major Major Major Major Major
+
+Comments Initial Release. Updated technical content and applicable product releases. Revised and edited for technical content. Updated and revised the technical content. Updated and revised the technical content. Updated and revised the technical content. Significantly changed the technical content. Significantly changed the technical content. Clarified the meaning of the technical content. Significantly changed the technical content. Significantly changed the technical content. Significantly changed the technical content. Clarified the meaning of the technical content. Significantly changed the technical content. Clarified the meaning of the technical content. No changes to the meaning, language, or formatting of the technical content. Significantly changed the technical content. No changes to the meaning, language, or formatting of the technical content. No changes to the meaning, language, or formatting of the technical content. Significantly changed the technical content. No changes to the meaning, language, or formatting of the technical content. Clarified the meaning of the technical content. Significantly changed the technical content. Significantly changed the technical content. Significantly changed the technical content. Significantly changed the technical content. Significantly changed the technical content. Significantly changed the technical content.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+2 / 43
+
+Date
+
+Revision History
+
+7/24/2018 21.0
+
+10/1/2018 22.0
+
+12/11/2018 22.1
+
+3/19/2019 22.2
+
+4/29/2022 23.0
+
+Revision Class Major Major Minor Minor Major
+
+Comments Significantly changed the technical content. Significantly changed the technical content. Clarified the meaning of the technical content. Clarified the meaning of the technical content. Significantly changed the technical content.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+3 / 43
+
+Table of Contents
+1 Introduction ............................................................................................................ 5 1.1 Glossary ........................................................................................................... 5 1.2 References ........................................................................................................ 5 1.2.1 Normative References ................................................................................... 6 1.2.2 Informative References ................................................................................. 6 1.3 Overview .......................................................................................................... 6 1.4 Relationship to Protocols and Other Algorithms ...................................................... 6 1.5 Applicability Statement ....................................................................................... 7 1.6 Standards Assignments....................................................................................... 8
+2 Algorithm Details..................................................................................................... 9 2.1 ActiveSync WBXML Algorithm Details.................................................................... 9 2.1.1 Abstract Data Model...................................................................................... 9 2.1.2 Initialization ................................................................................................. 9 2.1.2.1 Code Pages ............................................................................................ 9 2.1.2.1.1 Code Page 0: AirSync ...................................................................... 10 2.1.2.1.2 Code Page 1: Contacts ..................................................................... 11 2.1.2.1.3 Code Page 2: Email ......................................................................... 13 2.1.2.1.4 Code Page 3: AirNotify ..................................................................... 16 2.1.2.1.5 Code Page 4: Calendar..................................................................... 16 2.1.2.1.6 Code Page 5: Move .......................................................................... 17 2.1.2.1.7 Code Page 6: GetItemEstimate ......................................................... 18 2.1.2.1.8 Code Page 7: FolderHierarchy ........................................................... 18 2.1.2.1.9 Code Page 8: MeetingResponse ......................................................... 19 2.1.2.1.10 Code Page 9: Tasks ......................................................................... 20 2.1.2.1.11 Code Page 10: ResolveRecipients ...................................................... 21 2.1.2.1.12 Code Page 11: ValidateCert .............................................................. 22 2.1.2.1.13 Code Page 12: Contacts2 ................................................................. 22 2.1.2.1.14 Code Page 13: Ping ......................................................................... 23 2.1.2.1.15 Code Page 14: Provision................................................................... 23 2.1.2.1.16 Code Page 15: Search...................................................................... 25 2.1.2.1.17 Code Page 16: GAL.......................................................................... 27 2.1.2.1.18 Code Page 17: AirSyncBase .............................................................. 27 2.1.2.1.19 Code Page 18: Settings .................................................................... 29 2.1.2.1.20 Code Page 19: DocumentLibrary ....................................................... 30 2.1.2.1.21 Code Page 20: ItemOperations ......................................................... 31 2.1.2.1.22 Code Page 21: ComposeMail ............................................................. 32 2.1.2.1.23 Code Page 22: Email2 ...................................................................... 33 2.1.2.1.24 Code Page 23: Notes ....................................................................... 34 2.1.2.1.25 Code Page 24: RightsManagement..................................................... 34 2.1.2.1.26 Code Page 25: Find ......................................................................... 35 2.1.3 Processing Rules......................................................................................... 36
+3 Algorithm Examples .............................................................................................. 37
+4 Security ................................................................................................................. 40 4.1 Security Considerations for Implementers ........................................................... 40 4.2 Index of Security Parameters ............................................................................ 40
+5 Appendix A: Product Behavior ............................................................................... 41
+6 Change Tracking.................................................................................................... 42
+7 Index..................................................................................................................... 43
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+4 / 43
+
+1 Introduction
+The Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm incorporates Wireless Application Protocol (WAP) Binary XML (WBXML) functionality into the ActiveSync protocols by mapping ActiveSync XML schema elements to numeric code page values. This enables ActiveSync clients to encode XML requests into WBXML for transmission to an ActiveSync server.
+Sections 1.6 and 2 of this specification are normative. All other sections and examples in this specification are informative.
+1.1 Glossary
+This document uses the following terms:
+contact: A person, company, or other entity that is stored in a directory and is associated with one or more unique identifiers and attributes, such as an Internet message address or login name.
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, hypermedia information systems (text, graphic images, sound, video, and other multimedia files) on the World Wide Web.
+Secure Sockets Layer (SSL): A security protocol that supports confidentiality and integrity of messages in client and server applications that communicate over open networks. SSL supports server and, optionally, client authentication using X.509 certificates [X509] and [RFC5280]. SSL is superseded by Transport Layer Security (TLS). TLS version 1.0 is based on SSL version 3.0 [SSL3].
+WBXML code page: A map used to convert XML to Wireless Application Protocol (WAP) Binary XML (WBXML) that specifies the one-to-one relationships between the XML tags of a namespace and the tags' numeric representations called WBXML tokens. Each WBXML code page corresponds to an XML namespace.
+WBXML token: A single-byte code that represents a specific XML tag.
+Wireless Application Protocol (WAP) Binary XML (WBXML): A compact binary representation of XML that is designed to reduce the transmission size of XML documents over narrowband communication channels.
+XML: The Extensible Markup Language, as described in [XML1.0].
+XML namespace: A collection of names that is used to identify elements, types, and attributes in XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and local name allows XML documents to use elements, types, and attributes that have the same names but come from different sources. For more information, see [XMLNS-2ED].
+XML schema: A description of a type of XML document that is typically expressed in terms of constraints on the structure and content of documents of that type, in addition to the basic syntax constraints that are imposed by XML itself. An XML schema provides a view of a document type at a relatively high level of abstraction.
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT.
+1.2 References
+Links to a document in the Microsoft Open Specifications library point to the correct section in the most recently published version of the referenced document. However, because individual documents
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+5 / 43
+
+in the library are not updated at the same time, the section numbers in the documents may not match. You can confirm the correct section numbering by checking the Errata.
+
+1.2.1 Normative References
+We conduct frequent surveys of the normative references to assure their continued availability. If you have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will assist you in finding the relevant information.
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol".
+[MS-ASHTTP] Microsoft Corporation, "Exchange ActiveSync: HTTP Protocol".
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 2119, March 1997, https://www.rfc-editor.org/info/rfc2119
+[WBXML1.2] Martin, B., and Jano, B., Eds., "WAP Binary XML Content Format", W3C Note, June 1999, http://www.w3.org/1999/06/NOTE-wbxml-19990624
+
+1.2.2 Informative References [MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol". [MS-ASCAL] Microsoft Corporation, "Exchange ActiveSync: Calendar Class Protocol". [MS-ASCNTC] Microsoft Corporation, "Exchange ActiveSync: Contact Class Protocol". [MS-ASDOC] Microsoft Corporation, "Exchange ActiveSync: Document Class Protocol". [MS-ASEMAIL] Microsoft Corporation, "Exchange ActiveSync: Email Class Protocol". [MS-ASNOTE] Microsoft Corporation, "Exchange ActiveSync: Notes Class Protocol". [MS-ASPROV] Microsoft Corporation, "Exchange ActiveSync: Provisioning Protocol". [MS-ASRM] Microsoft Corporation, "Exchange ActiveSync: Rights Management Protocol". [MS-ASTASK] Microsoft Corporation, "Exchange ActiveSync: Tasks Class Protocol". [MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview".
+
+1.3 Overview
+This algorithm maps ActiveSync XML schema elements to numeric code page values for use by the ActiveSync protocols, enabling ActiveSync clients to encode WBXML requests for transmission to an ActiveSync server.
+This algorithm provides WBXML tokens and WBXML code pages that allow clients and servers to compress the XML tags in request and response messages. WBXML code pages are hard-coded on the server and cannot be changed by the client. The WBXML code pages correspond to XML namespaces.
+
+1.4 Relationship to Protocols and Other Algorithms
+The XML namespaces that are used by this algorithm are described in the ActiveSync protocol specifications, as shown in the following table.
+The WBXML code page numbers in the table are listed in decimal format.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+6 / 43
+
+WBXML code page
+
+Specification
+
+WBXML code page 0: AirSync
+
+[MS-ASCMD] section 2.2.1.21
+
+WBXML code page 1: Contacts
+
+[MS-ASCNTC]
+
+WBXML code page 2: Email
+
+[MS-ASEMAIL]
+
+WBXML code page 3: AirNotify
+
+(no longer used)
+
+WBXML code page 4: Calendar
+
+[MS-ASCAL]
+
+WBXML code page 5: Move
+
+[MS-ASCMD] section 2.2.1.12
+
+WBXML code page 6: GetItemEstimate
+
+[MS-ASCMD] section 2.2.1.9
+
+WBXML code page 7: FolderHierarchy
+
+[MS-ASCMD] sections 2.2.1.3, 2.2.1.4, 2.2.1.5, 2.2.1.6, and 2.2.1.8
+
+WBXML code page 8: MeetingResponse
+
+[MS-ASCMD] section 2.2.1.11
+
+WBXML code page 9: Tasks
+
+[MS-ASTASK]
+
+WBXML code page 10: ResolveRecipients [MS-ASCMD] section 2.2.1.15
+
+WBXML code page 11: ValidateCert
+
+[MS-ASCMD] section 2.2.1.22
+
+WBXML code page 12: Contacts2
+
+[MS-ASCNTC]
+
+WBXML code page 13: Ping
+
+[MS-ASCMD] section 2.2.1.13
+
+WBXML code page 14: Provision
+
+[MS-ASPROV]
+
+WBXML code page 15: Search
+
+[MS-ASCMD] section 2.2.1.16
+
+WBXML code page 16: GAL
+
+[MS-ASCMD] section 2.2.1.16
+
+WBXML code page 17: AirSyncBase
+
+[MS-ASAIRS]
+
+WBXML code page 18: Settings
+
+[MS-ASCMD] section 2.2.1.18
+
+WBXML code page 19: DocumentLibrary
+
+[MS-ASDOC]
+
+WBXML code page 20: ItemOperations
+
+[MS-ASCMD] sections 2.2.1.10
+
+WBXML code page 21: ComposeMail
+
+[MS-ASCMD] sections 2.2.1.17, 2.2.1.19, and 2.2.1.20
+
+WBXML code page 22: Email2
+
+[MS-ASEMAIL]
+
+WBXML code page 23: Notes
+
+[MS-ASNOTE]
+
+WBXML code page 24: Rights Management [MS-ASRM]
+
+WBXML code page 25: Find
+
+[MS-ASCMD] section 2.2.1.2
+
+For conceptual background information and overviews of the relationships and interactions between this and other protocols, see [MS-OXPROTO].
+
+1.5 Applicability Statement
+WBXML is used as a compact transmission format for mobile clients, which typically have little memory and bandwidth. WBXML encoding of XML tags is appropriate for all messages sent and received by using the ActiveSync protocols.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+7 / 43
+
+1.6 Standards Assignments This algorithm uses the global WBXML tokens listed in the following table.
+
+Token name Token Reference
+
+SWITCH_PAGE 0
+
+[WBXML1.2]
+
+END
+
+1
+
+[WBXML1.2]
+
+ENTITY
+
+2
+
+[WBXML1.2]
+
+STR_I
+
+3
+
+[WBXML1.2]
+
+LITERAL
+
+4
+
+[WBXML1.2]
+
+EXT_I_0
+
+40
+
+[WBXML1.2]
+
+EXT_I_1
+
+41
+
+[WBXML1.2]
+
+EXT_I_2
+
+42
+
+[WBXML1.2]
+
+PI
+
+43
+
+[WBXML1.2]
+
+LITERAL_C
+
+44
+
+[WBXML1.2]
+
+EXT_T_0
+
+80
+
+[WBXML1.2]
+
+EXT_T_1
+
+81
+
+[WBXML1.2]
+
+EXT_T_2
+
+82
+
+[WBXML1.2]
+
+STR_T
+
+83
+
+[WBXML1.2]
+
+LITERAL_A
+
+84
+
+[WBXML1.2]
+
+EXT_0
+
+C0
+
+[WBXML1.2]
+
+EXT_1
+
+C1
+
+[WBXML1.2]
+
+EXT_2
+
+C2
+
+[WBXML1.2]
+
+OPAQUE
+
+C3
+
+[WBXML1.2]
+
+LITERAL_AC
+
+C4
+
+[WBXML1.2]
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+8 / 43
+
+2 Algorithm Details
+2.1 ActiveSync WBXML Algorithm Details ActiveSync messages are transported as HTTP POST messages, as specified in [MS-ASHTTP], where the body of the message contains WBXML formatted data. The WBXML data encodes the XML required by the command being communicated in the message. The ActiveSync commands are specified in [MS-ASCMD]. This section specifies the algorithm to encode XML request and response messages into WBXML format and to decode WBXML data into XML request and response messages. This algorithm is used by clients and servers.
+2.1.1 Abstract Data Model None.
+2.1.2 Initialization The XML tags in both request and response messages are encoded by using WBXML tokenization, as specified in [WBXML1.2]. WBXML uses WBXML code pages to map XML tags to WBXML tokens. WBXML parsers MUST use the WBXML code pages specified in the following sections.
+2.1.2.1 Code Pages This algorithm supports the following WBXML code pages.
+
+Code page XML namespace
+
+0
+
+AirSync
+
+1
+
+Contacts
+
+2
+
+Email
+
+3
+
+AirNotify
+
+4
+
+Calendar
+
+5
+
+Move
+
+6
+
+GetItemEstimate
+
+7
+
+FolderHierarchy
+
+8
+
+MeetingResponse
+
+9
+
+Tasks
+
+10
+
+ResolveRecipients
+
+11
+
+ValidateCert
+
+12
+
+Contacts2
+
+13
+
+Ping
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+9 / 43
+
+Code page XML namespace
+
+14
+
+Provision
+
+15
+
+Search
+
+16
+
+Gal
+
+17
+
+AirSyncBase
+
+18
+
+Settings
+
+19
+
+DocumentLibrary
+
+20
+
+ItemOperations
+
+21
+
+ComposeMail
+
+22
+
+Email2
+
+23
+
+Notes
+
+24
+
+RightsManagement
+
+25
+
+Find
+
+2.1.2.1.1 Code Page 0: AirSync
+The tags and tokens in WBXML code page 0 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name Sync Responses Add Change Delete Fetch SyncKey ClientId ServerId Status Collection Class CollectionId
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10 0x12
+
+Protocol versions All All All All All All All All All All All All All
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+10 / 43
+
+Tag name GetChanges MoreAvailable WindowSize Commands Options FilterType Truncation Conflict Collections ApplicationData DeletesAsMoves Supported SoftDelete MIMESupport MIMETruncation Wait Limit Partial ConversationMode MaxItems HeartbeatInterval
+
+Token 0x13 0x14 0x15 0x16 0x17 0x18 0x19 0x1B 0x1C 0x1D 0x1E 0x20 0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28 0x29
+
+Protocol versions All All All All All All 2.5 All All All All All All All All 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1
+
+2.1.2.1.2 Code Page 1: Contacts
+The tags and tokens in WBXML code page 1 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name Anniversary AssistantName AssistantPhoneNumber Birthday
+
+Token 0x05 0x06 0x07 0x08
+
+Protocol versions All All All All
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+11 / 43
+
+Tag name Body -- see note 1 following this table BodySize BodyTruncated Business2PhoneNumber BusinessAddressCity BusinessAddressCountry BusinessAddressPostalCode BusinessAddressState BusinessAddressStreet BusinessFaxNumber BusinessPhoneNumber CarPhoneNumber Categories Category Children Child CompanyName Department Email1Address Email2Address Email3Address FileAs FirstName Home2PhoneNumber HomeAddressCity HomeAddressCountry HomeAddressPostalCode HomeAddressState HomeAddressStreet HomeFaxNumber HomePhoneNumber JobTitle
+
+Token 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17 0x18 0x19 0x1A 0x1B 0x1C 0x1D 0x1E 0x1F 0x20 0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+Protocol versions 2.5 2.5 2.5 All All All All All All All All All All All All All All All All All All All All All All All All All All All All All
+12 / 43
+
+Tag name LastName MiddleName MobilePhoneNumber OfficeLocation OtherAddressCity OtherAddressCountry OtherAddressPostalCode OtherAddressState OtherAddressStreet PagerNumber RadioPhoneNumber Spouse Suffix Title WebPage YomiCompanyName YomiFirstName YomiLastName Picture Alias WeightedRank
+
+Token 0x29 0x2A 0x2B 0x2C 0x2D 0x2E 0x2F 0x30 0x31 0x32 0x33 0x34 0x35 0x36 0x37 0x38 0x39 0x3A 0x3C 0x3D 0x3E
+
+Protocol versions All All All All All All All All All All All All All All All All All All All 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1
+
+Note 1: The Body tag in WBXML code page 17 (AirSyncBase) is used instead of the Body tag in WBXML code page 1 with protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1.
+
+2.1.2.1.3 Code Page 2: Email
+The tags and tokens in WBXML code page 2 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name Attachment Attachments -- see note 1 following this table AttName
+
+Token 0x05 0x06 0x07
+
+Protocol versions 2.5 2.5 2.5
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+13 / 43
+
+Tag name AttSize Att0id AttMethod Body -- see note 2 following this table BodySize BodyTruncated DateReceived DisplayName DisplayTo Importance MessageClass Subject Read To Cc From ReplyTo AllDayEvent Categories Category DtStamp EndTime InstanceType BusyStatus Location -- see note 3 following this table MeetingRequest Organizer RecurrenceId Reminder ResponseRequested Recurrences Recurrence
+
+Token 0x08 0x09 0x0A 0x0C 0x0D 0x0E 0x0F 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17 0x18 0x19 0x1A 0x1B 0x1C 0x1D 0x1E 0x1F 0x20 0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+Protocol versions 2.5 2.5 2.5 2.5 2.5 2.5 All 2.5 All All All All All All All All All All 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 All All All All 2.5, 12.0, 12.1, 14.0, 14.1 All All All All All All All
+14 / 43
+
+Tag name Type Until Occurrences Interval DayOfWeek DayOfMonth WeekOfMonth MonthOfYear StartTime Sensitivity TimeZone GlobalObjId -- see note 4 following this table ThreadTopic MIMEData MIMETruncated MIMESize InternetCPID Flag
+Status
+ContentClass
+FlagType
+CompleteTime
+DisallowNewTimeProposal
+
+Token 0x29 0x2A 0x2B 0x2C 0x2D 0x2E 0x2F 0x30 0x31 0x32 0x33 0x34 0x35 0x36 0x37 0x38 0x39 0x3A
+0x3B
+0x3C
+0x3D
+0x3E
+0x3F
+
+Protocol versions All All All All All All All All All All All 2.5, 12.0, 12.1, 14.0, 14.1 All 2.5 2.5 2.5 All 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1
+
+Note 1: The Attachments tag in WBXML code page 17 (AirSyncBase) is used instead of the Attachments tag in WBXML code page 2 with protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1.
+Note 2: The Body tag in WBXML code page 17 (AirSyncBase) is used instead of the Body tag in WBXML code page 2 with protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1.
+Note 3: The Location tag in WBXML code page 17 (AirSyncBase) is used instead of the Location tag in WBXML code page 2 with protocol version 16.0 and 16.1.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+15 / 43
+
+Note 4: The UID tag in WBXML code page 4 (Calendar) is used instead of the GlobalObjId tag in WBXML code page 2 with protocol version 16.0 and 16.1.
+
+2.1.2.1.4 Code Page 3: AirNotify WBXML code page 3 is no longer in use.
+
+2.1.2.1.5 Code Page 4: Calendar
+The tags and tokens in WBXML code page 4 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name Timezone AllDayEvent Attendees Attendee Email Name Body -- see note 1 following this table BodyTruncated BusyStatus Categories Category DtStamp EndTime Exception Exceptions Deleted ExceptionStartTime Location -- see note 2 following this table MeetingStatus OrganizerEmail OrganizerName Recurrence Type Until
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x11 0x12 0x13 0x14 0x15 0x16 0x17 0x18 0x19 0x1A 0x1B 0x1C 0x1D
+
+Protocol versions All All All All All All 2.5 2.5 All All All All All All All All 2.5, 12.0, 12.1, 14.0, 14.1 2.5, 12.0, 12.1, 14.0, 14.1 All All All All All All
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+16 / 43
+
+Tag name Occurrences Interval DayOfWeek DayOfMonth WeekOfMonth MonthOfYear Reminder Sensitivity Subject StartTime UID AttendeeStatus
+AttendeeType
+DisallowNewTimeProposal ResponseRequested AppointmentReplyTime ResponseType CalendarType IsLeapMonth FirstDayOfWeek OnlineMeetingConfLink OnlineMeetingExternalLink ClientUid
+
+Token 0x1E 0x1F 0x20 0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28 0x29
+0x2A
+0x33 0x34 0x35 0x36 0x37 0x38 0x39 0x3A 0x3B 0x3C
+
+Protocol versions All All All All All All All All All All All 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 16.0, 16.1
+
+Note 1: The Body tag in WBXML code page 17 (AirSyncBase) is used instead of the Body tag in WBXML code page 4 with protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1.
+Note 2: The Location tag in WBXML code page 17 (AirSyncBase) is used instead of the Location tag in WBXML code page 4 with protocol version 16.0 and 16.1.
+2.1.2.1.6 Code Page 5: Move
+The tags and tokens in WBXML code page 5 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+17 / 43
+
+details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name MoveItems Move SrcMsgId SrcFldId DstFldId Response Status DstMsgId
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C
+
+Protocol versions All All All All All All All All
+
+2.1.2.1.7 Code Page 6: GetItemEstimate
+The tags and tokens in WBXML code page 6 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name GetItemEstimate Collections Collection Class -- see note 1 following this table CollectionId Estimate Response Status
+
+Token 0x05 0x07 0x08 0x09 0x0A 0x0C 0x0D 0x0E
+
+Protocol versions All All All 2.5, 12.0, 12.1 All All All All
+
+Note 1: The Class tag in WBXML code page 0 (AirSync) is used instead of the Class tag in WBXML code page 6 with protocol versions 14.0, 14.1, 16.0, and 16.1.
+2.1.2.1.8 Code Page 7: FolderHierarchy
+The tags and tokens in WBXML code page 7 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+18 / 43
+
+Tag name Folders Folder DisplayName ServerId ParentId Type Status Changes Add Delete Update SyncKey FolderCreate FolderDelete FolderUpdate FolderSync Count
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0C 0x0E 0x0F 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17
+
+Protocol versions 2.5, 12.0, 12.1 2.5, 12.0, 12.1 All All All All All All All All All All All All All All All
+
+2.1.2.1.9 Code Page 8: MeetingResponse
+The tags and tokens in WBXML code page 8 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name CalendarId CollectionId MeetingResponse RequestId Request Result Status UserResponse
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C
+
+Protocol versions All All All All All All All All
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+19 / 43
+
+Tag name InstanceId ProposedStartTime ProposedEndTime SendResponse
+
+Token 0x0E 0x10 0x11 0x12
+
+Protocol versions 14.1, 16.0, 16.1 16.1 16.1 16.0, 16.1
+
+2.1.2.1.10 Code Page 9: Tasks
+The tags and tokens in WBXML code page 9 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MSASHTTP].
+
+Tag name Body -- see note 1 following this table BodySize BodyTruncated Categories Category Complete DateCompleted DueDate UtcDueDate Importance Recurrence Type Start Until Occurrences Interval DayOfMonth DayOfWeek WeekOfMonth MonthOfYear Regenerate
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17 0x18 0x19
+
+Protocol versions 2.5 2.5 2.5 All All All All All All All All All All All All All All All All All All
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+20 / 43
+
+Tag name DeadOccur ReminderSet ReminderTime Sensitivity StartDate UtcStartDate Subject OrdinalDate SubOrdinalDate CalendarType IsLeapMonth FirstDayOfWeek
+
+Token 0x1A 0x1B 0x1C 0x1D 0x1E 0x1F 0x20 0x22 0x23 0x24 0x25 0x26
+
+Protocol versions All All All All All All All 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.1, 16.0, 16.1
+
+Note 1: The Body tag in WBXML code page 17 (AirSyncBase) is used instead of the Body tag in WBXML code page 9 with protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, and 16.1.
+
+2.1.2.1.11 Code Page 10: ResolveRecipients
+The tags and tokens in WBXML code page 10 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name ResolveRecipients Response Status Type Recipient DisplayName EmailAddress Certificates Certificate MiniCertificate Options To
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10
+
+Protocol versions All All All All All All All All All All All All
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+21 / 43
+
+Tag name CertificateRetrieval RecipientCount MaxCertificates MaxAmbiguousRecipients CertificateCount Availability StartTime EndTime MergedFreeBusy Picture MaxSize Data MaxPictures
+
+Token 0x11 0x12 0x13 0x14 0x15 0x16 0x17 0x18 0x19 0x1A 0x1B 0x1C 0x1D
+
+Protocol versions All All All All All 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1
+
+2.1.2.1.12 Code Page 11: ValidateCert
+The tags and tokens in WBXML code page 11 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name ValidateCert Certificates Certificate CertificateChain CheckCRL Status
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A
+
+Protocol versions All All All All All All
+
+2.1.2.1.13 Code Page 12: Contacts2
+The tags and tokens in WBXML code page 12 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+22 / 43
+
+Tag name CustomerId GovernmentId IMAddress IMAddress2 IMAddress3 ManagerName CompanyMainPhone AccountName NickName MMS
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E
+
+Protocol versions All All All All All All All All All All
+
+2.1.2.1.14 Code Page 13: Ping
+The tags and tokens in WBXML code page 13 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name Ping Status HeartbeatInterval Folders Folder Id Class MaxFolders
+
+Token 0x05 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D
+
+Protocol versions All All All All All All All All
+
+2.1.2.1.15 Code Page 14: Provision
+The tags and tokens in WBXML code page 14 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name Provision
+
+Token 0x05
+
+Protocol versions All
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+23 / 43
+
+Tag name Policies Policy PolicyType PolicyKey Data Status RemoteWipe EASProvisionDoc
+DevicePasswordEnabled
+AlphanumericDevicePasswordRequired
+RequireStorageCardEncryption PasswordRecoveryEnabled
+AttachmentsEnabled
+MinDevicePasswordLength
+MaxInactivityTimeDeviceLock
+MaxDevicePasswordFailedAttempts
+MaxAttachmentSize
+AllowSimpleDevicePassword
+DevicePasswordExpiration
+DevicePasswordHistory
+AllowStorageCard AllowCamera RequireDeviceEncryption AllowUnsignedApplications AllowUnsignedInstallationPackages MinDevicePasswordComplexCharacters
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+Token 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D
+0x0E
+0x0F
+0x10 0x11
+0x13
+0x14
+0x15
+0x16
+0x17
+0x18
+0x19
+0x1A
+0x1B 0x1C 0x1D 0x1E 0x1F 0x20
+
+Protocol versions
+All
+All
+All
+All
+All
+All
+All
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+24 / 43
+
+Tag name AllowWiFi AllowTextMessaging AllowPOPIMAPEmail AllowBluetooth AllowIrDA RequireManualSyncWhenRoaming AllowDesktopSync MaxCalendarAgeFilter AllowHTMLEmail MaxEmailAgeFilter MaxEmailBodyTruncationSize MaxEmailHTMLBodyTruncationSize RequireSignedSMIMEMessages RequireEncryptedSMIMEMessages RequireSignedSMIMEAlgorithm RequireEncryptionSMIMEAlgorithm AllowSMIMEEncryptionAlgorithmNegotiation AllowSMIMESoftCerts AllowBrowser AllowConsumerEmail AllowRemoteDesktop AllowInternetSharing UnapprovedInROMApplicationList ApplicationName ApprovedApplicationList Hash AccountOnlyRemoteWipe
+
+Token 0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28 0x29 0x2A 0x2B 0x2C 0x2D 0x2E 0x2F 0x30 0x31 0x32 0x33 0x34 0x35 0x36 0x37 0x38 0x39 0x3A 0x3B
+
+Protocol versions 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1 16.1
+
+2.1.2.1.16 Code Page 15: Search
+The tags and tokens in WBXML code page 15 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+25 / 43
+
+Tag name Search Store Name Query Options Range Status Response Result Properties Total EqualTo
+Value
+And
+Or
+FreeText
+DeepTraversal
+LongId
+RebuildResults
+LessThan
+GreaterThan
+UserName Password ConversationId Picture MaxSize MaxPictures
+
+Token 0x05 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10 0x11
+0x12
+0x13
+0x14
+0x15
+0x17
+0x18
+0x19
+0x1A
+0x1B
+0x1E 0x1F 0x20 0x21 0x22 0x23
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+Protocol versions
+All All All
+All All All
+All All All
+All All
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.1, 16.0, 16.1
+14.1, 16.0, 16.1 14.1, 16.0, 16.1
+26 / 43
+
+2.1.2.1.17 Code Page 16: GAL
+The tags and tokens in WBXML code page 16 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name DisplayName Phone Office Title Company Alias FirstName LastName HomePhone MobilePhone EmailAddress Picture Status Data
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10 0x11 0x12
+
+Protocol versions All All All All All All All All All All All 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1
+
+2.1.2.1.18 Code Page 17: AirSyncBase
+The tags and tokens in WBXML code page 17 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name BodyPreference Type TruncationSize AllOrNone Body Data
+
+Token 0x05 0x06 0x07 0x08 0x0A 0x0B
+
+Protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+27 / 43
+
+Tag name EstimatedDataSize Truncated Attachments Attachment DisplayName FileReference Method ContentId ContentLocation IsInline NativeBodyType ContentType Preview BodyPartPreference BodyPart Status Add Delete ClientId Content Location Annotation Street City State Country PostalCode Latitude Longitude Accuracy Altitude AltitudeAccuracy
+
+Token 0x0C 0x0D 0x0E 0x0F 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17 0x18 0x19 0x1A 0x1B 0x1C 0x1D 0x1E 0x1F 0x20 0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28 0x29 0x2A 0x2B
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+Protocol versions 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 12.0, 12.1, 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1
+28 / 43
+
+Tag name LocationUri InstanceId
+
+Token 0x2C 0x2D
+
+Protocol versions 16.0, 16.1 16.0, 16.1
+
+2.1.2.1.19 Code Page 18: Settings
+The tags and tokens in WBXML code page 18 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name Settings Status Get Set Oof OofState StartTime EndTime OofMessage AppliesToInternal AppliesToExternalKnown AppliesToExternalUnknown Enabled ReplyMessage BodyType DevicePassword
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10 0x11 0x12 0x13 0x14
+
+Protocol versions
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0,
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+29 / 43
+
+Tag name
+Password DeviceInformation Model IMEI FriendlyName OS OSLanguage PhoneNumber UserInformation EmailAddresses SMTPAddress UserAgent EnableOutboundSMS MobileOperator PrimarySmtpAddress Accounts Account AccountId AccountName UserDisplayName SendDisabled RightsManagementInformation
+
+Token
+0x15 0x16 0x17 0x18 0x19 0x1A 0x1B 0x1C 0x1D 0x1E 0x1F 0x20 0x21 0x22 0x23 0x24 0x25 0x26 0x27 0x28 0x29 0x2B
+
+Protocol versions 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+14.0, 14.1, 16.0, 16.1
+14.0, 14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+14.1, 16.0, 16.1
+
+2.1.2.1.20 Code Page 19: DocumentLibrary
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+30 / 43
+
+The tags and tokens in WBXML code page 19 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name LinkId DisplayName IsFolder CreationDate LastModifiedDate IsHidden ContentLength ContentType
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C
+
+Protocol versions
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+
+2.1.2.1.21 Code Page 20: ItemOperations
+The tags and tokens in WBXML code page 20 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name ItemOperations Fetch Store Options Range Total Properties
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B
+
+Protocol versions
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+31 / 43
+
+Tag name Data Status Response
+Version Schema Part
+EmptyFolderContents DeleteSubFolders
+UserName Password Move DstFldId ConversationId MoveAlways
+
+Token 0x0C 0x0D 0x0E
+0x0F 0x10 0x11
+0x12 0x13
+0x14 0x15 0x16 0x17 0x18 0x19
+
+Protocol versions
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.0, 12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+12.1, 14.0, 14.1, 16.0, 16.1
+14.0, 14.1, 16.0, 16.1
+14.0, 14.1, 16.0, 16.1
+14.0, 14.1, 16.0, 16.1
+14.0, 14.1, 16.0, 16.1
+
+2.1.2.1.22 Code Page 21: ComposeMail
+The tags and tokens in WBXML code page 21 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name SendMail SmartForward SmartReply SaveInSentItems ReplaceMime Source FolderId
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0B 0x0C
+
+Protocol versions 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+32 / 43
+
+Tag name ItemId LongId InstanceId Mime ClientId Status AccountId Forwardees Forwardee Name Email
+
+Token 0x0D 0x0E 0x0F 0x10 0x11 0x12 0x13 0x15 0x16 0x17 0x18
+
+Protocol versions 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.1, 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1
+
+2.1.2.1.23 Code Page 22: Email2
+The tags and tokens in WBXML code page 22 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name UmCallerID UmUserNotes UmAttDuration UmAttOrder ConversationId ConversationIndex LastVerbExecuted LastVerbExecutionTime ReceivedAsBcc Sender CalendarType IsLeapMonth AccountId FirstDayOfWeek
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x0F 0x10 0x11 0x12
+
+Protocol versions 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+33 / 43
+
+Tag name MeetingMessageType IsDraft Bcc Send
+
+Token 0x13 0x15 0x16 0x17
+
+Protocol versions 14.1, 16.0, 16.1 16.0, 16.1 16.0, 16.1 16.0, 16.1
+
+2.1.2.1.24 Code Page 23: Notes
+The tags and tokens in WBXML code page 23 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name Subject MessageClass LastModifiedDate Categories Category
+
+Token 0x05 0x06 0x07 0x08 0x09
+
+Protocol versions 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1 14.0, 14.1, 16.0, 16.1
+
+2.1.2.1.25 Code Page 24: RightsManagement
+The tags and tokens in WBXML code page 24 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name RightsManagementSupport RightsManagementTemplates RightsManagementTemplate RightsManagementLicense EditAllowed ReplyAllowed ReplyAllAllowed ForwardAllowed ModifyRecipientsAllowed ExtractAllowed
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E
+
+Protocol versions 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+34 / 43
+
+Tag name PrintAllowed ExportAllowed ProgrammaticAccessAllowed Owner ContentExpiryDate TemplateID TemplateName TemplateDescription ContentOwner RemoveRightsManagementProtection
+
+Token 0x0F 0x10 0x11 0x12 0x13 0x14 0x15 0x16 0x17 0x18
+
+Protocol versions 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1 14.1, 16.0, 16.1
+
+2.1.2.1.26 Code Page 25: Find
+The tags and tokens in WBXML code page 25 are listed in the following table. The ActiveSync protocol versions that support each tag/token are specified in the "Protocol versions" column of the table. For details about the ActiveSync protocol versions that can be used by a client or a server, see [MS-ASHTTP].
+
+Tag name Find SearchId ExecuteSearch MailBoxSearchCriterion Query Status FreeText Options Range DeepTraversal Response Result Properties Preview HasAttachments
+
+Token 0x05 0x06 0x07 0x08 0x09 0x0A 0x0B 0x0C 0x0D 0x0E 0x11 0x12 0x13 0x14 0x15
+
+Protocol versions 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1 16.1
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+35 / 43
+
+Tag name Total DisplayCc DisplayBcc GalSearchCriterion MaxPictures MaxSize Picture
+
+Token 0x16 0x17 0x18 0x19 0x20 0x21 0x22
+
+Protocol versions 16.1 16.1 16.1 16.1 16.1 16.1 16.1
+
+2.1.3 Processing Rules The processing rules for this algorithm are specified in [WBXML1.2]. This algorithm uses the following features that are specified in [WBXML1.2]:  WBXML tokens to encode XML tags  WBXML code pages to support multiple XML namespaces  Inline strings  Opaque data This algorithm does not use the following features that are specified in [WBXML1.2]:  String tables  Entities  Processing instructions  Attribute encoding
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+36 / 43
+
+3 Algorithm Examples
+The following example shows the WBXML encoding of a server response that contains a new contact and provides a byte-by-byte description of the encoding.
+The following XML represents a server response to a request to create a new contact.
+<?xml version="1.0" encoding="utf-8"?> <Sync xmlns="AirSync" xmlns:airsyncbase="AirSyncBase" xmlns:contacts="Contacts">
+<Collections> <Collection> <Class>Contacts</Class> <SyncKey>2</SyncKey> <CollectionId>2</CollectionId> <Status>1</Status> <Commands> <Add> <ServerId>2:1</ServerId> <ApplicationData> <airsyncbase:Body> <airsyncbase:Type>1</airsyncbase:Type> <airsyncbase:EstimatedDataSize>0</airsyncbase:EstimatedDataSize> <airsyncbase:Truncated>1</airsyncbase:Truncated> </airsyncbase:Body> <contacts:FileAs>Funk, Don</contacts:FileAs> <contacts:FirstName>Don</contacts:FirstName> <contacts:LastName>Funk</contacts:LastName> <airsyncbase:NativeBodyType>1</airsyncbase:NativeBodyType> </ApplicationData> </Add> </Commands> </Collection>
+</Collections> </Sync>
+
+The Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm encodes this XML as the following WBXML encoding.
+03 01 6A 00 45 5C 4F 50 03 43 6F 6E 74 61 63 74 73 00 01 4B 03 32 00 01 52 03 32 00 01 4E 03 31 00 01 56 47 4D 03 32 3A 31 00 01 5D 00 11 4A 46 03 31 00 01 4C 03 30 00 01 4D 03 31 00 01 01 00 01 5E 03 46 75 6E 6B 2C 20 44 6F 6E 00 01 5F 03 44 6F 6E 00 01 69 03 46 75 6E 6B 00 01 00 11 56 03 31 00 01 01 01 01 01 01 01
+
+The following table explains each byte in the WBXML encoding.
+
+Bytes 03 01 6A 00 45 5C 4F
+
+Description Version number ­ WBXML version 1.3 Unknown public identifier Charset = UTF-8 String table length <airsync:Sync>, with content (0x05 + 0x40) <airsync:Collections>, with content <airsync:Collection>, with content
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+37 / 43
+
+Bytes 50 03 43 6F 6E 74 61 63 74 73 00 01 4B 03 32 00 01 52 03 32 00 01 4E 03 31 00 01 56 47 4D 03 32 3A 31 00 01 5D 00 11 4A 46 03 31 00 01 4C 03 30 00
+
+Description <airsync:Class>, with content Inline string follows "contacts" (the 00 is the end of the string) </airsync:Class> <airsync:SyncKey>, with content Inline string follows "2" </airsync:SyncKey> <airsync:CollectionID>, with content Inline string follows "2" </airsync:CollectionID> <airsync:Status>, with content Inline string follows "1" </airsync:Status> <airsync:Commands>, with content <airsync:Add>, with content <airsync:ServerId>, with content Inline string follows "2:1" </airsync:ServerId> <airsync:ApplicationData>, with content Select WBXML code page 17 (AirSyncBase) <airsyncbase:Body>, with content <airsyncbase:Type>, with content Inline string follows "1" </airsyncbase:Type> <airsyncbase:EstimatedDataSize>, with content Inline string follows "0"
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+38 / 43
+
+Bytes
+
+Description
+
+01
+
+</airsyncbase:EstimatedDataSize>
+
+4D
+
+<airsyncbase:Truncated>, with content
+
+03
+
+Inline string follows
+
+31 00
+
+"1"
+
+01
+
+</airsyncbase:Truncated>
+
+01
+
+</airsyncbase:Body>
+
+00 01
+
+Select WBXML code page 1 (Contacts)
+
+5E
+
+<contacts:FileAs>, with content
+
+03
+
+Inline string follows
+
+46 75 6E 6B 2C 20 44 6F 6E 00 "Funk, Don"
+
+01
+
+</contacts:FileAs>
+
+5F
+
+<contacts:FirstName>, with content
+
+03
+
+Inline string follows
+
+44 6F 6E 00
+
+"Don"
+
+01
+
+</contacts:FirstName>
+
+69
+
+<contacts:LastName>, with content
+
+03
+
+Inline string follows
+
+46 75 6E 6B 00
+
+"Funk"
+
+01
+
+</contacts:LastName>
+
+00 11
+
+Select WBXML code page 17 (AirSyncBase)
+
+56
+
+<airsyncbase:NativeBodyType>, with content
+
+03
+
+Inline string follows
+
+31 00
+
+"1"
+
+01
+
+</airsyncbase:NativeBodyType>
+
+01
+
+</airsync:ApplicationData>
+
+01
+
+</airsync:Add>
+
+01
+
+</airsync:Commands>
+
+01
+
+</airsync:Collection>
+
+01
+
+</airsync:Collections>
+
+01
+
+</airsync:Sync>
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+39 / 43
+
+4 Security
+4.1 Security Considerations for Implementers In most cases, all communication between the client and server happens across an HTTP connection secured by the Secure Sockets Layer (SSL) protocol. The SSL connection is assumed to be secure enough to transmit confidential data, such as user credentials and sensitive e-mail. The SSL certificate on the server is assumed to be trusted by the client application.
+4.2 Index of Security Parameters None.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+40 / 43
+
+5 Appendix A: Product Behavior
+The information in this specification is applicable to the following Microsoft products or supplemental software. References to product versions include updates to those products.
+ Microsoft Exchange Server 2007 Service Pack 1 (SP1)
+ Microsoft Exchange Server 2010
+ Microsoft Exchange Server 2013
+ Microsoft Exchange Server 2016
+ Microsoft Exchange Server 2019
+ Windows 8.1
+ Windows Communication Apps
+ Windows 10 operating system
+ Windows Server 2016 operating system
+ Windows 11 operating system
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base (KB) number appears with a product name, the behavior changed in that update. The new behavior also applies to subsequent updates unless otherwise specified. If a product edition appears with the product version, behavior is different in that product edition.
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the product does not follow the prescription.
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+41 / 43
+
+6 Change Tracking
+This section identifies changes that were made to this document since the last release. Changes are classified as Major, Minor, or None.
+The revision class Major means that the technical content in the document was significantly revised. Major changes affect protocol interoperability or implementation. Examples of major changes are:
+ A document revision that incorporates changes to interoperability requirements.  A document revision that captures changes to protocol functionality.
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes do not affect protocol interoperability or implementation. Examples of minor changes are updates to clarify ambiguity at the sentence, paragraph, or table level.
+The revision class None means that no new technical changes were introduced. Minor editorial and formatting changes may have been made, but the relevant technical content is identical to the last released version.
+The changes made to this document are listed in the following table. For more information, please contact dochelp@microsoft.com.
+
+Section
+
+Description
+
+Revision class
+
+5 Appendix A: Product Behavior Updated list of supported products. Major
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+42 / 43
+
+7 Index
+A
+Abstract data model 9 ActiveSync WBXML
+overview 9 Applicability 7
+C
+Change tracking 42 Code pages 9
+D
+Data model - abstract 9
+E
+Examples overview 37
+G
+Glossary 5
+I
+Implementer - security considerations 40 Index of security parameters 40 Informative references 6 Initialization 9 Introduction 5
+N
+Normative references 6
+O
+Overview (synopsis) 6
+P
+Parameters - security index 40 Processing rules 36 Product behavior 41
+R
+References informative 6 normative 6
+Relationship to other algorithms 6 other protocols 6
+S
+Security implementer considerations 40
+
+parameter index 40 Standards assignments 8
+T
+Tracking changes 42
+W
+WBXML code pages 9
+
+[MS-ASWBXML] - v20220429 Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm Copyright © 2022 Microsoft Corporation Release: April 29, 2022
+
+43 / 43
+
+

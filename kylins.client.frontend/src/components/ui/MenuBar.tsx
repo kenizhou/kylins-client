@@ -7,6 +7,7 @@ interface MenuItemData {
   label: string;
   shortcut?: string;
   disabled?: boolean;
+  onClick?: () => void;
 }
 
 interface MenuCategoryData {
@@ -20,6 +21,13 @@ const MENU_CATEGORIES: MenuCategoryData[] = [
     label: 'File',
     items: [
       { label: 'New Mail', shortcut: 'Ctrl+N' },
+      {
+        label: 'Add account…',
+        onClick: () => {
+          useUIStore.getState().setActiveMenuCategory(null);
+          useUIStore.getState().setAccountSetupOpen(true);
+        },
+      },
       { label: 'New Window', disabled: true },
       { label: 'Close Window', disabled: true },
       { label: 'Exit', disabled: true },
@@ -144,6 +152,7 @@ export function MenuBar() {
                       label={item.label}
                       shortcut={item.shortcut}
                       disabled={item.disabled}
+                      onClick={item.onClick}
                     />
                   ))
                 )}

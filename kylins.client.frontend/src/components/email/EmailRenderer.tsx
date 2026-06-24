@@ -24,7 +24,6 @@ import {
 import { addToAllowlist } from '@/services/db/imageAllowlist';
 import { openExternalUrl } from '@/utils/opener';
 import { useUIStore } from '@/stores/uiStore';
-import { PlusIcon, MinimizeIcon } from '../icons';
 import { LinkConfirmDialog } from './LinkConfirmDialog';
 
 interface PendingLink {
@@ -79,7 +78,7 @@ export function EmailRenderer({
   const rafRef = useRef<number>(0);
   const [overrideShow, setOverrideShow] = useState(false);
   const [pendingLink, setPendingLink] = useState<PendingLink | null>(null);
-  const [zoom, setZoom] = useState(1);
+  const zoom = useUIStore((s) => s.readerZoom);
 
   const theme = useUIStore((s) => s.theme);
   const isDark =
@@ -251,30 +250,6 @@ export function EmailRenderer({
           Known tracking pixels were blocked.
         </div>
       )}
-
-      <div className="absolute right-2 top-2 z-10 flex items-center gap-0.5 rounded-full border border-[var(--border)] bg-[var(--background)]/95 px-1 py-0.5 text-xs text-[var(--muted-text)] shadow-sm backdrop-blur-sm">
-        <button
-          onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(1)))}
-          aria-label="Zoom out"
-          className="flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
-        >
-          <MinimizeIcon size={12} />
-        </button>
-        <button
-          onClick={() => setZoom(1)}
-          className="min-w-[2.5rem] px-1 text-center font-medium tabular-nums transition-colors hover:text-[var(--foreground)]"
-          title="Reset zoom"
-        >
-          {Math.round(zoom * 100)}%
-        </button>
-        <button
-          onClick={() => setZoom((z) => Math.min(2, +(z + 0.1).toFixed(1)))}
-          aria-label="Zoom in"
-          className="flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
-        >
-          <PlusIcon size={12} />
-        </button>
-      </div>
 
       <iframe
         ref={iframeRef}
