@@ -156,10 +156,6 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
     s.setStep(s.config.id === 'exchange' ? 'eas-manual' : 'imap-manual');
   }
 
-  const handleBack = (): void => {
-    s.back();
-  };
-
   return (
     <SetupShell variant={variant}>
       {s.step === 'pick' && (
@@ -186,7 +182,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
             }}
             onSignIn={onSignIn}
             onManualSetup={onManualSetup}
-            onBack={handleBack}
+            onBack={s.back}
             canSubmit={s.canSubmit()}
           />
         </SetupStepTransition>
@@ -197,7 +193,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
           <OAuthPendingScreen
             providerName={s.config.name}
             fallbackUrl={oauthAuthUrl}
-            onCancel={handleBack}
+            onCancel={s.back}
           />
         </SetupStepTransition>
       )}
@@ -222,7 +218,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
               if (patch.smtpSecurity !== undefined) s.setSmtp({ smtpSecurity: patch.smtpSecurity });
             }}
             onSubmit={() => void handleImapPassword(true)}
-            onBack={handleBack}
+            onBack={s.back}
             canSubmit={!!s.imapHost && !!s.smtpHost}
           />
         </SetupStepTransition>
@@ -238,7 +234,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
               if (patch.deviceId !== undefined) s.setDeviceId(patch.deviceId);
             }}
             onSubmit={() => void handleEas()}
-            onBack={handleBack}
+            onBack={s.back}
             canSubmit={!!s.easServer}
           />
         </SetupStepTransition>
@@ -249,7 +245,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
           <VerifyStep
             error={s.step === 'error' ? s.error : null}
             onRetry={() => s.setStep('gateway')}
-            onBack={handleBack}
+            onBack={s.back}
           />
         </SetupStepTransition>
       )}
