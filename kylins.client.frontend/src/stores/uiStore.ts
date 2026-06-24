@@ -10,7 +10,9 @@ export interface UIState {
   inspectorPaneVisible: boolean;
   activeToolWindow: string | null;
   activeMenuCategory: string | null;
+  activeApp: 'mail' | 'calendar';
   setTheme: (theme: ThemeMode) => void;
+  setActiveApp: (app: 'mail' | 'calendar') => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setFolderPaneWidth: (width: number) => void;
   setMessageListWidth: (width: number) => void;
@@ -27,7 +29,9 @@ export const useUIStore = create<UIState>((set) => ({
   inspectorPaneVisible: false,
   activeToolWindow: null,
   activeMenuCategory: null,
+  activeApp: 'mail',
   setTheme: (theme) => set({ theme }),
+  setActiveApp: (activeApp) => set({ activeApp }),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   setFolderPaneWidth: (folderPaneWidth) => set({ folderPaneWidth }),
   setMessageListWidth: (messageListWidth) => set({ messageListWidth }),

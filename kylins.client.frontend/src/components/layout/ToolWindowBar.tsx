@@ -26,6 +26,11 @@ const TOOLS: ToolWindowItem[] = [
 export function ToolWindowBar() {
   const activeToolWindow = useUIStore((s) => s.activeToolWindow);
   const setActiveToolWindow = useUIStore((s) => s.setActiveToolWindow);
+  const activeApp = useUIStore((s) => s.activeApp);
+  const setActiveApp = useUIStore((s) => s.setActiveApp);
+
+  const isAppSwitcher = (id: string): id is 'mail' | 'calendar' =>
+    id === 'mail' || id === 'calendar';
 
   return (
     <nav
@@ -34,13 +39,22 @@ export function ToolWindowBar() {
     >
       <div className="flex flex-col items-center gap-2">
         {TOOLS.map((tool) => {
-          const active = activeToolWindow === tool.id;
+          const active = isAppSwitcher(tool.id)
+            ? activeApp === tool.id
+            : activeToolWindow === tool.id;
           return (
             <button
               key={tool.id}
               aria-label={tool.label}
               title={tool.label}
-              onClick={() => setActiveToolWindow(active ? null : tool.id)}
+              onClick={() => {
+                if (isAppSwitcher(tool.id)) {
+                  setActiveApp(tool.id);
+                  setActiveToolWindow(null);
+                } else {
+                  setActiveToolWindow(active ? null : tool.id);
+                }
+              }}
               className={`
                 relative grid place-items-center w-10 h-10 rounded-md transition-colors
                 ${

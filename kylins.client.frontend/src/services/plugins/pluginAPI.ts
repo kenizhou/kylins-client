@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react';
+import type { ComposerExtension, MessageViewExtension } from './extensions';
 
 /**
  * A component registered into a plugin slot. Props are an arbitrary string-keyed
@@ -12,6 +13,10 @@ export interface PluginAPI {
   onEvent(event: string, handler: (payload: unknown) => void): () => void;
   registerAction(id: string, handler: () => void): void;
   unregisterAction(id: string): void;
+  /** Register a viewer-side extension (body/file transforms, DOM hooks). */
+  registerMessageViewExtension(extension: MessageViewExtension, priority?: number): void;
+  /** Register a composer-side extension (send actions, send-time transforms). */
+  registerComposerExtension(extension: ComposerExtension, priority?: number): void;
 }
 
 export interface LoadedPlugin {

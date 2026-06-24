@@ -1,5 +1,6 @@
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { MenuIcon, PlusIcon, NotificationIcon, SettingsIcon, UserIcon } from '../icons';
+import { useComposerStore } from '../../stores/composerStore';
 
 export function HeaderBar() {
   return (
@@ -19,7 +20,10 @@ export function HeaderBar() {
       </div>
       <div className="flex items-center gap-1">
         <InjectedComponentSet role="header:right" />
-        <button className="flex items-center gap-1.5 px-3 h-7 text-sm rounded bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90">
+        <button
+          onClick={() => useComposerStore.getState().openComposer()}
+          className="flex items-center gap-1.5 px-3 h-7 text-sm rounded bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90"
+        >
           <PlusIcon /> New mail
         </button>
         <button className="p-1.5 rounded hover:bg-[var(--hover)]" aria-label="Notifications">

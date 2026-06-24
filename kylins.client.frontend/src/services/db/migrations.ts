@@ -785,6 +785,63 @@ export const MIGRATIONS: Migration[] = [
         ('view.state', '{"readingPanePosition":"right","folderPaneVisible":true,"commandRibbonVisible":true,"statusBarVisible":true,"conversationView":false,"messageListDensity":"normal","visibleColumnIds":["flag","from","subject","received"]}');
     `,
   },
+  {
+    version: 28,
+    description:
+      'kylins: Message plugin metadata, calendar recurrence range columns, events full-text search',
+    sql: `
+      -- Per-message plugin key/value metadata (RSVP state, tracking, …).
+      -- Mirrors Mailspring's syncback-metadata pattern. Consumed by
+      -- MessageViewExtension / ComposerExtension plugins (Phase 2/4).
+      CREATE TABLE IF NOT EXISTS message_metadata (
+        account_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        plugin_id TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER DEFAULT (unixepoch()),
+        PRIMARY KEY (account_id, message_id, plugin_id),
+        FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_metadata_message
+        ON message_metadata(account_id, message_id);
+
+      -- Calendar recurrence range columns (Mailspring Event.recurrenceStart/End
+      -- pattern). Precomputed window used for fast date-range queries over
+      -- recurring masters without expanding the RRULE. Populated by the
+      -- calendar data layer in Phase 3.
+      ALTER TABLE calendar_events ADD COLUMN recurrence_start INTEGER;
+      ALTER TABLE calendar_events ADD COLUMN recurrence_end INTEGER;
+      CREATE INDEX IF NOT EXISTS idx_cal_events_recurrence
+        ON calendar_events(account_id, recurrence_start, recurrence_end);
+
+      -- Full-text search over calendar events (mirrors messages_fts in v2).
+      CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+        summary,
+        description,
+        location,
+        content='calendar_events',
+        content_rowid='rowid',
+        tokenize='trigram'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON calendar_events BEGIN
+        INSERT INTO events_fts(rowid, summary, description, location)
+        VALUES (new.rowid, new.summary, new.description, new.location);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON calendar_events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, summary, description, location)
+        VALUES ('delete', old.rowid, old.summary, old.description, old.location);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON calendar_events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, summary, description, location)
+        VALUES ('delete', old.rowid, old.summary, old.description, old.location);
+        INSERT INTO events_fts(rowid, summary, description, location)
+        VALUES (new.rowid, new.summary, new.description, new.location);
+      END;
+    `,
+  },
 ];
 
 /**
