@@ -9,7 +9,7 @@ import {
   exchangeToken,
 } from './oauth';
 import type { OAuthProviderConfig, PasswordProviderConfig } from './providers';
-import { OAUTH_CALLBACK_PORT, presetsFor, buildAuthUrl } from './providers';
+import { presetsFor, buildAuthUrl } from './providers';
 import { fetchUserInfo, type ProviderUserInfo } from './userInfo';
 import { ImapProvider } from '../mail/imapProvider';
 import { EasProvider } from '../mail/easProvider';
@@ -43,7 +43,7 @@ export async function runOAuthFlow(
   const verifier = generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
   const state = generateState();
-  const redirectUri = `http://127.0.0.1:${OAUTH_CALLBACK_PORT}`;
+  const redirectUri = config.redirectUri;
   const authUrl = buildAuthUrl(config, {
     clientId,
     redirectUri,
@@ -58,7 +58,7 @@ export async function runOAuthFlow(
   // negligible because a human cannot complete OAuth consent that fast.
   await openExternalUrl(authUrl);
   opts.onStarted?.(authUrl);
-  const { code } = await startOAuthServer(OAUTH_CALLBACK_PORT, state);
+  const { code } = await startOAuthServer(config.callbackPort, state);
 
   const tokens = await exchangeToken({
     tokenUrl: config.tokenUrl,
@@ -66,7 +66,7 @@ export async function runOAuthFlow(
     clientId,
     redirectUri,
     codeVerifier: verifier,
-    clientSecret: opts.clientSecret,
+    clientSecret: opts.clientSecret || config.bundledClientSecret,
     scope: config.scopes.join(' '),
   });
 

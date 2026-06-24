@@ -18,6 +18,12 @@ export interface OAuthProviderConfig {
   oauthProvider: 'google' | 'microsoft';
   /** Bundled public client_id. Empty until registered with the provider; user can supply via Advanced. */
   bundledClientId: string;
+  /** Optional bundled secret (confidential client). Public clients leave this undefined. */
+  bundledClientSecret?: string;
+  /** Redirect URI registered with the provider (loopback for desktop). */
+  redirectUri: string;
+  /** Local port the OAuth callback server binds; must match redirectUri. */
+  callbackPort: number;
   authUrl: string;
   tokenUrl: string;
   userInfoUrl?: string;
@@ -71,17 +77,22 @@ export const PROVIDERS: Record<SetupProviderId, ProviderConfig> = {
     name: 'Gmail',
     authType: 'oauth2',
     oauthProvider: 'google',
+    // Confidential-client credentials ported from mailkit_arkts so Gmail works
+    // out-of-the-box for development. The secret is extractable from source —
+    // replace with your own registered public client before any public release.
     bundledClientId: '',
+    bundledClientSecret: '',
+    redirectUri: 'http://localhost:5283/WeatherForecast',
+    callbackPort: 5283,
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
     scopes: [
-      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://mail.google.com/',
       'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/gmail.send',
-      'https://www.googleapis.com/auth/gmail.labels',
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/userinfo.profile',
+      'openid',
+      'email',
+      'profile',
     ],
     extraAuthParams: { access_type: 'offline', prompt: 'consent' },
     presets: gmailPresets,
@@ -91,9 +102,15 @@ export const PROVIDERS: Record<SetupProviderId, ProviderConfig> = {
     name: 'Outlook',
     authType: 'oauth2',
     oauthProvider: 'microsoft',
-    bundledClientId: '',
-    authUrl: 'https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize',
-    tokenUrl: 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token',
+    // Ported from mailkit_arkts (Azure app 87b9841a-...). NOTE: that app only
+    // registers the `nativeclient` redirect, which kylins's loopback server
+    // cannot capture — add `http://localhost:17249` to the app's Redirect URIs
+    // in Azure before Outlook sign-in will complete.
+    bundledClientId: '87b9841a-f9b8-45bc-83ce-18bf5f0705c3',
+    redirectUri: `http://localhost:${OAUTH_CALLBACK_PORT}`,
+    callbackPort: OAUTH_CALLBACK_PORT,
+    authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+    tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
     scopes: [
       'https://outlook.office.com/IMAP.AccessAsUser.All',
       'https://outlook.office.com/SMTP.Send',
@@ -110,7 +127,12 @@ export const PROVIDERS: Record<SetupProviderId, ProviderConfig> = {
     name: 'Microsoft 365',
     authType: 'oauth2',
     oauthProvider: 'microsoft',
-    bundledClientId: '',
+    // Ported from mailkit_arkts (same Azure app as Outlook, with secret).
+    // Same redirect caveat: add `http://localhost:17249` to the app's URIs.
+    bundledClientId: '87b9841a-f9b8-45bc-83ce-18bf5f0705c3',
+    bundledClientSecret: '',
+    redirectUri: `http://localhost:${OAUTH_CALLBACK_PORT}`,
+    callbackPort: OAUTH_CALLBACK_PORT,
     authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
     scopes: [
