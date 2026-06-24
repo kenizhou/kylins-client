@@ -12,6 +12,7 @@ import { WeekView } from './WeekView';
 import { DayView } from './DayView';
 import { AgendaView } from './AgendaView';
 import { EventCreateModal } from './EventCreateModal';
+import { CalendarIcon } from '../icons';
 
 export function CalendarPage() {
   const currentDate = useCalendarStore((s) => s.currentDate);
@@ -37,7 +38,10 @@ export function CalendarPage() {
 
   if (!activeAccountId) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-[var(--muted-foreground)]">
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-[var(--muted-foreground)]">
+        <div className="rounded-full bg-[var(--surface)] p-3">
+          <CalendarIcon size={24} />
+        </div>
         No account selected.
       </div>
     );
@@ -47,13 +51,15 @@ export function CalendarPage() {
     <div className="flex flex-1 flex-col overflow-hidden">
       <CalendarToolbar onNewEvent={() => setShowCreate(true)} />
       {error && (
-        <div className="bg-[var(--secondary)] px-4 py-1 text-xs text-[var(--destructive)]">
+        <div className="flex items-center gap-1.5 border-b border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-4 py-1.5 text-xs text-[var(--destructive)]">
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--destructive)]" />
           {error}
         </div>
       )}
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {loading && (
-          <div className="absolute right-3 top-2 text-xs text-[var(--muted-foreground)]">
+          <div className="absolute right-3 top-2 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+            <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
             Loading…
           </div>
         )}

@@ -15,6 +15,7 @@ import {
   SettingsIcon,
   UserIcon,
 } from '../icons';
+import { useComposerStore } from '../../stores/composerStore';
 
 function RibbonGroup({ children }: { children: React.ReactNode }) {
   return (
@@ -29,9 +30,10 @@ interface RibbonButtonProps {
   icon?: React.ReactNode;
   primary?: boolean;
   split?: boolean;
+  onClick?: () => void;
 }
 
-function RibbonButton({ children, icon, primary, split }: RibbonButtonProps) {
+function RibbonButton({ children, icon, primary, split, onClick }: RibbonButtonProps) {
   return (
     <button
       className={`flex items-center gap-1.5 px-2.5 h-7 my-auto text-sm rounded ${
@@ -39,6 +41,8 @@ function RibbonButton({ children, icon, primary, split }: RibbonButtonProps) {
           ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
           : 'text-[var(--text)] hover:bg-[var(--hover)]'
       }`}
+      onClick={onClick}
+      type="button"
     >
       {icon}
       <span>{children}</span>
@@ -48,14 +52,16 @@ function RibbonButton({ children, icon, primary, split }: RibbonButtonProps) {
 }
 
 export function CommandRibbon() {
+  const openComposer = useComposerStore((s) => s.openComposer);
+
   return (
     <nav
-      className="h-11 flex items-stretch justify-between px-2 border-b bg-[var(--background)] border-[var(--border)]"
+      className="mx-2 mt-2 flex min-h-11 items-stretch justify-between rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 shadow-sm"
       aria-label="Command ribbon"
     >
       <div className="flex items-stretch">
         <RibbonGroup>
-          <RibbonButton primary icon={<PlusIcon />} split>
+          <RibbonButton primary icon={<PlusIcon />} split onClick={() => openComposer()}>
             New mail
           </RibbonButton>
         </RibbonGroup>

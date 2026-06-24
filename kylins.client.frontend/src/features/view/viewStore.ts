@@ -2,7 +2,22 @@ import { create } from 'zustand';
 import type { ReadingPanePosition, MessageListDensity, ViewState } from './types';
 import { DEFAULT_VIEW_STATE } from './defaults';
 
+export interface MailMessage {
+  id: string;
+  subject: string;
+  from: { name: string; address: string };
+  to: { name: string; address: string }[];
+  date: string;
+  preview: string;
+  html: string | null;
+  text: string | null;
+  threadId?: string | null;
+  messageId?: string | null;
+}
+
 export interface ViewStore extends ViewState {
+  selectedMessage: MailMessage | null;
+  setSelectedMessage: (message: MailMessage | null) => void;
   setReadingPanePosition: (position: ReadingPanePosition) => void;
   setFolderPaneVisible: (visible: boolean) => void;
   setCommandRibbonVisible: (visible: boolean) => void;
@@ -16,7 +31,9 @@ export interface ViewStore extends ViewState {
 
 export const useViewStore = create<ViewStore>((set) => ({
   ...DEFAULT_VIEW_STATE,
+  selectedMessage: null,
 
+  setSelectedMessage: (selectedMessage) => set({ selectedMessage }),
   setReadingPanePosition: (readingPanePosition) => set({ readingPanePosition }),
   setFolderPaneVisible: (folderPaneVisible) => set({ folderPaneVisible }),
   setCommandRibbonVisible: (commandRibbonVisible) => set({ commandRibbonVisible }),
@@ -25,7 +42,7 @@ export const useViewStore = create<ViewStore>((set) => ({
   setMessageListDensity: (messageListDensity) => set({ messageListDensity }),
   setVisibleColumnIds: (visibleColumnIds) => set({ visibleColumnIds }),
 
-  resetToDefaults: () => set({ ...DEFAULT_VIEW_STATE }),
+  resetToDefaults: () => set({ ...DEFAULT_VIEW_STATE, selectedMessage: null }),
 
   hydrate: (partial) =>
     set((current) => ({

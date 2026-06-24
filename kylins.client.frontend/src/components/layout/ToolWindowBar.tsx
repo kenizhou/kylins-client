@@ -35,7 +35,7 @@ export function ToolWindowBar() {
   return (
     <nav
       aria-label="Activity bar"
-      className="flex flex-col justify-between items-center w-12 shrink-0 bg-[var(--surface)] border-r border-[var(--border)] py-2"
+      className="flex flex-col justify-between items-center w-12 shrink-0 bg-[color-mix(in_oklab,var(--surface),black_12%)] py-2"
     >
       <div className="flex flex-col items-center gap-2">
         {TOOLS.map((tool) => {

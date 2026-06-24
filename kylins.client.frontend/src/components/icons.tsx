@@ -22,8 +22,11 @@ import {
   File02Icon,
   SmileIcon as SmileIconData,
   MailReply01Icon,
+  MailReply02Icon,
   MailReplyAll01Icon,
+  MailReplyAll02Icon,
   Forward01Icon,
+  Forward02Icon,
   Calendar03Icon,
   UserMultipleIcon,
   TickDoubleIcon,
@@ -35,6 +38,25 @@ import {
   Cancel01Icon,
   Clock01Icon,
   Attachment01Icon,
+  TextBoldIcon,
+  TextItalicIcon,
+  TextUnderlineIcon,
+  TextStrikethroughIcon,
+  TextFontIcon,
+  HighlighterIcon,
+  LeftToRightListBulletIcon,
+  LeftToRightListNumberIcon,
+  QuoteDownIcon,
+  SourceCodeIcon,
+  Link02Icon,
+  Unlink02Icon,
+  Image01Icon,
+  Heading01Icon,
+  Heading02Icon,
+  Heading03Icon,
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
+  ArrowUpRight01Icon,
 } from '@hugeicons/core-free-icons';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
@@ -70,6 +92,9 @@ export const SmileIcon = makeIcon(SmileIconData);
 export const ReplyIcon = makeIcon(MailReply01Icon);
 export const ReplyAllIcon = makeIcon(MailReplyAll01Icon);
 export const ForwardIcon = makeIcon(Forward01Icon);
+export const ReplyFilledIcon = makeIcon(MailReply02Icon);
+export const ReplyAllFilledIcon = makeIcon(MailReplyAll02Icon);
+export const ForwardFilledIcon = makeIcon(Forward02Icon);
 export const CalendarIcon = makeIcon(Calendar03Icon);
 export const ContactsIcon = makeIcon(UserMultipleIcon);
 export const TasksIcon = makeIcon(TickDoubleIcon);
@@ -82,3 +107,23 @@ export const RestoreIcon = makeIcon(ArrowShrink01Icon);
 export const CloseIcon = makeIcon(Cancel01Icon);
 export const ClockIcon = makeIcon(Clock01Icon);
 export const AttachmentIcon = makeIcon(Attachment01Icon);
+
+export const BoldIcon = makeIcon(TextBoldIcon);
+export const ItalicIcon = makeIcon(TextItalicIcon);
+export const UnderlineIcon = makeIcon(TextUnderlineIcon);
+export const StrikethroughIcon = makeIcon(TextStrikethroughIcon);
+export const FontIcon = makeIcon(TextFontIcon);
+export const HighlightIcon = makeIcon(HighlighterIcon);
+export const BulletListIcon = makeIcon(LeftToRightListBulletIcon);
+export const OrderedListIcon = makeIcon(LeftToRightListNumberIcon);
+export const QuoteIcon = makeIcon(QuoteDownIcon);
+export const CodeBlockIcon = makeIcon(SourceCodeIcon);
+export const LinkIcon = makeIcon(Link02Icon);
+export const UnlinkIcon = makeIcon(Unlink02Icon);
+export const ImageIcon = makeIcon(Image01Icon);
+export const H1Icon = makeIcon(Heading01Icon);
+export const H2Icon = makeIcon(Heading02Icon);
+export const H3Icon = makeIcon(Heading03Icon);
+export const ArrowLeftIcon = makeIcon(ArrowLeft01Icon);
+export const ArrowRightIcon = makeIcon(ArrowRight01Icon);
+export const PopOutIcon = makeIcon(ArrowUpRight01Icon);

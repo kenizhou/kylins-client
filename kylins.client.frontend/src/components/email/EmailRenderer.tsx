@@ -24,6 +24,7 @@ import {
 import { addToAllowlist } from '@/services/db/imageAllowlist';
 import { openExternalUrl } from '@/utils/opener';
 import { useUIStore } from '@/stores/uiStore';
+import { PlusIcon, MinimizeIcon } from '../icons';
 import { LinkConfirmDialog } from './LinkConfirmDialog';
 
 interface PendingLink {
@@ -214,50 +215,67 @@ export function EmailRenderer({
   }, [pendingLink]);
 
   return (
-    <div>
+    <div className="relative">
       {blocked && (
-        <div className="mb-2 flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-3 py-2 text-xs">
-          <span className="text-[var(--muted-text)]">Images hidden to protect your privacy.</span>
-          <button
-            onClick={handleLoadImages}
-            className="font-medium text-[var(--primary)] hover:opacity-80"
-          >
-            Load images
-          </button>
-          {senderAddress && accountId && (
-            <button
-              onClick={handleAlwaysLoad}
-              className="font-medium text-[var(--primary)] hover:opacity-80"
-            >
-              Always load from sender
-            </button>
-          )}
+        <div className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-[var(--foreground)]">
+              <span className="font-medium">Images hidden</span>
+              <span className="text-[var(--muted-text)]">
+                {' '}
+                — remote images are blocked to protect your privacy.
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleLoadImages}
+                className="rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90"
+              >
+                Load images
+              </button>
+              {senderAddress && accountId && (
+                <button
+                  onClick={handleAlwaysLoad}
+                  className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+                >
+                  Always load
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
       {trackerNote && (
-        <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-3 py-1.5 text-[0.625rem] text-[var(--muted-text)]">
+        <div className="mb-3 flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--secondary)] px-3 py-1.5 text-xs text-[var(--muted-text)]">
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--primary)]" />
           Known tracking pixels were blocked.
         </div>
       )}
-      <div className="flex items-center justify-end gap-1 px-1 py-1 text-xs text-[var(--muted-text)]">
+
+      <div className="absolute right-2 top-2 z-10 flex items-center gap-0.5 rounded-full border border-[var(--border)] bg-[var(--background)]/95 px-1 py-0.5 text-xs text-[var(--muted-text)] shadow-sm backdrop-blur-sm">
         <button
           onClick={() => setZoom((z) => Math.max(0.5, +(z - 0.1).toFixed(1)))}
           aria-label="Zoom out"
-          className="rounded px-1 hover:bg-[var(--hover)]"
+          className="flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
         >
-          −
+          <MinimizeIcon size={12} />
         </button>
-        <button onClick={() => setZoom(1)} className="rounded px-1 hover:bg-[var(--hover)]">
+        <button
+          onClick={() => setZoom(1)}
+          className="min-w-[2.5rem] px-1 text-center font-medium tabular-nums transition-colors hover:text-[var(--foreground)]"
+          title="Reset zoom"
+        >
           {Math.round(zoom * 100)}%
         </button>
         <button
           onClick={() => setZoom((z) => Math.min(2, +(z + 0.1).toFixed(1)))}
           aria-label="Zoom in"
-          className="rounded px-1 hover:bg-[var(--hover)]"
+          className="flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
         >
-          +
+          <PlusIcon size={12} />
         </button>
       </div>
+
       <iframe
         ref={iframeRef}
         sandbox="allow-same-origin"

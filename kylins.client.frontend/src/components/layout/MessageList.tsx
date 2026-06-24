@@ -1,6 +1,7 @@
-import { useViewStore } from '../../features/view/viewStore';
+import { useViewStore, type MailMessage } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
 import type { ColumnDef } from '../../features/view/types';
+import { DEMO_MESSAGES, getInitials, formatMessageTime } from '../../data/demoMessages';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -12,6 +13,7 @@ interface MessageRowProps {
   state: MessageState;
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
+  onClick?: () => void;
 }
 
 const RIBBON_COLOR: Record<MessageState, string> = {
@@ -35,10 +37,20 @@ function MessageRow({
   state,
   selected,
   density,
+  onClick,
 }: MessageRowProps) {
   const unread = state === 'unread';
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick?.();
+        }
+      }}
       className={`
         flex items-stretch gap-2.5 pr-3 pl-0 cursor-pointer
         ${DENSITY_ROW_CLASSES[density]}
@@ -68,19 +80,6 @@ function MessageRow({
   );
 }
 
-function Tabs() {
-  return (
-    <div className="flex gap-1 p-1">
-      <button className="h-6 px-2.5 rounded text-[12px] font-medium bg-[var(--selected)] text-[var(--primary)]">
-        Focused
-      </button>
-      <button className="h-6 px-2.5 rounded text-[12px] font-medium text-[var(--muted-text)] hover:bg-[var(--hover)]">
-        Other
-      </button>
-    </div>
-  );
-}
-
 function MessageGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="py-1.5 border-b border-[var(--border)] last:border-b-0">
@@ -96,19 +95,21 @@ export function MessageList() {
   const density = useViewStore((s) => s.messageListDensity);
   const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
   const conversationView = useViewStore((s) => s.conversationView);
+  const selectedMessage = useViewStore((s) => s.selectedMessage);
+  const setSelectedMessage = useViewStore((s) => s.setSelectedMessage);
 
   const visibleColumns = visibleColumnIds
     .map((id) => COLUMN_REGISTRY.get(id))
     .filter((c): c is ColumnDef => c != null);
 
-  return (
-    <div className="flex flex-col h-full bg-[var(--background)]">
-      <div className="h-8 flex items-center px-2 border-b bg-[var(--surface)] border-[var(--border)]">
-        <Tabs />
-      </div>
+  const handleSelect = (message: MailMessage) => {
+    setSelectedMessage(message);
+  };
 
+  return (
+    <div className="flex flex-col h-full bg-[var(--card)]">
       {visibleColumns.length > 0 && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--border)] bg-[var(--surface)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
           {visibleColumns.map((col) => (
             <span key={col.id} className="truncate" style={{ width: col.width }}>
               {col.label}
@@ -125,49 +126,34 @@ export function MessageList() {
 
       <div className="flex-1 overflow-auto">
         <MessageGroup label="Today">
-          <MessageRow
-            sender="Kevin Sturgis"
-            subject="Coral Gables project — revised timeline"
-            time="9:30 AM"
-            initials="KS"
-            state="unread"
-            selected
-            density={density}
-          />
-          <MessageRow
-            sender="Cecil Folk"
-            subject="Security review passed"
-            time="1:23 PM"
-            initials="CF"
-            state="vip"
-            density={density}
-          />
+          {DEMO_MESSAGES.slice(0, 2).map((message) => (
+            <MessageRow
+              key={message.id}
+              sender={message.from.name}
+              subject={message.subject}
+              time={formatMessageTime(message.date)}
+              initials={getInitials(message.from.name)}
+              state={message.id === 'msg-1' ? 'unread' : 'vip'}
+              selected={selectedMessage?.id === message.id}
+              density={density}
+              onClick={() => handleSelect(message)}
+            />
+          ))}
         </MessageGroup>
         <MessageGroup label="Yesterday">
-          <MessageRow
-            sender="Lydia Bauer"
-            subject="Follow-up: Q3 budget draft"
-            time="12:55 PM"
-            initials="LB"
-            state="flagged"
-            density={density}
-          />
-          <MessageRow
-            sender="Design Review"
-            subject="Notes from yesterday's session"
-            time="11:20 AM"
-            initials="DR"
-            state="read"
-            density={density}
-          />
-          <MessageRow
-            sender="Mina Nichols"
-            subject="Lunch next week?"
-            time="9:04 AM"
-            initials="MN"
-            state="read"
-            density={density}
-          />
+          {DEMO_MESSAGES.slice(2).map((message) => (
+            <MessageRow
+              key={message.id}
+              sender={message.from.name}
+              subject={message.subject}
+              time={formatMessageTime(message.date)}
+              initials={getInitials(message.from.name)}
+              state={message.id === 'msg-4' ? 'flagged' : 'read'}
+              selected={selectedMessage?.id === message.id}
+              density={density}
+              onClick={() => handleSelect(message)}
+            />
+          ))}
         </MessageGroup>
       </div>
     </div>

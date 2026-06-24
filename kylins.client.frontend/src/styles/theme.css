@@ -4,34 +4,61 @@
   --font-serif: Georgia, Cambria, 'Times New Roman', serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Courier New', monospace;
 
-  /* Colors — light */
+  /*
+   * Color series
+   *
+   * The default series is a professional blue-gray (Slate) intended for
+   * government/enterprise office use. To add a new theme series, override these
+   * --series-* variables in a class or in :root, and the whole UI will recolor
+   * automatically through the semantic mapping below.
+   *
+   * Keep the scale monotonic from 50 (lightest) to 950 (darkest). The accent
+   * should be a calm, professional brand color that harmonizes with the scale.
+   */
+  --series-50: #f8fafc;
+  --series-100: #f1f5f9;
+  --series-200: #e2e8f0;
+  --series-300: #cbd5e1;
+  --series-400: #94a3b8;
+  --series-500: #64748b;
+  --series-600: #475569;
+  --series-700: #334155;
+  --series-800: #1e293b;
+  --series-900: #0f172a;
+  --series-950: #020617;
+
+  --series-accent: #2563eb;
+  --series-accent-hover: #1d4ed8;
+
+  /* Semantic color mapping — derived from the active series */
   --background: #ffffff;
-  --foreground: #111827;
+  --foreground: var(--series-900);
+
   --card: #ffffff;
-  --card-foreground: #111827;
+  --card-foreground: var(--series-900);
   --popover: #ffffff;
-  --popover-foreground: #111827;
-  --primary: #3b82f6;
+  --popover-foreground: var(--series-900);
+  --primary: var(--series-accent);
   --primary-foreground: #ffffff;
-  --secondary: #f9fafb;
-  --secondary-foreground: #111827;
-  --muted: #f9fafb;
-  --muted-foreground: #4b5563;
-  --accent: #eff6ff;
-  --accent-foreground: #111827;
+  --secondary: var(--series-100);
+  --secondary-foreground: var(--series-900);
+  --muted: var(--series-100);
+  --muted-foreground: var(--series-500);
+  --accent: var(--series-50);
+  --accent-foreground: var(--series-900);
   --destructive: #dc2626;
-  --border: #e5e7eb;
-  --input: #e5e7eb;
-  --ring: #3b82f6;
+  --border: var(--series-200);
+  --input: var(--series-200);
+  --ring: var(--series-accent);
   --radius: 0.375rem;
 
   /* Semantic desktop tokens */
-  --surface: #f9fafb;
-  --text: #111827;
-  --muted-text: #4b5563;
-  --hover: #eff6ff;
-  --selected: #eff6ff;
-  --selected-text: #3b82f6;
+  --surface: var(--series-100);
+  --text: var(--series-900);
+  --muted-text: var(--series-500);
+  --hover: var(--series-200);
+  --selected: var(--series-200);
+  --selected-text: var(--series-accent);
   --primary-fg: #ffffff;
 
   /* Status colors */
@@ -50,33 +77,51 @@
 }
 
 .dark {
-  --background: #111827;
-  --foreground: #f9fafb;
-  --card: #1f2937;
-  --card-foreground: #f9fafb;
-  --popover: #1f2937;
-  --popover-foreground: #f9fafb;
-  --primary: #60a5fa;
-  --primary-foreground: #111827;
-  --secondary: #1f2937;
-  --secondary-foreground: #f9fafb;
-  --muted: #1f2937;
-  --muted-foreground: #9ca3af;
-  --accent: #1e3a8a;
-  --accent-foreground: #f9fafb;
+  /* Same series names, reversed for dark mode */
+  --series-50: #020617;
+  --series-100: #0f172a;
+  --series-200: #1e293b;
+  --series-300: #334155;
+  --series-400: #475569;
+  --series-500: #64748b;
+  --series-600: #94a3b8;
+  --series-700: #cbd5e1;
+  --series-800: #e2e8f0;
+  --series-900: #f1f5f9;
+  --series-950: #f8fafc;
+
+  --series-accent: #60a5fa;
+  --series-accent-hover: #3b82f6;
+
+  --background: var(--series-100);
+  --foreground: var(--series-900);
+
+  --card: var(--series-200);
+  --card-foreground: var(--series-900);
+  --popover: var(--series-200);
+  --popover-foreground: var(--series-900);
+  --primary: var(--series-accent);
+  --primary-foreground: var(--series-950);
+  --secondary: var(--series-200);
+  --secondary-foreground: var(--series-900);
+  --muted: var(--series-200);
+  --muted-foreground: var(--series-500);
+  --accent: var(--series-300);
+  --accent-foreground: var(--series-900);
   --destructive: #f87171;
-  --border: #374151;
-  --input: #374151;
-  --ring: #60a5fa;
+  --border: var(--series-300);
+  --input: var(--series-300);
+  --ring: var(--series-accent);
 
-  --surface: #1f2937;
-  --text: #f9fafb;
-  --muted-text: #9ca3af;
-  --hover: #1e3a8a;
-  --selected: #1e3a8a;
-  --selected-text: #60a5fa;
-  --primary-fg: #111827;
+  --surface: var(--series-200);
+  --text: var(--series-900);
+  --muted-text: var(--series-500);
+  --hover: var(--series-300);
+  --selected: var(--series-300);
+  --selected-text: var(--series-accent);
+  --primary-fg: var(--series-950);
 
+  /* Status colors */
   --amber: #fbbf24;
   --green: #34d399;
 }

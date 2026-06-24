@@ -37,7 +37,6 @@ export default function App() {
   const [adding, setAdding] = useState(false);
   const isMounted = useRef(true);
   const setTheme = useUIStore((s) => s.setTheme);
-  const accounts = useAccountStore((st) => st.accounts);
   useViewSettings();
 
   useEffect(() => {
@@ -58,8 +57,8 @@ export default function App() {
           await pluginManager.loadPlugins([]);
           await pluginManager.activatePlugins();
 
-          // Load existing accounts so the store knows whether to show the
-          // first-run setup flow or the main shell.
+          // Load existing accounts into the store so the UI reflects any
+          // already-configured accounts on startup.
           if (isMounted.current) {
             await refreshAccounts();
           }
@@ -106,11 +105,6 @@ export default function App() {
   async function handleSetupComplete(): Promise<void> {
     await refreshAccounts();
     setAdding(false);
-  }
-
-  // First-run: no accounts configured yet — show the fullscreen setup flow.
-  if (accounts.length === 0) {
-    return <AccountSetupFlow variant="fullscreen" onComplete={handleSetupComplete} />;
   }
 
   return (

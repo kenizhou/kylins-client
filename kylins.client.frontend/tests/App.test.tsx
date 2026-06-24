@@ -72,11 +72,11 @@ describe('App', () => {
     cleanup();
   });
 
-  it('shows the AccountSetupFlow when there are no accounts (first-run)', async () => {
+  it('shows AppShell even when there are no accounts (setup can be opened later)', async () => {
     vi.mocked(getAllAccounts).mockResolvedValue([]);
     render(<App />);
-    // AccountSetupFlow renders the picker with the new welcome heading.
-    expect(await screen.findByText('Welcome to Kylins Mail')).toBeInTheDocument();
+    expect(await screen.findByText('AppShell')).toBeInTheDocument();
+    expect(screen.getByText('add-account-trigger')).toBeInTheDocument();
   });
 
   it('shows AppShell with an Add-account trigger once an account exists', async () => {

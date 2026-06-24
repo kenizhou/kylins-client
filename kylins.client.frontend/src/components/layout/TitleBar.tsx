@@ -40,7 +40,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-10 flex items-center justify-between px-2 bg-[var(--surface)] border-b border-[var(--border)] select-none"
+      className="relative h-10 flex items-center justify-between px-2 bg-[color-mix(in_oklab,var(--surface),black_12%)] select-none"
       style={dragStyle}
     >
       {/* Left: hamburger + menu bar */}

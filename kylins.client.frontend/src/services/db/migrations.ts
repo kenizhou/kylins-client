@@ -893,20 +893,21 @@ function splitStatements(sql: string): string[] {
   return statements;
 }
 
-// Serialize migrations across concurrent callers (e.g. React StrictMode
-// double-mount in dev fires init() twice in rapid succession — without this
-// guard both invocations race for BEGIN/COMMIT and SQLite throws
-// `database is locked` partway through, leaving the schema half-applied).
+// Dedupe concurrent callers — e.g. React StrictMode's dev double-mount fires
+// init() twice in rapid succession. The first call caches its promise here so
+// the second awaits it instead of starting a parallel run. (A previous version
+// reset this in a `finally`; that allowed a StrictMode remount to start a fresh
+// run after a failure. With manual transactions removed below that re-run is now
+// a harmless no-op — v28 is already in `_migrations` and gets skipped — so we
+// keep the simple reset-on-completion form.)
 let migrationPromise: Promise<void> | null = null;
 
-export async function runMigrations(): Promise<void> {
+export function runMigrations(): Promise<void> {
   if (migrationPromise) return migrationPromise;
   migrationPromise = (async () => {
     try {
       await doRunMigrations();
     } finally {
-      // Allow a future retry after a failed run; successful runs have nothing
-      // to retry since _migrations is fully populated.
       migrationPromise = null;
     }
   })();
@@ -915,6 +916,13 @@ export async function runMigrations(): Promise<void> {
 
 async function doRunMigrations(): Promise<void> {
   const db = await getDb();
+
+  // Best-effort: make SQLite wait briefly for a lock instead of failing
+  // immediately with SQLITE_BUSY (code 5, "database is locked"). The SQL plugin
+  // uses a connection pool, so this only configures one pooled connection — the
+  // real protection is avoiding transactions that span pooled execute() calls
+  // (see the note by the migration loop below).
+  await db.execute('PRAGMA busy_timeout = 5000');
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS _migrations (
@@ -936,30 +944,34 @@ async function doRunMigrations(): Promise<void> {
 
     const statements = splitStatements(migration.sql);
 
-    await db.execute('BEGIN');
-    try {
-      for (const statement of statements) {
-        try {
-          await db.execute(statement);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('duplicate column')) {
-            console.warn(`Skipping duplicate column in v${migration.version}: ${msg}`);
-          } else {
-            throw err;
-          }
+    // Each statement is allowed to autocommit — we deliberately do NOT wrap the
+    // migration in BEGIN/COMMIT. @tauri-apps/plugin-sql serves every execute()
+    // from a pooled connection (see its `Database.close()`: "closes the database
+    // connection pool"), so a manual transaction cannot be committed or rolled
+    // back on the SAME connection. Issuing BEGIN on one pooled connection and
+    // ROLLBACK on another leaks an open write transaction that holds the lock,
+    // and the next write — even the next run's BEGIN — then fails immediately
+    // with `database is locked`. Migrations are written idempotently (CREATE ...
+    // IF NOT EXISTS, duplicate-column tolerance below, INSERT OR IGNORE), so a
+    // partially-applied migration resumes cleanly on the next run; the
+    // `_migrations` row inserted last marks the migration complete.
+    for (const statement of statements) {
+      try {
+        await db.execute(statement);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('duplicate column')) {
+          console.warn(`Skipping duplicate column in v${migration.version}: ${msg}`);
+        } else {
+          throw err;
         }
       }
-
-      await db.execute('INSERT OR IGNORE INTO _migrations (version, description) VALUES ($1, $2)', [
-        migration.version,
-        migration.description,
-      ]);
-      await db.execute('COMMIT');
-    } catch (err) {
-      await db.execute('ROLLBACK').catch(() => {});
-      throw err;
     }
+
+    await db.execute('INSERT OR IGNORE INTO _migrations (version, description) VALUES ($1, $2)', [
+      migration.version,
+      migration.description,
+    ]);
   }
 
   console.log('All migrations applied.');

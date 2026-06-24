@@ -30,32 +30,36 @@ export function AppShell({ onAddAccount }: AppShellProps = {}) {
   const readingPane = useMemo(() => <ReadingPane />, []);
 
   return (
-    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
-      <TitleBar />
-      {commandRibbonVisible && <CommandRibbon />}
+    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[color-mix(in_oklab,var(--surface),black_12%)] text-[var(--foreground)]">
       {onAddAccount && (
         <button
           type="button"
           onClick={onAddAccount}
-          className="absolute right-2 top-[52px] z-20 rounded px-3 py-1 text-sm text-[var(--foreground)] hover:bg-[var(--hover)] border border-[var(--border)] bg-[var(--surface)]"
+          className="absolute right-2 top-[112px] z-20 rounded px-3 py-1 text-sm text-[var(--foreground)] hover:bg-[var(--hover)] border border-[var(--border)] bg-[var(--card)]"
           title="Add another account"
         >
           + Add account
         </button>
       )}
+      <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
-        {activeApp === 'calendar' ? (
-          <CalendarPage />
-        ) : (
-          <ReadingPaneLayout
-            position={readingPanePosition}
-            folderPaneVisible={folderPaneVisible}
-            folderPane={folderPane}
-            messageList={messageList}
-            readingPane={readingPane}
-          />
-        )}
+        <div className="flex flex-1 flex-col min-w-0 overflow-hidden rounded-l-lg bg-[var(--surface)]">
+          {commandRibbonVisible && <CommandRibbon />}
+          <div className="flex flex-1 overflow-hidden">
+            {activeApp === 'calendar' ? (
+              <CalendarPage />
+            ) : (
+              <ReadingPaneLayout
+                position={readingPanePosition}
+                folderPaneVisible={folderPaneVisible}
+                folderPane={folderPane}
+                messageList={messageList}
+                readingPane={readingPane}
+              />
+            )}
+          </div>
+        </div>
       </div>
       {statusBarVisible && <StatusBar />}
       <Composer />

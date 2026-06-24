@@ -9,10 +9,11 @@ export function EventCard({ occurrence }: { occurrence: Occurrence }) {
   const title = occurrence.summary ?? '(no title)';
   return (
     <div
-      className="truncate rounded bg-[var(--accent)] px-1.5 py-0.5 text-[0.6875rem] text-[var(--selected-text)]"
+      className="group flex cursor-pointer items-center gap-1 truncate rounded border-l-2 border-[var(--primary)] bg-[var(--secondary)] px-1.5 py-1 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
       title={`${time} — ${title}`}
     >
-      <span className="font-medium">{time}</span> {title}
+      <span className="font-medium text-[var(--muted-text)]">{time}</span>
+      <span className="truncate">{title}</span>
     </div>
   );
 }

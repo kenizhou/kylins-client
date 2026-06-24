@@ -1,10 +1,11 @@
 // Quick event-create modal. Builds a VEVENT via icalHelper and persists it
 // (with its ical_data) to calendar_events; the calendar store re-expands.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { IcalHelper } from '@/services/calendar/icalHelper';
 import { insertCalendarEvent } from '@/services/db/calendarEvents';
 import { toUnixSeconds } from './range';
+import { CloseIcon } from '../icons';
 
 interface EventCreateModalProps {
   accountId: string;
@@ -29,6 +30,14 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
   const [allDay, setAllDay] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
 
   const handleSave = async () => {
     if (!summary.trim()) return;
@@ -71,41 +80,65 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="event-modal-title"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-96 rounded-md border border-[var(--border)] bg-[var(--background)] p-4 shadow-xl"
+        className="w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--background)] p-5 shadow-xl"
       >
-        <h3 className="mb-3 text-sm font-semibold text-[var(--foreground)]">New event</h3>
-        <div className="space-y-2">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 id="event-modal-title" className="text-base font-semibold text-[var(--foreground)]">
+            New event
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+            aria-label="Close"
+          >
+            <CloseIcon size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
           <input
             type="text"
             placeholder="Title"
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
-            className="h-8 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+            className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)] focus:ring-1 focus:ring-[var(--ring)]"
           />
           <input
             type="text"
             placeholder="Location"
             value={location}
             onChange={(e) => setLocation(e.target.value)}
-            className="h-8 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+            className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)] focus:ring-1 focus:ring-[var(--ring)]"
           />
-          <label className="flex items-center gap-2 text-xs text-[var(--muted-text)]">
-            <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
+          <label className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+            <span className="relative inline-flex h-4 w-7 items-center rounded-full bg-[var(--border)] transition-colors has-[:checked]:bg-[var(--primary)]">
+              <input
+                type="checkbox"
+                checked={allDay}
+                onChange={(e) => setAllDay(e.target.checked)}
+                className="peer sr-only"
+              />
+              <span className="ml-0.5 h-3 w-3 rounded-full bg-white transition-transform peer-checked:translate-x-3" />
+            </span>
             All day
           </label>
-          <div className="flex gap-2">
+          <div className="flex gap-3">
             <label className="flex-1 text-xs text-[var(--muted-text)]">
               Starts
               <input
                 type="datetime-local"
                 value={start}
                 onChange={(e) => setStart(e.target.value)}
-                className="mt-0.5 h-8 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                className="mt-1 h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)] focus:ring-1 focus:ring-[var(--ring)]"
               />
             </label>
             <label className="flex-1 text-xs text-[var(--muted-text)]">
@@ -114,7 +147,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                 type="datetime-local"
                 value={end}
                 onChange={(e) => setEnd(e.target.value)}
-                className="mt-0.5 h-8 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                className="mt-1 h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)] focus:ring-1 focus:ring-[var(--ring)]"
               />
             </label>
           </div>
@@ -123,23 +156,31 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={3}
-            className="w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+            className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)] focus:ring-1 focus:ring-[var(--ring)]"
           />
-          {error && <div className="text-xs text-[var(--destructive)]">{error}</div>}
+          {error && (
+            <div className="flex items-center gap-1.5 rounded-md border border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-3 py-2 text-xs text-[var(--destructive)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--destructive)]" />
+              {error}
+            </div>
+          )}
         </div>
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-5 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="h-8 rounded px-3 text-sm text-[var(--foreground)] hover:bg-[var(--hover)]"
+            className="h-9 rounded-md px-4 text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={!summary.trim() || saving}
-            className="h-8 rounded bg-[var(--primary)] px-3 text-sm text-[var(--primary-fg)] hover:opacity-90 disabled:opacity-50"
+            className="flex h-9 items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saving && (
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            )}
+            Save
           </button>
         </div>
       </div>

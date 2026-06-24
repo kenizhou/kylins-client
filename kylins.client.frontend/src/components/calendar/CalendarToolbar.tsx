@@ -2,6 +2,7 @@
 
 import type { CalendarView } from '@/stores/calendarStore';
 import { useCalendarStore } from '@/stores/calendarStore';
+import { PlusIcon, ArrowLeftIcon, ArrowRightIcon } from '../icons';
 import { addDays } from './range';
 
 const VIEWS: { key: CalendarView; label: string }[] = [
@@ -42,39 +43,39 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
     <div className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2">
       <button
         onClick={() => setCurrentDate(new Date())}
-        className="rounded border border-[var(--border)] px-2 py-1 text-xs text-[var(--foreground)] hover:bg-[var(--hover)]"
+        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
       >
         Today
       </button>
-      <div className="flex items-center">
+      <div className="flex items-center rounded-md border border-[var(--border)] overflow-hidden">
         <button
           onClick={() => shift(-1)}
-          className="rounded-l border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--hover)]"
+          className="flex h-7 w-7 items-center justify-center border-r border-[var(--border)] text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
           aria-label="Previous"
         >
-          ‹
+          <ArrowLeftIcon size={14} />
         </button>
         <button
           onClick={() => shift(1)}
-          className="rounded-r border-l-0 border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--hover)]"
+          className="flex h-7 w-7 items-center justify-center text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
           aria-label="Next"
         >
-          ›
+          <ArrowRightIcon size={14} />
         </button>
       </div>
-      <h2 className="ml-1 text-sm font-semibold text-[var(--foreground)]">{title}</h2>
+      <h2 className="ml-1 text-base font-semibold text-[var(--foreground)]">{title}</h2>
 
       <div className="ml-auto flex items-center gap-2">
-        <div className="flex overflow-hidden rounded border border-[var(--border)]">
-          {VIEWS.map((v) => (
+        <div className="flex overflow-hidden rounded-md border border-[var(--border)]">
+          {VIEWS.map((v, idx) => (
             <button
               key={v.key}
               onClick={() => setView(v.key)}
-              className={`px-2 py-1 text-xs ${
+              className={`px-2.5 py-1.5 text-xs transition-colors ${
                 view === v.key
                   ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
                   : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
-              }`}
+              } ${idx > 0 ? 'border-l border-[var(--border)]' : ''}`}
             >
               {v.label}
             </button>
@@ -82,8 +83,9 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
         </div>
         <button
           onClick={onNewEvent}
-          className="flex items-center gap-1 rounded bg-[var(--primary)] px-2.5 py-1 text-xs text-[var(--primary-fg)] hover:opacity-90"
+          className="flex items-center gap-1 rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90"
         >
+          <PlusIcon size={13} />
           New event
         </button>
       </div>

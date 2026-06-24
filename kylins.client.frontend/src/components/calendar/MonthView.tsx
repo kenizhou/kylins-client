@@ -11,6 +11,8 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export function MonthView() {
   const currentDate = useCalendarStore((s) => s.currentDate);
   const occurrences = useCalendarStore((s) => s.occurrences);
+  const setCurrentDate = useCalendarStore((s) => s.setCurrentDate);
+  const setView = useCalendarStore((s) => s.setView);
 
   const byDay = useMemo(() => groupOccurrencesByDay(occurrences), [occurrences]);
 
@@ -19,32 +21,42 @@ export function MonthView() {
   const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
   const todayKey = dayKey(new Date());
 
+  const handleMore = (date: Date) => {
+    setCurrentDate(date);
+    setView('day');
+  };
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="grid grid-cols-7 border-b border-[var(--border)] text-xs text-[var(--muted-foreground)]">
+      <div className="grid grid-cols-7 border-b border-[var(--border)] bg-[var(--surface)] text-xs font-medium text-[var(--muted-text)]">
         {WEEKDAYS.map((d) => (
-          <div key={d} className="px-2 py-1">
+          <div key={d} className="px-2 py-1.5">
             {d}
           </div>
         ))}
       </div>
-      <div className="grid flex-1 grid-cols-7 overflow-auto">
+      <div className="grid flex-1 grid-cols-7 overflow-auto border-l border-t border-[var(--border)]">
         {cells.map((date) => {
           const k = dayKey(date);
           const inMonth = date.getMonth() === currentDate.getMonth();
           const items = byDay.get(k) ?? [];
+          const isToday = k === todayKey;
           return (
             <div
               key={k}
-              className={`min-h-[80px] border-b border-r border-[var(--border)] p-1 ${
-                inMonth ? '' : 'bg-[var(--surface)]'
+              className={`min-h-[96px] border-b border-r border-[var(--border)] p-1 transition-colors ${
+                inMonth
+                  ? 'bg-[var(--background)] hover:bg-[var(--hover)]'
+                  : 'bg-[var(--surface)]/60'
               }`}
             >
               <div
-                className={`mb-0.5 text-xs ${
-                  k === todayKey
-                    ? 'inline-flex h-5 w-5 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-fg)]'
-                    : 'text-[var(--muted-text)]'
+                className={`mb-1 flex h-5 w-5 items-center justify-center text-xs ${
+                  isToday
+                    ? 'rounded-full bg-[var(--primary)] font-medium text-[var(--primary-fg)]'
+                    : inMonth
+                      ? 'text-[var(--foreground)]'
+                      : 'text-[var(--muted-text)]'
                 }`}
               >
                 {date.getDate()}
@@ -54,9 +66,13 @@ export function MonthView() {
                   <EventCard key={`${o.uid}-${o.start.getTime()}`} occurrence={o} />
                 ))}
                 {items.length > 3 && (
-                  <div className="text-[0.625rem] text-[var(--muted-foreground)]">
+                  <button
+                    type="button"
+                    onClick={() => handleMore(date)}
+                    className="mt-0.5 w-full rounded px-1 py-0.5 text-left text-[0.625rem] font-medium text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+                  >
                     +{items.length - 3} more
-                  </div>
+                  </button>
                 )}
               </div>
             </div>

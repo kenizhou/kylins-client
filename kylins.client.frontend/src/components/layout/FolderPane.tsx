@@ -38,7 +38,7 @@ function FolderRow({ icon, name, count, active }: FolderRowProps) {
 
 function FolderGroup({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="py-2 border-b border-[var(--border)] last:border-b-0">
+    <div className="py-2 last:pb-0">
       <div className="px-3 pb-1.5 text-[11px] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)]">
         {title}
       </div>
@@ -49,7 +49,7 @@ function FolderGroup({ title, children }: { title: string; children: React.React
 
 export function FolderPane() {
   return (
-    <div className="flex flex-col h-full bg-[var(--surface)]">
+    <div className="flex flex-col h-full bg-[var(--surface)] border border-[var(--series-300)] rounded-xl">
       <PaneHeader title="Folders" role="folder-pane:header" />
       <div className="flex-1 overflow-auto">
         <FolderGroup title="Favorites">

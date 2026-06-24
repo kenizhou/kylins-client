@@ -21,7 +21,7 @@ export function WeekView() {
   const todayKey = dayKey(new Date());
 
   return (
-    <div className="grid flex-1 grid-cols-7 overflow-auto">
+    <div className="grid flex-1 grid-cols-7 overflow-auto border-t border-[var(--border)]">
       {days.map((date) => {
         const k = dayKey(date);
         const items = (byDay.get(k) ?? [])
@@ -29,20 +29,25 @@ export function WeekView() {
           .sort((a, b) => a.start.getTime() - b.start.getTime());
         const isToday = k === todayKey;
         return (
-          <div key={k} className="flex min-h-[120px] flex-col border-r border-[var(--border)]">
+          <div
+            key={k}
+            className={`flex min-h-[140px] flex-col border-r border-b border-[var(--border)] transition-colors ${
+              isToday ? 'bg-[var(--accent)]/30' : 'hover:bg-[var(--hover)]/50'
+            }`}
+          >
             <div
-              className={`border-b border-[var(--border)] px-2 py-1 text-xs ${
+              className={`border-b border-[var(--border)] px-2 py-1.5 text-xs ${
                 isToday ? 'font-semibold text-[var(--primary)]' : 'text-[var(--muted-text)]'
               }`}
             >
               {WEEKDAYS[date.getDay()]} {date.getDate()}
             </div>
-            <div className="space-y-1 p-1">
+            <div className="flex-1 space-y-1 p-1">
               {items.map((o) => (
                 <EventCard key={`${o.uid}-${o.start.getTime()}`} occurrence={o} />
               ))}
               {items.length === 0 && (
-                <div className="text-[0.625rem] text-[var(--muted-foreground)]">—</div>
+                <div className="px-1 py-2 text-[0.625rem] text-[var(--muted-text)]">No events</div>
               )}
             </div>
           </div>

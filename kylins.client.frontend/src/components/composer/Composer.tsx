@@ -49,7 +49,7 @@ import { getTemplatesForAccount, type DbTemplate } from '@/services/db/templates
 import { interpolateVariables } from '@/utils/templateVariables';
 import { sanitizeHtml } from '@/utils/sanitize';
 import { readFileAsBase64 } from '@/utils/fileUtils';
-import { MaximizeIcon, RestoreIcon, ClockIcon, CloseIcon } from '../icons';
+import { MaximizeIcon, RestoreIcon, ClockIcon, CloseIcon, PopOutIcon, PlusIcon } from '../icons';
 import { InputDialog } from '@/components/ui/InputDialog';
 
 export function Composer() {
@@ -454,8 +454,11 @@ export function Composer() {
         onDrop={handleDrop}
       >
         {isDragging && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-[var(--accent)]">
-            <span className="text-sm font-medium text-[var(--selected-text)]">
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-[var(--primary)] bg-[var(--accent)]/90">
+            <div className="rounded-full bg-[var(--primary)] p-3 text-[var(--primary-fg)]">
+              <PlusIcon size={24} />
+            </div>
+            <span className="text-sm font-medium text-[var(--accent-foreground)]">
               Drop files to attach
             </span>
           </div>
@@ -477,7 +480,7 @@ export function Composer() {
               className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
               title="Open in new window"
             >
-              <span aria-hidden>↗</span>
+              <PopOutIcon size={14} />
             </button>
             <button
               onClick={closeComposer}
@@ -521,7 +524,7 @@ export function Composer() {
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               placeholder="Subject"
-              className="flex-1 bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+              className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
             />
           </div>
         </div>
