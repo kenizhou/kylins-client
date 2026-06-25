@@ -28,6 +28,9 @@ export interface EasFolder {
   parent_id: string;
   display_name: string;
   class: string;
+  /** Raw EAS MS-ASFD Type byte (2=Inbox, 3=Drafts, ...). Optional: older
+   *  payloads without it fall back to name-based role detection. */
+  folder_type?: number;
 }
 
 export interface EasFolderSyncResult {

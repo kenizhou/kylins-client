@@ -1,7 +1,12 @@
-import { useViewStore, type MailMessage } from '../../features/view/viewStore';
+import { useEffect, useMemo, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
 import type { ColumnDef } from '../../features/view/types';
-import { DEMO_MESSAGES, getInitials, formatMessageTime } from '../../data/demoMessages';
+import { useThreadStore } from '../../stores/threadStore';
+import { useFolderStore } from '../../stores/folderStore';
+import type { Thread } from '../../services/db/threads';
+import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
@@ -84,34 +89,99 @@ function MessageRow({
   );
 }
 
-function MessageGroup({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="py-1.5 border-b border-[var(--border)] last:border-b-0">
-      <div className="px-3 py-1 font-[var(--text-overline)] uppercase tracking-[0.04em] text-[var(--muted-text)]">
-        {label}
-      </div>
-      {children}
-    </div>
-  );
+type ListItem = { kind: 'group'; label: string } | { kind: 'thread'; thread: Thread };
+
+function dayBucket(ts: number): string {
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dayMs = 86_400_000;
+  if (d.getTime() >= startOfToday) return 'Today';
+  if (d.getTime() >= startOfToday - dayMs) return 'Yesterday';
+  return d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+  });
 }
 
-const TODAY_MESSAGES = DEMO_MESSAGES.slice(0, 2);
-const YESTERDAY_MESSAGES = DEMO_MESSAGES.slice(2);
+function buildItems(threads: Thread[]): ListItem[] {
+  const items: ListItem[] = [];
+  let lastBucket = '';
+  for (const t of threads) {
+    const bucket = t.lastMessageAt != null ? dayBucket(t.lastMessageAt) : 'Earlier';
+    if (bucket !== lastBucket) {
+      items.push({ kind: 'group', label: bucket });
+      lastBucket = bucket;
+    }
+    items.push({ kind: 'thread', thread: t });
+  }
+  return items;
+}
+
+function threadState(t: Thread): MessageState {
+  if (!t.isRead) return 'unread';
+  if (t.isStarred) return 'flagged';
+  if (t.isImportant) return 'vip';
+  return 'read';
+}
 
 export function MessageList() {
   const density = useViewStore((s) => s.messageListDensity);
   const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
   const conversationView = useViewStore((s) => s.conversationView);
-  const selectedMessage = useViewStore((s) => s.selectedMessage);
-  const setSelectedMessage = useViewStore((s) => s.setSelectedMessage);
+
+  const selectedFolder = useFolderStore((s) => s.selected);
+  const threads = useThreadStore((s) => s.threads);
+  const selectedThreadId = useThreadStore((s) => s.selectedThreadId);
+  const isLoading = useThreadStore((s) => s.isLoading);
+  const cursor = useThreadStore((s) => s.cursor);
+  const loadThreads = useThreadStore((s) => s.loadThreads);
+  const loadMore = useThreadStore((s) => s.loadMore);
+  const selectThread = useThreadStore((s) => s.selectThread);
 
   const visibleColumns = visibleColumnIds
     .map((id) => COLUMN_REGISTRY.get(id))
     .filter((c): c is ColumnDef => c != null);
 
-  const handleSelect = (message: MailMessage) => {
-    setSelectedMessage(message);
+  // Load threads whenever the selected folder changes.
+  useEffect(() => {
+    if (selectedFolder) {
+      void loadThreads(selectedFolder.accountId, selectedFolder.labelId);
+    } else {
+      useThreadStore.setState({ threads: [], currentQuery: null, cursor: null });
+    }
+  }, [selectedFolder, loadThreads]);
+
+  const items = useMemo(() => buildItems(threads), [threads]);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 44,
+    overscan: 12,
+  });
+
+  // Infinite scroll: when the user nears the end, fetch the next cursor page.
+  // Depend on a stable `nearEnd` boolean rather than the virtualItems array
+  // (a new array reference on every measure pass), so the effect doesn't
+  // re-run on every scroll tick.
+  const virtualItems = virtualizer.getVirtualItems();
+  const nearEnd = (virtualItems.at(-1)?.index ?? -1) >= items.length - 6;
+  useEffect(() => {
+    if (nearEnd && cursor && !isLoading) {
+      void loadMore();
+    }
+  }, [nearEnd, cursor, isLoading, loadMore]);
+
+  const handleDoubleClick = async (thread: Thread) => {
+    await selectThread(thread);
+    const msg = useViewStore.getState().selectedMessage;
+    if (msg) openViewerWindow(msg);
   };
+
+  const showEmpty = !isLoading && items.length === 0;
 
   return (
     <div className="flex flex-col h-full bg-[var(--card)]">
@@ -131,39 +201,59 @@ export function MessageList() {
         </div>
       )}
 
-      <div className="flex-1 overflow-auto">
-        <MessageGroup label="Today">
-          {TODAY_MESSAGES.map((message) => (
-            <MessageRow
-              key={message.id}
-              sender={message.from.name}
-              subject={message.subject}
-              time={formatMessageTime(message.date)}
-              initials={getInitials(message.from.name)}
-              state={message.id === 'msg-1' ? 'unread' : 'vip'}
-              selected={selectedMessage?.id === message.id}
-              density={density}
-              onClick={() => handleSelect(message)}
-              onDoubleClick={() => openViewerWindow(message)}
-            />
-          ))}
-        </MessageGroup>
-        <MessageGroup label="Yesterday">
-          {YESTERDAY_MESSAGES.map((message) => (
-            <MessageRow
-              key={message.id}
-              sender={message.from.name}
-              subject={message.subject}
-              time={formatMessageTime(message.date)}
-              initials={getInitials(message.from.name)}
-              state={message.id === 'msg-4' ? 'flagged' : 'read'}
-              selected={selectedMessage?.id === message.id}
-              density={density}
-              onClick={() => handleSelect(message)}
-              onDoubleClick={() => openViewerWindow(message)}
-            />
-          ))}
-        </MessageGroup>
+      <div ref={scrollRef} className="flex-1 overflow-auto">
+        {isLoading && items.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-[var(--muted-text)]">Loading…</div>
+        ) : showEmpty ? (
+          <div className="px-3 py-6 text-center text-xs text-[var(--muted-text)]">
+            No messages in this folder.
+          </div>
+        ) : (
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualItems.map((vi) => {
+              const item = items[vi.index];
+              if (!item) return null;
+              return (
+                <div
+                  key={vi.key}
+                  data-index={vi.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
+                  {item.kind === 'group' ? (
+                    <div className="py-1.5 px-3 border-b border-[var(--border)] font-[var(--text-overline)] uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]">
+                      {item.label}
+                    </div>
+                  ) : (
+                    <MessageRow
+                      sender={item.thread.fromName ?? item.thread.fromAddress ?? 'Unknown'}
+                      subject={item.thread.subject ?? '(no subject)'}
+                      time={
+                        item.thread.lastMessageAt != null
+                          ? formatMessageTime(
+                              new Date(item.thread.lastMessageAt * 1000).toISOString(),
+                            )
+                          : ''
+                      }
+                      initials={getInitials(item.thread.fromName ?? item.thread.fromAddress ?? '?')}
+                      state={threadState(item.thread)}
+                      selected={selectedThreadId === item.thread.id}
+                      density={density}
+                      onClick={() => void selectThread(item.thread)}
+                      onDoubleClick={() => void handleDoubleClick(item.thread)}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

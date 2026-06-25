@@ -14,7 +14,7 @@ export interface SeedDummyDataOptions {
   clearExisting?: boolean;
 }
 
-const ACCOUNT_IDS = ['dummy-gmail', 'dummy-work'];
+const ACCOUNT_IDS = ['dummy-gmail', 'dummy-work', 'dummy-eas'];
 
 const ACCOUNTS = [
   {
@@ -36,6 +36,15 @@ const ACCOUNTS = [
     smtpSecurity: 'starttls',
     authMethod: 'password',
   },
+  {
+    id: ACCOUNT_IDS[2],
+    email: 'alice@contoso.com',
+    displayName: 'Alice (Exchange)',
+    provider: 'eas',
+    easUrl: 'https://mail.contoso.com/Microsoft-Server-ActiveSync',
+    easProtocolVersion: '16.1',
+    easDeviceId: 'KYLINS-SEED-EAS1',
+  },
 ];
 
 const CONTACTS = [
@@ -49,7 +58,21 @@ const CONTACTS = [
   { email: 'team@figma.com', displayName: 'Figma', avatarUrl: '' },
 ];
 
-const LABELS = [
+interface SeedLabel {
+  id: string;
+  name: string;
+  type: 'system' | 'user';
+  /** Explicit canonical role override; otherwise derived for system labels. */
+  role?: string | null;
+  /** Provider-native id; defaults to the label id. */
+  remoteId?: string;
+  /** Native parent id (matched against a sibling's remoteId for nesting). */
+  parentId?: string | null;
+  /** Folder class; non-'mail' folders are hidden by the mail folder pane. */
+  mailClass?: string;
+}
+
+const LABELS: SeedLabel[] = [
   { id: 'inbox', name: 'Inbox', type: 'system' },
   { id: 'sent', name: 'Sent', type: 'system' },
   { id: 'drafts', name: 'Drafts', type: 'system' },
@@ -58,6 +81,38 @@ const LABELS = [
   { id: 'important', name: 'Important', type: 'system' },
   { id: 'starred', name: 'Starred', type: 'system' },
   { id: 'newsletters', name: 'Newsletters', type: 'user' },
+];
+
+// EAS (Exchange ActiveSync) folders for the dummy Exchange account. Same
+// canonical ids as the other accounts (so seeded threads link via
+// thread_labels), but with Exchange display names and source='eas'. Also
+// exercises folder hierarchy (Projects > Apollo via remoteId/parentId) and
+// non-mail filtering (Calendar, hidden from the mail folder pane).
+const EAS_LABELS: SeedLabel[] = [
+  { id: 'inbox', name: 'Inbox', type: 'system', role: 'inbox' },
+  { id: 'sent', name: 'Sent Items', type: 'system', role: 'sent' },
+  { id: 'drafts', name: 'Drafts', type: 'system', role: 'drafts' },
+  { id: 'trash', name: 'Deleted Items', type: 'system', role: 'trash' },
+  { id: 'spam', name: 'Junk E-mail', type: 'system', role: 'junk' },
+  { id: 'important', name: 'Important', type: 'system', role: 'important' },
+  { id: 'starred', name: 'Starred', type: 'system', role: 'starred' },
+  { id: 'newsletters', name: 'Newsletters', type: 'user' },
+  { id: 'eas-projects', name: 'Projects', type: 'user', remoteId: 'col-projects' },
+  {
+    id: 'eas-apollo',
+    name: 'Apollo',
+    type: 'user',
+    remoteId: 'col-apollo',
+    parentId: 'col-projects',
+  },
+  {
+    id: 'eas-calendar',
+    name: 'Calendar',
+    type: 'system',
+    role: null,
+    remoteId: 'col-cal',
+    mailClass: 'calendar',
+  },
 ];
 
 const TINY_PNG_B64 =
@@ -123,15 +178,13 @@ const SIGNATURES = [
   },
   {
     name: 'Work reply',
-    bodyHtml:
-      '<p>Best regards,<br/>Alice Doe<br/>Example Inc. | Engineering</p>',
+    bodyHtml: '<p>Best regards,<br/>Alice Doe<br/>Example Inc. | Engineering</p>',
     context: 'reply' as const,
     isDefault: true,
   },
   {
     name: 'Work forward',
-    bodyHtml:
-      '<p>—<br/>Alice Doe<br/>Senior Engineer, Example Inc.</p>',
+    bodyHtml: '<p>—<br/>Alice Doe<br/>Senior Engineer, Example Inc.</p>',
     context: 'forward' as const,
     isDefault: true,
   },
@@ -154,8 +207,7 @@ const TEMPLATES = [
   {
     name: 'Out of office',
     subject: 'Out of office',
-    bodyHtml:
-      '<p>Hi,</p><p>I am currently out of office and will reply when I return.</p>',
+    bodyHtml: '<p>Hi,</p><p>I am currently out of office and will reply when I return.</p>',
     shortcut: '',
   },
 ];
@@ -170,10 +222,20 @@ interface TaskScenario {
 const TASKS: TaskScenario[] = [
   { title: 'Review Q3 roadmap', priority: 'high', isCompleted: false, dueOffsetDays: 2 },
   { title: 'Update team documentation', priority: 'medium', isCompleted: false, dueOffsetDays: 5 },
-  { title: 'Book flights for conference', priority: 'medium', isCompleted: true, dueOffsetDays: -3 },
+  {
+    title: 'Book flights for conference',
+    priority: 'medium',
+    isCompleted: true,
+    dueOffsetDays: -3,
+  },
   { title: 'Prepare demo script', priority: 'high', isCompleted: false, dueOffsetDays: 1 },
   { title: 'Order office supplies', priority: 'low', isCompleted: false, dueOffsetDays: null },
-  { title: 'Follow up with design team', priority: 'medium', isCompleted: false, dueOffsetDays: -1 },
+  {
+    title: 'Follow up with design team',
+    priority: 'medium',
+    isCompleted: false,
+    dueOffsetDays: -1,
+  },
 ];
 
 function nowSeconds(): number {
@@ -211,8 +273,9 @@ async function seedAccounts(db: Awaited<ReturnType<typeof getDb>>): Promise<void
     await db.execute(
       `INSERT OR REPLACE INTO accounts (
         id, email, display_name, provider, is_active, created_at, updated_at,
-        imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security, auth_method
-      ) VALUES ($1, $2, $3, $4, 1, $5, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security, auth_method,
+        eas_url, eas_protocol_version, eas_device_id
+      ) VALUES ($1, $2, $3, $4, 1, $5, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         account.id,
         account.email,
@@ -226,6 +289,9 @@ async function seedAccounts(db: Awaited<ReturnType<typeof getDb>>): Promise<void
         'smtpPort' in account ? account.smtpPort : null,
         'smtpSecurity' in account ? account.smtpSecurity : null,
         'authMethod' in account ? account.authMethod : null,
+        'easUrl' in account ? account.easUrl : null,
+        'easProtocolVersion' in account ? account.easProtocolVersion : null,
+        'easDeviceId' in account ? account.easDeviceId : null,
       ],
     );
   }
@@ -253,14 +319,50 @@ async function seedContacts(db: Awaited<ReturnType<typeof getDb>>): Promise<void
   }
 }
 
+// Canonical role for each well-known system label id. Mirrors the role
+// resolvers in services/mail/folders/folderRoles.ts so dummy folders classify
+// the same way real provider folders do.
+const SYSTEM_LABEL_ROLES: Record<string, string> = {
+  inbox: 'inbox',
+  sent: 'sent',
+  drafts: 'drafts',
+  trash: 'trash',
+  spam: 'junk',
+  important: 'important',
+  starred: 'starred',
+};
+
 async function seedLabels(db: Awaited<ReturnType<typeof getDb>>): Promise<void> {
-  for (const accountId of ACCOUNT_IDS) {
-    for (let i = 0; i < LABELS.length; i++) {
-      const label = LABELS[i]!;
+  for (let a = 0; a < ACCOUNT_IDS.length; a++) {
+    const accountId = ACCOUNT_IDS[a]!;
+    const isEas = ACCOUNTS[a]!.provider === 'eas';
+    const set = isEas ? EAS_LABELS : LABELS;
+    const source = isEas ? 'eas' : 'local';
+    for (let i = 0; i < set.length; i++) {
+      const label = set[i]!;
+      const role =
+        label.role !== undefined
+          ? label.role
+          : label.type === 'system'
+            ? (SYSTEM_LABEL_ROLES[label.id] ?? null)
+            : null;
       await db.execute(
-        `INSERT OR REPLACE INTO labels (id, account_id, name, type, visible, sort_order)
-         VALUES ($1, $2, $3, $4, 1, $5)`,
-        [label.id, accountId, label.name, label.type, i],
+        `INSERT OR REPLACE INTO labels (
+           id, account_id, name, type, visible, sort_order,
+           source, role, parent_id, remote_id, mail_class
+         ) VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8, $9, $10)`,
+        [
+          label.id,
+          accountId,
+          label.name,
+          label.type,
+          i,
+          source,
+          role,
+          label.parentId ?? null,
+          label.remoteId ?? label.id,
+          label.mailClass ?? 'mail',
+        ],
       );
     }
   }
@@ -293,16 +395,19 @@ interface MessageInput {
   attachments?: AttachmentMeta[];
 }
 
-async function createMessage(db: Awaited<ReturnType<typeof getDb>>, input: MessageInput): Promise<void> {
+async function createMessage(
+  db: Awaited<ReturnType<typeof getDb>>,
+  input: MessageInput,
+): Promise<void> {
   const bodyHtml = input.bodyHtml ?? buildSimpleBody(input.snippet, input.id);
   const bodyText = input.snippet;
 
   await db.execute(
     `INSERT OR REPLACE INTO messages (
       id, account_id, thread_id, from_address, from_name, to_addresses, cc_addresses, bcc_addresses,
-      subject, snippet, date, is_read, is_starred, body_html, body_text,
+      subject, snippet, date, is_read, is_starred, body_text,
       body_cached, message_id_header, internal_date, in_reply_to_header
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 1, $16, $11, $17)`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, $15, $11, $16)`,
     [
       input.id,
       input.accountId,
@@ -317,11 +422,18 @@ async function createMessage(db: Awaited<ReturnType<typeof getDb>>, input: Messa
       input.date,
       input.isRead ? 1 : 0,
       input.isStarred ? 1 : 0,
-      bodyHtml,
       bodyText,
       `<${input.id}@dummy.kylins>`,
       input.inReplyTo ?? null,
     ],
+  );
+
+  // HTML body lives in the separate message_bodies table (migration v34);
+  // messages keeps only body_text for FTS + the reading-pane text fallback.
+  await db.execute(
+    `INSERT OR REPLACE INTO message_bodies (account_id, message_id, body_html)
+     VALUES ($1, $2, $3)`,
+    [input.accountId, input.id, bodyHtml],
   );
 
   if (input.attachments) {
@@ -395,9 +507,7 @@ async function createThread(
   }
 }
 
-async function seedThreadsAndMessages(
-  db: Awaited<ReturnType<typeof getDb>>,
-): Promise<void> {
+async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Promise<void> {
   const baseTime = nowSeconds();
 
   for (let a = 0; a < ACCOUNT_IDS.length; a++) {
@@ -476,7 +586,11 @@ async function seedThreadsAndMessages(
         bodyHtml: BODY_INLINE,
         attachments: [
           { filename: 'roadmap.pdf', mimeType: 'application/pdf', size: 512000 },
-          { filename: 'budget.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 128000 },
+          {
+            filename: 'budget.xlsx',
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            size: 128000,
+          },
         ],
       });
       await createMessage(db, {
@@ -804,10 +918,7 @@ async function seedThreadsAndMessages(
         date,
         isRead: false,
         isStarred: false,
-        bodyHtml: BODY_NEWSLETTER!.replace(
-          'alt="header"',
-          `alt="header" id="${contentId}"`,
-        ),
+        bodyHtml: BODY_NEWSLETTER!.replace('alt="header"', `alt="header" id="${contentId}"`),
         attachments: [
           {
             filename: 'summer-catalog.pdf',
@@ -1015,6 +1126,7 @@ async function clearDummyData(db: Awaited<ReturnType<typeof getDb>>): Promise<vo
     await db.execute('DELETE FROM calendar_events WHERE account_id = $1', [accountId]);
     await db.execute('DELETE FROM calendars WHERE account_id = $1', [accountId]);
     await db.execute('DELETE FROM local_drafts WHERE account_id = $1', [accountId]);
+    await db.execute('DELETE FROM message_bodies WHERE account_id = $1', [accountId]);
     await db.execute('DELETE FROM attachments WHERE account_id = $1', [accountId]);
     await db.execute('DELETE FROM messages WHERE account_id = $1', [accountId]);
     await db.execute('DELETE FROM thread_labels WHERE account_id = $1', [accountId]);

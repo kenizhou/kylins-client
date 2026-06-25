@@ -11,6 +11,7 @@ import { themeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { useUIStore } from './stores/uiStore';
 import { useAccountStore } from './stores/accountStore';
+import { useFolderStore } from './stores/folderStore';
 import { useAccountSetupStore } from './stores/accountSetupStore';
 import { useComposerStore } from './stores/composerStore';
 import { usePreferencesStore } from './stores/preferencesStore';
@@ -19,6 +20,7 @@ import { useViewSettings } from './features/view/hooks/useViewSettings';
 import { readComposeWindowParams } from './utils/composeWindow';
 import { readViewerWindowParams } from './utils/viewerWindow';
 import { MessageViewerWindow } from './components/viewer/MessageViewerWindow';
+import { Toaster } from './components/ui/Toaster';
 import { isSkinId, DEFAULT_SKIN, type SkinId } from './styles/skins';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useShortcutStore } from './stores/shortcutStore';
@@ -42,9 +44,10 @@ function describeError(err: unknown): string {
   }
 }
 
-function hydrateBackground(applyAppearance: (theme: string | null, skin: string | null) => void): void {
-  refreshAccounts()
-    .catch((err) => console.error('Background account refresh failed:', err));
+function hydrateBackground(
+  applyAppearance: (theme: string | null, skin: string | null) => void,
+): void {
+  refreshAccounts().catch((err) => console.error('Background account refresh failed:', err));
 
   Promise.all([getSetting('theme'), getSetting('skin')])
     .then(([savedTheme, savedSkin]) => applyAppearance(savedTheme, savedSkin))
@@ -79,6 +82,7 @@ export default function App() {
   const setSkin = useUIStore((s) => s.setSkin);
   const accountSetupOpen = useUIStore((s) => s.accountSetupOpen);
   const setAccountSetupOpen = useUIStore((s) => s.setAccountSetupOpen);
+  const accounts = useAccountStore((s) => s.accounts);
   useViewSettings();
   useKeyboardShortcuts();
 
@@ -131,7 +135,10 @@ export default function App() {
           } else {
             await runMigrations();
 
-            const [savedTheme, savedSkin] = await Promise.all([getSetting('theme'), getSetting('skin')]);
+            const [savedTheme, savedSkin] = await Promise.all([
+              getSetting('theme'),
+              getSetting('skin'),
+            ]);
             applyAppearance(savedTheme, savedSkin);
 
             await Promise.all([
@@ -166,6 +173,17 @@ export default function App() {
       isMounted.current = false;
     };
   }, [setTheme, setSkin]);
+
+  // Load folders (labels) + unread counts + favorites whenever the account set
+  // changes. Covers initial startup (after refreshAccounts populates the store)
+  // and add/remove account. No-op until there are accounts to load.
+  useEffect(() => {
+    if (accounts.length === 0) return;
+    useFolderStore
+      .getState()
+      .loadLabels()
+      .catch((err) => console.error('Folder load failed:', err));
+  }, [accounts]);
 
   async function handleSetupComplete(): Promise<void> {
     await refreshAccounts();
@@ -218,6 +236,7 @@ export default function App() {
           >
             <AccountSetupFlow variant="modal" onComplete={handleSetupComplete} />
           </Modal>
+          <Toaster />
         </>
       )}
     </>

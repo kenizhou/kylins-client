@@ -62,6 +62,13 @@ pub struct EasFolder {
     pub display_name: String,
     /// `"Email"`, `"Calendar"`, `"Contacts"`, `"Tasks"`, `"Notes"`, etc.
     pub class: String,
+    /// Raw EAS folder Type byte (MS-ASFD `FolderHierarchy:Type`): 2=Inbox,
+    /// 3=Drafts, 4=DeletedItems, 5=Sent, 6=Outbox, 7=Tasks, 8=Calendar,
+    /// 9=Contacts, 10/11=Notes/Journal, 1/12=user-created mail, etc. Surfaced so
+    /// the frontend can derive a canonical role without locale-dependent
+    /// name-matching. `None` when the element is absent or non-numeric.
+    #[serde(default)]
+    pub folder_type: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

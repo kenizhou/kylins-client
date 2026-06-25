@@ -229,6 +229,7 @@ fn parse_folder_element(folder_el: &WbxmlElement) -> Result<EasFolder, WbxmlErro
             (PAGE_FOLDER, FH_TYPE) => {
                 let t = text_value(child)?;
                 folder.class = folder_type_to_class(&t);
+                folder.folder_type = t.parse::<u8>().ok();
             }
             _ => {}
         }
@@ -889,6 +890,7 @@ mod tests {
         assert_eq!(parsed.changes[0].server_id, "fid-1");
         assert_eq!(parsed.changes[0].display_name, "Inbox");
         assert_eq!(parsed.changes[0].class, "Email"); // type 2 = Inbox → Email
+        assert_eq!(parsed.changes[0].folder_type, Some(2)); // raw Type byte surfaced
         assert_eq!(parsed.deletions, vec!["fid-old".to_string()]);
     }
 

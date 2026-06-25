@@ -940,6 +940,80 @@ export const MIGRATIONS: Migration[] = [
         ('share_diagnostics_data', 'false');
     `,
   },
+  {
+    version: 33,
+    description:
+      'kylins: Provider-agnostic folder columns on labels (source, role, hierarchy, counts)',
+    sql: `
+      -- Make \`labels\` the unified source-agnostic folder store so folders from
+      -- IMAP, Gmail, ActiveSync, and Outlook Graph share one model with a
+      -- canonical role, native parent and remote ids, an IMAP delimiter, a
+      -- mail-vs-other class, and cached counts. Avoid semicolons inside line
+      -- comments because splitStatements splits on them.
+      ALTER TABLE labels ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
+      ALTER TABLE labels ADD COLUMN role TEXT;
+      ALTER TABLE labels ADD COLUMN parent_id TEXT;
+      ALTER TABLE labels ADD COLUMN remote_id TEXT;
+      ALTER TABLE labels ADD COLUMN delimiter TEXT;
+      ALTER TABLE labels ADD COLUMN mail_class TEXT NOT NULL DEFAULT 'mail';
+      ALTER TABLE labels ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE labels ADD COLUMN total_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE labels ADD COLUMN hierarchical_name TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_labels_role ON labels(account_id, role);
+      CREATE INDEX IF NOT EXISTS idx_labels_parent ON labels(account_id, parent_id);
+
+      -- Backfill the well-known system labels seeded by seedDummyData so the
+      -- folder pane can group them by role without a re-seed.
+      UPDATE labels SET role = 'inbox', remote_id = id WHERE id = 'inbox' AND role IS NULL;
+      UPDATE labels SET role = 'sent', remote_id = id WHERE id = 'sent' AND role IS NULL;
+      UPDATE labels SET role = 'drafts', remote_id = id WHERE id = 'drafts' AND role IS NULL;
+      UPDATE labels SET role = 'trash', remote_id = id
+        WHERE id IN ('trash', 'deleteditems') AND role IS NULL;
+      UPDATE labels SET role = 'junk', remote_id = id
+        WHERE id IN ('spam', 'junk') AND role IS NULL;
+      UPDATE labels SET role = 'important', remote_id = id
+        WHERE id = 'important' AND role IS NULL;
+      UPDATE labels SET role = 'starred', remote_id = id
+        WHERE id = 'starred' AND role IS NULL;
+      UPDATE labels SET role = 'archive', remote_id = id
+        WHERE id = 'archive' AND role IS NULL;
+      UPDATE labels SET role = 'outbox', remote_id = id
+        WHERE id = 'outbox' AND role IS NULL;
+      UPDATE labels SET remote_id = id WHERE remote_id IS NULL;
+    `,
+  },
+  {
+    version: 34,
+    description: 'kylins: keyset-pagination index on threads + separate message_bodies table',
+    sql: `
+      -- Index backing keyset (cursor) pagination of the message list by
+      -- (account, last_message_at, id). Avoid semicolons inside line comments.
+      CREATE INDEX IF NOT EXISTS idx_threads_cursor
+        ON threads(account_id, last_message_at DESC, id DESC);
+
+      -- Separate body store (Mailspring-style): move the bulky rendered HTML
+      -- out of the hot messages row. body_text stays on messages so the
+      -- existing external-content FTS5 (messages_fts) keeps indexing it.
+      CREATE TABLE IF NOT EXISTS message_bodies (
+        account_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        body_html TEXT,
+        fetched_at INTEGER DEFAULT (unixepoch()),
+        PRIMARY KEY (account_id, message_id),
+        FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE
+      );
+
+      INSERT OR IGNORE INTO message_bodies (account_id, message_id, body_html)
+        SELECT account_id, id, body_html FROM messages WHERE body_html IS NOT NULL;
+
+      UPDATE messages SET body_html = NULL, body_cached = 1
+        WHERE EXISTS (
+          SELECT 1 FROM message_bodies mb
+          WHERE mb.account_id = messages.account_id AND mb.message_id = messages.id
+        );
+    `,
+  },
 ];
 
 /**
