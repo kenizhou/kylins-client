@@ -14,7 +14,7 @@ export function StatusBar() {
   const setReaderZoom = useUIStore((s) => s.setReaderZoom);
 
   return (
-    <footer className="h-6 flex items-center justify-between px-3 text-[11px] bg-[color-mix(in_oklab,var(--surface),black_12%)] text-[var(--muted-text)] shrink-0">
+    <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-[11px] bg-[var(--chrome)] text-[var(--muted-text)] shrink-0">
       <div className="flex items-center gap-3">
         <span>Synced · 3 accounts</span>
         <span>1 selected</span>

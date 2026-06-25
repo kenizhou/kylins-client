@@ -40,14 +40,18 @@ export interface Account {
   id: string;
   email: string;
   displayName?: string;
+  accountLabel?: string;
   avatarUrl?: string;
   provider: MailProvider;
+  setupProviderId?: string;
   accessToken?: string;
   refreshToken?: string;
   tokenExpiresAt?: number;
   historyId?: string;
   lastSyncAt?: number;
   isActive: boolean;
+  isDefault: boolean;
+  sortOrder: number;
   createdAt: number;
   updatedAt: number;
   // IMAP/SMTP provider fields (migration 14-16, 23)
@@ -76,14 +80,18 @@ export interface DbAccountRow {
   id: string;
   email: string;
   display_name?: string | null;
+  account_label?: string | null;
   avatar_url?: string | null;
   provider: string;
+  setup_provider_id?: string | null;
   access_token?: string | null;
   refresh_token?: string | null;
   token_expires_at?: number | null;
   history_id?: string | null;
   last_sync_at?: number | null;
   is_active: number;
+  is_default: number;
+  sort_order: number;
   created_at: number;
   updated_at: number;
   // IMAP/SMTP

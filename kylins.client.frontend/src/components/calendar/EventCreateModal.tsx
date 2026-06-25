@@ -1,7 +1,7 @@
 // Quick event-create modal. Builds a VEVENT via icalHelper and persists it
 // (with its ical_data) to calendar_events; the calendar store re-expands.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { IcalHelper } from '@/services/calendar/icalHelper';
 import { insertCalendarEvent } from '@/services/db/calendarEvents';
 import { toUnixSeconds } from './range';
@@ -31,13 +31,16 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  }, []);
 
   const handleSave = async () => {
     if (!summary.trim()) return;

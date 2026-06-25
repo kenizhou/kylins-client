@@ -12,7 +12,7 @@ import { escapeHtml } from '@/utils/sanitize';
 import { inlineCss } from '@/services/composer/juiceInline';
 import { sanitizeForCompose } from '@/services/composer/sanitizeForCompose';
 import { formatFullDate } from '@/utils/formatDate';
-import { formatRecipient, type Recipient } from './contacts';
+import { formatRecipient, toRecipient } from './contacts';
 
 export interface QuoteableMessage {
   html: string | null;
@@ -43,15 +43,11 @@ export function prepareBodyForQuoting(message: QuoteableMessage): string {
   return source;
 }
 
-function addr(p: { name: string; address: string }): Recipient {
-  return { name: p.name, email: p.address };
-}
-
 /** Reply quote: attribution line + `<blockquote class="gmail_quote">`. */
 export function buildReplyQuote(message: QuoteableMessage): string {
   const prepared = prepareBodyForQuoting(message);
   const attribution = `On ${escapeHtml(formatFullDate(message.date))}, ${escapeHtml(
-    formatRecipient(addr(message.from)),
+    formatRecipient(toRecipient(message.from)),
   )} wrote:`;
   return (
     '<br/><br/>' +
@@ -72,12 +68,12 @@ export function buildForwardQuote(message: QuoteableMessage): string {
   lines.push('<br/>');
   lines.push('<div class="gmail_quote">');
   lines.push('<br/>---------- Forwarded Message ---------<br/><br/>');
-  lines.push(header('From', formatRecipient(addr(message.from))));
+  lines.push(header('From', formatRecipient(toRecipient(message.from))));
   lines.push(header('Subject', message.subject));
   lines.push(header('Date', formatFullDate(message.date)));
-  lines.push(header('To', message.to.map((t) => formatRecipient(addr(t))).join(', ')));
+  lines.push(header('To', message.to.map((t) => formatRecipient(toRecipient(t))).join(', ')));
   if (message.cc && message.cc.length > 0) {
-    lines.push(header('Cc', message.cc.map((t) => formatRecipient(addr(t))).join(', ')));
+    lines.push(header('Cc', message.cc.map((t) => formatRecipient(toRecipient(t))).join(', ')));
   }
   lines.push('<br/>');
   lines.push(prepared);

@@ -8,6 +8,8 @@ import {
   getAccountById,
   updateAccount,
   deleteAccount,
+  setDefaultAccount,
+  getDefaultAccount,
   type CreateAccountInput,
 } from '../../src/services/accounts';
 import { getDb } from '../../src/services/db/connection';
@@ -16,6 +18,10 @@ import type Database from '@tauri-apps/plugin-sql';
 
 vi.mock('../../src/services/db/connection', () => ({
   getDb: vi.fn(),
+  withTransaction: vi.fn(async (fn: (db: unknown) => Promise<void>) => {
+    const db = vi.mocked(getDb)();
+    return db.then((d) => fn(d));
+  }),
 }));
 
 vi.mock('../../src/services/crypto', () => ({
@@ -316,5 +322,132 @@ describe('accounts', () => {
     const [sql, params] = mockDb.execute.mock.calls[0];
     expect(sql).toBe('DELETE FROM accounts WHERE id = $1');
     expect(params).toEqual(['acc-1']);
+  });
+
+  it('sets the first created account as default', async () => {
+    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    mockDb.select
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([
+        {
+          id: 'acc-1',
+          email: 'first@example.com',
+          provider: 'imap',
+          is_active: 1,
+          is_default: 1,
+          sort_order: 0,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
+    const account = await createAccount({
+      email: 'first@example.com',
+      provider: 'imap',
+    });
+    expect(account.isDefault).toBe(true);
+    expect(account.sortOrder).toBe(0);
+    const [, params] = mockDb.execute.mock.calls[0];
+    expect(params).toContain(1); // is_default = 1
+  });
+
+  it('does not override explicit isDefault on create', async () => {
+    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    mockDb.select.mockResolvedValue([
+      {
+        id: 'acc-2',
+        email: 'second@example.com',
+        provider: 'imap',
+        is_active: 1,
+        is_default: 1,
+        sort_order: 3,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+    const account = await createAccount({
+      email: 'second@example.com',
+      provider: 'imap',
+      isDefault: true,
+      sortOrder: 3,
+    });
+    expect(account.isDefault).toBe(true);
+    expect(account.sortOrder).toBe(3);
+  });
+
+  it('sets default account and clears previous default', async () => {
+    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    await setDefaultAccount('acc-2');
+    expect(mockDb.execute).toHaveBeenCalledTimes(2); // clear + set
+    const calls = mockDb.execute.mock.calls;
+    const clearCall = calls.find(([sql]) => String(sql).includes('UPDATE accounts SET is_default = 0'));
+    const setCall = calls.find(
+      ([sql, params]) =>
+        String(sql).includes('is_default = 1') && (params as unknown[]).includes('acc-2'),
+    );
+    expect(clearCall).toBeDefined();
+    expect(setCall).toBeDefined();
+  });
+
+  it('gets the default account', async () => {
+    mockDb.select.mockResolvedValue([
+      {
+        id: 'acc-default',
+        email: 'default@example.com',
+        provider: 'imap',
+        is_active: 1,
+        is_default: 1,
+        sort_order: 0,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+    const account = await getDefaultAccount();
+    expect(account).not.toBeNull();
+    expect(account!.id).toBe('acc-default');
+    expect(account!.isDefault).toBe(true);
+  });
+
+  it('persists account label and setup provider id', async () => {
+    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    mockDb.select
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([
+        {
+          id: 'acc-1',
+          email: 'e@x.com',
+          account_label: 'Work',
+          provider: 'imap',
+          setup_provider_id: 'gmail',
+          is_active: 1,
+          is_default: 1,
+          sort_order: 0,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
+    const account = await createAccount({
+      email: 'e@x.com',
+      provider: 'imap',
+      accountLabel: 'Work',
+      setupProviderId: 'gmail',
+    });
+    expect(account.accountLabel).toBe('Work');
+    expect(account.setupProviderId).toBe('gmail');
+  });
+
+  it('updates account label and default flag', async () => {
+    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    await updateAccount('acc-1', {
+      accountLabel: 'Personal',
+      isDefault: true,
+      sortOrder: 2,
+    });
+    const [sql, params] = mockDb.execute.mock.calls[0];
+    expect(sql).toContain('account_label =');
+    expect(sql).toContain('is_default =');
+    expect(sql).toContain('sort_order =');
+    expect(params).toContain('Personal');
+    expect(params).toContain(1);
+    expect(params).toContain(2);
   });
 });

@@ -14,6 +14,7 @@ pub mod crypto;
 pub mod eas;
 pub mod mail;
 pub mod oauth;
+pub mod sync;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -58,6 +59,14 @@ pub fn run() {
             commands::open_devtools,
             commands::encrypt_secret,
             commands::decrypt_secret,
+            commands::read_text_file,
+            commands::write_text_file,
+            commands::get_autostart_state,
+            commands::set_autostart_enabled,
+            commands::request_notification_permission,
+            commands::get_cache_size,
+            commands::clear_cache,
+            commands::reveal_logs_directory,
             oauth::start_oauth_server,
             oauth::oauth_exchange_token,
             oauth::oauth_refresh_token,
@@ -91,6 +100,8 @@ pub fn run() {
             eas::service::eas_folder_create,
             eas::service::eas_folder_delete,
             eas::service::eas_folder_update,
+            sync::contacts::commands::parse_vcard,
+            sync::contacts::commands::export_vcard,
         ])
         .setup(|app| {
             {

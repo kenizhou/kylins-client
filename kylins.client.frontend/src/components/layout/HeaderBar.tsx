@@ -1,6 +1,6 @@
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { MenuIcon, PlusIcon, NotificationIcon, SettingsIcon, UserIcon } from '../icons';
-import { useComposerStore } from '../../stores/composerStore';
+import { openComposerWindow } from '../../utils/composeWindow';
 
 export function HeaderBar() {
   return (
@@ -21,7 +21,7 @@ export function HeaderBar() {
       <div className="flex items-center gap-1">
         <InjectedComponentSet role="header:right" />
         <button
-          onClick={() => useComposerStore.getState().openComposer()}
+          onClick={() => openComposerWindow()}
           className="flex items-center gap-1.5 px-3 h-7 text-sm rounded bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90"
         >
           <PlusIcon /> New mail

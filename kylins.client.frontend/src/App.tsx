@@ -1,16 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { AppShell } from './components/layout/AppShell';
 import { AccountSetupFlow } from './components/account-setup/AccountSetupFlow';
+import { PreferencesDialog } from './components/preferences/PreferencesDialog';
+import { Composer } from './components/composer/Composer';
+import { Modal } from './components/ui/Modal';
 import { runMigrations } from './services/db/migrations';
 import { getSetting } from './services/settings';
 import { getAllAccounts } from './services/accounts';
-import { ThemeManager } from './services/theme/themeManager';
+import { themeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { useUIStore } from './stores/uiStore';
 import { useAccountStore } from './stores/accountStore';
+import { useAccountSetupStore } from './stores/accountSetupStore';
+import { useComposerStore } from './stores/composerStore';
+import { usePreferencesStore } from './stores/preferencesStore';
+import { useViewStore } from './features/view/viewStore';
 import { useViewSettings } from './features/view/hooks/useViewSettings';
-
-const themeManager = new ThemeManager();
+import { readComposeWindowParams } from './utils/composeWindow';
+import { readViewerWindowParams } from './utils/viewerWindow';
+import { MessageViewerWindow } from './components/viewer/MessageViewerWindow';
+import { isSkinId, DEFAULT_SKIN, type SkinId } from './styles/skins';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useShortcutStore } from './stores/shortcutStore';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -31,37 +42,113 @@ function describeError(err: unknown): string {
   }
 }
 
+function hydrateBackground(applyAppearance: (theme: string | null, skin: string | null) => void): void {
+  refreshAccounts()
+    .catch((err) => console.error('Background account refresh failed:', err));
+
+  Promise.all([getSetting('theme'), getSetting('skin')])
+    .then(([savedTheme, savedSkin]) => applyAppearance(savedTheme, savedSkin))
+    .catch(() => {
+      /* ignore: appearance is cosmetic */
+    });
+
+  useShortcutStore
+    .getState()
+    .hydrate()
+    .catch(() => {
+      /* ignore: shortcuts are optional at startup */
+    });
+
+  usePreferencesStore
+    .getState()
+    .hydrate()
+    .catch(() => {
+      /* ignore: preferences are optional at startup */
+    });
+}
+
 export default function App() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isMounted = useRef(true);
+  const composeParams = readComposeWindowParams();
+  const isComposeWindow = composeParams !== null;
+  const viewerParams = readViewerWindowParams();
+  const isViewerWindow = viewerParams !== null;
   const setTheme = useUIStore((s) => s.setTheme);
+  const setSkin = useUIStore((s) => s.setSkin);
   const accountSetupOpen = useUIStore((s) => s.accountSetupOpen);
   const setAccountSetupOpen = useUIStore((s) => s.setAccountSetupOpen);
   useViewSettings();
+  useKeyboardShortcuts();
 
   useEffect(() => {
     isMounted.current = true;
+
+    function applyAppearance(theme: string | null, skin: string | null): void {
+      if (theme === 'light' || theme === 'dark' || theme === 'system') {
+        if (isMounted.current) setTheme(theme);
+        themeManager.applyTheme(theme);
+      }
+      const resolvedSkin: SkinId = skin && isSkinId(skin) ? skin : DEFAULT_SKIN;
+      if (isMounted.current) setSkin(resolvedSkin);
+      themeManager.applySkin(resolvedSkin);
+    }
+
     async function init() {
       try {
         if (isTauri) {
-          await runMigrations();
+          if (isComposeWindow) {
+            // Composer pop-out window: skip the heavy main-window startup
+            // (migrations, plugin load, full account refresh). Just hydrate the
+            // composer state from the URL params and become ready.
+            if (isMounted.current && composeParams) {
+              useComposerStore.getState().openComposer({
+                mode: composeParams.mode,
+                to: composeParams.to,
+                cc: composeParams.cc,
+                bcc: composeParams.bcc,
+                subject: composeParams.subject,
+                bodyHtml: composeParams.bodyHtml,
+                threadId: composeParams.threadId,
+                inReplyToMessageId: composeParams.inReplyToMessageId,
+                draftId: composeParams.draftId,
+                fromEmail: composeParams.fromEmail,
+                signatureId: composeParams.signatureId,
+              });
+            }
 
-          const savedTheme = await getSetting('theme');
-          if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
-            if (isMounted.current) setTheme(savedTheme);
-            themeManager.applyTheme(savedTheme);
-          }
+            // Hydrate everything in the background; don't block the composer UI.
+            hydrateBackground(applyAppearance);
+          } else if (isViewerWindow) {
+            // Viewer pop-out window: skip heavy startup. Hydrate the selected
+            // message from the URL params and become ready immediately.
+            if (isMounted.current && viewerParams) {
+              useViewStore.getState().setSelectedMessage(viewerParams);
+            }
 
-          // Plugin discovery: empty for the skeleton. Real implementation will
-          // scan the plugins/ directory via the Tauri fs API.
-          await pluginManager.loadPlugins([]);
-          await pluginManager.activatePlugins();
+            hydrateBackground(applyAppearance);
+          } else {
+            await runMigrations();
 
-          // Load existing accounts into the store so the UI reflects any
-          // already-configured accounts on startup.
-          if (isMounted.current) {
-            await refreshAccounts();
+            const [savedTheme, savedSkin] = await Promise.all([getSetting('theme'), getSetting('skin')]);
+            applyAppearance(savedTheme, savedSkin);
+
+            await Promise.all([
+              useShortcutStore.getState().hydrate(),
+              usePreferencesStore.getState().hydrate(),
+            ]);
+
+            // Plugin discovery: empty for the skeleton. Real implementation will
+            // scan the plugins/ directory via the Tauri fs API.
+            await pluginManager.loadPlugins([]);
+            await pluginManager.activatePlugins();
+
+            // Load existing accounts into the store so the UI reflects any
+            // already-configured accounts on startup.
+            if (isMounted.current) {
+              await refreshAccounts();
+            }
           }
         }
 
@@ -78,7 +165,17 @@ export default function App() {
     return () => {
       isMounted.current = false;
     };
-  }, [setTheme]);
+  }, [setTheme, setSkin]);
+
+  async function handleSetupComplete(): Promise<void> {
+    await refreshAccounts();
+    setAccountSetupOpen(false);
+  }
+
+  function handleCloseSetup(): void {
+    useAccountSetupStore.getState().reset();
+    setAccountSetupOpen(false);
+  }
 
   if (error) {
     return (
@@ -103,25 +200,25 @@ export default function App() {
     );
   }
 
-  async function handleSetupComplete(): Promise<void> {
-    await refreshAccounts();
-    setAccountSetupOpen(false);
-  }
-
   return (
     <>
-      <AppShell />
-      {accountSetupOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Add account"
-        >
-          <div className="h-[640px] w-[680px] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)] shadow-xl">
+      {isComposeWindow ? (
+        <Composer windowed />
+      ) : isViewerWindow ? (
+        <MessageViewerWindow message={viewerParams!} />
+      ) : (
+        <>
+          <AppShell />
+          <PreferencesDialog />
+          <Modal
+            isOpen={accountSetupOpen}
+            onClose={handleCloseSetup}
+            size="md"
+            contentClassName="bg-[var(--background)]"
+          >
             <AccountSetupFlow variant="modal" onComplete={handleSetupComplete} />
-          </div>
-        </div>
+          </Modal>
+        </>
       )}
     </>
   );

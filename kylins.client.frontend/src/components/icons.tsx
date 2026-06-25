@@ -8,6 +8,7 @@ import {
   UserCircleIcon,
   Delete01Icon,
   Delete02Icon,
+  Copy01Icon,
   Archive01Icon,
   Move02Icon,
   Tag01Icon,
@@ -58,6 +59,20 @@ import {
   ArrowRight01Icon,
   ArrowUpRight01Icon,
   Folder01Icon,
+  UserAccountIcon,
+  Search01Icon,
+  CreditCardIcon,
+  PaintBoardIcon,
+  KeyboardIcon,
+  FilterIcon,
+  File01Icon,
+  SignatureIcon,
+  GlobeIcon,
+  MailSend01Icon,
+  MailOpen01Icon,
+  PencilEdit01Icon,
+  Database01Icon,
+  Shield01Icon,
 } from '@hugeicons/core-free-icons';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
@@ -69,6 +84,22 @@ function makeIcon(iconData: Parameters<typeof HugeiconsIcon>[0]['icon']) {
   return function Icon({ size = 16, strokeWidth = 1.5, ...rest }: IconProps) {
     return <HugeiconsIcon icon={iconData} size={size} strokeWidth={strokeWidth} {...rest} />;
   };
+}
+
+export function UploadIcon({ size = 16, ...rest }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} {...rest}>
+      <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function DownloadIcon({ size = 16, ...rest }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} {...rest}>
+      <path d="M12 8v8m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 export const MenuIcon = makeIcon(Menu01Icon);
@@ -83,6 +114,7 @@ export const TagIcon = makeIcon(Tag01Icon);
 export const LightningIcon = makeIcon(FlashIcon);
 export const MailIcon = makeIcon(Mail01Icon);
 export const FolderIcon = makeIcon(Folder01Icon);
+export const SearchIcon = makeIcon(Search01Icon);
 export const FlagIcon = makeIcon(Flag02Icon);
 export const PinIcon = makeIcon(Pin02Icon);
 export const UndoIcon = makeIcon(ArrowTurnBackwardIcon);
@@ -99,10 +131,13 @@ export const ReplyAllFilledIcon = makeIcon(MailReplyAll02Icon);
 export const ForwardFilledIcon = makeIcon(Forward02Icon);
 export const CalendarIcon = makeIcon(Calendar03Icon);
 export const ContactsIcon = makeIcon(UserMultipleIcon);
+export const PencilIcon = makeIcon(PencilEdit01Icon);
+export const CheckIcon = makeIcon(TickDoubleIcon);
 export const TasksIcon = makeIcon(TickDoubleIcon);
 export const AiIcon = makeIcon(AiChat02Icon);
 export const BellIcon = makeIcon(Alert01Icon);
 export const TrashIcon = makeIcon(Delete02Icon);
+export const CopyIcon = makeIcon(Copy01Icon);
 export const MinimizeIcon = makeIcon(MinusSignIcon);
 export const MaximizeIcon = makeIcon(ArrowExpand01Icon);
 export const RestoreIcon = makeIcon(ArrowShrink01Icon);
@@ -129,3 +164,23 @@ export const H3Icon = makeIcon(Heading03Icon);
 export const ArrowLeftIcon = makeIcon(ArrowLeft01Icon);
 export const ArrowRightIcon = makeIcon(ArrowRight01Icon);
 export const PopOutIcon = makeIcon(ArrowUpRight01Icon);
+
+export const PreferencesGeneralIcon = makeIcon(Settings01Icon);
+export const PreferencesAccountsIcon = makeIcon(UserAccountIcon);
+export const PreferencesSubscriptionIcon = makeIcon(CreditCardIcon);
+export const PreferencesAppearanceIcon = makeIcon(PaintBoardIcon);
+export const PreferencesShortcutsIcon = makeIcon(KeyboardIcon);
+export const PreferencesMailRulesIcon = makeIcon(FilterIcon);
+export const PreferencesFoldersIcon = makeIcon(Folder01Icon);
+export const PreferencesSignaturesIcon = makeIcon(SignatureIcon);
+export const PreferencesTemplatesIcon = makeIcon(File01Icon);
+
+export const PreferencesReadingIcon = makeIcon(MailOpen01Icon);
+export const PreferencesSendingIcon = makeIcon(MailSend01Icon);
+export const PreferencesComposingIcon = makeIcon(PencilEdit01Icon);
+export const PreferencesNotificationsIcon = makeIcon(Notification03Icon);
+export const PreferencesAttachmentsIcon = makeIcon(Attachment01Icon);
+export const PreferencesLanguageIcon = makeIcon(GlobeIcon);
+export const PreferencesLocalDataIcon = makeIcon(Database01Icon);
+export const PreferencesSystemIcon = makeIcon(UserCircleIcon);
+export const PreferencesPrivacySecurityIcon = makeIcon(Shield01Icon);

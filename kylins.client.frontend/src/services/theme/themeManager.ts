@@ -1,3 +1,5 @@
+import { type SkinId, DEFAULT_SKIN } from '../../styles/skins';
+
 export interface Theme {
   name: string;
   css: string;
@@ -34,7 +36,18 @@ export class ThemeManager {
     }
   }
 
+  applySkin(skin: SkinId): void {
+    const root = document.documentElement;
+    root.setAttribute('data-skin', skin);
+  }
+
+  resetSkin(): void {
+    document.documentElement.setAttribute('data-skin', DEFAULT_SKIN);
+  }
+
   getActiveTheme(): string {
     return this.activeTheme;
   }
 }
+
+export const themeManager = new ThemeManager();

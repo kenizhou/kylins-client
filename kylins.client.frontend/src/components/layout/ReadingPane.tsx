@@ -11,9 +11,11 @@ import {
 } from '../icons';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { usePreferencesStore } from '../../stores/preferencesStore';
 import { EmailRenderer } from '../email/EmailRenderer';
 import { InlineReply } from '../email/InlineReply';
-import { formatMessageDate } from '../../data/demoMessages';
+import { formatFullDate } from '../../utils/formatDate';
+import { getInitials } from '../../data/demoMessages';
 
 function hashString(str: string): number {
   let h = 0;
@@ -31,19 +33,9 @@ function senderGradient(name: string): string {
 
 function recipientList(recipients: { name: string; address: string }[]): string {
   if (recipients.length === 0) return '';
-  const first = recipients[0];
-  if (!first) return '';
+  const first = recipients[0]!;
   if (recipients.length === 1) return `${first.name} <${first.address}>`;
   return `${first.name} <${first.address}> +${recipients.length - 1} more`;
-}
-
-function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .map((n) => n[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
 }
 
 function SubjectActionButton({
@@ -77,6 +69,7 @@ export function ReadingPane() {
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
+  const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
   const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
   // Reset the inline composer when the selected message changes. Uses the
   // prev-value render pattern (setState-during-render to correct stale state)
@@ -176,7 +169,7 @@ export function ReadingPane() {
               <span className="text-[var(--text)]">{recipientList(message.to)}</span>
             </div>
             <div className="mt-0.5 text-xs text-[var(--muted-text)]">
-              {formatMessageDate(message.date)}
+              {formatFullDate(message.date)}
             </div>
           </div>
         </div>
@@ -186,9 +179,9 @@ export function ReadingPane() {
         <EmailRenderer
           html={message.html}
           text={message.text}
-          blockImages
+          blockImages={!automaticallyLoadImages}
           senderAddress={message.from.address}
-          accountId={null}
+          accountId={activeAccountId}
           senderAllowlisted={false}
           isMessageSuspicious={isSuspicious}
           cidMap={null}

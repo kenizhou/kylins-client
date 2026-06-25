@@ -842,6 +842,104 @@ export const MIGRATIONS: Migration[] = [
       END;
     `,
   },
+  {
+    version: 29,
+    description: 'kylins: Signature context (new/reply/forward/all)',
+    sql: `
+      ALTER TABLE signatures ADD COLUMN context TEXT DEFAULT 'all';
+      UPDATE signatures SET context = 'all' WHERE context IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_signatures_account_context
+        ON signatures(account_id, context);
+    `,
+  },
+  {
+    version: 31,
+    description: 'kylins: Rich contacts, contact groups, and sync state',
+    sql: `
+      ALTER TABLE contacts ADD COLUMN account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE;
+      ALTER TABLE contacts ADD COLUMN source TEXT DEFAULT 'local';
+      ALTER TABLE contacts ADD COLUMN external_id TEXT;
+      ALTER TABLE contacts ADD COLUMN etag TEXT;
+      ALTER TABLE contacts ADD COLUMN raw_vcard TEXT;
+      ALTER TABLE contacts ADD COLUMN is_hidden INTEGER DEFAULT 0;
+      ALTER TABLE contacts ADD COLUMN is_readonly INTEGER DEFAULT 0;
+      ALTER TABLE contacts ADD COLUMN company TEXT;
+      ALTER TABLE contacts ADD COLUMN job_title TEXT;
+      ALTER TABLE contacts ADD COLUMN emails_json TEXT DEFAULT '[]';
+      ALTER TABLE contacts ADD COLUMN phone_numbers_json TEXT DEFAULT '[]';
+      ALTER TABLE contacts ADD COLUMN addresses_json TEXT DEFAULT '[]';
+
+      CREATE INDEX IF NOT EXISTS idx_contacts_account_source ON contacts(account_id, source);
+      CREATE INDEX IF NOT EXISTS idx_contacts_external ON contacts(account_id, source, external_id);
+
+      CREATE TABLE IF NOT EXISTS contact_groups (
+        id TEXT PRIMARY KEY,
+        account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
+        source TEXT DEFAULT 'local',
+        external_id TEXT,
+        name TEXT NOT NULL,
+        etag TEXT,
+        is_readonly INTEGER DEFAULT 0,
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_contact_groups_account ON contact_groups(account_id);
+
+      CREATE TABLE IF NOT EXISTS contact_group_members (
+        group_id TEXT NOT NULL REFERENCES contact_groups(id) ON DELETE CASCADE,
+        contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+        PRIMARY KEY (group_id, contact_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_contact_group_members_contact ON contact_group_members(contact_id);
+
+      CREATE TABLE IF NOT EXISTS contact_sync_state (
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        source TEXT NOT NULL,
+        sync_token TEXT,
+        last_sync_at INTEGER,
+        PRIMARY KEY (account_id, source)
+      );
+    `,
+  },
+  {
+    version: 32,
+    description: 'kylins: Seed default preference values for persistent preferences store',
+    sql: `
+      INSERT OR IGNORE INTO settings (key, value) VALUES
+        ('launch_on_system_start', 'true'),
+        ('show_icon_in_menu_bar', 'true'),
+        ('show_gmail_style_important_markers', 'true'),
+        ('show_unread_counts_for_all_folders', 'false'),
+        ('use_24_hour_clock', 'false'),
+        ('interface_language', 'automatic'),
+        ('mark_as_read_delay', '0.5'),
+        ('automatically_load_images', 'true'),
+        ('show_full_message_headers', 'false'),
+        ('show_recipient_full_names', 'false'),
+        ('restrict_message_width', 'false'),
+        ('move_to_trash_on_swipe', 'false'),
+        ('disable_swipe_gestures', 'false'),
+        ('descending_conversations', 'false'),
+        ('message_sent_sound', 'true'),
+        ('default_send_behavior', 'send'),
+        ('default_reply_behavior', 'reply-all'),
+        ('undo_send_duration', '5'),
+        ('send_new_messages_from', 'selected-account'),
+        ('enable_rich_text', 'true'),
+        ('check_spelling', 'true'),
+        ('check_grammar', 'false'),
+        ('spellcheck_language', 'system'),
+        ('show_notifications_for_new_unread', 'true'),
+        ('show_notifications_for_repeated_opens', 'true'),
+        ('play_sound_on_new_mail', 'true'),
+        ('resurface_messages_on_unsnooze', 'true'),
+        ('app_icon_badge', 'unread-count'),
+        ('open_attachment_folder', 'false'),
+        ('display_attachment_thumbnails', 'true'),
+        ('cache_auto_cleanup_enabled', 'false'),
+        ('share_diagnostics_data', 'false');
+    `,
+  },
 ];
 
 /**

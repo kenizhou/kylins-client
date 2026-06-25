@@ -26,6 +26,11 @@ export function isValidEmail(email: string): boolean {
   return EMAIL_ANCHORED.test(email.trim());
 }
 
+/** Case-insensitive email comparison. */
+export function eqEmail(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 function isQuote(ch: string | undefined): boolean {
   return ch === '"' || ch === "'";
 }

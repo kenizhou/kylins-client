@@ -9,6 +9,8 @@ use crate::mail::imap::types::{
 use crate::mail::smtp::client as smtp_client;
 use crate::mail::smtp::types::{SmtpConfig, SmtpSendResult};
 use tauri::Manager;
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_notification::NotificationExt as _;
 
 // ---------- App commands ----------
 
@@ -46,6 +48,117 @@ pub fn encrypt_secret(plaintext: String) -> Result<String, String> {
 #[tauri::command]
 pub fn decrypt_secret(ciphertext: String) -> Result<String, String> {
     crate::crypto::decrypt(&ciphertext)
+}
+
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))
+}
+
+#[tauri::command]
+pub fn write_text_file(path: String, data: String) -> Result<(), String> {
+    std::fs::write(&path, data).map_err(|e| format!("failed to write {path}: {e}"))
+}
+
+// ---------- Startup / notification / storage commands ----------
+
+#[tauri::command]
+pub fn get_autostart_state(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("failed to read autostart state: {e}"))
+}
+
+#[tauri::command]
+pub fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|e| e.to_string())
+    } else {
+        autolaunch.disable().map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn request_notification_permission(app: tauri::AppHandle) -> Result<bool, String> {
+    let state = app
+        .notification()
+        .permission_state()
+        .map_err(|e| format!("failed to read notification permission: {e}"))?;
+    let granted = matches!(state, tauri_plugin_notification::PermissionState::Granted);
+    if granted {
+        return Ok(true);
+    }
+    let requested = app
+        .notification()
+        .request_permission()
+        .map_err(|e| format!("failed to request notification permission: {e}"))?;
+    Ok(matches!(requested, tauri_plugin_notification::PermissionState::Granted))
+}
+
+fn dir_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut total: u64 = 0;
+    let metadata = path.metadata()?;
+    if metadata.is_file() {
+        total += metadata.len();
+    } else if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_file() {
+                total += metadata.len();
+            } else if metadata.is_dir() {
+                total += dir_size(&entry.path())?;
+            }
+        }
+    }
+    Ok(total)
+}
+
+#[tauri::command]
+pub fn get_cache_size(app: tauri::AppHandle) -> Result<u64, String> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("failed to resolve cache dir: {e}"))?;
+    if !cache_dir.exists() {
+        return Ok(0);
+    }
+    dir_size(&cache_dir).map_err(|e| format!("failed to compute cache size: {e}"))
+}
+
+#[tauri::command]
+pub fn clear_cache(app: tauri::AppHandle) -> Result<(), String> {
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("failed to resolve cache dir: {e}"))?;
+    if !cache_dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(&cache_dir).map_err(|e| format!("failed to read cache dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("failed to read cache entry: {e}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(|e| format!("failed to remove {path:?}: {e}"))?;
+        } else {
+            std::fs::remove_file(&path).map_err(|e| format!("failed to remove {path:?}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reveal_logs_directory(app: tauri::AppHandle) -> Result<(), String> {
+    let log_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("failed to resolve log dir: {e}"))?;
+    if !log_dir.exists() {
+        std::fs::create_dir_all(&log_dir).map_err(|e| format!("failed to create log dir: {e}"))?;
+    }
+    tauri_plugin_opener::open_path(&log_dir, None::<&str>)
+        .map_err(|e| format!("failed to open log dir: {e}"))
 }
 
 // ---------- IMAP commands ----------

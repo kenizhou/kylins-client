@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
-import { getSignaturesForAccount, type DbSignature } from '@/services/db/signatures';
+import { getSignaturesForAccount, type DbSignature, CONTEXT_LABELS } from '@/services/db/signatures';
 
 export function SignatureSelector() {
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
@@ -53,7 +53,7 @@ export function SignatureSelector() {
       <option value="">No signature</option>
       {signatures.map((sig) => (
         <option key={sig.id} value={sig.id}>
-          {sig.name}
+          {sig.name} ({CONTEXT_LABELS[sig.context]})
         </option>
       ))}
     </select>

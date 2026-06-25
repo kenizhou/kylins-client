@@ -39,6 +39,8 @@ function toTestAccount(input: CreateAccountInput, email: string): Account {
     email,
     id: 'tmp',
     isActive: true,
+    isDefault: false,
+    sortOrder: 0,
     createdAt: 0,
     updatedAt: 0,
   };
@@ -69,6 +71,8 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
   // Auth URL shown on the oauth-pending screen as a copyable fallback. Populated
   // from runOAuthFlow's onStarted callback right after the browser opens.
   const [oauthAuthUrl, setOauthAuthUrl] = useState<string>('');
+  // Stable fallback so we don't regenerate a device ID on every render.
+  const [deviceIdFallback] = useState<string>(() => newDeviceId());
 
   async function handleOAuth(): Promise<void> {
     if (!s.config || s.config.authType !== 'oauth2') return;
@@ -122,7 +126,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
 
   async function handleEas(): Promise<void> {
     if (!s.config) return;
-    const deviceId = s.deviceId || newDeviceId();
+    const deviceId = s.deviceId || deviceIdFallback;
     // Derive the EAS server from the email domain unless the user overrode it.
     // Guard against an email with no `@` — under noUncheckedIndexedAccess
     // `split('@')[1]` is `string | undefined`, which would otherwise build
@@ -138,7 +142,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
       server = `https://${domain}/Microsoft-Server-ActiveSync`;
     }
     await runWithVerification(s, async () => {
-      const input = buildEasAccount(s.email, s.password, server, deviceId);
+      const input = buildEasAccount(s.email, s.password, server, deviceId, s.config!.id);
       await testEasConnection(toTestAccount(input, s.email));
       await createAccount(input);
     });
@@ -228,7 +232,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         <SetupStepTransition>
           <EasManualForm
             server={s.easServer}
-            deviceId={s.deviceId || newDeviceId()}
+            deviceId={s.deviceId || deviceIdFallback}
             onChange={(patch) => {
               if (patch.server !== undefined) s.setEasServer(patch.server);
               if (patch.deviceId !== undefined) s.setDeviceId(patch.deviceId);

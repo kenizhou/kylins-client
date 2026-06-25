@@ -1,20 +1,24 @@
 import { create } from 'zustand';
 
+import type { SkinId } from '../styles/skins';
+
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface UIState {
   theme: ThemeMode;
+  skin: SkinId;
   sidebarCollapsed: boolean;
   folderPaneWidth: number;
   messageListWidth: number;
   inspectorPaneVisible: boolean;
   activeToolWindow: string | null;
   activeMenuCategory: string | null;
-  activeApp: 'mail' | 'calendar';
+  activeApp: 'mail' | 'calendar' | 'contacts';
   accountSetupOpen: boolean;
   readerZoom: number;
   setTheme: (theme: ThemeMode) => void;
-  setActiveApp: (app: 'mail' | 'calendar') => void;
+  setSkin: (skin: SkinId) => void;
+  setActiveApp: (app: 'mail' | 'calendar' | 'contacts') => void;
   setAccountSetupOpen: (open: boolean) => void;
   setReaderZoom: (zoom: number) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -25,8 +29,11 @@ export interface UIState {
   setActiveMenuCategory: (category: string | null) => void;
 }
 
+import { DEFAULT_SKIN } from '../styles/skins';
+
 export const useUIStore = create<UIState>((set) => ({
   theme: 'system',
+  skin: DEFAULT_SKIN,
   sidebarCollapsed: false,
   folderPaneWidth: 240,
   messageListWidth: 320,
@@ -37,6 +44,7 @@ export const useUIStore = create<UIState>((set) => ({
   accountSetupOpen: false,
   readerZoom: 1,
   setTheme: (theme) => set({ theme }),
+  setSkin: (skin) => set({ skin }),
   setActiveApp: (activeApp) => set({ activeApp }),
   setAccountSetupOpen: (accountSetupOpen) => set({ accountSetupOpen }),
   setReaderZoom: (readerZoom) => set({ readerZoom }),

@@ -15,6 +15,7 @@ import {
 import { Composer } from '../composer/Composer';
 import { UndoSendToast } from '../composer/UndoSendToast';
 import { CalendarPage } from '../calendar/CalendarPage';
+import { ContactsPage } from '../contacts/ContactsPage';
 
 export function AppShell() {
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
@@ -28,7 +29,7 @@ export function AppShell() {
   const readingPane = useMemo(() => <ReadingPane />, []);
 
   return (
-    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[color-mix(in_oklab,var(--surface),black_12%)] text-[var(--foreground)]">
+    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--chrome)] text-[var(--foreground)]">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
@@ -37,6 +38,8 @@ export function AppShell() {
           <div className="flex flex-1 overflow-hidden">
             {activeApp === 'calendar' ? (
               <CalendarPage />
+            ) : activeApp === 'contacts' ? (
+              <ContactsPage />
             ) : (
               <>
                 {!folderPaneVisible && <FolderExpandStrip />}

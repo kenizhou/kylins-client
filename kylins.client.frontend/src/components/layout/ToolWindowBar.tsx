@@ -29,13 +29,13 @@ export function ToolWindowBar() {
   const activeApp = useUIStore((s) => s.activeApp);
   const setActiveApp = useUIStore((s) => s.setActiveApp);
 
-  const isAppSwitcher = (id: string): id is 'mail' | 'calendar' =>
-    id === 'mail' || id === 'calendar';
+  const isAppSwitcher = (id: string): id is 'mail' | 'calendar' | 'contacts' =>
+    id === 'mail' || id === 'calendar' || id === 'contacts';
 
   return (
     <nav
       aria-label="Activity bar"
-      className="flex flex-col justify-between items-center w-12 shrink-0 bg-[color-mix(in_oklab,var(--surface),black_12%)] py-2"
+      className="flex flex-col justify-between items-center w-12 shrink-0 bg-[var(--chrome)] py-2"
     >
       <div className="flex flex-col items-center gap-2">
         {TOOLS.map((tool) => {
@@ -65,7 +65,7 @@ export function ToolWindowBar() {
               `}
             >
               {active && (
-                <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-[var(--primary)]" />
+                <span className="absolute left-0 top-2 bottom-2 w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] bg-[var(--primary)]" />
               )}
               {tool.icon}
             </button>

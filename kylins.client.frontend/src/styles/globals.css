@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import './theme.css';
+@import './skins.css';
 
 @theme inline {
   --color-background: var(--background);
@@ -27,6 +28,8 @@
   --color-selected: var(--selected);
   --color-selected-text: var(--selected-text);
   --color-primary-fg: var(--primary-fg);
+  --color-chrome: var(--chrome);
+  --color-chrome-foreground: var(--chrome-foreground);
   --color-amber: var(--amber);
   --color-green: var(--green);
 
@@ -34,6 +37,7 @@
   --font-serif: var(--font-serif);
   --font-mono: var(--font-mono);
 
+  --radius-xs: 2px;
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -108,6 +112,33 @@
     opacity: 1;
     transform: scale(1);
   }
+}
+
+.kylins-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
+}
+
+.kylins-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.kylins-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.kylins-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 4px;
+}
+
+.kylins-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-text);
+}
+
+.kylins-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {

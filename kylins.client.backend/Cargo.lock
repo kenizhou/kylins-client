@@ -2966,6 +2966,7 @@ dependencies = [
  "tokio-test",
  "tray-item",
  "utf7-imap",
+ "uuid",
  "windows 0.58.0",
 ]
 

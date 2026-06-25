@@ -68,6 +68,7 @@ export interface ComposerState {
     threadId?: string | null;
     inReplyToMessageId?: string | null;
     draftId?: string | null;
+    signatureId?: string | null;
   }) => void;
   closeComposer: () => void;
   setTo: (to: RecipientInput) => void;
@@ -134,7 +135,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
       lastSavedAt: null,
       isSaving: false,
       signatureHtml: '',
-      signatureId: null,
+      signatureId: opts?.signatureId ?? null,
     }),
   closeComposer: () =>
     set({

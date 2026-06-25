@@ -9,8 +9,9 @@ import {
   exchangeToken,
 } from './oauth';
 import type { OAuthProviderConfig, PasswordProviderConfig } from './providers';
-import { presetsFor, buildAuthUrl } from './providers';
+import { presetsFor, buildAuthUrl, getProvider } from './providers';
 import { fetchUserInfo, type ProviderUserInfo } from './userInfo';
+import { updateAccount } from '../accounts';
 import { ImapProvider } from '../mail/imapProvider';
 import { EasProvider } from '../mail/easProvider';
 import { testConnection as smtpTestConnection } from '../mail/smtpSender';
@@ -99,6 +100,7 @@ export function buildOAuthImapAccount(
     email: userInfo.email,
     displayName: userInfo.displayName,
     provider: 'imap',
+    setupProviderId: config.id,
     authMethod: 'oauth2',
     oauthProvider: config.oauthProvider,
     oauthClientId: clientId,
@@ -124,6 +126,7 @@ export function buildImapAccount(
   return {
     email,
     provider: 'imap',
+    setupProviderId: config.id,
     authMethod: 'password',
     imapPassword: password,
     imapUsername: email,
@@ -141,14 +144,64 @@ export function buildEasAccount(
   password: string,
   serverUrl: string,
   deviceId: string,
+  configId: string,
 ): CreateAccountInput {
   return {
     email,
     provider: 'eas',
+    setupProviderId: configId,
     imapUsername: email,
     imapPassword: password,
     easUrl: serverUrl,
     easProtocolVersion: '16.1',
     easDeviceId: deviceId,
   };
+}
+
+function oauthConfigForAccount(account: Account): OAuthProviderConfig | null {
+  const setupId = account.setupProviderId;
+  if (setupId === 'gmail' || setupId === 'outlook' || setupId === 'microsoft365') {
+    const cfg = getProvider(setupId);
+    if (cfg.authType === 'oauth2') return cfg;
+  }
+  if (account.oauthProvider === 'google') {
+    const cfg = getProvider('gmail');
+    return cfg.authType === 'oauth2' ? cfg : null;
+  }
+  if (account.oauthProvider === 'microsoft') {
+    const cfg = getProvider('outlook');
+    return cfg.authType === 'oauth2' ? cfg : null;
+  }
+  return null;
+}
+
+export async function reauthorizeAccount(
+  account: Account,
+  opts?: {
+    clientId?: string;
+    clientSecret?: string;
+    onStarted?: (authUrl: string) => void;
+  },
+): Promise<void> {
+  const config = oauthConfigForAccount(account);
+  if (!config) {
+    throw new Error('This account does not support re-authorization');
+  }
+
+  const { tokens, userInfo } = await runOAuthFlow(config, {
+    email: account.email,
+    clientId: opts?.clientId,
+    clientSecret: opts?.clientSecret,
+    onStarted: opts?.onStarted,
+  });
+
+  const tokenExpiresAt = Math.floor(Date.now() / 1000) + (tokens.expires_in ?? 3600);
+
+  await updateAccount(account.id, {
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token ?? undefined,
+    tokenExpiresAt,
+    displayName: userInfo.displayName,
+    // Keep the same provider/presets; only tokens and identity may refresh.
+  });
 }

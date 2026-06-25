@@ -45,7 +45,7 @@ async function resolveRecipientName(ctx: VariableContext): Promise<string> {
   if (!ctx.recipientEmail) return '';
   try {
     const contact = await getContactByEmail(ctx.recipientEmail);
-    return contact?.display_name ?? '';
+    return contact?.displayName ?? '';
   } catch {
     return '';
   }

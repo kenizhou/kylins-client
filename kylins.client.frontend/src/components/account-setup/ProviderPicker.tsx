@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { PROVIDERS, type SetupProviderId } from '../../services/auth/providers';
 import { SetupCard, SetupHeader, ProviderTile } from './setup-ui';
 
@@ -16,20 +15,6 @@ export interface ProviderPickerProps {
 }
 
 export function ProviderPicker({ onPick }: ProviderPickerProps) {
-  const tiles = useMemo(
-    () =>
-      TILE_ORDER.map((id, index) => (
-        <ProviderTile
-          key={id}
-          id={id}
-          name={PROVIDERS[id].name}
-          onClick={() => onPick(id)}
-          style={{ animationDelay: `${index * 40}ms` }}
-        />
-      )),
-    [onPick],
-  );
-
   return (
     <SetupCard width="lg">
       <SetupHeader
@@ -37,10 +22,20 @@ export function ProviderPicker({ onPick }: ProviderPickerProps) {
         subtitle="Choose your email provider to get started. You can add more accounts later."
       />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{tiles}</div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {TILE_ORDER.map((id, index) => (
+          <ProviderTile
+            key={id}
+            id={id}
+            name={PROVIDERS[id].name}
+            onClick={() => onPick(id)}
+            style={{ animationDelay: `${index * 40}ms` }}
+          />
+        ))}
+      </div>
 
       <p className="mt-6 text-center text-xs text-[var(--muted-text)]">
-        Don’t see your provider? Use Other (IMAP/SMTP) or Exchange.
+        Don't see your provider? Use Other (IMAP/SMTP) or Exchange.
       </p>
     </SetupCard>
   );

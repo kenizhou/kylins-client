@@ -7,12 +7,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { searchContacts, type DbContact } from '@/services/db/contacts';
 import { parseRecipients, isValidEmail, type Recipient } from '@/features/composer/contacts';
+import { CopyIcon, MoveIcon, TrashIcon } from '@/components/icons';
+
+export type MoveTarget = 'to' | 'cc' | 'bcc';
 
 interface RecipientFieldProps {
   label: string;
   recipients: Recipient[];
   onChange: (recipients: Recipient[]) => void;
   placeholder?: string;
+  moveTargets?: { label: string; target: MoveTarget }[];
+  onMove?: (recipient: Recipient, target: MoveTarget) => void;
 }
 
 export function RecipientField({
@@ -20,12 +25,14 @@ export function RecipientField({
   recipients,
   onChange,
   placeholder = 'Add recipients…',
+  moveTargets,
+  onMove,
 }: RecipientFieldProps) {
   const [inputValue, setInputValue] = useState('');
   const [suggestions, setSuggestions] = useState<DbContact[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(-1);
-  // Which recipient chip has its action menu open (arrow click or right-click).
+  // Which recipient chip has its action menu open (chip click or right-click).
   const [menuIndex, setMenuIndex] = useState<number | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -60,8 +67,9 @@ export function RecipientField({
       // parseRecipients handles comma/semicolon split, "Name <email>", and
       // produces one invalid recipient for unparseable blobs (so it surfaces as
       // a red chip rather than being silently dropped).
+      const existing = new Set(recipients.map((r) => r.email.toLowerCase()));
       const parsed = parseRecipients(text).filter(
-        (r) => !recipients.some((x) => x.email.toLowerCase() === r.email.toLowerCase()),
+        (r) => !existing.has(r.email.toLowerCase()),
       );
       if (parsed.length > 0) onChange([...recipients, ...parsed]);
       setInputValue('');
@@ -109,6 +117,16 @@ export function RecipientField({
     [recipients],
   );
 
+  const moveRecipient = useCallback(
+    (i: number, target: MoveTarget) => {
+      const r = recipients[i];
+      if (!r || !onMove) return;
+      onMove(r, target);
+      setMenuIndex(null);
+    },
+    [recipients, onMove],
+  );
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === 'Tab' || e.key === ',' || e.key === ';') {
       if (showSuggestions && selectedIdx >= 0 && suggestions[selectedIdx]) {
@@ -128,12 +146,15 @@ export function RecipientField({
       setSelectedIdx((prev) => Math.max(prev - 1, 0));
     } else if (e.key === 'Escape') {
       setShowSuggestions(false);
+      setMenuIndex(null);
     }
   };
 
+  const hasMoveOptions = moveTargets && moveTargets.length > 0 && onMove;
+
   return (
     <div className="flex items-start gap-2">
-      <span className="w-8 shrink-0 pt-1.5 text-xs text-[var(--muted-text)]">{label}</span>
+      <span className="w-8 shrink-0 pt-1.5 text-xs font-medium text-[var(--muted-text)]">{label}</span>
       <div className="relative flex min-h-[32px] flex-1 flex-wrap items-center gap-1">
         {recipients.map((r, i) => {
           const invalid = !isValidEmail(r.email);
@@ -142,13 +163,18 @@ export function RecipientField({
             <span
               key={`${r.email}-${i}`}
               title={r.email}
-              className={`relative inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs ${
+              className={`group relative inline-flex items-center gap-1 rounded-full pl-2.5 pr-1 py-0.5 text-xs cursor-pointer transition-colors ${
                 invalid
                   ? 'bg-[var(--destructive)]/15 text-[var(--destructive)] ring-1 ring-[var(--destructive)]/40'
-                  : 'bg-[var(--accent)] text-[var(--selected-text)]'
+                  : 'bg-[color-mix(in_oklab,var(--primary),transparent_88%)] text-[var(--foreground)] hover:bg-[color-mix(in_oklab,var(--primary),transparent_80%)]'
               }`}
+              onClick={(e) => {
+                // Left-click the chip (but not the arrow button) opens the menu.
+                if ((e.target as HTMLElement).closest('[data-chip-arrow]')) return;
+                setMenuIndex(menuOpen ? null : i);
+              }}
               onContextMenu={(e) => {
-                // Right-click a recipient to open its action menu (copy / remove).
+                // Right-click a recipient to open its action menu.
                 e.preventDefault();
                 setMenuIndex(i);
               }}
@@ -158,11 +184,12 @@ export function RecipientField({
               </span>
               <button
                 type="button"
+                data-chip-arrow
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuIndex(menuOpen ? null : i);
                 }}
-                className="text-[0.625rem] leading-none opacity-70 hover:opacity-100"
+                className="flex h-4 w-4 items-center justify-center rounded-full text-[0.625rem] leading-none opacity-60 hover:bg-black/10 hover:opacity-100 transition-opacity"
                 aria-label={`Actions for ${r.email}`}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
@@ -181,16 +208,35 @@ export function RecipientField({
                     onKeyDown={(e) => {
                       if (e.key === 'Escape') setMenuIndex(null);
                     }}
-                    className="absolute right-0 top-full z-50 mt-1 min-w-[168px] overflow-hidden rounded-md border border-[var(--border)] bg-[var(--popover)] py-1 text-[var(--foreground)] shadow-lg"
+                    className="absolute left-0 top-full z-50 mt-1 min-w-[180px] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--popover)] py-1 text-[var(--popover-foreground)] shadow-lg"
                   >
                     <button
                       type="button"
                       role="menuitem"
                       onClick={() => copyAddress(i)}
-                      className="block w-full px-3 py-1.5 text-left text-xs hover:bg-[var(--hover)]"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-[var(--hover)] transition-colors"
                     >
-                      {copiedIndex === i ? 'Copied!' : 'Copy email address'}
+                      <CopyIcon size={14} />
+                      <span>{copiedIndex === i ? 'Copied!' : 'Copy email address'}</span>
                     </button>
+                    {hasMoveOptions && (
+                      <>
+                        <div className="my-1 border-t border-[var(--border)]" />
+                        {moveTargets.map((target) => (
+                          <button
+                            key={target.target}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => moveRecipient(i, target.target)}
+                            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-[var(--hover)] transition-colors"
+                          >
+                            <MoveIcon size={14} />
+                            <span>Move to {target.label}</span>
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    <div className="my-1 border-t border-[var(--border)]" />
                     <button
                       type="button"
                       role="menuitem"
@@ -198,9 +244,10 @@ export function RecipientField({
                         removeAt(i);
                         setMenuIndex(null);
                       }}
-                      className="block w-full px-3 py-1.5 text-left text-xs text-[var(--destructive)] hover:bg-[var(--hover)]"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors"
                     >
-                      Remove
+                      <TrashIcon size={14} />
+                      <span>Remove</span>
                     </button>
                   </div>
                 </>
@@ -222,7 +269,7 @@ export function RecipientField({
           }}
           placeholder={recipients.length === 0 ? placeholder : ''}
           aria-label={label}
-          className="min-w-[120px] flex-1 bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]"
+          className="min-w-[120px] flex-1 bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/50"
         />
 
         {showSuggestions && (

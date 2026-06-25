@@ -2,6 +2,7 @@ import { useViewStore, type MailMessage } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
 import type { ColumnDef } from '../../features/view/types';
 import { DEMO_MESSAGES, getInitials, formatMessageTime } from '../../data/demoMessages';
+import { openViewerWindow } from '../../utils/viewerWindow';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -14,6 +15,7 @@ interface MessageRowProps {
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
   onClick?: () => void;
+  onDoubleClick?: () => void;
 }
 
 const RIBBON_COLOR: Record<MessageState, string> = {
@@ -38,6 +40,7 @@ function MessageRow({
   selected,
   density,
   onClick,
+  onDoubleClick,
 }: MessageRowProps) {
   const unread = state === 'unread';
   return (
@@ -45,6 +48,7 @@ function MessageRow({
       role="button"
       tabIndex={0}
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -57,7 +61,7 @@ function MessageRow({
         ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}
       `}
     >
-      <div className={`w-[3px] rounded-r-[2px] ${RIBBON_COLOR[state]}`} />
+      <div className={`w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] ${RIBBON_COLOR[state]}`} />
       <div className="w-7 h-7 rounded-full bg-[var(--border)] grid place-items-center text-[10px] font-bold text-[var(--muted-text)] shrink-0">
         {initials}
       </div>
@@ -83,13 +87,16 @@ function MessageRow({
 function MessageGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="py-1.5 border-b border-[var(--border)] last:border-b-0">
-      <div className="px-3 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)]">
+      <div className="px-3 py-1 font-[var(--text-overline)] uppercase tracking-[0.04em] text-[var(--muted-text)]">
         {label}
       </div>
       {children}
     </div>
   );
 }
+
+const TODAY_MESSAGES = DEMO_MESSAGES.slice(0, 2);
+const YESTERDAY_MESSAGES = DEMO_MESSAGES.slice(2);
 
 export function MessageList() {
   const density = useViewStore((s) => s.messageListDensity);
@@ -126,7 +133,7 @@ export function MessageList() {
 
       <div className="flex-1 overflow-auto">
         <MessageGroup label="Today">
-          {DEMO_MESSAGES.slice(0, 2).map((message) => (
+          {TODAY_MESSAGES.map((message) => (
             <MessageRow
               key={message.id}
               sender={message.from.name}
@@ -137,11 +144,12 @@ export function MessageList() {
               selected={selectedMessage?.id === message.id}
               density={density}
               onClick={() => handleSelect(message)}
+              onDoubleClick={() => openViewerWindow(message)}
             />
           ))}
         </MessageGroup>
         <MessageGroup label="Yesterday">
-          {DEMO_MESSAGES.slice(2).map((message) => (
+          {YESTERDAY_MESSAGES.map((message) => (
             <MessageRow
               key={message.id}
               sender={message.from.name}
@@ -152,6 +160,7 @@ export function MessageList() {
               selected={selectedMessage?.id === message.id}
               density={density}
               onClick={() => handleSelect(message)}
+              onDoubleClick={() => openViewerWindow(message)}
             />
           ))}
         </MessageGroup>

@@ -15,7 +15,7 @@ import {
   SettingsIcon,
   UserIcon,
 } from '../icons';
-import { useComposerStore } from '../../stores/composerStore';
+import { openComposerWindow } from '../../utils/composeWindow';
 
 function RibbonGroup({ children }: { children: React.ReactNode }) {
   return (
@@ -52,16 +52,14 @@ function RibbonButton({ children, icon, primary, split, onClick }: RibbonButtonP
 }
 
 export function CommandRibbon() {
-  const openComposer = useComposerStore((s) => s.openComposer);
-
   return (
     <nav
-      className="mx-2 mt-2 flex min-h-11 items-stretch justify-between rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 shadow-sm"
+      className="mx-2 mt-2 flex min-h-[var(--ribbon-h)] items-stretch justify-between rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 shadow-sm"
       aria-label="Command ribbon"
     >
       <div className="flex items-stretch">
         <RibbonGroup>
-          <RibbonButton primary icon={<PlusIcon />} split onClick={() => openComposer()}>
+          <RibbonButton primary icon={<PlusIcon />} split onClick={() => openComposerWindow()}>
             New mail
           </RibbonButton>
         </RibbonGroup>

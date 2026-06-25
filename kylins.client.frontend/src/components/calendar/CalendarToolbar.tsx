@@ -66,8 +66,8 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
       <h2 className="ml-1 text-base font-semibold text-[var(--foreground)]">{title}</h2>
 
       <div className="ml-auto flex items-center gap-2">
-        <div className="flex overflow-hidden rounded-md border border-[var(--border)]">
-          {VIEWS.map((v, idx) => (
+        <div className="flex overflow-hidden rounded-md border border-[var(--border)] divide-x divide-[var(--border)]">
+          {VIEWS.map((v) => (
             <button
               key={v.key}
               onClick={() => setView(v.key)}
@@ -75,7 +75,7 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
                 view === v.key
                   ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
                   : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
-              } ${idx > 0 ? 'border-l border-[var(--border)]' : ''}`}
+              }`}
             >
               {v.label}
             </button>

@@ -6,7 +6,7 @@
 // mailbox or custom "From"). When the table has no rows for an account we
 // synthesize one from the account itself so the From selector always works.
 
-import { getDb } from './connection';
+import { getDb, buildDynamicUpdate } from './connection';
 import type { Account } from '../../types';
 
 export interface DbSendAsAlias {
@@ -31,6 +31,7 @@ export interface SendAsAlias {
   signatureId: string | null;
   isPrimary: boolean;
   isDefault: boolean;
+  treatAsAlias: boolean;
   verificationStatus: string;
 }
 
@@ -43,8 +44,90 @@ export function mapDbAlias(row: DbSendAsAlias): SendAsAlias {
     signatureId: row.signature_id,
     isPrimary: row.is_primary === 1,
     isDefault: row.is_default === 1,
+    treatAsAlias: row.treat_as_alias === 1,
     verificationStatus: row.verification_status,
   };
+}
+
+export async function getMappedAliasesForAccount(accountId: string): Promise<SendAsAlias[]> {
+  const rows = await getAliasesForAccount(accountId);
+  return rows.map(mapDbAlias);
+}
+
+export interface CreateAliasInput {
+  accountId: string;
+  email: string;
+  displayName?: string;
+  replyTo?: string;
+  isDefault?: boolean;
+  treatAsAlias?: boolean;
+}
+
+export async function insertAlias(input: CreateAliasInput): Promise<string> {
+  const db = await getDb();
+  const id = crypto.randomUUID();
+
+  if (input.isDefault) {
+    await db.execute('UPDATE send_as_aliases SET is_default = 0 WHERE account_id = $1', [
+      input.accountId,
+    ]);
+  }
+
+  await db.execute(
+    `INSERT INTO send_as_aliases (
+      id, account_id, email, display_name, reply_to_address,
+      is_primary, is_default, treat_as_alias, verification_status, created_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'accepted', $9)`,
+    [
+      id,
+      input.accountId,
+      input.email,
+      input.displayName ?? null,
+      input.replyTo ?? null,
+      0,
+      input.isDefault ? 1 : 0,
+      input.treatAsAlias !== false ? 1 : 0,
+      Math.floor(Date.now() / 1000),
+    ],
+  );
+  return id;
+}
+
+export async function updateAlias(
+  id: string,
+  updates: Partial<Omit<CreateAliasInput, 'accountId' | 'email'>>,
+): Promise<void> {
+  const db = await getDb();
+
+  if (updates.isDefault) {
+    const rows = await db.select<{ account_id: string }[]>(
+      'SELECT account_id FROM send_as_aliases WHERE id = $1',
+      [id],
+    );
+    if (rows[0]) {
+      await db.execute(
+        'UPDATE send_as_aliases SET is_default = 0 WHERE account_id = $1',
+        [rows[0].account_id],
+      );
+    }
+  }
+
+  const fields: [string, unknown][] = [];
+  if (updates.displayName !== undefined) fields.push(['display_name', updates.displayName]);
+  if (updates.replyTo !== undefined) fields.push(['reply_to_address', updates.replyTo]);
+  if (updates.isDefault !== undefined) fields.push(['is_default', updates.isDefault ? 1 : 0]);
+  if (updates.treatAsAlias !== undefined)
+    fields.push(['treat_as_alias', updates.treatAsAlias ? 1 : 0]);
+
+  const query = buildDynamicUpdate('send_as_aliases', 'id', id, fields);
+  if (query) {
+    await db.execute(query.sql, query.params);
+  }
+}
+
+export async function deleteAlias(id: string): Promise<void> {
+  const db = await getDb();
+  await db.execute('DELETE FROM send_as_aliases WHERE id = $1', [id]);
 }
 
 export async function getAliasesForAccount(accountId: string): Promise<DbSendAsAlias[]> {
@@ -68,6 +151,7 @@ export function accountAsAlias(account: Account): SendAsAlias {
     signatureId: null,
     isPrimary: true,
     isDefault: true,
+    treatAsAlias: true,
     verificationStatus: 'accepted',
   };
 }

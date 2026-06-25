@@ -21,8 +21,10 @@ vi.mock('../src/services/accounts', () => ({
   getAllAccounts: vi.fn(() => Promise.resolve([])),
 }));
 vi.mock('../src/services/theme/themeManager', () => ({
-  ThemeManager: class {
-    applyTheme = vi.fn();
+  themeManager: {
+    applyTheme: vi.fn(),
+    applySkin: vi.fn(),
+    resetSkin: vi.fn(),
   },
 }));
 vi.mock('../src/services/plugins/pluginManager', () => ({

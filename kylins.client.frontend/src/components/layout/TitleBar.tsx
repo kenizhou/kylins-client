@@ -40,7 +40,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-10 flex items-center justify-between px-2 bg-[color-mix(in_oklab,var(--surface),black_12%)] select-none"
+      className="relative h-[var(--header-h)] flex items-center justify-between px-2 bg-[var(--chrome)] select-none"
       style={dragStyle}
     >
       {/* Left: hamburger + menu bar */}
@@ -89,7 +89,7 @@ export function TitleBar() {
         <button
           type="button"
           onClick={handleClose}
-          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-red-500 hover:text-white transition-colors"
+          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-[var(--destructive)] hover:text-[var(--primary-fg)] transition-colors"
           aria-label="Close"
         >
           <CloseIcon size={14} />

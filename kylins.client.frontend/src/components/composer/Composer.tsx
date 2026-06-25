@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 
 import { RecipientField } from '@/features/composer/RecipientField';
+import type { MoveTarget } from '@/features/composer/RecipientField';
 import { buildComposerExtensions } from '@/features/composer/editorExtensions';
 import { EditorToolbar } from './EditorToolbar';
 import { AttachmentPicker } from './AttachmentPicker';
@@ -25,14 +26,14 @@ import { TemplatePicker } from './TemplatePicker';
 import { FromSelector } from './FromSelector';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
+import { usePreferencesStore } from '@/stores/preferencesStore';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
 import { getDb } from '@/services/db/connection';
 import { upsertContact } from '@/services/db/contacts';
-import { getSetting } from '@/services/settings';
 import { insertScheduledEmail } from '@/services/db/scheduledEmails';
-import { getDefaultSignature } from '@/services/db/signatures';
+import { getDefaultSignature, signatureContextForComposerMode } from '@/services/db/signatures';
 import {
   getAliasesForAccount,
   mapDbAlias,
@@ -42,12 +43,25 @@ import {
 import { getTemplatesForAccount, type DbTemplate } from '@/services/db/templates';
 import { interpolateVariables } from '@/utils/templateVariables';
 import { formatRecipients } from '@/features/composer/contacts';
+import type { Recipient } from '@/features/composer/contacts';
 import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { readFileAsBase64 } from '@/utils/fileUtils';
-import { MaximizeIcon, RestoreIcon, ClockIcon, CloseIcon, PopOutIcon, PlusIcon } from '../icons';
+import { MaximizeIcon, RestoreIcon, MinimizeIcon, ClockIcon, CloseIcon, PopOutIcon, PlusIcon } from '../icons';
 import { InputDialog } from '@/components/ui/InputDialog';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
-export function Composer() {
+const dragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
+  WebkitAppRegion: 'drag',
+};
+const noDragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
+  WebkitAppRegion: 'no-drag',
+};
+
+interface ComposerProps {
+  windowed?: boolean;
+}
+
+export function Composer({ windowed = false }: ComposerProps) {
   // Individual selectors — only re-render when each value changes.
   const isOpen = useComposerStore((s) => s.isOpen);
   const mode = useComposerStore((s) => s.mode);
@@ -77,10 +91,16 @@ export function Composer() {
   const accounts = useAccountStore((s) => s.accounts);
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
 
+  const enableRichText = usePreferencesStore((s) => s.enableRichText);
+  const checkSpelling = usePreferencesStore((s) => s.checkSpelling);
+  const undoSendDuration = usePreferencesStore((s) => s.undoSendDuration);
+  const messageSentSound = usePreferencesStore((s) => s.messageSentSound);
+
   const sendingRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
   const dragCounterRef = useRef(0);
@@ -126,6 +146,7 @@ export function Composer() {
       attributes: {
         class:
           'kylins-editor max-w-none px-4 py-3 min-h-[200px] focus:outline-none text-[var(--foreground)]',
+        spellcheck: String(checkSpelling),
       },
       handleKeyDown: (_view, event) => {
         // Cmd/Ctrl+K → open the link dialog (also reachable via the toolbar button).
@@ -166,20 +187,41 @@ export function Composer() {
     });
   }, [editor, signatureId, signatureHtml]);
 
+  // Track maximize state for windowed composer so the restore/maximize icon
+  // matches the actual window state.
+  useEffect(() => {
+    if (!windowed) return;
+    const appWindow = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+
+    async function init() {
+      setIsMaximized(await appWindow.isMaximized());
+      unlisten = await appWindow.onResized(async () => {
+        setIsMaximized(await appWindow.isMaximized());
+      });
+    }
+    init();
+
+    return () => {
+      unlisten?.();
+    };
+  }, [windowed]);
+
   // Load signature, aliases, and templates when the composer opens.
   useEffect(() => {
     if (!isOpen || !activeAccountId || !activeAccount) return;
     let cancelled = false;
 
     Promise.all([
-      getDefaultSignature(activeAccountId),
+      getDefaultSignature(activeAccountId, signatureContextForComposerMode(mode)),
       getAliasesForAccount(activeAccountId),
       getTemplatesForAccount(activeAccountId),
     ]).then(([sig, dbAliases, templates]) => {
       if (cancelled) return;
       const store = useComposerStore.getState();
 
-      if (sig) {
+      // Respect a signature already chosen by the caller (e.g. pop-out restore).
+      if (!store.signatureId && sig) {
         store.setSignatureHtml(sig.body_html);
         store.setSignatureId(sig.id);
       }
@@ -287,14 +329,17 @@ export function Composer() {
           : undefined,
     };
 
-    const delaySetting = await getSetting('undo_send_delay_seconds');
-    const delay = parseInt(delaySetting ?? '5', 10) * 1000;
+    const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
 
     state.setUndoSendVisible(true);
 
     const timer = setTimeout(async () => {
       try {
         await sendEmail(activeAccountId, input, currentDraftId);
+        if (messageSentSound) {
+          // TODO: play actual sent sound once a sound asset is bundled.
+          console.log('[composer] message sent sound');
+        }
         // TODO: send-and-archive (needs viewer archiveThread) — when enabled,
         // archive the thread here if the setting is on and state.threadId is set.
         await Promise.all(
@@ -342,7 +387,7 @@ export function Composer() {
         replyToMessageId: state.inReplyToMessageId,
         threadId: state.threadId,
         scheduledAt,
-        signatureId: null,
+        signatureId: state.signatureId,
       });
 
       // insertScheduledEmail has no attachment column setter, so persist the
@@ -376,6 +421,15 @@ export function Composer() {
     [activeAccountId, closeComposer, getFullHtml],
   );
 
+  const closeWindowIfWindowed = useCallback(async () => {
+    if (!windowed) return;
+    try {
+      await getCurrentWindow().close();
+    } catch {
+      /* ignore in non-Tauri contexts */
+    }
+  }, [windowed]);
+
   const handleDiscard = useCallback(async () => {
     stopAutoSave();
     const currentDraftId = useComposerStore.getState().draftId;
@@ -387,7 +441,50 @@ export function Composer() {
       }
     }
     closeComposer();
-  }, [closeComposer]);
+    await closeWindowIfWindowed();
+  }, [closeComposer, closeWindowIfWindowed]);
+
+  const handleClose = useCallback(async () => {
+    stopAutoSave();
+    closeComposer();
+    await closeWindowIfWindowed();
+  }, [closeComposer, closeWindowIfWindowed]);
+
+  const handleMinimize = useCallback(async () => {
+    if (!windowed) return;
+    try {
+      await getCurrentWindow().minimize();
+    } catch {
+      /* ignore in non-Tauri contexts */
+    }
+  }, [windowed]);
+
+  const handleToggleMaximize = useCallback(async () => {
+    if (!windowed) return;
+    try {
+      await getCurrentWindow().toggleMaximize();
+    } catch {
+      /* ignore in non-Tauri contexts */
+    }
+  }, [windowed]);
+
+  const handleSendAndCloseWindow = useCallback(async () => {
+    await handleSend();
+    await closeWindowIfWindowed();
+  }, [handleSend, closeWindowIfWindowed]);
+
+  const handleMoveRecipient = useCallback(
+    (recipient: Recipient, from: 'to' | 'cc' | 'bcc', toField: MoveTarget) => {
+      const eqEmail = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+      const lists = { to, cc, bcc };
+      const setters = { to: setTo, cc: setCc, bcc: setBcc };
+      setters[from](lists[from].filter((r) => !eqEmail(r.email, recipient.email)));
+      if (!lists[toField].some((r) => eqEmail(r.email, recipient.email))) {
+        setters[toField]([...lists[toField], recipient]);
+      }
+    },
+    [to, cc, bcc, setTo, setCc, setBcc],
+  );
 
   const handlePopOutComposer = useCallback(async () => {
     try {
@@ -404,22 +501,31 @@ export function Composer() {
       if (state.inReplyToMessageId) params.set('inReplyToMessageId', state.inReplyToMessageId);
       if (state.draftId) params.set('draftId', state.draftId);
       if (state.fromEmail) params.set('fromEmail', state.fromEmail);
+      if (state.signatureId) params.set('signatureId', state.signatureId);
       const bodyHtml = editor?.getHTML() ?? '';
       if (bodyHtml) params.set('body', btoa(unescape(encodeURIComponent(bodyHtml))));
 
       const windowLabel = `compose-${Date.now()}`;
-      const existing = await WebviewWindow.getByLabel(windowLabel);
-      if (existing) {
-        await existing.setFocus();
-        return;
-      }
-
-      new WebviewWindow(windowLabel, {
+      const webview = new WebviewWindow(windowLabel, {
         url: `index.html?${params.toString()}`,
         title: state.subject || 'New Message',
         width: 700,
         height: 650,
+        minWidth: 600,
+        minHeight: 480,
         center: true,
+        decorations: false,
+        resizable: true,
+        maximizable: true,
+        minimizable: true,
+        closable: true,
+      });
+
+      webview.once('tauri://created', () => {
+        console.log('[Composer] popped out', windowLabel);
+      });
+      webview.once('tauri://error', (e) => {
+        console.error('[Composer] pop-out failed', e);
       });
 
       stopAutoSave();
@@ -431,7 +537,7 @@ export function Composer() {
 
   if (!isOpen) return null;
 
-  const isFullpage = viewMode === 'fullpage';
+  const isFullpage = windowed || viewMode === 'fullpage';
   const modeLabel =
     mode === 'reply'
       ? 'Reply'
@@ -442,25 +548,20 @@ export function Composer() {
           : 'New Message';
   const savedLabel = isSaving ? 'Saving...' : lastSavedAt ? 'Draft saved' : null;
 
-  return (
+  const composerPanel = (
     <div
-      className={`fixed inset-0 z-50 flex ${
-        isFullpage ? 'items-stretch justify-center p-4' : 'items-end justify-center pb-4'
-      } pointer-events-none`}
+      className={`composer-panel pointer-events-auto relative flex flex-col rounded-xl border bg-[var(--background)] shadow-2xl ${
+        windowed
+          ? 'h-full w-full rounded-none border-0 shadow-none'
+          : isFullpage
+            ? 'h-full max-w-5xl w-full'
+            : 'h-[min(760px,85vh)] w-[min(900px,92vw)]'
+      } ${isDragging ? 'border-2 border-[var(--primary)]' : 'border-[var(--border)]'}`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
     >
-      {/* Backdrop */}
-      <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={closeComposer} />
-
-      {/* Composer window */}
-      <div
-        className={`composer-panel pointer-events-auto relative flex flex-col rounded-lg border bg-[var(--background)] shadow-2xl ${
-          isFullpage ? 'h-full max-w-5xl w-full' : 'max-h-[80vh] max-w-2xl w-full'
-        } ${isDragging ? 'border-2 border-[var(--primary)]' : 'border-[var(--border)]'}`}
-        onDragEnter={handleDragEnter}
-        onDragLeave={handleDragLeave}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-      >
         {isDragging && (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-[var(--primary)] bg-[var(--accent)]/90">
             <div className="rounded-full bg-[var(--primary)] p-3 text-[var(--primary-fg)]">
@@ -473,25 +574,52 @@ export function Composer() {
         )}
 
         {/* Header */}
-        <div className="flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+        <div
+          className={`flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 ${windowed ? 'select-none' : ''}`}
+          style={windowed ? dragStyle : undefined}
+        >
           <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1" style={noDragStyle}>
+            {!windowed && (
+              <button
+                onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
+                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+                title={isFullpage ? 'Collapse' : 'Expand'}
+              >
+                {isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
+              </button>
+            )}
+            {!windowed && (
+              <button
+                onClick={handlePopOutComposer}
+                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+                title="Open in new window"
+              >
+                <PopOutIcon size={14} />
+              </button>
+            )}
+            {windowed && (
+              <>
+                <button
+                  onClick={handleMinimize}
+                  className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+                  title="Minimize"
+                  aria-label="Minimize"
+                >
+                  <MinimizeIcon size={14} />
+                </button>
+                <button
+                  onClick={handleToggleMaximize}
+                  className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+                  title={isMaximized ? 'Restore' : 'Maximize'}
+                  aria-label={isMaximized ? 'Restore' : 'Maximize'}
+                >
+                  {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
+                </button>
+              </>
+            )}
             <button
-              onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
-              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-              title={isFullpage ? 'Collapse' : 'Expand'}
-            >
-              {isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-            </button>
-            <button
-              onClick={handlePopOutComposer}
-              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-              title="Open in new window"
-            >
-              <PopOutIcon size={14} />
-            </button>
-            <button
-              onClick={closeComposer}
+              onClick={handleClose}
               className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
               aria-label="Close composer"
             >
@@ -507,7 +635,17 @@ export function Composer() {
             selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
             onChange={(alias) => setFromEmail(alias.email)}
           />
-          <RecipientField label="To" recipients={to} onChange={setTo} placeholder="Recipients" />
+          <RecipientField
+            label="To"
+            recipients={to}
+            onChange={setTo}
+            placeholder="Recipients"
+            moveTargets={[
+              { label: 'Cc', target: 'cc' },
+              { label: 'Bcc', target: 'bcc' },
+            ]}
+            onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
+          />
           {showCcBcc ? (
             <>
               <RecipientField
@@ -515,12 +653,22 @@ export function Composer() {
                 recipients={cc}
                 onChange={setCc}
                 placeholder="Cc recipients"
+                moveTargets={[
+                  { label: 'To', target: 'to' },
+                  { label: 'Bcc', target: 'bcc' },
+                ]}
+                onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
               />
               <RecipientField
                 label="Bcc"
                 recipients={bcc}
                 onChange={setBcc}
                 placeholder="Bcc recipients"
+                moveTargets={[
+                  { label: 'To', target: 'to' },
+                  { label: 'Cc', target: 'cc' },
+                ]}
+                onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
               />
             </>
           ) : (
@@ -548,7 +696,9 @@ export function Composer() {
         </div>
 
         {/* Editor toolbar */}
-        <EditorToolbar editor={editor} onRequestLink={() => setShowLinkDialog(true)} />
+        {enableRichText && (
+          <EditorToolbar editor={editor} onRequestLink={() => setShowLinkDialog(true)} />
+        )}
 
         {/* Editor */}
         <div className="flex-1 overflow-y-auto">
@@ -587,7 +737,7 @@ export function Composer() {
             </button>
             <div className="flex items-center">
               <button
-                onClick={handleSend}
+                onClick={windowed ? handleSendAndCloseWindow : handleSend}
                 disabled={to.length === 0}
                 className="rounded-l-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -604,22 +754,36 @@ export function Composer() {
             </div>
           </div>
         </div>
+
+        {showSchedule && (
+          <ScheduleSendDialog onSchedule={handleSchedule} onClose={() => setShowSchedule(false)} />
+        )}
+
+        <InputDialog
+          isOpen={showLinkDialog}
+          onClose={() => setShowLinkDialog(false)}
+          onSubmit={(values) => {
+            if (values.url) editor?.chain().focus().setLink({ href: values.url }).run();
+          }}
+          title="Insert Link"
+          fields={[{ key: 'url', label: 'URL', placeholder: 'https://...' }]}
+          submitLabel="Insert"
+        />
       </div>
+    );
 
-      {showSchedule && (
-        <ScheduleSendDialog onSchedule={handleSchedule} onClose={() => setShowSchedule(false)} />
-      )}
+  if (windowed) {
+    return (
+      <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
+        {composerPanel}
+      </div>
+    );
+  }
 
-      <InputDialog
-        isOpen={showLinkDialog}
-        onClose={() => setShowLinkDialog(false)}
-        onSubmit={(values) => {
-          if (values.url) editor?.chain().focus().setLink({ href: values.url }).run();
-        }}
-        title="Insert Link"
-        fields={[{ key: 'url', label: 'URL', placeholder: 'https://...' }]}
-        submitLabel="Insert"
-      />
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+      <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={closeComposer} />
+      {composerPanel}
     </div>
   );
 }

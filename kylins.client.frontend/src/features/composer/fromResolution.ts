@@ -6,14 +6,11 @@
 // so it is unit-testable.
 
 import type { SendAsAlias } from '@/services/db/sendAsAliases';
+import { eqEmail } from './contacts';
 
 interface ReplyableMessage {
   to: { name: string; address: string }[];
   cc?: { name: string; address: string }[];
-}
-
-function eqEmail(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
 }
 
 /**

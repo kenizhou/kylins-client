@@ -40,7 +40,7 @@ function FolderRow({ icon, name, count, active }: FolderRowProps) {
 function FolderGroup({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="py-2 last:pb-0">
-      <div className="px-3 pb-1.5 text-[11px] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)]">
+      <div className="px-3 pb-1.5 font-[var(--text-overline)] uppercase tracking-[0.04em] text-[var(--muted-text)]">
         {title}
       </div>
       <div className="space-y-0.5 px-0">{children}</div>
@@ -52,7 +52,7 @@ export function FolderPane() {
   const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
   return (
     <div className="flex flex-col h-full bg-[var(--surface)] rounded-xl">
-      <div className="flex h-8 shrink-0 items-center justify-between px-3">
+      <div className="flex h-[var(--pane-header-h)] shrink-0 items-center justify-between px-3">
         <span className="text-sm font-semibold text-[var(--foreground)]">Folders</span>
         <div className="flex items-center gap-1">
           <InjectedComponentSet role="folder-pane:header" containersRequired={false} />

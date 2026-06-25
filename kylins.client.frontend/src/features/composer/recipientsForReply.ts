@@ -7,17 +7,13 @@
 // any aliases) explicitly so it is unit-testable.
 
 import type { Recipient } from './contacts';
-import { toRecipient } from './contacts';
+import { toRecipient, eqEmail } from './contacts';
 
 interface SourceMessage {
   from: { name: string; address: string };
   to: { name: string; address: string }[];
   cc?: { name: string; address: string }[];
   replyTo?: { name: string; address: string }[];
-}
-
-function eqEmail(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
 }
 
 function isSelf(address: string, selfEmails: string[]): boolean {

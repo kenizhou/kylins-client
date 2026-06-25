@@ -23,7 +23,7 @@ import { subjectWithPrefix } from '@/features/composer/subjectPrefix';
 import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { resolveFromForReply } from '@/features/composer/fromResolution';
 import type { Recipient } from '@/features/composer/contacts';
-import { getDefaultSignature } from '@/services/db/signatures';
+import { getDefaultSignature, type SignatureContext } from '@/services/db/signatures';
 import {
   getAliasesForAccount,
   mapDbAlias,
@@ -57,7 +57,7 @@ export function InlineReply({
   onSent,
 }: InlineReplyProps) {
   const isForward = mode === 'forward';
-  const selfEmails = useMemo(() => (accountEmail ? [accountEmail] : []), [accountEmail]);
+  const selfEmails = accountEmail ? [accountEmail] : [];
 
   // Recipients are pre-filled for replies (To/Cc via participantsForReply*),
   // empty for forward. The component remounts per message/mode (ReadingPane
@@ -83,11 +83,13 @@ export function InlineReply({
   const [status, setStatus] = useState<SendStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const signatureContext: SignatureContext = mode === 'forward' ? 'forward' : 'reply';
+
   // Load the account's default signature + send-as aliases (for smart-From).
   useEffect(() => {
     if (!accountId) return;
     let cancelled = false;
-    Promise.all([getDefaultSignature(accountId), getAliasesForAccount(accountId)]).then(
+    Promise.all([getDefaultSignature(accountId, signatureContext), getAliasesForAccount(accountId)]).then(
       ([sig, aliases]) => {
         if (cancelled) return;
         setSignature(sig ? { id: sig.id, html: sig.body_html } : null);
@@ -216,6 +218,7 @@ export function InlineReply({
       threadId: message.threadId ?? null,
       inReplyToMessageId: isForward ? null : (message.messageId ?? null),
       fromEmail: fromEmail ?? accountEmail ?? undefined,
+      signatureId: signature?.id ?? null,
     });
     onClose();
   }, [

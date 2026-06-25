@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { SetupCard, SetupHeader, SetupButton, SetupBackButton } from './setup-ui';
 
 export interface OAuthPendingScreenProps {
@@ -13,12 +13,20 @@ export function OAuthPendingScreen({
   onCancel,
 }: OAuthPendingScreenProps) {
   const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(fallbackUrl);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => setCopied(false), 1500);
     } catch {
       setCopied(false);
     }

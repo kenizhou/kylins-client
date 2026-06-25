@@ -51,6 +51,7 @@
   --input: var(--series-200);
   --ring: var(--series-accent);
   --radius: 0.375rem;
+  --radius-xs: 2px;
 
   /* Semantic desktop tokens */
   --surface: var(--series-100);
@@ -74,6 +75,14 @@
   --status-h: 24px;
   --pane-header-h: 32px;
   --row-h: 28px;
+
+  /* Chrome surface — used for native-feeling window chrome (title bar, status
+   * bar, activity bar, preferences tab bar) so they sit visually above cards. */
+  --chrome: color-mix(in oklab, var(--surface), black 12%);
+  --chrome-foreground: var(--foreground);
+
+  /* Shared typography */
+  --text-overline: 700 11px / 1.2 var(--font-ui);
 }
 
 .dark {
@@ -112,6 +121,8 @@
   --border: var(--series-300);
   --input: var(--series-300);
   --ring: var(--series-accent);
+  --radius: 0.375rem;
+  --radius-xs: 2px;
 
   --surface: var(--series-200);
   --text: var(--series-900);
@@ -124,4 +135,8 @@
   /* Status colors */
   --amber: #fbbf24;
   --green: #34d399;
+
+  /* Chrome surface */
+  --chrome: color-mix(in oklab, var(--surface), black 12%);
+  --chrome-foreground: var(--foreground);
 }

@@ -360,18 +360,19 @@ export function SetupButton({
 }: SetupButtonProps) {
   const base =
     'inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-50';
-  const variantClass =
-    variant === 'primary'
-      ? 'bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 active:scale-[0.98]'
-      : variant === 'secondary'
-        ? 'border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:bg-[var(--hover)]'
-        : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]';
+  const variantMap = {
+    primary:
+      'bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 active:scale-[0.98]',
+    secondary:
+      'border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:bg-[var(--hover)]',
+    ghost: 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]',
+  };
 
   return (
     <button
       type="button"
       disabled={disabled || loading}
-      className={`${base} ${variantClass} ${className}`}
+      className={`${base} ${variantMap[variant]} ${className}`}
       {...rest}
     >
       {loading && (
