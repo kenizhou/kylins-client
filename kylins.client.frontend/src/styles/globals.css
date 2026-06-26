@@ -33,6 +33,12 @@
   --color-amber: var(--amber);
   --color-green: var(--green);
 
+  /* Neutral highlight and stable link tokens — independent of accent skin. */
+  --color-highlight: var(--highlight);
+  --color-highlight-text: var(--highlight-text);
+  --color-link: var(--link);
+  --color-link-hover: var(--link-hover);
+
   --font-sans: var(--font-ui);
   --font-serif: var(--font-serif);
   --font-mono: var(--font-mono);
@@ -203,9 +209,33 @@
   padding: 0.1em 0.3em;
 }
 .kylins-editor :where(a) {
-  color: var(--primary);
+  color: var(--link);
   text-decoration: underline;
+  transition: color 120ms ease;
 }
+.kylins-editor :where(a:hover) {
+  color: var(--link-hover);
+}
+
+/* ---- Reusable link utility (matches .kylins-editor a) ---- */
+.kylins-link {
+  color: var(--link);
+  text-decoration: underline;
+  transition: color 120ms ease;
+}
+.kylins-link:hover {
+  color: var(--link-hover);
+}
+
+/* ---- Reusable badge utilities ---- */
+.kylins-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  background: var(--highlight);
+  color: var(--highlight-text);
+}
+
 .kylins-editor :where(img) {
   max-width: 100%;
   height: auto;

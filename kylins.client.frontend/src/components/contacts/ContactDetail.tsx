@@ -33,7 +33,13 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
   const removeContact = useContactStore((s) => s.removeContact);
   const updateContactInPlace = useContactStore((s) => s.updateContact);
 
-  const [draft, setDraft] = useState<UpdateContactInput & { emails: ContactEmail[]; phones: ContactPhone[]; addresses: ContactAddress[] }>({
+  const [draft, setDraft] = useState<
+    UpdateContactInput & {
+      emails: ContactEmail[];
+      phones: ContactPhone[];
+      addresses: ContactAddress[];
+    }
+  >({
     displayName: contact.displayName,
     company: contact.company,
     jobTitle: contact.jobTitle,
@@ -44,6 +50,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
   });
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraft({
       displayName: contact.displayName,
       company: contact.company,
@@ -257,48 +264,50 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
               <button
                 type="button"
                 onClick={() => setDraft((d) => ({ ...d, emails: [...d.emails, { value: '' }] }))}
-                className="text-xs text-[var(--primary)] hover:opacity-80"
+                className="kylins-link text-xs"
               >
                 + Add
               </button>
             )}
           </div>
           <div className="space-y-2">
-            {isEditing
-              ? draft.emails.map((email, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={email.value}
-                      placeholder="Email"
-                      onChange={(e) => {
-                        const next = [...draft.emails];
-                        next[idx] = { ...email, value: e.target.value };
-                        setDraft((d) => ({ ...d, emails: next }));
-                      }}
-                      className="flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = draft.emails.filter((_, i) => i !== idx);
-                        setDraft((d) => ({ ...d, emails: next }));
-                      }}
-                      className="text-[var(--destructive)] hover:opacity-80"
-                      aria-label="Remove email"
-                    >
-                      <CloseIcon size={14} />
-                    </button>
-                  </div>
-                ))
-              : contact.emails.length > 0
-                ? contact.emails.map((e, i) => (
-                    <div key={i} className="text-sm text-[var(--foreground)]">
-                      {e.value}
-                      {e.label && <span className="text-[var(--muted-text)] ml-2">({e.label})</span>}
-                    </div>
-                  ))
-                : <span className="text-sm text-[var(--muted-text)]">No additional emails.</span>}
+            {isEditing ? (
+              draft.emails.map((email, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={email.value}
+                    placeholder="Email"
+                    onChange={(e) => {
+                      const next = [...draft.emails];
+                      next[idx] = { ...email, value: e.target.value };
+                      setDraft((d) => ({ ...d, emails: next }));
+                    }}
+                    className="flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = draft.emails.filter((_, i) => i !== idx);
+                      setDraft((d) => ({ ...d, emails: next }));
+                    }}
+                    className="text-[var(--destructive)] hover:opacity-80"
+                    aria-label="Remove email"
+                  >
+                    <CloseIcon size={14} />
+                  </button>
+                </div>
+              ))
+            ) : contact.emails.length > 0 ? (
+              contact.emails.map((e, i) => (
+                <div key={i} className="text-sm text-[var(--foreground)]">
+                  {e.value}
+                  {e.label && <span className="text-[var(--muted-text)] ml-2">({e.label})</span>}
+                </div>
+              ))
+            ) : (
+              <span className="text-sm text-[var(--muted-text)]">No additional emails.</span>
+            )}
           </div>
         </section>
 
@@ -311,48 +320,50 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
               <button
                 type="button"
                 onClick={() => setDraft((d) => ({ ...d, phones: [...d.phones, { value: '' }] }))}
-                className="text-xs text-[var(--primary)] hover:opacity-80"
+                className="kylins-link text-xs"
               >
                 + Add
               </button>
             )}
           </div>
           <div className="space-y-2">
-            {isEditing
-              ? draft.phones.map((phone, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={phone.value}
-                      placeholder="Phone"
-                      onChange={(e) => {
-                        const next = [...draft.phones];
-                        next[idx] = { ...phone, value: e.target.value };
-                        setDraft((d) => ({ ...d, phones: next }));
-                      }}
-                      className="flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = draft.phones.filter((_, i) => i !== idx);
-                        setDraft((d) => ({ ...d, phones: next }));
-                      }}
-                      className="text-[var(--destructive)] hover:opacity-80"
-                      aria-label="Remove phone"
-                    >
-                      <CloseIcon size={14} />
-                    </button>
-                  </div>
-                ))
-              : contact.phones.length > 0
-                ? contact.phones.map((p, i) => (
-                    <div key={i} className="text-sm text-[var(--foreground)]">
-                      {p.value}
-                      {p.label && <span className="text-[var(--muted-text)] ml-2">({p.label})</span>}
-                    </div>
-                  ))
-                : <span className="text-sm text-[var(--muted-text)]">No phone numbers.</span>}
+            {isEditing ? (
+              draft.phones.map((phone, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={phone.value}
+                    placeholder="Phone"
+                    onChange={(e) => {
+                      const next = [...draft.phones];
+                      next[idx] = { ...phone, value: e.target.value };
+                      setDraft((d) => ({ ...d, phones: next }));
+                    }}
+                    className="flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = draft.phones.filter((_, i) => i !== idx);
+                      setDraft((d) => ({ ...d, phones: next }));
+                    }}
+                    className="text-[var(--destructive)] hover:opacity-80"
+                    aria-label="Remove phone"
+                  >
+                    <CloseIcon size={14} />
+                  </button>
+                </div>
+              ))
+            ) : contact.phones.length > 0 ? (
+              contact.phones.map((p, i) => (
+                <div key={i} className="text-sm text-[var(--foreground)]">
+                  {p.value}
+                  {p.label && <span className="text-[var(--muted-text)] ml-2">({p.label})</span>}
+                </div>
+              ))
+            ) : (
+              <span className="text-sm text-[var(--muted-text)]">No phone numbers.</span>
+            )}
           </div>
         </section>
 
@@ -389,7 +400,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
                     onClick={() => toggleGroup(g.id)}
                     className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
                       active
-                        ? 'border-[var(--primary)] bg-[color-mix(in_oklab,var(--primary),transparent_88%)] text-[var(--primary)]'
+                        ? 'border-[var(--primary)] bg-[var(--selected)] text-[var(--selected-text)]'
                         : 'border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)]'
                     }`}
                   >

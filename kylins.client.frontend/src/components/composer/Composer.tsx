@@ -46,7 +46,15 @@ import { formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
 import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { readFileAsBase64 } from '@/utils/fileUtils';
-import { MaximizeIcon, RestoreIcon, MinimizeIcon, ClockIcon, CloseIcon, PopOutIcon, PlusIcon } from '../icons';
+import {
+  MaximizeIcon,
+  RestoreIcon,
+  MinimizeIcon,
+  ClockIcon,
+  CloseIcon,
+  PopOutIcon,
+  PlusIcon,
+} from '../icons';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
@@ -562,215 +570,212 @@ export function Composer({ windowed = false }: ComposerProps) {
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-        {isDragging && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-[var(--primary)] bg-[var(--accent)]/90">
-            <div className="rounded-full bg-[var(--primary)] p-3 text-[var(--primary-fg)]">
-              <PlusIcon size={24} />
-            </div>
-            <span className="text-sm font-medium text-[var(--accent-foreground)]">
-              Drop files to attach
-            </span>
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-[var(--primary)] bg-[var(--accent)]/90">
+          <div className="rounded-full bg-[var(--primary)] p-3 text-[var(--primary-fg)]">
+            <PlusIcon size={24} />
           </div>
-        )}
-
-        {/* Header */}
-        <div
-          className={`flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 ${windowed ? 'select-none' : ''}`}
-          style={windowed ? dragStyle : undefined}
-        >
-          <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
-          <div className="flex items-center gap-1" style={noDragStyle}>
-            {!windowed && (
-              <button
-                onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
-                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                title={isFullpage ? 'Collapse' : 'Expand'}
-              >
-                {isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-              </button>
-            )}
-            {!windowed && (
-              <button
-                onClick={handlePopOutComposer}
-                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                title="Open in new window"
-              >
-                <PopOutIcon size={14} />
-              </button>
-            )}
-            {windowed && (
-              <>
-                <button
-                  onClick={handleMinimize}
-                  className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                  title="Minimize"
-                  aria-label="Minimize"
-                >
-                  <MinimizeIcon size={14} />
-                </button>
-                <button
-                  onClick={handleToggleMaximize}
-                  className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                  title={isMaximized ? 'Restore' : 'Maximize'}
-                  aria-label={isMaximized ? 'Restore' : 'Maximize'}
-                >
-                  {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-                </button>
-              </>
-            )}
-            <button
-              onClick={handleClose}
-              className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-              aria-label="Close composer"
-            >
-              <CloseIcon size={14} />
-            </button>
-          </div>
+          <span className="text-sm font-medium text-[var(--accent-foreground)]">
+            Drop files to attach
+          </span>
         </div>
+      )}
 
-        {/* Address fields */}
-        <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
-          <FromSelector
-            aliases={aliases}
-            selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
-            onChange={(alias) => setFromEmail(alias.email)}
-          />
-          <RecipientField
-            label="To"
-            recipients={to}
-            onChange={setTo}
-            placeholder="Recipients"
-            moveTargets={[
-              { label: 'Cc', target: 'cc' },
-              { label: 'Bcc', target: 'bcc' },
-            ]}
-            onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
-          />
-          {showCcBcc ? (
-            <>
-              <RecipientField
-                label="Cc"
-                recipients={cc}
-                onChange={setCc}
-                placeholder="Cc recipients"
-                moveTargets={[
-                  { label: 'To', target: 'to' },
-                  { label: 'Bcc', target: 'bcc' },
-                ]}
-                onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
-              />
-              <RecipientField
-                label="Bcc"
-                recipients={bcc}
-                onChange={setBcc}
-                placeholder="Bcc recipients"
-                moveTargets={[
-                  { label: 'To', target: 'to' },
-                  { label: 'Cc', target: 'cc' },
-                ]}
-                onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-              />
-            </>
-          ) : (
+      {/* Header */}
+      <div
+        className={`flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 ${windowed ? 'select-none' : ''}`}
+        style={windowed ? dragStyle : undefined}
+      >
+        <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
+        <div className="flex items-center gap-1" style={noDragStyle}>
+          {!windowed && (
             <button
-              onClick={() => setShowCcBcc(true)}
-              className="ml-10 text-xs text-[var(--primary)] hover:opacity-80"
+              onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
+              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+              title={isFullpage ? 'Collapse' : 'Expand'}
             >
-              Cc / Bcc
+              {isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
             </button>
           )}
-        </div>
-
-        {/* Subject */}
-        <div className="border-b border-[var(--border)] px-3 py-1.5">
-          <div className="flex items-center gap-2">
-            <span className="w-8 shrink-0 text-xs text-[var(--muted-foreground)]">Sub</span>
-            <input
-              type="text"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder="Subject"
-              className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
-            />
-          </div>
-        </div>
-
-        {/* Editor toolbar */}
-        {enableRichText && (
-          <EditorToolbar editor={editor} onRequestLink={() => setShowLinkDialog(true)} />
-        )}
-
-        {/* Editor */}
-        <div className="flex-1 overflow-y-auto">
-          <EditorContent editor={editor} />
-        </div>
-
-        {/* Attachments */}
-        <div className="border-t border-[var(--border)]">
-          <AttachmentPicker />
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between rounded-b-lg border-t border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
-          <div className="flex items-center gap-3">
-            <div className="text-xs text-[var(--muted-foreground)]">
-              {fromEmail ?? activeAccount?.email ?? 'No account'}
-            </div>
-            {savedLabel && (
-              <span
-                className={`text-xs italic text-[var(--muted-foreground)] transition-opacity duration-200 ${
-                  isSaving ? 'animate-pulse' : ''
-                }`}
-              >
-                {savedLabel}
-              </span>
-            )}
-            <SignatureSelector />
-            <TemplatePicker editor={editor} />
-          </div>
-          <div className="flex items-center gap-2">
+          {!windowed && (
             <button
-              onClick={handleDiscard}
-              className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+              onClick={handlePopOutComposer}
+              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+              title="Open in new window"
             >
-              Discard
+              <PopOutIcon size={14} />
             </button>
-            <div className="flex items-center">
+          )}
+          {windowed && (
+            <>
               <button
-                onClick={windowed ? handleSendAndCloseWindow : handleSend}
-                disabled={to.length === 0}
-                className="rounded-l-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={handleMinimize}
+                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+                title="Minimize"
+                aria-label="Minimize"
               >
-                Send
+                <MinimizeIcon size={14} />
               </button>
               <button
-                onClick={() => setShowSchedule(true)}
-                disabled={to.length === 0}
-                className="rounded-r-md border-l border-white/20 bg-[var(--primary)] py-1.5 px-2 text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Schedule send"
+                onClick={handleToggleMaximize}
+                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+                title={isMaximized ? 'Restore' : 'Maximize'}
+                aria-label={isMaximized ? 'Restore' : 'Maximize'}
               >
-                <ClockIcon size={12} />
+                {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
               </button>
-            </div>
+            </>
+          )}
+          <button
+            onClick={handleClose}
+            className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+            aria-label="Close composer"
+          >
+            <CloseIcon size={14} />
+          </button>
+        </div>
+      </div>
+
+      {/* Address fields */}
+      <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
+        <FromSelector
+          aliases={aliases}
+          selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
+          onChange={(alias) => setFromEmail(alias.email)}
+        />
+        <RecipientField
+          label="To"
+          recipients={to}
+          onChange={setTo}
+          placeholder="Recipients"
+          moveTargets={[
+            { label: 'Cc', target: 'cc' },
+            { label: 'Bcc', target: 'bcc' },
+          ]}
+          onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
+        />
+        {showCcBcc ? (
+          <>
+            <RecipientField
+              label="Cc"
+              recipients={cc}
+              onChange={setCc}
+              placeholder="Cc recipients"
+              moveTargets={[
+                { label: 'To', target: 'to' },
+                { label: 'Bcc', target: 'bcc' },
+              ]}
+              onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+            />
+            <RecipientField
+              label="Bcc"
+              recipients={bcc}
+              onChange={setBcc}
+              placeholder="Bcc recipients"
+              moveTargets={[
+                { label: 'To', target: 'to' },
+                { label: 'Cc', target: 'cc' },
+              ]}
+              onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
+            />
+          </>
+        ) : (
+          <button onClick={() => setShowCcBcc(true)} className="kylins-link ml-10 text-xs">
+            Cc / Bcc
+          </button>
+        )}
+      </div>
+
+      {/* Subject */}
+      <div className="border-b border-[var(--border)] px-3 py-1.5">
+        <div className="flex items-center gap-2">
+          <span className="w-8 shrink-0 text-xs text-[var(--muted-foreground)]">Sub</span>
+          <input
+            type="text"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            placeholder="Subject"
+            className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+          />
+        </div>
+      </div>
+
+      {/* Editor toolbar */}
+      {enableRichText && (
+        <EditorToolbar editor={editor} onRequestLink={() => setShowLinkDialog(true)} />
+      )}
+
+      {/* Editor */}
+      <div className="flex-1 overflow-y-auto">
+        <EditorContent editor={editor} />
+      </div>
+
+      {/* Attachments */}
+      <div className="border-t border-[var(--border)]">
+        <AttachmentPicker />
+      </div>
+
+      {/* Footer */}
+      <div className="flex items-center justify-between rounded-b-lg border-t border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-[var(--muted-foreground)]">
+            {fromEmail ?? activeAccount?.email ?? 'No account'}
+          </div>
+          {savedLabel && (
+            <span
+              className={`text-xs italic text-[var(--muted-foreground)] transition-opacity duration-200 ${
+                isSaving ? 'animate-pulse' : ''
+              }`}
+            >
+              {savedLabel}
+            </span>
+          )}
+          <SignatureSelector />
+          <TemplatePicker editor={editor} />
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleDiscard}
+            className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+          >
+            Discard
+          </button>
+          <div className="flex items-center">
+            <button
+              onClick={windowed ? handleSendAndCloseWindow : handleSend}
+              disabled={to.length === 0}
+              className="rounded-l-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Send
+            </button>
+            <button
+              onClick={() => setShowSchedule(true)}
+              disabled={to.length === 0}
+              className="rounded-r-md border-l border-white/20 bg-[var(--primary)] py-1.5 px-2 text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              title="Schedule send"
+            >
+              <ClockIcon size={12} />
+            </button>
           </div>
         </div>
-
-        {showSchedule && (
-          <ScheduleSendDialog onSchedule={handleSchedule} onClose={() => setShowSchedule(false)} />
-        )}
-
-        <InputDialog
-          isOpen={showLinkDialog}
-          onClose={() => setShowLinkDialog(false)}
-          onSubmit={(values) => {
-            if (values.url) editor?.chain().focus().setLink({ href: values.url }).run();
-          }}
-          title="Insert Link"
-          fields={[{ key: 'url', label: 'URL', placeholder: 'https://...' }]}
-          submitLabel="Insert"
-        />
       </div>
-    );
+
+      {showSchedule && (
+        <ScheduleSendDialog onSchedule={handleSchedule} onClose={() => setShowSchedule(false)} />
+      )}
+
+      <InputDialog
+        isOpen={showLinkDialog}
+        onClose={() => setShowLinkDialog(false)}
+        onSubmit={(values) => {
+          if (values.url) editor?.chain().focus().setLink({ href: values.url }).run();
+        }}
+        title="Insert Link"
+        fields={[{ key: 'url', label: 'URL', placeholder: 'https://...' }]}
+        submitLabel="Insert"
+      />
+    </div>
+  );
 
   if (windowed) {
     return (

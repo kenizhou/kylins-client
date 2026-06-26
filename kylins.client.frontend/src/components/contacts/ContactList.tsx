@@ -1,10 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useContactStore } from '../../stores/contactStore';
 import { ContactAvatar } from './ContactAvatar';
-import {
-  getContactIdsForGroup,
-  type Contact,
-} from '../../services/db/contacts';
+import { getContactIdsForGroup, type Contact } from '../../services/db/contacts';
 import { SearchIcon } from '../icons';
 
 export function ContactList() {
@@ -22,12 +19,14 @@ export function ContactList() {
 
   useEffect(() => {
     if (!selectedGroupId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setGroupContactIds(new Set());
       return;
     }
     let cancelled = false;
     getContactIdsForGroup(selectedGroupId).then((ids) => {
       if (cancelled) return;
+       
       setGroupContactIds(new Set(ids));
     });
     return () => {
@@ -122,7 +121,7 @@ export function ContactList() {
                       }}
                       className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
                         active
-                          ? 'border-[var(--primary)] bg-[color-mix(in_oklab,var(--primary),transparent_92%)]'
+                          ? 'border-[var(--primary)] bg-[var(--selected)]'
                           : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)]'
                       }`}
                     >
@@ -132,11 +131,15 @@ export function ContactList() {
                           {contact.displayName || contact.email}
                         </div>
                         {contact.displayName && (
-                          <div className="text-xs text-[var(--muted-text)] truncate">{contact.email}</div>
+                          <div className="text-xs text-[var(--muted-text)] truncate">
+                            {contact.email}
+                          </div>
                         )}
                       </div>
                       {contact.frequency > 0 && (
-                        <span className="text-[10px] text-[var(--muted-text)]">{contact.frequency}</span>
+                        <span className="text-[10px] text-[var(--muted-text)]">
+                          {contact.frequency}
+                        </span>
                       )}
                     </li>
                   );

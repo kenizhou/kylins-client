@@ -107,16 +107,17 @@ function FolderRow({
       style={{ paddingLeft: `${12 + depth * 14}px` }}
       className={`
         group relative flex items-center gap-2.5 pr-2 h-7 cursor-pointer
-        ${active ? 'bg-[var(--selected)] text-[var(--primary)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--text)]'}
+        ${active ? 'bg-[var(--selected)] text-[var(--selected-text)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--text)]'}
       `}
     >
+      {active && <span className="absolute left-0 top-0 bottom-0 w-[2px] bg-[var(--primary)]" />}
       <span className="shrink-0">{icon}</span>
       <span className="flex-1 truncate text-[13px]">{name}</span>
       {unread > 0 && (
         <span
           className={`font-mono text-[11px] px-1.5 py-0.5 rounded-full ${
             active
-              ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
+              ? 'bg-[var(--text)] text-[var(--background)]'
               : 'bg-[var(--border)] text-[var(--text)]'
           }`}
         >
@@ -136,7 +137,7 @@ function FolderRow({
             flex h-5 w-5 shrink-0 items-center justify-center rounded transition-opacity
             ${
               isFavorite
-                ? 'opacity-100 text-[var(--primary)]'
+                ? 'opacity-100 text-[var(--selected-text)]'
                 : 'opacity-0 text-[var(--muted-text)] hover:text-[var(--foreground)] group-hover:opacity-100'
             }
           `}

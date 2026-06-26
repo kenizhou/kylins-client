@@ -196,7 +196,7 @@ export function MessageList() {
       )}
 
       {conversationView && (
-        <div className="px-3 py-1 text-[11px] text-[var(--primary)] bg-[var(--selected)]">
+        <div className="px-3 py-1 text-[11px] text-[var(--foreground)] bg-[var(--selected)]">
           Conversation view enabled
         </div>
       )}

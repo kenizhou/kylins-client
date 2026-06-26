@@ -1,290 +1,99 @@
-/* Coordinated color skins for Kylins.
+/**
+ * Accent-only color skins for Kylins.
  *
- * Each skin redefines the full --series-* scale so that every semantic token
- * (surface, border, hover, selected, primary, etc.) shifts together.
- * The default skin lives in :root inside theme.css; these override it when
- * <html data-skin="..."> is set.
- *
- * Dark variants reverse the scale so that --series-50 becomes the darkest and
- * --series-950 the lightest, matching the default dark behavior in theme.css.
+ * Skins no longer repaint the entire gray scale. They only swap the accent
+ * color, which flows into --primary and --ring. The neutral --series-* scale
+ * stays consistent in every skin so text, borders, and surfaces remain calm
+ * and readable.
  */
 
 /* ---------- Slate (neutral enterprise default) ---------- */
-[data-skin="slate"] {
-  --series-50: #f8fafc;
-  --series-100: #f1f5f9;
-  --series-200: #e2e8f0;
-  --series-300: #cbd5e1;
-  --series-400: #94a3b8;
-  --series-500: #64748b;
-  --series-600: #475569;
-  --series-700: #334155;
-  --series-800: #1e293b;
-  --series-900: #0f172a;
-  --series-950: #020617;
-
+[data-skin='slate'] {
   --series-accent: #2563eb;
   --series-accent-hover: #1d4ed8;
 }
 
-.dark[data-skin="slate"] {
-  --series-50: #020617;
-  --series-100: #0f172a;
-  --series-200: #1e293b;
-  --series-300: #334155;
-  --series-400: #475569;
-  --series-500: #64748b;
-  --series-600: #94a3b8;
-  --series-700: #cbd5e1;
-  --series-800: #e2e8f0;
-  --series-900: #f1f5f9;
-  --series-950: #f8fafc;
-
+.dark[data-skin='slate'] {
   --series-accent: #60a5fa;
   --series-accent-hover: #3b82f6;
 }
 
 /* ---------- Blue ---------- */
-[data-skin="blue"] {
-  --series-50: #eff6ff;
-  --series-100: #dbeafe;
-  --series-200: #bfdbfe;
-  --series-300: #93c5fd;
-  --series-400: #60a5fa;
-  --series-500: #3b82f6;
-  --series-600: #2563eb;
-  --series-700: #1d4ed8;
-  --series-800: #1e40af;
-  --series-900: #1e3a8a;
-  --series-950: #172554;
-
+[data-skin='blue'] {
   --series-accent: #2563eb;
   --series-accent-hover: #1d4ed8;
 }
 
-.dark[data-skin="blue"] {
-  --series-50: #172554;
-  --series-100: #1e3a8a;
-  --series-200: #1e40af;
-  --series-300: #1d4ed8;
-  --series-400: #2563eb;
-  --series-500: #3b82f6;
-  --series-600: #60a5fa;
-  --series-700: #93c5fd;
-  --series-800: #bfdbfe;
-  --series-900: #dbeafe;
-  --series-950: #eff6ff;
-
+.dark[data-skin='blue'] {
   --series-accent: #60a5fa;
   --series-accent-hover: #3b82f6;
 }
 
 /* ---------- Indigo ---------- */
-[data-skin="indigo"] {
-  --series-50: #eef2ff;
-  --series-100: #e0e7ff;
-  --series-200: #c7d2fe;
-  --series-300: #a5b4fc;
-  --series-400: #818cf8;
-  --series-500: #6366f1;
-  --series-600: #4f46e5;
-  --series-700: #4338ca;
-  --series-800: #3730a3;
-  --series-900: #312e81;
-  --series-950: #1e1b4b;
-
+[data-skin='indigo'] {
   --series-accent: #4f46e5;
   --series-accent-hover: #4338ca;
 }
 
-.dark[data-skin="indigo"] {
-  --series-50: #1e1b4b;
-  --series-100: #312e81;
-  --series-200: #3730a3;
-  --series-300: #4338ca;
-  --series-400: #4f46e5;
-  --series-500: #6366f1;
-  --series-600: #818cf8;
-  --series-700: #a5b4fc;
-  --series-800: #c7d2fe;
-  --series-900: #e0e7ff;
-  --series-950: #eef2ff;
-
+.dark[data-skin='indigo'] {
   --series-accent: #818cf8;
   --series-accent-hover: #6366f1;
 }
 
 /* ---------- Rose ---------- */
-[data-skin="rose"] {
-  --series-50: #fff1f2;
-  --series-100: #ffe4e6;
-  --series-200: #fecdd3;
-  --series-300: #fda4af;
-  --series-400: #fb7185;
-  --series-500: #f43f5e;
-  --series-600: #e11d48;
-  --series-700: #be123c;
-  --series-800: #9f1239;
-  --series-900: #881337;
-  --series-950: #4c0519;
-
+[data-skin='rose'] {
   --series-accent: #e11d48;
   --series-accent-hover: #be123c;
 }
 
-.dark[data-skin="rose"] {
-  --series-50: #4c0519;
-  --series-100: #881337;
-  --series-200: #9f1239;
-  --series-300: #be123c;
-  --series-400: #e11d48;
-  --series-500: #f43f5e;
-  --series-600: #fb7185;
-  --series-700: #fda4af;
-  --series-800: #fecdd3;
-  --series-900: #ffe4e6;
-  --series-950: #fff1f2;
-
+.dark[data-skin='rose'] {
   --series-accent: #fb7185;
   --series-accent-hover: #f43f5e;
+  --primary-foreground: var(--series-50);
 }
 
 /* ---------- Emerald ---------- */
-[data-skin="emerald"] {
-  --series-50: #ecfdf5;
-  --series-100: #d1fae5;
-  --series-200: #a7f3d0;
-  --series-300: #6ee7b7;
-  --series-400: #34d399;
-  --series-500: #10b981;
-  --series-600: #059669;
-  --series-700: #047857;
-  --series-800: #065f46;
-  --series-900: #064e3b;
-  --series-950: #022c22;
-
+[data-skin='emerald'] {
   --series-accent: #059669;
   --series-accent-hover: #047857;
 }
 
-.dark[data-skin="emerald"] {
-  --series-50: #022c22;
-  --series-100: #064e3b;
-  --series-200: #065f46;
-  --series-300: #047857;
-  --series-400: #059669;
-  --series-500: #10b981;
-  --series-600: #34d399;
-  --series-700: #6ee7b7;
-  --series-800: #a7f3d0;
-  --series-900: #d1fae5;
-  --series-950: #ecfdf5;
-
+.dark[data-skin='emerald'] {
   --series-accent: #34d399;
   --series-accent-hover: #10b981;
 }
 
 /* ---------- Amber ---------- */
-[data-skin="amber"] {
-  --series-50: #fffbeb;
-  --series-100: #fef3c7;
-  --series-200: #fde68a;
-  --series-300: #fcd34d;
-  --series-400: #fbbf24;
-  --series-500: #f59e0b;
-  --series-600: #d97706;
-  --series-700: #b45309;
-  --series-800: #92400e;
-  --series-900: #78350f;
-  --series-950: #451a03;
-
+[data-skin='amber'] {
   --series-accent: #d97706;
   --series-accent-hover: #b45309;
 }
 
-.dark[data-skin="amber"] {
-  --series-50: #451a03;
-  --series-100: #78350f;
-  --series-200: #92400e;
-  --series-300: #b45309;
-  --series-400: #d97706;
-  --series-500: #f59e0b;
-  --series-600: #fbbf24;
-  --series-700: #fcd34d;
-  --series-800: #fde68a;
-  --series-900: #fef3c7;
-  --series-950: #fffbeb;
-
+.dark[data-skin='amber'] {
   --series-accent: #fbbf24;
   --series-accent-hover: #f59e0b;
+  --primary-foreground: var(--series-50);
 }
 
 /* ---------- Violet ---------- */
-[data-skin="violet"] {
-  --series-50: #f5f3ff;
-  --series-100: #ede9fe;
-  --series-200: #ddd6fe;
-  --series-300: #c4b5fd;
-  --series-400: #a78bfa;
-  --series-500: #8b5cf6;
-  --series-600: #7c3aed;
-  --series-700: #6d28d9;
-  --series-800: #5b21b6;
-  --series-900: #4c1d95;
-  --series-950: #2e1065;
-
+[data-skin='violet'] {
   --series-accent: #7c3aed;
   --series-accent-hover: #6d28d9;
 }
 
-.dark[data-skin="violet"] {
-  --series-50: #2e1065;
-  --series-100: #4c1d95;
-  --series-200: #5b21b6;
-  --series-300: #6d28d9;
-  --series-400: #7c3aed;
-  --series-500: #8b5cf6;
-  --series-600: #a78bfa;
-  --series-700: #c4b5fd;
-  --series-800: #ddd6fe;
-  --series-900: #ede9fe;
-  --series-950: #f5f3ff;
-
+.dark[data-skin='violet'] {
   --series-accent: #a78bfa;
   --series-accent-hover: #8b5cf6;
 }
 
 /* ---------- Orange ---------- */
-[data-skin="orange"] {
-  --series-50: #fff7ed;
-  --series-100: #ffedd5;
-  --series-200: #fed7aa;
-  --series-300: #fdba74;
-  --series-400: #fb923c;
-  --series-500: #f97316;
-  --series-600: #ea580c;
-  --series-700: #c2410c;
-  --series-800: #9a3412;
-  --series-900: #7c2d12;
-  --series-950: #431407;
-
+[data-skin='orange'] {
   --series-accent: #ea580c;
   --series-accent-hover: #c2410c;
 }
 
-.dark[data-skin="orange"] {
-  --series-50: #431407;
-  --series-100: #7c2d12;
-  --series-200: #9a3412;
-  --series-300: #c2410c;
-  --series-400: #ea580c;
-  --series-500: #f97316;
-  --series-600: #fb923c;
-  --series-700: #fdba74;
-  --series-800: #fed7aa;
-  --series-900: #ffedd5;
-  --series-950: #fff7ed;
-
+.dark[data-skin='orange'] {
   --series-accent: #fb923c;
   --series-accent-hover: #f97316;
+  --primary-foreground: var(--series-50);
 }

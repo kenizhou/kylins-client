@@ -94,101 +94,107 @@ export function AppearancePreferences() {
         left={
           <>
             <PreferencesSectionCard title="Mode" icon={PreferencesSystemIcon}>
-            <SegmentedControl options={THEME_OPTIONS} value={theme} onChange={handleThemeChange} />
-          </PreferencesSectionCard>
+              <SegmentedControl
+                options={THEME_OPTIONS}
+                value={theme}
+                onChange={handleThemeChange}
+              />
+            </PreferencesSectionCard>
 
-          <PreferencesSectionCard title="Color skin" icon={PreferencesAppearanceIcon}>
-            <div className="grid grid-cols-4 sm:grid-cols-8 gap-3">
-              {SKINS.map((s) => {
-                const active = skin === s.id;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => handleSkinChange(s.id)}
-                    title={s.name}
-                    className={`group flex flex-col items-center gap-1.5 rounded-lg p-2 transition-colors ${
-                      active
-                        ? 'bg-[color-mix(in_oklab,var(--primary),transparent_88%)] ring-1 ring-[var(--primary)]'
-                        : 'hover:bg-[var(--hover)]'
-                    }`}
-                  >
-                    <span
-                      className="h-8 w-8 rounded-full shadow-sm ring-2 ring-white/20"
-                      style={{ background: s.swatch }}
-                    />
-                    <span className="text-[10px] font-medium text-[var(--muted-text)]">{s.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </PreferencesSectionCard>
+            <PreferencesSectionCard title="Color skin" icon={PreferencesAppearanceIcon}>
+              <div className="grid grid-cols-4 sm:grid-cols-8 gap-3">
+                {SKINS.map((s) => {
+                  const active = skin === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => handleSkinChange(s.id)}
+                      title={s.name}
+                      className={`group flex flex-col items-center gap-1.5 rounded-lg p-2 transition-colors ${
+                        active
+                          ? 'bg-[var(--highlight)] ring-1 ring-[var(--primary)]'
+                          : 'hover:bg-[var(--hover)]'
+                      }`}
+                    >
+                      <span
+                        className="h-8 w-8 rounded-full shadow-sm ring-2 ring-white/20"
+                        style={{ background: s.swatch }}
+                      />
+                      <span className="text-[10px] font-medium text-[var(--muted-text)]">
+                        {s.name}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </PreferencesSectionCard>
 
-          <PreferencesSectionCard title="Message list" icon={MailIcon}>
-            <div className="space-y-3">
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-[var(--muted-text)]">Density</span>
-                <SegmentedControl
-                  options={DENSITY_OPTIONS}
-                  value={messageListDensity}
-                  onChange={setMessageListDensity}
+            <PreferencesSectionCard title="Message list" icon={MailIcon}>
+              <div className="space-y-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs text-[var(--muted-text)]">Density</span>
+                  <SegmentedControl
+                    options={DENSITY_OPTIONS}
+                    value={messageListDensity}
+                    onChange={setMessageListDensity}
+                  />
+                </div>
+                <CheckboxRow
+                  label="Conversation view"
+                  checked={conversationView}
+                  onChange={setConversationView}
                 />
               </div>
-              <CheckboxRow
-                label="Conversation view"
-                checked={conversationView}
-                onChange={setConversationView}
-              />
-            </div>
-          </PreferencesSectionCard>
+            </PreferencesSectionCard>
           </>
         }
         right={
           <>
             <PreferencesSectionCard title="Layout" icon={PreferencesAppearanceIcon}>
-            <div className="space-y-3">
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-[var(--muted-text)]">Reading pane position</span>
-                <SegmentedControl
-                  options={READING_PANE_OPTIONS}
-                  value={readingPanePosition}
-                  onChange={setReadingPanePosition}
+              <div className="space-y-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs text-[var(--muted-text)]">Reading pane position</span>
+                  <SegmentedControl
+                    options={READING_PANE_OPTIONS}
+                    value={readingPanePosition}
+                    onChange={setReadingPanePosition}
+                  />
+                </div>
+                <CheckboxRow
+                  label="Show folder pane"
+                  checked={folderPaneVisible}
+                  onChange={setFolderPaneVisible}
+                />
+                <CheckboxRow
+                  label="Show command ribbon"
+                  checked={commandRibbonVisible}
+                  onChange={setCommandRibbonVisible}
+                />
+                <CheckboxRow
+                  label="Show status bar"
+                  checked={statusBarVisible}
+                  onChange={setStatusBarVisible}
                 />
               </div>
-              <CheckboxRow
-                label="Show folder pane"
-                checked={folderPaneVisible}
-                onChange={setFolderPaneVisible}
-              />
-              <CheckboxRow
-                label="Show command ribbon"
-                checked={commandRibbonVisible}
-                onChange={setCommandRibbonVisible}
-              />
-              <CheckboxRow
-                label="Show status bar"
-                checked={statusBarVisible}
-                onChange={setStatusBarVisible}
-              />
-            </div>
-          </PreferencesSectionCard>
+            </PreferencesSectionCard>
 
-          <PreferencesSectionCard title="Reading" icon={PreferencesReadingIcon}>
-            <p className="text-sm text-[var(--muted-text)]">
-              Reading preferences such as auto-image loading and header display are on the
-              General tab.
-            </p>
-          </PreferencesSectionCard>
+            <PreferencesSectionCard title="Reading" icon={PreferencesReadingIcon}>
+              <p className="text-sm text-[var(--muted-text)]">
+                Reading preferences such as auto-image loading and header display are on the General
+                tab.
+              </p>
+            </PreferencesSectionCard>
 
-          <PreferencesSectionCard title="Restore defaults" icon={PreferencesMailRulesIcon}>
-            <button
-              type="button"
-              onClick={handleReset}
-              className="px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
-            >
-              Reset appearance and layout
-            </button>
-          </PreferencesSectionCard>
+            <PreferencesSectionCard title="Restore defaults" icon={PreferencesMailRulesIcon}>
+              <button
+                type="button"
+                onClick={handleReset}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+              >
+                Reset appearance and layout
+              </button>
+            </PreferencesSectionCard>
           </>
         }
       />

@@ -42,7 +42,7 @@ function ToolbarButton({
       title={title}
       className={`rounded p-1.5 transition-colors ${
         active
-          ? 'bg-[color-mix(in_oklab,var(--primary),transparent_88%)] text-[var(--primary)]'
+          ? 'bg-[var(--selected)] text-[var(--selected-text)]'
           : 'text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)]'
       }`}
     >
@@ -111,10 +111,15 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
 
   return (
     <div className="space-y-5">
-      <PreferencesSectionCard title={initial.id === 'new' ? 'New signature' : 'Edit signature'} icon={PreferencesSignaturesIcon}>
+      <PreferencesSectionCard
+        title={initial.id === 'new' ? 'New signature' : 'Edit signature'}
+        icon={PreferencesSignaturesIcon}
+      >
         <div className="space-y-4">
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="sig-name" className="text-xs text-[var(--muted-text)]">Name</label>
+            <label htmlFor="sig-name" className="text-xs text-[var(--muted-text)]">
+              Name
+            </label>
             <input
               id="sig-name"
               type="text"
@@ -137,17 +142,15 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
               onChange={(e) => setIsDefault(e.target.checked)}
               className="mt-0.5 rounded border-[var(--border)] text-[var(--primary)] focus:ring-[var(--ring)]"
             />
-            <span className="text-sm text-[var(--foreground)]">Use as default for this context</span>
+            <span className="text-sm text-[var(--foreground)]">
+              Use as default for this context
+            </span>
           </label>
 
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <span className="text-xs text-[var(--muted-text)]">Body</span>
-              <button
-                type="button"
-                onClick={toggleSource}
-                className="text-xs text-[var(--primary)] hover:opacity-80"
-              >
+              <button type="button" onClick={toggleSource} className="kylins-link text-xs">
                 {showSource ? 'Visual editor' : 'HTML source'}
               </button>
             </div>
@@ -232,7 +235,6 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
             <span className="text-xs text-[var(--muted-text)]">Preview</span>
             <div
               className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] min-h-[80px]"
-              // eslint-disable-next-line react/no-danger
               dangerouslySetInnerHTML={{ __html: sanitizeHtml(bodyHtml) }}
             />
           </div>

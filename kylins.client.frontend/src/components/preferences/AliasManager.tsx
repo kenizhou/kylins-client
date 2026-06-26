@@ -34,12 +34,12 @@ function AliasRow({
         )}
         <div className="flex items-center gap-1.5">
           {alias.isPrimary && (
-            <span className="inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--primary),transparent_88%)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)]">
+            <span className="inline-flex items-center rounded-full bg-[var(--highlight)] px-2 py-0.5 text-[10px] font-medium text-[var(--highlight-text)]">
               Primary
             </span>
           )}
           {alias.isDefault && (
-            <span className="inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--primary),transparent_88%)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)]">
+            <span className="inline-flex items-center rounded-full bg-[var(--highlight)] px-2 py-0.5 text-[10px] font-medium text-[var(--highlight-text)]">
               Default
             </span>
           )}
@@ -98,6 +98,7 @@ export function AliasManager({ account }: AliasManagerProps) {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh().then(() => {
       if (cancelled) return;
     });
@@ -180,7 +181,10 @@ export function AliasManager({ account }: AliasManagerProps) {
         </ul>
       )}
 
-      <form onSubmit={handleSave} className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-3 space-y-3">
+      <form
+        onSubmit={handleSave}
+        className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-3 space-y-3"
+      >
         <div className="text-sm font-medium text-[var(--foreground)]">
           {editingAlias ? 'Edit alias' : 'Add alias'}
         </div>

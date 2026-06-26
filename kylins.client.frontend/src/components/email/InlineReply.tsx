@@ -89,13 +89,14 @@ export function InlineReply({
   useEffect(() => {
     if (!accountId) return;
     let cancelled = false;
-    Promise.all([getDefaultSignature(accountId, signatureContext), getAliasesForAccount(accountId)]).then(
-      ([sig, aliases]) => {
-        if (cancelled) return;
-        setSignature(sig ? { id: sig.id, html: sig.body_html } : null);
-        setDbAliases(aliases.map(mapDbAlias));
-      },
-    );
+    Promise.all([
+      getDefaultSignature(accountId, signatureContext),
+      getAliasesForAccount(accountId),
+    ]).then(([sig, aliases]) => {
+      if (cancelled) return;
+      setSignature(sig ? { id: sig.id, html: sig.body_html } : null);
+      setDbAliases(aliases.map(mapDbAlias));
+    });
     return () => {
       cancelled = true;
     };
@@ -274,7 +275,7 @@ export function InlineReply({
           <button
             type="button"
             onClick={() => setShowCcBcc(true)}
-            className="ml-10 mt-0.5 text-[var(--primary)] hover:opacity-80"
+            className="kylins-link ml-10 mt-0.5"
           >
             Cc / Bcc
           </button>

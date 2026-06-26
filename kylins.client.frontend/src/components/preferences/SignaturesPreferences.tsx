@@ -34,6 +34,7 @@ export function SignaturesPreferences() {
   useEffect(() => {
     if (!effectiveAccountId) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoading(true);
     getSignaturesForAccount(effectiveAccountId)
       .then((sigs) => {
@@ -42,6 +43,7 @@ export function SignaturesPreferences() {
       .finally(() => {
         if (!cancelled) setIsLoading(false);
       });
+     
     setEditingId(null);
     return () => {
       cancelled = true;
@@ -137,7 +139,7 @@ export function SignaturesPreferences() {
                       <span className="text-sm font-medium text-[var(--foreground)] truncate">
                         {sig.name}
                         {sig.is_default === 1 && (
-                          <span className="ml-2 inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--primary),transparent_88%)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)]">
+                          <span className="ml-2 inline-flex items-center rounded-full bg-[var(--highlight)] px-2 py-0.5 text-[10px] font-medium text-[var(--highlight-text)]">
                             Default
                           </span>
                         )}

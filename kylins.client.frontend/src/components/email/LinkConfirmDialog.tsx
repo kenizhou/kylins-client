@@ -54,7 +54,7 @@ export function LinkConfirmDialog({
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
               suspicious
                 ? 'bg-[var(--destructive)]/10 text-[var(--destructive)]'
-                : 'bg-[var(--accent)] text-[var(--selected-text)]'
+                : 'bg-[var(--highlight)] text-[var(--highlight-text)]'
             }`}
           >
             {suspicious ? <BellIcon size={18} /> : <LinkIcon size={18} />}

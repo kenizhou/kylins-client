@@ -1,15 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useContactStore } from '../../stores/contactStore';
 import { ContactList } from './ContactList';
 import { ContactDetail } from './ContactDetail';
 import { ContactGroupManager } from './ContactGroupManager';
 import { PreferencesSectionCard } from '../preferences/PreferencesSectionCard';
-import {
-  getContacts,
-  getContactGroups,
-  createContact,
-  type Contact,
-} from '../../services/db/contacts';
+import { getContacts, getContactGroups, createContact } from '../../services/db/contacts';
 import { ContactsIcon, PlusIcon, UploadIcon, DownloadIcon } from '../icons';
 
 import { importVCard, exportVCard } from '../../services/sync/vcard';
@@ -23,17 +18,18 @@ export function ContactsPage() {
   const setIsLoading = useContactStore((s) => s.setIsLoading);
   const addContact = useContactStore((s) => s.addContact);
 
-  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
+
+  const selectedContact = useMemo(
+    () => contacts.find((c) => c.id === selectedContactId) ?? contacts[0] ?? null,
+    [contacts, selectedContactId],
+  );
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [loadedContacts, loadedGroups] = await Promise.all([
-        getContacts(),
-        getContactGroups(),
-      ]);
+      const [loadedContacts, loadedGroups] = await Promise.all([getContacts(), getContactGroups()]);
       setContacts(loadedContacts);
       setGroups(loadedGroups);
     } finally {
@@ -44,11 +40,6 @@ export function ContactsPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    const contact = contacts.find((c) => c.id === selectedContactId) ?? contacts[0] ?? null;
-    setSelectedContact(contact);
-  }, [contacts, selectedContactId]);
 
   async function handleAddContact() {
     const email = prompt('Enter email address for the new contact:');
@@ -86,7 +77,7 @@ export function ContactsPage() {
     <div className="flex flex-col h-full bg-[var(--surface)]">
       <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
         <div className="flex items-center gap-2">
-          <ContactsIcon size={20} className="text-[var(--primary)]" />
+          <ContactsIcon size={20} className="text-[var(--foreground)]" />
           <h1 className="text-base font-semibold text-[var(--foreground)]">Contacts</h1>
         </div>
         <div className="flex items-center gap-2">

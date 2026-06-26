@@ -68,9 +68,7 @@ export function RecipientField({
       // produces one invalid recipient for unparseable blobs (so it surfaces as
       // a red chip rather than being silently dropped).
       const existing = new Set(recipients.map((r) => r.email.toLowerCase()));
-      const parsed = parseRecipients(text).filter(
-        (r) => !existing.has(r.email.toLowerCase()),
-      );
+      const parsed = parseRecipients(text).filter((r) => !existing.has(r.email.toLowerCase()));
       if (parsed.length > 0) onChange([...recipients, ...parsed]);
       setInputValue('');
       setSuggestions([]);
@@ -154,7 +152,9 @@ export function RecipientField({
 
   return (
     <div className="flex items-start gap-2">
-      <span className="w-8 shrink-0 pt-1.5 text-xs font-medium text-[var(--muted-text)]">{label}</span>
+      <span className="w-8 shrink-0 pt-1.5 text-xs font-medium text-[var(--muted-text)]">
+        {label}
+      </span>
       <div className="relative flex min-h-[32px] flex-1 flex-wrap items-center gap-1">
         {recipients.map((r, i) => {
           const invalid = !isValidEmail(r.email);
@@ -166,7 +166,7 @@ export function RecipientField({
               className={`group relative inline-flex items-center gap-1 rounded-full pl-2.5 pr-1 py-0.5 text-xs cursor-pointer transition-colors ${
                 invalid
                   ? 'bg-[var(--destructive)]/15 text-[var(--destructive)] ring-1 ring-[var(--destructive)]/40'
-                  : 'bg-[color-mix(in_oklab,var(--primary),transparent_88%)] text-[var(--foreground)] hover:bg-[color-mix(in_oklab,var(--primary),transparent_80%)]'
+                  : 'bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:bg-[var(--hover)]'
               }`}
               onClick={(e) => {
                 // Left-click the chip (but not the arrow button) opens the menu.
