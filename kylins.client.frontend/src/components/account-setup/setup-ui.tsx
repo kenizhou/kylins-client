@@ -359,7 +359,7 @@ export function SetupButton({
   ...rest
 }: SetupButtonProps) {
   const base =
-    'inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-50';
+    'inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)] disabled:cursor-not-allowed disabled:opacity-50';
   const variantMap = {
     primary:
       'bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 active:scale-[0.98]',
@@ -467,7 +467,7 @@ export function ProviderTile({ name, id, onClick, style }: ProviderTileProps) {
     <button
       type="button"
       onClick={onClick}
-      className="setup-stagger-child group relative flex items-center gap-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--primary)] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      className="setup-stagger-child group relative flex items-center gap-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--primary)] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)]"
       style={style}
     >
       <span

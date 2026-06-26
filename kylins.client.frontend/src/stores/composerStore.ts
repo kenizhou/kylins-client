@@ -55,6 +55,9 @@ export interface ComposerState {
   viewMode: ComposerViewMode;
   signatureHtml: string;
   signatureId: string | null;
+  classificationId: string | null;
+  isEncrypted: boolean;
+  isSigned: boolean;
 
   openComposer: (opts?: {
     mode?: ComposerMode;
@@ -69,6 +72,9 @@ export interface ComposerState {
     inReplyToMessageId?: string | null;
     draftId?: string | null;
     signatureId?: string | null;
+    classificationId?: string | null;
+    isEncrypted?: boolean;
+    isSigned?: boolean;
   }) => void;
   closeComposer: () => void;
   setTo: (to: RecipientInput) => void;
@@ -90,6 +96,9 @@ export interface ComposerState {
   setViewMode: (mode: ComposerViewMode) => void;
   setSignatureHtml: (signatureHtml: string) => void;
   setSignatureId: (id: string | null) => void;
+  setClassificationId: (id: string | null) => void;
+  setIsEncrypted: (value: boolean) => void;
+  setIsSigned: (value: boolean) => void;
 }
 
 export const useComposerStore = create<ComposerState>((set) => ({
@@ -114,6 +123,9 @@ export const useComposerStore = create<ComposerState>((set) => ({
   isSaving: false,
   signatureHtml: '',
   signatureId: null,
+  classificationId: null,
+  isEncrypted: false,
+  isSigned: false,
 
   openComposer: (opts) =>
     set({
@@ -136,6 +148,9 @@ export const useComposerStore = create<ComposerState>((set) => ({
       isSaving: false,
       signatureHtml: '',
       signatureId: opts?.signatureId ?? null,
+      classificationId: opts?.classificationId ?? null,
+      isEncrypted: opts?.isEncrypted ?? false,
+      isSigned: opts?.isSigned ?? false,
     }),
   closeComposer: () =>
     set({
@@ -158,6 +173,9 @@ export const useComposerStore = create<ComposerState>((set) => ({
       isSaving: false,
       signatureHtml: '',
       signatureId: null,
+      classificationId: null,
+      isEncrypted: false,
+      isSigned: false,
     }),
   setTo: (to) => set({ to: normalizeRecipients(to) }),
   setCc: (cc) => set({ cc: normalizeRecipients(cc) }),
@@ -180,4 +198,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setViewMode: (viewMode) => set({ viewMode }),
   setSignatureHtml: (signatureHtml) => set({ signatureHtml }),
   setSignatureId: (signatureId) => set({ signatureId }),
+  setClassificationId: (classificationId) => set({ classificationId }),
+  setIsEncrypted: (isEncrypted) => set({ isEncrypted }),
+  setIsSigned: (isSigned) => set({ isSigned }),
 }));

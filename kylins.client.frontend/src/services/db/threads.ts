@@ -21,6 +21,9 @@ export interface Thread {
   isSnoozed: boolean;
   fromName: string | null;
   fromAddress: string | null;
+  classificationId: string | null;
+  isEncrypted: boolean;
+  isSigned: boolean;
 }
 
 export interface ThreadCursor {
@@ -50,6 +53,9 @@ interface DbThreadRow {
   is_snoozed: number;
   from_name: string | null;
   from_address: string | null;
+  classification_id: string | null;
+  is_encrypted: number;
+  is_signed: number;
 }
 
 function mapThread(r: DbThreadRow): Thread {
@@ -67,6 +73,9 @@ function mapThread(r: DbThreadRow): Thread {
     isSnoozed: r.is_snoozed === 1,
     fromName: r.from_name,
     fromAddress: r.from_address,
+    classificationId: r.classification_id ?? null,
+    isEncrypted: r.is_encrypted === 1,
+    isSigned: r.is_signed === 1,
   };
 }
 
@@ -105,6 +114,7 @@ export async function getThreads(
   const sql = `
     SELECT t.id, t.account_id, t.subject, t.snippet, t.last_message_at, t.message_count,
            t.is_read, t.is_starred, t.is_important, t.has_attachments, t.is_snoozed,
+           t.classification_id, t.is_encrypted, t.is_signed,
            m.from_name, m.from_address
     FROM threads t
     ${joins.join('\n    ')}
@@ -143,6 +153,9 @@ export interface DbMessageRow {
   body_cached?: number;
   message_id_header?: string | null;
   in_reply_to_header?: string | null;
+  classification_id: string | null;
+  is_encrypted: number;
+  is_signed: number;
 }
 
 /** Load a thread's message metadata (no body_html) ordered oldest→newest. */
@@ -209,5 +222,8 @@ export function mapMessageToMailMessage(
     text: msg.body_text ?? null,
     threadId: msg.thread_id,
     messageId: msg.message_id_header ?? undefined,
+    classificationId: msg.classification_id ?? null,
+    isEncrypted: msg.is_encrypted === 1,
+    isSigned: msg.is_signed === 1,
   };
 }

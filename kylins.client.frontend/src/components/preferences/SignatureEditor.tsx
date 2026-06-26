@@ -140,7 +140,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
               type="checkbox"
               checked={isDefault}
               onChange={(e) => setIsDefault(e.target.checked)}
-              className="mt-0.5 rounded border-[var(--border)] text-[var(--primary)] focus:ring-[var(--ring)]"
+              className="mt-0.5 rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
             />
             <span className="text-sm text-[var(--foreground)]">
               Use as default for this context

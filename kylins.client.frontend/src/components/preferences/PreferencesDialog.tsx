@@ -5,6 +5,7 @@ import { ShortcutsPreferences } from './ShortcutsPreferences';
 import { SignaturesPreferences } from './SignaturesPreferences';
 import { AccountsPreferences } from './AccountsPreferences';
 import { ContactsPreferences } from './ContactsPreferences';
+import { SecurityPreferences } from './SecurityPreferences';
 import { Modal } from '../ui/Modal';
 import {
   PreferencesGeneralIcon,
@@ -15,6 +16,7 @@ import {
   PreferencesSignaturesIcon,
   PreferencesTemplatesIcon,
   ContactsIcon,
+  PreferencesPrivacySecurityIcon,
 } from '../icons';
 
 const TABS: { id: PreferenceTab; icon: React.ComponentType<{ size?: number }> }[] = [
@@ -26,6 +28,7 @@ const TABS: { id: PreferenceTab; icon: React.ComponentType<{ size?: number }> }[
   { id: 'Signatures', icon: PreferencesSignaturesIcon },
   { id: 'Templates', icon: PreferencesTemplatesIcon },
   { id: 'Contacts', icon: ContactsIcon },
+  { id: 'Security', icon: PreferencesPrivacySecurityIcon },
 ];
 
 const TAB_COMPONENTS: Record<string, React.ComponentType> = {
@@ -35,6 +38,7 @@ const TAB_COMPONENTS: Record<string, React.ComponentType> = {
   Shortcuts: ShortcutsPreferences,
   Signatures: SignaturesPreferences,
   Contacts: ContactsPreferences,
+  Security: SecurityPreferences,
 };
 
 function ComingSoonTab({ tab }: { tab: string }) {
@@ -65,7 +69,9 @@ export function PreferencesDialog() {
       disableBackdropClose
       footer={
         <>
-          <span className="text-xs text-[var(--muted-text)]">Changes are applied automatically.</span>
+          <span className="text-xs text-[var(--muted-text)]">
+            Changes are applied automatically.
+          </span>
           <button
             type="button"
             onClick={closePreferences}
@@ -75,11 +81,11 @@ export function PreferencesDialog() {
           </button>
         </>
       }
-      contentClassName="bg-[color-mix(in_oklab,var(--surface),black_2%)]"
+      contentClassName="!overflow-hidden bg-[color-mix(in_oklab,var(--surface),black_2%)]"
     >
-      <div className="flex flex-col h-full">
+      <div className="flex h-full">
         {/* Tabs */}
-        <div className="flex items-center gap-1 px-4 border-b border-[var(--border)] bg-[var(--chrome)] overflow-x-auto shrink-0">
+        <div className="flex w-52 shrink-0 flex-col gap-0.5 border-r border-[var(--border)] bg-[var(--chrome)] p-3 overflow-y-auto">
           {TABS.map((tab) => {
             const active = activeTab === tab.id;
             const Icon = tab.icon;
@@ -88,10 +94,10 @@ export function PreferencesDialog() {
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors ${
                   active
-                    ? 'border-[var(--primary)] text-[var(--primary)]'
-                    : 'border-transparent text-[var(--muted-text)] hover:text-[var(--foreground)]'
+                    ? 'bg-[var(--selected)] text-[var(--primary)]'
+                    : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
                 }`}
               >
                 <Icon size={18} />

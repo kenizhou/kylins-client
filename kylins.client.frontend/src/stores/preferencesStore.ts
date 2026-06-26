@@ -10,7 +10,8 @@ export type PreferenceTab =
   | 'Mail Rules'
   | 'Signatures'
   | 'Templates'
-  | 'Contacts';
+  | 'Contacts'
+  | 'Security';
 
 interface BoolField {
   key: string;
@@ -54,9 +55,15 @@ const BOOL_FIELDS: Record<string, BoolField> = {
     defaultValue: true,
   },
   playSoundOnNewMail: { key: SETTING_KEYS.playSoundOnNewMail, defaultValue: true },
-  resurfaceMessagesOnUnsnooze: { key: SETTING_KEYS.resurfaceMessagesOnUnsnooze, defaultValue: true },
+  resurfaceMessagesOnUnsnooze: {
+    key: SETTING_KEYS.resurfaceMessagesOnUnsnooze,
+    defaultValue: true,
+  },
   openAttachmentFolder: { key: SETTING_KEYS.openAttachmentFolder, defaultValue: false },
-  displayAttachmentThumbnails: { key: SETTING_KEYS.displayAttachmentThumbnails, defaultValue: true },
+  displayAttachmentThumbnails: {
+    key: SETTING_KEYS.displayAttachmentThumbnails,
+    defaultValue: true,
+  },
   cacheAutoCleanupEnabled: { key: SETTING_KEYS.cacheAutoCleanupEnabled, defaultValue: false },
   shareDiagnosticsData: { key: SETTING_KEYS.shareDiagnosticsData, defaultValue: false },
 };

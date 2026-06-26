@@ -1,4 +1,5 @@
 import { HugeiconsIcon } from '@hugeicons/react';
+import type { IconSvgElement } from '@hugeicons/react';
 import type { SVGProps } from 'react';
 import {
   Menu01Icon,
@@ -16,6 +17,7 @@ import {
   Mail01Icon,
   Flag02Icon,
   Pin02Icon,
+  StarIcon as StarIconData,
   ArrowTurnBackwardIcon,
   ArrowTurnForwardIcon,
   MoreHorizontalIcon,
@@ -72,6 +74,15 @@ import {
   PencilEdit01Icon,
   Database01Icon,
   Shield01Icon,
+  LockIcon,
+  EyeIcon,
+  Flag01Icon,
+  SquareLock02Icon,
+  CircleLock02Icon,
+  BiometricAccessIcon,
+  FingerPrintIcon,
+  SecurityIcon,
+  Certificate02Icon,
 } from '@hugeicons/core-free-icons';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
@@ -87,19 +98,129 @@ function makeIcon(iconData: Parameters<typeof HugeiconsIcon>[0]['icon']) {
 
 export function UploadIcon({ size = 16, ...rest }: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} {...rest}>
-      <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      {...rest}
+    >
+      <path
+        d="M12 16V4m0 0l-4 4m4-4l4 4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
 
 export function DownloadIcon({ size = 16, ...rest }: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} {...rest}>
-      <path d="M12 8v8m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" strokeLinecap="round" strokeLinejoin="round" />
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      {...rest}
+    >
+      <path
+        d="M12 8v8m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
+
+export function PanelLeftOpenIcon({ size = 16, ...rest }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      {...rest}
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+      <path d="M14 9l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function PanelLeftCloseIcon({ size = 16, ...rest }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      {...rest}
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+      <path d="M17 9l-3 3 3 3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export const CornerUpLeftIcon: IconSvgElement = [
+  [
+    'path',
+    {
+      d: 'M4 9.00195H11C14.7712 9.00195 16.6569 9.00195 17.8284 10.1735C19 11.3451 19 13.2307 19 17.002V20.002',
+      stroke: 'currentColor',
+      strokeWidth: 1.5,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      fill: 'none',
+    },
+  ],
+  [
+    'path',
+    {
+      d: 'M7.99996 4.00195C7.99996 4.00195 3.00001 7.6844 3 9.00199C2.99999 10.3196 8 14.002 8 14.002',
+      stroke: 'currentColor',
+      strokeWidth: 1.5,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      fill: 'none',
+    },
+  ],
+];
+
+export const CornerUpRightIcon: IconSvgElement = [
+  [
+    'path',
+    {
+      d: 'M18 9.00195H11C7.22876 9.00195 5.34315 9.00195 4.17157 10.1735C3 11.3451 3 13.2307 3 17.002V20.002',
+      stroke: 'currentColor',
+      strokeWidth: 1.5,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      fill: 'none',
+    },
+  ],
+  [
+    'path',
+    {
+      d: 'M14 4.00195C14 4.00195 19 7.6844 19 9.00199C19 10.3196 14 14.002 14 14.002',
+      stroke: 'currentColor',
+      strokeWidth: 1.5,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      fill: 'none',
+    },
+  ],
+];
 
 export const MenuIcon = makeIcon(Menu01Icon);
 export const PlusIcon = makeIcon(Add01Icon);
@@ -115,6 +236,7 @@ export const MailIcon = makeIcon(Mail01Icon);
 export const FolderIcon = makeIcon(Folder01Icon);
 export const SearchIcon = makeIcon(Search01Icon);
 export const FlagIcon = makeIcon(Flag02Icon);
+export const StarIcon = makeIcon(StarIconData);
 export const PinIcon = makeIcon(Pin02Icon);
 export const UndoIcon = makeIcon(ArrowTurnBackwardIcon);
 export const RedoIcon = makeIcon(ArrowTurnForwardIcon);
@@ -180,3 +302,57 @@ export const PreferencesLanguageIcon = makeIcon(GlobeIcon);
 export const PreferencesLocalDataIcon = makeIcon(Database01Icon);
 export const PreferencesSystemIcon = makeIcon(UserCircleIcon);
 export const PreferencesPrivacySecurityIcon = makeIcon(Shield01Icon);
+
+export const CLASSIFICATION_ICON_IDS = [
+  'shield',
+  'lock',
+  'eye',
+  'flag',
+  'star',
+  'alert',
+  'square-lock',
+  'circle-lock',
+  'biometric',
+  'fingerprint',
+  'security',
+  'certificate',
+] as const;
+
+export type ClassificationIconId = (typeof CLASSIFICATION_ICON_IDS)[number];
+
+const CLASSIFICATION_ICON_MAP: Record<
+  ClassificationIconId,
+  Parameters<typeof HugeiconsIcon>[0]['icon']
+> = {
+  shield: Shield01Icon,
+  lock: LockIcon,
+  eye: EyeIcon,
+  flag: Flag01Icon,
+  star: StarIconData,
+  alert: Alert01Icon,
+  'square-lock': SquareLock02Icon,
+  'circle-lock': CircleLock02Icon,
+  biometric: BiometricAccessIcon,
+  fingerprint: FingerPrintIcon,
+  security: SecurityIcon,
+  certificate: Certificate02Icon,
+};
+
+export function ClassificationIcon({
+  icon,
+  size = 14,
+  className,
+  style,
+}: {
+  icon?: string | null;
+  size?: number;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  if (!icon) return null;
+  const data = CLASSIFICATION_ICON_MAP[icon as ClassificationIconId];
+  if (!data) return null;
+  return (
+    <HugeiconsIcon icon={data} size={size} strokeWidth={2} className={className} style={style} />
+  );
+}

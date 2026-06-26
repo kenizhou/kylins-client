@@ -157,42 +157,21 @@ const MENU_CATEGORIES: MenuCategoryData[] = [
     customContent: true,
   },
   {
-    label: 'Go',
-    items: [
-      { label: 'Mail', commandId: 'go:mail' },
-      { label: 'Calendar', commandId: 'go:calendar', disabled: true },
-      { label: 'Contacts', disabled: true },
-      { label: 'Tasks', disabled: true },
-      { label: 'AI Assistant', disabled: true },
-    ],
-  },
-  {
     label: 'Tools',
     items: [
-      { label: 'Settings', commandId: 'app:preferences' },
-      { label: 'Accounts', commandId: 'app:add-account' },
+      { label: 'Change Theme…', commandId: 'app:preferences-appearance' },
+      { label: 'Run with Debug Flags', commandId: 'app:toggle-debug-flags' },
       { type: 'separator' },
-      { label: 'Change Theme…', disabled: true },
-      { label: 'Install Theme…', disabled: true },
-      { type: 'separator' },
-      { label: 'Run with Debug Flags', disabled: true },
-      { type: 'separator' },
-      { label: 'Create a Plugin…', disabled: true },
-      { label: 'Install a Plugin…', disabled: true },
+      { label: 'Create a Plugin…', commandId: 'app:create-plugin' },
+      { label: 'Install a Plugin…', commandId: 'app:install-plugin' },
       { type: 'separator' },
       {
         label: 'Reload',
         commandId: 'app:reload',
       },
-      {
-        label: 'Toggle Developer Tools',
-        commandId: 'app:reload',
-        disabled: true,
-      },
-      { label: 'Toggle Component Regions', disabled: true },
-      { label: 'Toggle Screenshot Mode', disabled: true },
+      { label: 'Developer Tools', commandId: 'app:open-devtools' },
       { type: 'separator' },
-      { label: 'Open Mailsync Logs', disabled: true },
+      { label: 'Open Mailsync Logs', commandId: 'app:open-logs' },
     ],
   },
   {
@@ -234,37 +213,21 @@ function MenuDropdown({ items, onClose, className = '' }: MenuDropdownProps) {
     >
       {items.map((item, index) => {
         if (isSeparator(item)) {
-          return (
-            <div
-              key={`sep-${index}`}
-              className="my-1 border-t border-[var(--border)]"
-            />
-          );
+          return <div key={`sep-${index}`} className="my-1 border-t border-[var(--border)]" />;
         }
 
         if (isSubmenu(item)) {
           const isActive = active === item.label;
           return (
-            <div
-              key={item.label}
-              className="relative"
-              onMouseEnter={() => open(item.label)}
-            >
-              <MenuItem
-                label={item.label}
-                disabled={item.items.length === 0}
-                hasSubmenu
-              />
+            <div key={item.label} className="relative" onMouseEnter={() => open(item.label)}>
+              <MenuItem label={item.label} disabled={item.items.length === 0} hasSubmenu />
               {isActive && (
                 <div
                   className="absolute top-0 left-full ml-0.5 w-56 z-50"
                   onMouseEnter={cancelClose}
                   onMouseLeave={scheduleClose}
                 >
-                  <MenuDropdown
-                    items={item.items}
-                    onClose={onClose}
-                  />
+                  <MenuDropdown items={item.items} onClose={onClose} />
                 </div>
               )}
             </div>
@@ -360,10 +323,7 @@ export function MenuBar() {
                     <ViewMenu />
                   </div>
                 ) : (
-                  <MenuDropdown
-                    items={category.items as MenuItemData[]}
-                    onClose={closeMenu}
-                  />
+                  <MenuDropdown items={category.items as MenuItemData[]} onClose={closeMenu} />
                 )}
               </div>
             )}

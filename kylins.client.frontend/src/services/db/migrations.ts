@@ -1014,6 +1014,24 @@ export const MIGRATIONS: Migration[] = [
         );
     `,
   },
+  {
+    version: 35,
+    description:
+      'kylins: classification and encryption/signing flags on threads, messages, and local_drafts',
+    sql: `
+      ALTER TABLE threads ADD COLUMN classification_id TEXT;
+      ALTER TABLE threads ADD COLUMN is_encrypted INTEGER DEFAULT 0;
+      ALTER TABLE threads ADD COLUMN is_signed INTEGER DEFAULT 0;
+
+      ALTER TABLE messages ADD COLUMN classification_id TEXT;
+      ALTER TABLE messages ADD COLUMN is_encrypted INTEGER DEFAULT 0;
+      ALTER TABLE messages ADD COLUMN is_signed INTEGER DEFAULT 0;
+
+      ALTER TABLE local_drafts ADD COLUMN classification_id TEXT;
+      ALTER TABLE local_drafts ADD COLUMN is_encrypted INTEGER DEFAULT 0;
+      ALTER TABLE local_drafts ADD COLUMN is_signed INTEGER DEFAULT 0;
+    `,
+  },
 ];
 
 /**

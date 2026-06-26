@@ -24,6 +24,9 @@ export interface MailMessage {
   text: string | null;
   threadId?: string | null;
   messageId?: string | null;
+  classificationId: string | null;
+  isEncrypted: boolean;
+  isSigned: boolean;
 }
 
 export interface ViewStore extends ViewState {

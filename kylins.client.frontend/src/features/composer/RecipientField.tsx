@@ -163,7 +163,7 @@ export function RecipientField({
             <span
               key={`${r.email}-${i}`}
               title={r.email}
-              className={`group relative inline-flex items-center gap-1 rounded-full pl-2.5 pr-1 py-0.5 text-xs cursor-pointer transition-colors ${
+              className={`group relative inline-flex items-center gap-1 rounded pl-2.5 pr-1 py-0.5 text-xs cursor-pointer transition-colors ${
                 invalid
                   ? 'bg-[var(--destructive)]/15 text-[var(--destructive)] ring-1 ring-[var(--destructive)]/40'
                   : 'bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:bg-[var(--hover)]'
@@ -189,7 +189,7 @@ export function RecipientField({
                   e.stopPropagation();
                   setMenuIndex(menuOpen ? null : i);
                 }}
-                className="flex h-4 w-4 items-center justify-center rounded-full text-[0.625rem] leading-none opacity-60 hover:bg-black/10 hover:opacity-100 transition-opacity"
+                className="flex h-4 w-4 items-center justify-center rounded text-[0.625rem] leading-none opacity-60 hover:bg-black/10 hover:opacity-100 transition-opacity"
                 aria-label={`Actions for ${r.email}`}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}

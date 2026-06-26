@@ -14,6 +14,9 @@ export interface ComposeWindowOptions {
   draftId?: string | null;
   fromEmail?: string | null;
   signatureId?: string | null;
+  classificationId?: string | null;
+  isEncrypted?: boolean;
+  isSigned?: boolean;
 }
 
 /**
@@ -38,6 +41,9 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
       draftId: opts.draftId,
       fromEmail: opts.fromEmail,
       signatureId: opts.signatureId,
+      classificationId: opts.classificationId,
+      isEncrypted: opts.isEncrypted,
+      isSigned: opts.isSigned,
     });
     return;
   }
@@ -57,6 +63,9 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
     if (opts.draftId) params.set('draftId', opts.draftId);
     if (opts.fromEmail) params.set('fromEmail', opts.fromEmail);
     if (opts.signatureId) params.set('signatureId', opts.signatureId);
+    if (opts.classificationId) params.set('classificationId', opts.classificationId);
+    params.set('isEncrypted', opts.isEncrypted ? '1' : '0');
+    params.set('isSigned', opts.isSigned ? '1' : '0');
 
     const label = `compose-${Date.now()}`;
     const webview = new WebviewWindow(label, {
@@ -97,9 +106,7 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
   };
 
   const bodyParam = params.get('body');
-  const bodyHtml = bodyParam
-    ? decodeURIComponent(escape(atob(bodyParam)))
-    : undefined;
+  const bodyHtml = bodyParam ? decodeURIComponent(escape(atob(bodyParam))) : undefined;
 
   return {
     mode: (params.get('mode') as ComposerMode) ?? 'new',
@@ -113,5 +120,8 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     draftId: params.get('draftId') ?? undefined,
     fromEmail: params.get('fromEmail') ?? undefined,
     signatureId: params.get('signatureId') ?? undefined,
+    classificationId: params.get('classificationId') ?? undefined,
+    isEncrypted: params.get('isEncrypted') === '1',
+    isSigned: params.get('isSigned') === '1',
   };
 }

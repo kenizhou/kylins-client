@@ -47,7 +47,7 @@
   --destructive: #dc2626;
   --border: var(--series-200);
   --input: var(--series-200);
-  --ring: var(--series-accent);
+  --ring: color-mix(in oklab, var(--series-accent), transparent 75%);
   --radius: 0.375rem;
   --radius-xs: 2px;
 
@@ -125,7 +125,7 @@
   --destructive: #f87171;
   --border: var(--series-300);
   --input: var(--series-300);
-  --ring: var(--series-accent);
+  --ring: color-mix(in oklab, var(--series-accent), transparent 75%);
   --radius: 0.375rem;
   --radius-xs: 2px;
 

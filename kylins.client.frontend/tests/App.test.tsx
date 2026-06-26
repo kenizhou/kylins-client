@@ -29,8 +29,7 @@ vi.mock('../src/services/theme/themeManager', () => ({
 }));
 vi.mock('../src/services/plugins/pluginManager', () => ({
   pluginManager: {
-    loadPlugins: vi.fn(() => Promise.resolve()),
-    activatePlugins: vi.fn(() => Promise.resolve()),
+    loadInstalledPlugins: vi.fn(() => Promise.resolve()),
   },
 }));
 vi.mock('../src/features/view/hooks/useViewSettings', () => ({ useViewSettings: vi.fn() }));

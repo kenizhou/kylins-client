@@ -8,6 +8,9 @@ import { useFolderStore } from '../../stores/folderStore';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
+import { useClassification } from '../../features/classification/useClassification';
+import { useSecurityIndicatorIcons } from '../../features/classification/useSecurityIndicatorIcons';
+import { ClassificationIcon } from '../icons';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -19,6 +22,9 @@ interface MessageRowProps {
   state: MessageState;
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
+  classificationId: string | null;
+  isEncrypted: boolean;
+  isSigned: boolean;
   onClick?: () => void;
   onDoubleClick?: () => void;
 }
@@ -44,10 +50,17 @@ function MessageRow({
   state,
   selected,
   density,
+  classificationId,
+  isEncrypted,
+  isSigned,
   onClick,
   onDoubleClick,
 }: MessageRowProps) {
   const unread = state === 'unread';
+  const { getLevelById } = useClassification();
+  const { encryptedIcon, signedIcon } = useSecurityIndicatorIcons();
+  const level = getLevelById(classificationId);
+  const showSecurity = isEncrypted || isSigned;
   return (
     <div
       role="button"
@@ -75,9 +88,41 @@ function MessageRow({
           <span
             className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
           >
+            {level && (
+              <span className="inline-flex items-center gap-1 mr-1.5 align-[-2px]">
+                <ClassificationIcon
+                  icon={level.icon}
+                  size={12}
+                  className="shrink-0"
+                  style={{ color: level.color }}
+                />
+                {!level.icon && (
+                  <span
+                    className="inline-block h-2 w-2 rounded-full shrink-0"
+                    style={{ backgroundColor: level.color }}
+                  />
+                )}
+              </span>
+            )}
             {sender}
           </span>
-          <span className="text-[11px] font-mono text-[var(--muted-text)] shrink-0">{time}</span>
+          <span className="flex items-center gap-1 shrink-0">
+            {showSecurity && (
+              <span className="inline-flex items-center gap-0.5 text-[var(--muted-text)]">
+                {isEncrypted && (
+                  <span title="Encrypted" aria-label="Encrypted">
+                    <ClassificationIcon icon={encryptedIcon} size={12} />
+                  </span>
+                )}
+                {isSigned && (
+                  <span title="Signed" aria-label="Signed">
+                    <ClassificationIcon icon={signedIcon} size={12} />
+                  </span>
+                )}
+              </span>
+            )}
+            <span className="text-[11px] font-mono text-[var(--muted-text)]">{time}</span>
+          </span>
         </div>
         <span
           className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
@@ -245,6 +290,9 @@ export function MessageList() {
                       state={threadState(item.thread)}
                       selected={selectedThreadId === item.thread.id}
                       density={density}
+                      classificationId={item.thread.classificationId}
+                      isEncrypted={item.thread.isEncrypted}
+                      isSigned={item.thread.isSigned}
                       onClick={() => void selectThread(item.thread)}
                       onDoubleClick={() => void handleDoubleClick(item.thread)}
                     />

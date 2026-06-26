@@ -34,6 +34,44 @@ export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
     defaultBindings: { mac: 'mod+/', win: 'ctrl+/' },
   },
 
+  /* ---------- Tools ---------- */
+  {
+    id: 'app:open-devtools',
+    label: 'Developer Tools',
+    category: 'Tools',
+    defaultBindings: { mac: 'mod+alt+i', win: 'ctrl+alt+i' },
+  },
+  {
+    id: 'app:open-logs',
+    label: 'Open Mailsync Logs',
+    category: 'Tools',
+    defaultBindings: { mac: '', win: '' },
+  },
+  {
+    id: 'app:preferences-appearance',
+    label: 'Change Theme',
+    category: 'Tools',
+    defaultBindings: { mac: '', win: '' },
+  },
+  {
+    id: 'app:toggle-debug-flags',
+    label: 'Run with Debug Flags',
+    category: 'Tools',
+    defaultBindings: { mac: '', win: '' },
+  },
+  {
+    id: 'app:create-plugin',
+    label: 'Create a Plugin',
+    category: 'Tools',
+    defaultBindings: { mac: '', win: '' },
+  },
+  {
+    id: 'app:install-plugin',
+    label: 'Install a Plugin',
+    category: 'Tools',
+    defaultBindings: { mac: '', win: '' },
+  },
+
   /* ---------- Edit ---------- */
   {
     id: 'edit:undo',

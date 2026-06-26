@@ -4,7 +4,7 @@ import { useAccountSetupStore } from '../../stores/accountSetupStore';
 import { getAllAccounts } from '../../services/accounts';
 import { AccountSetupFlow } from '../account-setup/AccountSetupFlow';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
-import { PreferencesTabLayout, PreferencesTabColumns } from './PreferencesTabLayout';
+import { PreferencesTabLayout } from './PreferencesTabLayout';
 import { AccountDetailsEditor } from './AccountDetailsEditor';
 import { ProviderBadge } from './ProviderBadge';
 import { PreferencesAccountsIcon, PlusIcon, CloseIcon } from '../icons';
@@ -75,97 +75,63 @@ export function AccountsPreferences() {
 
   return (
     <PreferencesTabLayout>
-      <PreferencesTabColumns
-        left={
-          <>
-            <PreferencesSectionCard title="Your accounts" icon={PreferencesAccountsIcon}>
-              {isLoading ? (
-                <div className="text-sm text-[var(--muted-text)]">Loading…</div>
-              ) : accounts.length === 0 ? (
-                <div className="text-sm text-[var(--muted-text)]">No accounts configured.</div>
-              ) : (
-                <ul className="space-y-2">
-                  {accounts.map((account) => {
-                    const active = account.id === effectiveAccountId;
-                    return (
-                      <li
-                        key={account.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setSelectedAccountId(account.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            setSelectedAccountId(account.id);
-                          }
-                        }}
-                        className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${
-                          active
-                            ? 'border-[var(--primary)] bg-[var(--selected)]'
-                            : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <ProviderBadge
-                            provider={account.provider}
-                            setupProviderId={account.setupProviderId}
-                          />
-                          <div className="flex flex-col min-w-0">
-                            <span className="text-sm font-medium text-[var(--foreground)] truncate">
-                              {account.accountLabel || account.displayName || account.email}
-                            </span>
-                            <span className="text-xs text-[var(--muted-text)] truncate">
-                              {account.email}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {account.isDefault && (
-                            <span className="inline-flex items-center rounded-full bg-[var(--highlight)] px-2 py-0.5 text-[10px] font-medium text-[var(--highlight-text)]">
-                              Default
-                            </span>
-                          )}
-                          {!account.isActive && (
-                            <span className="inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--muted-foreground),transparent_88%)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)]">
-                              Paused
-                            </span>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
+      <PreferencesSectionCard title="Accounts" icon={PreferencesAccountsIcon}>
+        <div className="flex flex-wrap items-center gap-2 mb-5">
+          {accounts.map((account) => {
+            const active = account.id === effectiveAccountId;
+            return (
               <button
+                key={account.id}
                 type="button"
-                onClick={handleOpenSetup}
-                className="mt-4 flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                onClick={() => setSelectedAccountId(account.id)}
+                className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition-colors ${
+                  active
+                    ? 'border-[var(--primary)] bg-[var(--selected)] text-[var(--primary)]'
+                    : 'border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)]'
+                }`}
               >
-                <PlusIcon size={14} />
-                Add account
+                <ProviderBadge
+                  provider={account.provider}
+                  setupProviderId={account.setupProviderId}
+                />
+                <span className="truncate max-w-[180px]">
+                  {account.accountLabel || account.email}
+                </span>
+                {account.isDefault && (
+                  <span className="inline-flex items-center rounded-full bg-[var(--highlight)] px-2 py-0.5 text-[10px] font-medium text-[var(--highlight-text)]">
+                    Default
+                  </span>
+                )}
+                {!account.isActive && (
+                  <span className="inline-flex items-center rounded-full bg-[color-mix(in_oklab,var(--muted-foreground),transparent_88%)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)]">
+                    Paused
+                  </span>
+                )}
               </button>
-            </PreferencesSectionCard>
-          </>
-        }
-        right={
-          <>
-            {selectedAccount ? (
-              <AccountDetailsEditor
-                key={selectedAccount.id}
-                account={selectedAccount}
-                onUpdate={() => void refresh()}
-              />
-            ) : (
-              <PreferencesSectionCard title="Account details" icon={PreferencesAccountsIcon}>
-                <p className="text-sm text-[var(--muted-text)]">
-                  Select an account to view details.
-                </p>
-              </PreferencesSectionCard>
-            )}
-          </>
-        }
-      />
+            );
+          })}
+          <button
+            type="button"
+            onClick={handleOpenSetup}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+          >
+            <PlusIcon size={14} />
+            Add account
+          </button>
+        </div>
+
+        {selectedAccount ? (
+          <AccountDetailsEditor
+            key={selectedAccount.id}
+            account={selectedAccount}
+            onUpdate={() => void refresh()}
+          />
+        ) : (
+          <p className="text-sm text-[var(--muted-text)]">
+            Select an account to view and edit its details.
+          </p>
+        )}
+      </PreferencesSectionCard>
 
       {showSetup && <SetupOverlay onClose={handleCloseSetup} onComplete={handleSetupComplete} />}
     </PreferencesTabLayout>

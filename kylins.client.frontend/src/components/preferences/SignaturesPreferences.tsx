@@ -43,7 +43,7 @@ export function SignaturesPreferences() {
       .finally(() => {
         if (!cancelled) setIsLoading(false);
       });
-     
+
     setEditingId(null);
     return () => {
       cancelled = true;
@@ -102,7 +102,7 @@ export function SignaturesPreferences() {
 
   return (
     <div className="p-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5" style={{ alignItems: 'start' }}>
+      <div className="grid grid-cols-1 gap-5">
         <div className="space-y-5">
           <PreferencesSectionCard title="Account" icon={PreferencesSignaturesIcon}>
             <div className="flex flex-col gap-1.5">
@@ -177,7 +177,7 @@ export function SignaturesPreferences() {
               <button
                 type="button"
                 onClick={() => setEditingId('new')}
-                className="mt-4 flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                className="mt-4 flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
               >
                 <PlusIcon size={14} />
                 Add signature

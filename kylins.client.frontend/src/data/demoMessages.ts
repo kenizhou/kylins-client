@@ -16,6 +16,9 @@ export const DEMO_MESSAGES: MailMessage[] = [
     text: "Hi,\n\nAfter yesterday's standup I moved the foundation milestone out by two weeks. The structural drawings should be ready by Friday, but we need sign-off from the city before we can pour.\n\nI've attached the updated Gantt chart. Let me know if the new dates work on your end.\n\n— Kevin",
     threadId: 'thread-1',
     messageId: '<msg-1@example.com>',
+    classificationId: null,
+    isEncrypted: false,
+    isSigned: false,
   },
   {
     id: 'msg-2',
@@ -47,6 +50,9 @@ export const DEMO_MESSAGES: MailMessage[] = [
     text: 'Great news — the latest penetration test completed with no critical findings.\n\nSeverity | Count\nCritical | 0\nHigh | 1\nMedium | 3\n\n— Cecil',
     threadId: 'thread-2',
     messageId: '<msg-2@example.com>',
+    classificationId: 'restricted',
+    isEncrypted: true,
+    isSigned: true,
   },
   {
     id: 'msg-3',
@@ -65,6 +71,9 @@ export const DEMO_MESSAGES: MailMessage[] = [
     text: 'Please review the attached Q3 budget draft by Friday. I flagged two line items for your input:\n\n- Cloud infrastructure spend is up 12% quarter-over-quarter.\n- Contractor hours exceeded plan in May; I added a contingency for June.\n\nLet me know if you want to walk through it together.\n\nThanks,\nLydia',
     threadId: 'thread-3',
     messageId: '<msg-3@example.com>',
+    classificationId: 'confidential',
+    isEncrypted: true,
+    isSigned: true,
   },
   {
     id: 'msg-4',
@@ -79,6 +88,9 @@ export const DEMO_MESSAGES: MailMessage[] = [
     text: 'Dear user,\n\nWe noticed unusual activity on your account. Please click here to verify your details: https://secure-portal.example.com/verify\n\nThis is a demo message used to test the suspicious-link warning.',
     threadId: 'thread-4',
     messageId: '<msg-4@example.com>',
+    classificationId: null,
+    isEncrypted: false,
+    isSigned: false,
   },
   {
     id: 'msg-5',
@@ -95,6 +107,9 @@ export const DEMO_MESSAGES: MailMessage[] = [
     text: 'Here are the top stories from this week:\n\n[Image: Weekly hero]\n\nRead the full recap on our blog.\n\nThis message demonstrates remote-image blocking and tracker-pixel stripping.',
     threadId: 'thread-5',
     messageId: '<msg-5@example.com>',
+    classificationId: null,
+    isEncrypted: false,
+    isSigned: false,
   },
   {
     id: 'msg-6',
@@ -107,6 +122,9 @@ export const DEMO_MESSAGES: MailMessage[] = [
     text: 'Site visit went well. Foundation is curing as expected and the weather looks clear for the pour on Monday.\n\n— Mina',
     threadId: 'thread-6',
     messageId: '<msg-6@example.com>',
+    classificationId: null,
+    isEncrypted: false,
+    isSigned: false,
   },
 ];
 

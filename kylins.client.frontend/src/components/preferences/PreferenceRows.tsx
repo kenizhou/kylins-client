@@ -15,7 +15,7 @@ export function CheckboxRow({
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 rounded border-[var(--border)] text-[var(--primary)] focus:ring-[var(--ring)]"
+        className="mt-0.5 rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
       />
       <span className="text-sm text-[var(--foreground)]">{label}</span>
     </label>
@@ -64,9 +64,7 @@ export function ButtonRow({
     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2">
       <div className="space-y-0.5">
         <span className="text-sm text-[var(--foreground)]">{label}</span>
-        {description && (
-          <p className="text-xs text-[var(--muted-text)]">{description}</p>
-        )}
+        {description && <p className="text-xs text-[var(--muted-text)]">{description}</p>}
       </div>
       {children}
     </div>

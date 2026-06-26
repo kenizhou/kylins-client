@@ -1,10 +1,6 @@
 import { useState } from 'react';
 import type { Account } from '../../types';
-import {
-  updateAccount,
-  setDefaultAccount,
-  deleteAccount,
-} from '../../services/accounts';
+import { updateAccount, setDefaultAccount, deleteAccount } from '../../services/accounts';
 import {
   reauthorizeAccount,
   testImapConnection,
@@ -41,11 +37,17 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
   const [accountLabel, setAccountLabel] = useState(account.accountLabel ?? '');
   const [displayName, setDisplayName] = useState(account.displayName ?? '');
   const [isSavingIdentity, setIsSavingIdentity] = useState(false);
-  const [testStatus, setTestStatus] = useState<{ type: 'idle' | 'loading' | 'success' | 'error'; message: string }>({
+  const [testStatus, setTestStatus] = useState<{
+    type: 'idle' | 'loading' | 'success' | 'error';
+    message: string;
+  }>({
     type: 'idle',
     message: '',
   });
-  const [reauthStatus, setReauthStatus] = useState<{ type: 'idle' | 'loading' | 'success' | 'error'; message: string }>({
+  const [reauthStatus, setReauthStatus] = useState<{
+    type: 'idle' | 'loading' | 'success' | 'error';
+    message: string;
+  }>({
     type: 'idle',
     message: '',
   });
@@ -172,7 +174,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
             type="checkbox"
             checked={account.isActive}
             onChange={() => void handleToggleActive()}
-            className="rounded border-[var(--border)] text-[var(--primary)] focus:ring-[var(--ring)]"
+            className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
           />
           <span className="text-sm text-[var(--foreground)]">Active (sync enabled)</span>
         </label>
@@ -214,9 +216,11 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
                   });
                   onUpdate();
                 }}
-                className="rounded border-[var(--border)] text-[var(--primary)] focus:ring-[var(--ring)]"
+                className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
               />
-              <span className="text-sm text-[var(--foreground)]">Accept invalid / self-signed certificates</span>
+              <span className="text-sm text-[var(--foreground)]">
+                Accept invalid / self-signed certificates
+              </span>
             </label>
           </>
         )}

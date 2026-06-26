@@ -291,3 +291,50 @@
     width: 0%;
   }
 }
+
+/* ---- Reading pane action labels: show text only when the pane is wide enough ---- */
+.reading-pane {
+  container-type: inline-size;
+  container-name: reading-pane;
+}
+.reading-pane-action-label {
+  display: none;
+}
+@container reading-pane (min-width: 640px) {
+  .reading-pane-action-label {
+    display: inline;
+  }
+}
+
+/* ---- Reading pane header: stack and tighten when the pane gets narrow ---- */
+@container reading-pane (max-width: 480px) {
+  .reading-pane-header {
+    padding-left: 1rem;
+    padding-right: 1rem;
+    padding-top: 0.75rem;
+    padding-bottom: 0.5rem;
+  }
+  .reading-pane-subject {
+    font-size: 1.125rem;
+    line-height: 1.3;
+  }
+  .reading-pane-sender-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .reading-pane-actions {
+    align-self: flex-end;
+    margin-top: 0;
+  }
+}
+
+@container reading-pane (max-width: 360px) {
+  .reading-pane-subject {
+    font-size: 1rem;
+  }
+  .reading-pane-actions button {
+    padding-left: 0.375rem;
+    padding-right: 0.375rem;
+  }
+}

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   eventMatchesCombo,
   parseBinding,
@@ -16,6 +18,9 @@ import { useUIStore } from '../stores/uiStore';
 import { openComposerWindow } from '../utils/composeWindow';
 import { DEMO_MESSAGES } from '../data/demoMessages';
 import { isMac } from '../utils/platform';
+import { pluginManager } from '../services/plugins/pluginManager';
+import { getSettingBool, setSettingBool } from '../services/settings';
+import { SETTING_KEYS } from '../services/settingsKeys';
 
 const SEQUENCE_TIMEOUT_MS = 1000;
 
@@ -50,8 +55,41 @@ const ACTION_REGISTRY: Record<string, () => void | Promise<void>> = {
   'app:print': () => window.print(),
   'app:close-window': () => getCurrentWindow().close(),
   'app:reload': () => window.location.reload(),
-  'app:show-shortcuts-help': () =>
-    usePreferencesStore.getState().openPreferences('Shortcuts'),
+  'app:show-shortcuts-help': () => usePreferencesStore.getState().openPreferences('Shortcuts'),
+
+  'app:open-devtools': () => {
+    void invoke('open_devtools');
+  },
+  'app:open-logs': () => {
+    void invoke('reveal_logs_directory');
+  },
+  'app:preferences-appearance': () => usePreferencesStore.getState().openPreferences('Appearance'),
+  'app:toggle-debug-flags': async () => {
+    const current = (await getSettingBool(SETTING_KEYS.debugFlags)) ?? false;
+    await setSettingBool(SETTING_KEYS.debugFlags, !current);
+    window.location.reload();
+  },
+  'app:install-plugin': async () => {
+    const path = await open({ multiple: false, directory: false });
+    if (typeof path !== 'string') return;
+    try {
+      await pluginManager.installPlugin(path);
+      console.log('[plugins] installed', path);
+    } catch (err) {
+      console.error('[plugins] failed to install plugin:', err);
+    }
+  },
+  'app:create-plugin': async () => {
+    const directory = await save({ defaultPath: 'my-kylins-plugin' });
+    if (typeof directory !== 'string') return;
+    try {
+      const name = directory.split(/[\\/]/).pop() || 'my-kylins-plugin';
+      await pluginManager.createPlugin(directory, name);
+      console.log('[plugins] created plugin at', directory);
+    } catch (err) {
+      console.error('[plugins] failed to create plugin:', err);
+    }
+  },
 
   'edit:undo': () => runDocumentCommand('undo'),
   'edit:redo': () => runDocumentCommand('redo'),

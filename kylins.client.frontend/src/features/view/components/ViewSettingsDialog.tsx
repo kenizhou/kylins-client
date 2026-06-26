@@ -48,7 +48,7 @@ export function ViewSettingsDialog({ onClose }: ViewSettingsDialogProps) {
                     type="checkbox"
                     checked={visibleColumnIds.includes(col.id)}
                     onChange={() => toggleColumn(col.id)}
-                    className="rounded border-[var(--border)]"
+                    className="rounded border-[var(--border)] accent-[var(--primary)]"
                   />
                   <span className="text-sm text-[var(--foreground)]">{col.label}</span>
                 </label>

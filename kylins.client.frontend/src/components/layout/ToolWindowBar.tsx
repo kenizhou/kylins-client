@@ -4,10 +4,11 @@ import {
   ContactsIcon,
   TasksIcon,
   AiIcon,
-  SettingsIcon,
-  UserIcon,
+  PanelLeftOpenIcon,
+  PanelLeftCloseIcon,
 } from '../icons';
 import { useUIStore } from '../../stores/uiStore';
+import { useViewStore } from '../../features/view/viewStore';
 
 interface ToolWindowItem {
   id: string;
@@ -28,6 +29,8 @@ export function ToolWindowBar() {
   const setActiveToolWindow = useUIStore((s) => s.setActiveToolWindow);
   const activeApp = useUIStore((s) => s.activeApp);
   const setActiveApp = useUIStore((s) => s.setActiveApp);
+  const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
+  const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
 
   const isAppSwitcher = (id: string): id is 'mail' | 'calendar' | 'contacts' =>
     id === 'mail' || id === 'calendar' || id === 'contacts';
@@ -73,24 +76,15 @@ export function ToolWindowBar() {
         })}
       </div>
 
-      <div className="flex flex-col items-center gap-2">
-        <button
-          type="button"
-          aria-label="Settings"
-          title="Settings"
-          className="grid place-items-center w-10 h-10 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
-        >
-          <SettingsIcon size={20} />
-        </button>
-        <button
-          type="button"
-          aria-label="Account"
-          title="Account"
-          className="grid place-items-center w-10 h-10 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
-        >
-          <UserIcon size={20} />
-        </button>
-      </div>
+      <button
+        type="button"
+        aria-label={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
+        title={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
+        onClick={() => setFolderPaneVisible(!folderPaneVisible)}
+        className="grid place-items-center w-10 h-10 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+      >
+        {folderPaneVisible ? <PanelLeftCloseIcon size={20} /> : <PanelLeftOpenIcon size={20} />}
+      </button>
     </nav>
   );
 }

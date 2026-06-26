@@ -8,6 +8,7 @@ import {
   MailIcon,
   SendIcon,
   TrashIcon,
+  StarIcon,
   type IconProps,
 } from '../components/icons';
 import type { FolderRole } from '../services/mail/folders';
@@ -21,7 +22,7 @@ const ROLE_ICON: Partial<Record<FolderRole, ComponentType<IconProps>>> = {
   archive: ArchiveIcon,
   outbox: SendIcon,
   flagged: FlagIcon,
-  starred: FlagIcon,
+  starred: StarIcon,
   important: FlagIcon,
   all: MailIcon,
 };

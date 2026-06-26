@@ -119,6 +119,9 @@ export default function App() {
                 draftId: composeParams.draftId,
                 fromEmail: composeParams.fromEmail,
                 signatureId: composeParams.signatureId,
+                classificationId: composeParams.classificationId,
+                isEncrypted: composeParams.isEncrypted,
+                isSigned: composeParams.isSigned,
               });
             }
 
@@ -146,10 +149,8 @@ export default function App() {
               usePreferencesStore.getState().hydrate(),
             ]);
 
-            // Plugin discovery: empty for the skeleton. Real implementation will
-            // scan the plugins/ directory via the Tauri fs API.
-            await pluginManager.loadPlugins([]);
-            await pluginManager.activatePlugins();
+            // Plugin discovery: load any previously installed plugins, then activate.
+            await pluginManager.loadInstalledPlugins();
 
             // Load existing accounts into the store so the UI reflects any
             // already-configured accounts on startup.

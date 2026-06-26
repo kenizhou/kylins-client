@@ -164,8 +164,6 @@ export function AliasManager({ account }: AliasManagerProps) {
 
   return (
     <div className="space-y-4">
-      <h4 className="text-sm font-semibold text-[var(--foreground)]">Send-as aliases</h4>
-
       {isLoading ? (
         <div className="text-sm text-[var(--muted-text)]">Loading…</div>
       ) : (
@@ -228,7 +226,7 @@ export function AliasManager({ account }: AliasManagerProps) {
               type="checkbox"
               checked={isDefault}
               onChange={(e) => setIsDefault(e.target.checked)}
-              className="rounded border-[var(--border)] text-[var(--primary)] focus:ring-[var(--ring)]"
+              className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
             />
             Default alias
           </label>
@@ -237,7 +235,7 @@ export function AliasManager({ account }: AliasManagerProps) {
               type="checkbox"
               checked={treatAsAlias}
               onChange={(e) => setTreatAsAlias(e.target.checked)}
-              className="rounded border-[var(--border)] text-[var(--primary)] focus:ring-[var(--ring)]"
+              className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
             />
             Treat as alias
           </label>

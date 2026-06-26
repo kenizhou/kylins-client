@@ -36,6 +36,9 @@ export interface DraftInput {
   inReplyToMessageId?: string | null;
   signatureId?: string | null;
   attachments?: StoredAttachment[];
+  classificationId?: string | null;
+  isEncrypted?: boolean;
+  isSigned?: boolean;
 }
 
 /** Raw `local_drafts` row. Array/attachment columns are JSON-encoded strings. */
@@ -53,6 +56,9 @@ export interface DbDraft {
   signature_id: string | null;
   remote_draft_id: string | null;
   attachments: string | null;
+  classification_id: string | null;
+  is_encrypted: number;
+  is_signed: number;
   created_at: number;
   updated_at: number;
   sync_status: string;
@@ -82,6 +88,9 @@ function inputToColumns(input: DraftInput): [string, unknown][] {
       'attachments',
       input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null,
     ],
+    ['classification_id', input.classificationId ?? null],
+    ['is_encrypted', input.isEncrypted ? 1 : 0],
+    ['is_signed', input.isSigned ? 1 : 0],
   ];
 }
 

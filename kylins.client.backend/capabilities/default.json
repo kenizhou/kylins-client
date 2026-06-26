@@ -29,6 +29,8 @@
     "fs:allow-appdata-read-recursive",
     "fs:allow-appdata-write-recursive",
     "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
     "autostart:default",
     "global-shortcut:default",
     "deep-link:default"

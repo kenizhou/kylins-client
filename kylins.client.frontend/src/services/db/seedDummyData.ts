@@ -393,6 +393,9 @@ interface MessageInput {
   bodyHtml?: string;
   inReplyTo?: string;
   attachments?: AttachmentMeta[];
+  classificationId?: string | null;
+  isEncrypted?: boolean;
+  isSigned?: boolean;
 }
 
 async function createMessage(
@@ -406,8 +409,9 @@ async function createMessage(
     `INSERT OR REPLACE INTO messages (
       id, account_id, thread_id, from_address, from_name, to_addresses, cc_addresses, bcc_addresses,
       subject, snippet, date, is_read, is_starred, body_text,
-      body_cached, message_id_header, internal_date, in_reply_to_header
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, $15, $11, $16)`,
+      body_cached, message_id_header, internal_date, in_reply_to_header,
+      classification_id, is_encrypted, is_signed
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, $15, $11, $16, $17, $18, $19)`,
     [
       input.id,
       input.accountId,
@@ -425,6 +429,9 @@ async function createMessage(
       bodyText,
       `<${input.id}@dummy.kylins>`,
       input.inReplyTo ?? null,
+      input.classificationId ?? null,
+      input.isEncrypted ? 1 : 0,
+      input.isSigned ? 1 : 0,
     ],
   );
 
@@ -474,13 +481,17 @@ async function createThread(
     hasAttachments: boolean;
     primaryLabel: string;
     extraLabels?: string[];
+    classificationId?: string | null;
+    isEncrypted?: boolean;
+    isSigned?: boolean;
   },
 ): Promise<void> {
   await db.execute(
     `INSERT OR REPLACE INTO threads (
       id, account_id, subject, snippet, last_message_at, message_count,
-      is_read, is_starred, is_important, has_attachments
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      is_read, is_starred, is_important, has_attachments,
+      classification_id, is_encrypted, is_signed
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
     [
       input.id,
       input.accountId,
@@ -492,6 +503,9 @@ async function createThread(
       input.isStarred ? 1 : 0,
       input.isImportant ? 1 : 0,
       input.hasAttachments ? 1 : 0,
+      input.classificationId ?? null,
+      input.isEncrypted ? 1 : 0,
+      input.isSigned ? 1 : 0,
     ],
   );
 
@@ -514,7 +528,7 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
     const accountId = ACCOUNT_IDS[a]!;
     const accountEmail = ACCOUNTS[a]!.email;
 
-    // 1. Unread important security alert (simple, no attachments).
+    // 1. Unread important security alert (restricted, encrypted + signed).
     {
       const threadId = deterministicId('thread', accountId, 'unread-important');
       const subject = 'Action required: security alert';
@@ -532,6 +546,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         isImportant: true,
         hasAttachments: false,
         primaryLabel: 'inbox',
+        classificationId: 'restricted',
+        isEncrypted: true,
+        isSigned: true,
       });
       await createMessage(db, {
         id: deterministicId('msg', accountId, 'unread-important'),
@@ -545,10 +562,13 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         date,
         isRead: false,
         isStarred: false,
+        classificationId: 'restricted',
+        isEncrypted: true,
+        isSigned: true,
       });
     }
 
-    // 2. Inbox thread with attachment + reply (conversation).
+    // 2. Inbox thread with attachment + reply (confidential, encrypted + signed).
     {
       const threadId = deterministicId('thread', accountId, 'attachment-reply');
       const subject = 'Q3 roadmap review';
@@ -567,6 +587,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         isImportant: false,
         hasAttachments: true,
         primaryLabel: 'inbox',
+        classificationId: 'confidential',
+        isEncrypted: true,
+        isSigned: true,
       });
       const msg1Id = deterministicId('msg', accountId, 'attachment-reply', 1);
       const msg2Id = deterministicId('msg', accountId, 'attachment-reply', 2);
@@ -592,6 +615,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
             size: 128000,
           },
         ],
+        classificationId: 'confidential',
+        isEncrypted: true,
+        isSigned: true,
       });
       await createMessage(db, {
         id: msg2Id,
@@ -608,6 +634,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         isStarred: false,
         bodyHtml: BODY_REPLY_QUOTE,
         inReplyTo: `<${msg1Id}@dummy.kylins>`,
+        classificationId: 'confidential',
+        isEncrypted: true,
+        isSigned: true,
       });
     }
 
@@ -685,15 +714,15 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
       });
     }
 
-    // 5. Local draft.
+    // 5. Local draft (restricted, encrypted + signed).
     {
       const draftId = deterministicId('draft', accountId);
       await db.execute(
         `INSERT OR REPLACE INTO local_drafts (
           id, account_id, to_addresses, cc_addresses, bcc_addresses, subject, body_html,
           reply_to_message_id, thread_id, from_email, signature_id, remote_draft_id,
-          attachments, created_at, updated_at, sync_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, 'pending')`,
+          attachments, classification_id, is_encrypted, is_signed, created_at, updated_at, sync_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17, 'pending')`,
         [
           draftId,
           accountId,
@@ -708,6 +737,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
           null,
           null,
           null,
+          'restricted',
+          1,
+          1,
           nowSeconds(),
         ],
       );
@@ -782,7 +814,7 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
       });
     }
 
-    // 8. Forward thread with table budget.
+    // 8. Forward thread with table budget (restricted, signed).
     {
       const threadId = deterministicId('thread', accountId, 'forward');
       const subject = 'Fwd: Conference notes';
@@ -800,6 +832,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         isImportant: true,
         hasAttachments: false,
         primaryLabel: 'inbox',
+        classificationId: 'restricted',
+        isEncrypted: false,
+        isSigned: true,
       });
       await createMessage(db, {
         id: deterministicId('msg', accountId, 'forward'),
@@ -814,6 +849,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         isRead: true,
         isStarred: false,
         bodyHtml: BODY_TABLE,
+        classificationId: 'restricted',
+        isEncrypted: false,
+        isSigned: true,
       });
     }
 
@@ -936,7 +974,7 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
       });
     }
 
-    // 11. Multi-image screenshot thread.
+    // 11. Multi-image screenshot thread (confidential, encrypted + signed).
     {
       const threadId = deterministicId('thread', accountId, 'screenshots');
       const subject = 'UI feedback';
@@ -954,6 +992,9 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         isImportant: false,
         hasAttachments: false,
         primaryLabel: 'inbox',
+        classificationId: 'confidential',
+        isEncrypted: true,
+        isSigned: true,
       });
       await createMessage(db, {
         id: deterministicId('msg', accountId, 'screenshots'),
@@ -969,6 +1010,94 @@ async function seedThreadsAndMessages(db: Awaited<ReturnType<typeof getDb>>): Pr
         isRead: true,
         isStarred: true,
         bodyHtml: BODY_GALLERY,
+        classificationId: 'confidential',
+        isEncrypted: true,
+        isSigned: true,
+      });
+    }
+
+    // 12. Board memo (confidential, encrypted + signed).
+    {
+      const threadId = deterministicId('thread', accountId, 'board-memo');
+      const subject = 'Board memo: FY26 strategic plan';
+      const contact = CONTACTS[6]!; // GitHub (reuse as corporate sender)
+      const date = baseTime - 3600 * 5;
+      await createThread(db, {
+        id: threadId,
+        accountId,
+        subject,
+        snippet: 'Please review the attached draft before Friday.',
+        lastMessageAt: date,
+        messageCount: 1,
+        isRead: false,
+        isStarred: false,
+        isImportant: true,
+        hasAttachments: true,
+        primaryLabel: 'inbox',
+        classificationId: 'confidential',
+        isEncrypted: true,
+        isSigned: true,
+      });
+      await createMessage(db, {
+        id: deterministicId('msg', accountId, 'board-memo'),
+        accountId,
+        threadId,
+        fromAddress: contact.email,
+        fromName: 'Corporate Secretary',
+        toAddresses: accountEmail,
+        subject,
+        snippet: 'Please review the attached draft before Friday.',
+        date,
+        isRead: false,
+        isStarred: false,
+        bodyHtml: BODY_TABLE,
+        attachments: [{ filename: 'fy26-plan.pdf', mimeType: 'application/pdf', size: 768000 }],
+        classificationId: 'confidential',
+        isEncrypted: true,
+        isSigned: true,
+      });
+    }
+
+    // 13. Vendor contract (restricted, encrypted + signed).
+    {
+      const threadId = deterministicId('thread', accountId, 'vendor-contract');
+      const subject = 'Vendor contract: engineering tools';
+      const contact = CONTACTS[7]!; // Figma (reuse as vendor contact)
+      const date = baseTime - 3600 * 9;
+      await createThread(db, {
+        id: threadId,
+        accountId,
+        subject,
+        snippet: 'The negotiated terms are in the attachment.',
+        lastMessageAt: date,
+        messageCount: 1,
+        isRead: true,
+        isStarred: false,
+        isImportant: false,
+        hasAttachments: true,
+        primaryLabel: 'inbox',
+        classificationId: 'restricted',
+        isEncrypted: true,
+        isSigned: true,
+      });
+      await createMessage(db, {
+        id: deterministicId('msg', accountId, 'vendor-contract'),
+        accountId,
+        threadId,
+        fromAddress: contact.email,
+        fromName: 'Vendor Relations',
+        toAddresses: accountEmail,
+        ccAddresses: 'procurement@example.com',
+        subject,
+        snippet: 'The negotiated terms are in the attachment.',
+        date,
+        isRead: true,
+        isStarred: false,
+        bodyHtml: BODY_INLINE,
+        attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', size: 512000 }],
+        classificationId: 'restricted',
+        isEncrypted: true,
+        isSigned: true,
       });
     }
   }

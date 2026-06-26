@@ -1,7 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
-import { ArrowLeftIcon, PinIcon, PlusIcon, PencilIcon, TrashIcon, FolderIcon } from '../icons';
-import { useViewStore } from '../../features/view/viewStore';
+import { PinIcon, PlusIcon, PencilIcon, TrashIcon, FolderIcon } from '../icons';
 import { useAccountStore } from '../../stores/accountStore';
 import { useFolderStore } from '../../stores/folderStore';
 import type { MailFolder } from '../../services/mail/folders';
@@ -42,7 +40,7 @@ function InlineFolderInput({
       className="flex items-center gap-2.5 h-7 pr-2 text-[var(--foreground)]"
       style={{ paddingLeft: `${12 + depth * 14}px` }}
     >
-      <FolderIcon size={15} />
+      <FolderIcon size={18} className="shrink-0" />
       <input
         ref={ref}
         value={value}
@@ -72,9 +70,7 @@ interface FolderRowProps {
   depth?: number;
   active?: boolean;
   unread?: number;
-  isFavorite?: boolean;
   onClick?: () => void;
-  onToggleFavorite?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
 }
 
@@ -84,9 +80,7 @@ function FolderRow({
   depth = 0,
   active = false,
   unread = 0,
-  isFavorite = false,
   onClick,
-  onToggleFavorite,
   onContextMenu,
 }: FolderRowProps) {
   return (
@@ -107,7 +101,7 @@ function FolderRow({
       style={{ paddingLeft: `${12 + depth * 14}px` }}
       className={`
         group relative flex items-center gap-2.5 pr-2 h-7 cursor-pointer
-        ${active ? 'bg-[var(--selected)] text-[var(--selected-text)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--text)]'}
+        ${active ? 'bg-[var(--selected)] text-[var(--selected-text)]' : 'text-[var(--text)] hover:bg-[var(--hover)]'}
       `}
     >
       {active && <span className="absolute left-0 top-0 bottom-0 w-[2px] bg-[var(--primary)]" />}
@@ -117,33 +111,12 @@ function FolderRow({
         <span
           className={`font-mono text-[11px] px-1.5 py-0.5 rounded-full ${
             active
-              ? 'bg-[var(--text)] text-[var(--background)]'
+              ? 'bg-[var(--primary)] text-[var(--primary-foreground)]'
               : 'bg-[var(--border)] text-[var(--text)]'
           }`}
         >
           {unread}
         </span>
-      )}
-      {onToggleFavorite && (
-        <button
-          type="button"
-          aria-label={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
-          title={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleFavorite();
-          }}
-          className={`
-            flex h-5 w-5 shrink-0 items-center justify-center rounded transition-opacity
-            ${
-              isFavorite
-                ? 'opacity-100 text-[var(--selected-text)]'
-                : 'opacity-0 text-[var(--muted-text)] hover:text-[var(--foreground)] group-hover:opacity-100'
-            }
-          `}
-        >
-          <PinIcon size={12} />
-        </button>
       )}
     </div>
   );
@@ -151,8 +124,8 @@ function FolderRow({
 
 function FolderGroup({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="py-2 last:pb-0">
-      <div className="px-3 pb-1.5 font-[var(--text-overline)] uppercase tracking-[0.04em] text-[var(--muted-text)]">
+    <div className="first:pt-3 pt-2 pb-2 last:pb-0">
+      <div className="px-3 pb-1.5 text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide">
         {title}
       </div>
       <div className="space-y-0.5 px-0">{children}</div>
@@ -172,9 +145,7 @@ interface FolderNodesProps {
   inline: InlineEdit | null;
   isSelected: (folder: MailFolder) => boolean;
   unreadFor: (folder: MailFolder) => number;
-  isFavorite: (folder: MailFolder) => boolean;
   onSelect: (folder: MailFolder) => void;
-  onToggleFavorite: (folder: MailFolder) => void;
   onContextMenu: (folder: MailFolder, e: React.MouseEvent) => void;
   onCommitInline: (value: string) => void;
   onCancelInline: () => void;
@@ -186,9 +157,7 @@ function FolderNodes({
   inline,
   isSelected,
   unreadFor,
-  isFavorite,
   onSelect,
-  onToggleFavorite,
   onContextMenu,
   onCommitInline,
   onCancelInline,
@@ -223,9 +192,7 @@ function FolderNodes({
                 depth={depth}
                 active={isSelected(node.folder)}
                 unread={unreadFor(node.folder)}
-                isFavorite={isFavorite(node.folder)}
                 onClick={() => onSelect(node.folder)}
-                onToggleFavorite={() => onToggleFavorite(node.folder)}
                 onContextMenu={(e) => onContextMenu(node.folder, e)}
               />
             )}
@@ -236,9 +203,7 @@ function FolderNodes({
                 inline={inline}
                 isSelected={isSelected}
                 unreadFor={unreadFor}
-                isFavorite={isFavorite}
                 onSelect={onSelect}
-                onToggleFavorite={onToggleFavorite}
                 onContextMenu={onContextMenu}
                 onCommitInline={onCommitInline}
                 onCancelInline={onCancelInline}
@@ -263,9 +228,7 @@ function FolderNodes({
 // ---- Pane ----
 
 export function FolderPane() {
-  const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
   const accounts = useAccountStore((s) => s.accounts);
-  const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const byAccount = useFolderStore((s) => s.byAccount);
   const selected = useFolderStore((s) => s.selected);
   const favorites = useFolderStore((s) => s.favorites);
@@ -320,6 +283,11 @@ export function FolderPane() {
         },
         { separator: true },
         {
+          label: isFavorite(menu.folder) ? 'Remove from Favorites' : 'Add to Favorites',
+          icon: PinIcon,
+          onSelect: () => void onToggleFavorite(menu.folder),
+        },
+        {
           label: 'New Subfolder',
           icon: PlusIcon,
           onSelect: () =>
@@ -349,35 +317,6 @@ export function FolderPane() {
 
   return (
     <div className="flex flex-col h-full bg-[var(--surface)] rounded-xl">
-      <div className="flex h-[var(--pane-header-h)] shrink-0 items-center justify-between px-3">
-        <span className="text-sm font-semibold text-[var(--foreground)]">Folders</span>
-        <div className="flex items-center gap-1">
-          <InjectedComponentSet role="folder-pane:header" containersRequired={false} />
-          <button
-            type="button"
-            disabled={!activeAccountId}
-            onClick={() =>
-              activeAccountId &&
-              setInline({ kind: 'create', accountId: activeAccountId, parentId: null, name: '' })
-            }
-            aria-label="New folder"
-            title="New folder"
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:opacity-40 disabled:hover:bg-transparent"
-          >
-            <PlusIcon size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => setFolderPaneVisible(false)}
-            aria-label="Collapse folder pane"
-            title="Collapse folder pane"
-            className="flex h-6 w-6 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
-          >
-            <ArrowLeftIcon size={14} />
-          </button>
-        </div>
-      </div>
-
       <div className="flex-1 overflow-auto">
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-[var(--muted-text)]">
@@ -396,15 +335,15 @@ export function FolderPane() {
                       name={folder.name}
                       active={isSelected(folder)}
                       unread={unreadFor(folder)}
-                      isFavorite
                       onClick={() => onSelect(folder)}
-                      onToggleFavorite={() => onToggleFavorite(folder)}
                       onContextMenu={(e) => openMenu(folder, e)}
                     />
                   );
                 })}
               </FolderGroup>
             )}
+
+            {favoriteFolders.length > 0 && <div className="h-px bg-[var(--border)] mx-3" />}
 
             {accounts.map((account) => {
               const folders = byAccount[account.id] ?? [];
@@ -438,9 +377,7 @@ export function FolderPane() {
                           name={folder.name}
                           active={isSelected(folder)}
                           unread={unreadFor(folder)}
-                          isFavorite={isFavorite(folder)}
                           onClick={() => onSelect(folder)}
-                          onToggleFavorite={() => onToggleFavorite(folder)}
                           onContextMenu={(e) => openMenu(folder, e)}
                         />
                         {childCreate && (
@@ -475,9 +412,7 @@ export function FolderPane() {
                       inline={inline}
                       isSelected={isSelected}
                       unreadFor={unreadFor}
-                      isFavorite={isFavorite}
                       onSelect={onSelect}
-                      onToggleFavorite={onToggleFavorite}
                       onContextMenu={openMenu}
                       onCommitInline={commitInline}
                       onCancelInline={cancelInline}

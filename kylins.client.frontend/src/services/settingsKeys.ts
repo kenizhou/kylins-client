@@ -44,6 +44,14 @@ export const SETTING_KEYS = {
 
   // Privacy & Security
   shareDiagnosticsData: 'share_diagnostics_data',
+
+  // Classification / security levels
+  classificationLevels: 'classification_levels',
+  securityIndicatorIcons: 'security_indicator_icons',
+
+  // Tools / developer
+  installedPluginPaths: 'installed_plugin_paths',
+  debugFlags: 'debug_flags',
 } as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];

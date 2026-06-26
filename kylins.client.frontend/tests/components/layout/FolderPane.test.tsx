@@ -111,12 +111,6 @@ describe('FolderPane context menu', () => {
     expect(getByText('Delete Folder').closest('button')!.disabled).toBe(true);
   });
 
-  it('opens an inline create input from the header "+" button', () => {
-    const { getByLabelText, getByPlaceholderText } = render(<FolderPane />);
-    fireEvent.click(getByLabelText('New folder'));
-    expect(getByPlaceholderText('Folder name')).toBeInTheDocument();
-  });
-
   it('opens an inline create input from "New Subfolder"', () => {
     const { getByText, getByPlaceholderText } = render(<FolderPane />);
     fireEvent.contextMenu(getByText('Todo'));

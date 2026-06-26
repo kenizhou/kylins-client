@@ -1,7 +1,6 @@
+import { useEffect, useRef } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { ReadingPanePosition } from '../types';
-import { FolderIcon, ArrowRightIcon } from '@/components/icons';
-import { useViewStore } from '../viewStore';
 
 interface ReadingPaneLayoutProps {
   position: ReadingPanePosition;
@@ -9,27 +8,6 @@ interface ReadingPaneLayoutProps {
   folderPane: React.ReactNode;
   messageList: React.ReactNode;
   readingPane: React.ReactNode;
-}
-
-/**
- * Slim expand strip shown at the left edge of the mail content when the folder
- * pane is hidden. Click to restore the folder pane. (Auto-expand on hover is
- * intentionally omitted — it would fire whenever the pointer nears the edge.)
- */
-export function FolderExpandStrip() {
-  const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
-  return (
-    <button
-      type="button"
-      onClick={() => setFolderPaneVisible(true)}
-      aria-label="Show folder pane"
-      title="Show folder pane"
-      className="flex w-7 shrink-0 flex-col items-center gap-2 rounded-lg bg-[var(--surface)] pt-2 text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
-    >
-      <ArrowRightIcon size={14} />
-      <FolderIcon size={18} />
-    </button>
-  );
 }
 
 function PanelCard({ children }: { children: React.ReactNode }) {
@@ -73,6 +51,40 @@ function HDivider() {
   );
 }
 
+/**
+ * Wraps a panel and exposes its screen position/size as CSS variables so the
+ * title-bar search box can track the panel.
+ */
+function MeasuredPanelCard({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function update() {
+      const el = ref.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      document.documentElement.style.setProperty('--message-list-left', `${rect.left}px`);
+      document.documentElement.style.setProperty('--message-list-width', `${rect.width}px`);
+    }
+
+    update();
+    const observer = new ResizeObserver(update);
+    if (ref.current) observer.observe(ref.current);
+    window.addEventListener('resize', update);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, []);
+
+  return (
+    <div ref={ref} className="h-full">
+      <PanelCard>{children}</PanelCard>
+    </div>
+  );
+}
+
 export function ReadingPaneLayout({
   position,
   folderPaneVisible,
@@ -91,7 +103,7 @@ export function ReadingPaneLayout({
         )}
         {folderPaneVisible && <VDivider hidden />}
         <Panel key="message-list" defaultSize="80%" minSize="40%">
-          <PanelCard>{messageList}</PanelCard>
+          <MeasuredPanelCard>{messageList}</MeasuredPanelCard>
         </Panel>
       </Group>
     );
@@ -108,7 +120,7 @@ export function ReadingPaneLayout({
         )}
         {folderPaneVisible && <VDivider hidden />}
         <Panel key="message-list" defaultSize="30%" minSize="18%" maxSize="50%">
-          <PanelCard>{messageList}</PanelCard>
+          <MeasuredPanelCard>{messageList}</MeasuredPanelCard>
         </Panel>
         <VDivider />
         <Panel key="reading-pane" defaultSize="50%" minSize="30%">
@@ -132,7 +144,7 @@ export function ReadingPaneLayout({
       <Panel key="content" defaultSize="80%" minSize="30%">
         <Group orientation="vertical" className="h-full">
           <Panel key="message-list" defaultSize="60%" minSize="25%">
-            <PanelCard>{messageList}</PanelCard>
+            <MeasuredPanelCard>{messageList}</MeasuredPanelCard>
           </Panel>
           <HDivider />
           <Panel key="reading-pane" defaultSize="40%" minSize="20%">

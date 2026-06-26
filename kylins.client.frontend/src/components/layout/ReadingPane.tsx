@@ -1,13 +1,13 @@
 import { type ReactNode, useState } from 'react';
+import { HugeiconsIcon } from '@hugeicons/react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
+import { ArrowBendDoubleUpLeft, Archive } from '@phosphor-icons/react';
 import {
-  SmileIcon,
-  ReplyFilledIcon,
-  ReplyAllFilledIcon,
-  ForwardFilledIcon,
+  CornerUpLeftIcon,
+  CornerUpRightIcon,
   MoreIcon,
-  ArchiveIcon,
   DeleteIcon,
+  ClassificationIcon,
 } from '../icons';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -16,6 +16,8 @@ import { EmailRenderer } from '../email/EmailRenderer';
 import { InlineReply } from '../email/InlineReply';
 import { formatFullDate } from '../../utils/formatDate';
 import { getInitials } from '../../data/demoMessages';
+import { useClassification } from '../../features/classification/useClassification';
+import { useSecurityIndicatorIcons } from '../../features/classification/useSecurityIndicatorIcons';
 
 function hashString(str: string): number {
   let h = 0;
@@ -36,6 +38,37 @@ function recipientList(recipients: { name: string; address: string }[]): string 
   const first = recipients[0]!;
   if (recipients.length === 1) return `${first.name} <${first.address}>`;
   return `${first.name} <${first.address}> +${recipients.length - 1} more`;
+}
+
+function SubjectActionTextButton({
+  icon,
+  label,
+  title,
+  onClick,
+  className,
+  labelClassName,
+}: {
+  icon: ReactNode;
+  label: string;
+  title: string;
+  onClick?: () => void;
+  className?: string;
+  labelClassName?: string;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 px-2.5 h-8 whitespace-nowrap text-sm font-medium rounded-md transition-colors hover:bg-[var(--hover)] ${
+        className ?? 'text-[var(--muted-text)] hover:text-[var(--foreground)]'
+      }`}
+    >
+      {icon}
+      <span className={labelClassName ?? 'hidden sm:inline'}>{label}</span>
+    </button>
+  );
 }
 
 function SubjectActionButton({
@@ -70,6 +103,8 @@ export function ReadingPane() {
   const accounts = useAccountStore((s) => s.accounts);
   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
   const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
+  const { getLevelById } = useClassification();
+  const { encryptedIcon, signedIcon } = useSecurityIndicatorIcons();
   const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
   // Reset the inline composer when the selected message changes. Uses the
   // prev-value render pattern (setState-during-render to correct stale state)
@@ -117,60 +152,123 @@ export function ReadingPane() {
 
   const isSuspicious = message.subject.toLowerCase().includes('verify your account');
 
+  const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
+  const isConfidential = level?.id === 'confidential';
+
   return (
-    <div className="flex h-full min-w-0 flex-col bg-[var(--card)]">
-      <div className="border-b border-[var(--border)] px-5 pt-4 pb-3">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <h1 className="min-w-0 flex-1 text-[22px] font-semibold leading-[1.25] tracking-tight text-[var(--text)]">
-            {message.subject}
-          </h1>
-          <div className="mt-0.5 flex shrink-0 items-center gap-1">
-            <SubjectActionButton
-              icon={<ReplyFilledIcon size={18} />}
+    <div className="reading-pane flex h-full min-w-0 flex-col bg-[var(--card)]">
+      <div
+        className="reading-pane-header border-b border-[var(--border)] px-5 pt-4 pb-3"
+        style={{
+          borderTopWidth: '4px',
+          borderTopColor: level?.color ?? 'transparent',
+          backgroundColor: isConfidential ? `${level?.color}10` : undefined,
+        }}
+      >
+        <h1 className="reading-pane-subject min-w-0 text-[22px] font-semibold leading-[1.25] tracking-tight text-[var(--text)]">
+          {message.subject}
+        </h1>
+
+        {level && (
+          <div className="mt-2 flex items-center gap-2">
+            <span
+              className="inline-flex items-center gap-1.5 rounded border px-2.5 py-0.5 text-xs font-medium"
+              style={{
+                borderColor: level.color,
+                color: level.color,
+                backgroundColor: `${level.color}15`,
+              }}
+            >
+              <ClassificationIcon icon={level.icon} size={12} />
+              {!level.icon && (
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: level.color }}
+                />
+              )}
+              {level.name}
+            </span>
+            {(message.isEncrypted || message.isSigned) && (
+              <span className="inline-flex items-center gap-1 text-[var(--muted-text)]">
+                {message.isEncrypted && (
+                  <span className="inline-flex items-center gap-0.5 text-[11px]">
+                    <ClassificationIcon icon={encryptedIcon} size={12} />
+                    Encrypted
+                  </span>
+                )}
+                {message.isSigned && (
+                  <span className="inline-flex items-center gap-0.5 text-[11px]">
+                    <ClassificationIcon icon={signedIcon} size={12} />
+                    Signed
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="reading-pane-sender-row mt-3 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0 flex-1">
+            <div
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold text-white shadow-sm"
+              style={{ background: senderGradient(message.from.name) }}
+              aria-hidden="true"
+            >
+              {getInitials(message.from.name)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <span className="font-semibold text-[var(--text)]">{message.from.name}</span>
+                <span className="text-sm text-[var(--muted-text)]">{message.from.address}</span>
+              </div>
+              <div className="mt-0.5 text-sm text-[var(--muted-text)]">
+                <span className="text-[var(--muted-text)]">To:</span>{' '}
+                <span className="text-[var(--text)]">{recipientList(message.to)}</span>
+              </div>
+              <div className="mt-0.5 text-xs text-[var(--muted-text)]">
+                {formatFullDate(message.date)}
+              </div>
+            </div>
+          </div>
+
+          <div className="reading-pane-actions mt-0.5 flex flex-wrap items-center gap-1 shrink-0">
+            <SubjectActionTextButton
+              icon={
+                <span className="text-[var(--primary)]">
+                  <HugeiconsIcon icon={CornerUpLeftIcon} size={18} strokeWidth={2} />
+                </span>
+              }
+              label="Reply"
               title="Reply"
               onClick={handleReply}
-              className="text-[var(--primary)]"
+              labelClassName="reading-pane-action-label"
             />
-            <SubjectActionButton
-              icon={<ReplyAllFilledIcon size={18} />}
+            <SubjectActionTextButton
+              icon={
+                <span className="text-[var(--primary)]">
+                  <ArrowBendDoubleUpLeft size={18} weight="bold" />
+                </span>
+              }
+              label="Reply all"
               title="Reply all"
               onClick={handleReplyAll}
-              className="text-[var(--primary)]"
+              labelClassName="reading-pane-action-label"
             />
-            <SubjectActionButton
-              icon={<ForwardFilledIcon size={18} />}
+            <SubjectActionTextButton
+              icon={
+                <span className="text-[var(--primary)]">
+                  <HugeiconsIcon icon={CornerUpRightIcon} size={18} strokeWidth={2} />
+                </span>
+              }
+              label="Forward"
               title="Forward"
               onClick={handleForward}
-              className="text-[var(--primary)]"
+              labelClassName="reading-pane-action-label"
             />
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
-            <SubjectActionButton icon={<ArchiveIcon size={17} />} title="Archive" />
+            <SubjectActionButton icon={<Archive size={18} />} title="Archive" />
             <SubjectActionButton icon={<DeleteIcon size={17} />} title="Delete" />
-            <SubjectActionButton icon={<SmileIcon size={17} />} title="React" />
             <SubjectActionButton icon={<MoreIcon size={17} />} title="More actions" />
-          </div>
-        </div>
-
-        <div className="flex items-start gap-3">
-          <div
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold text-white shadow-sm"
-            style={{ background: senderGradient(message.from.name) }}
-            aria-hidden="true"
-          >
-            {getInitials(message.from.name)}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              <span className="font-semibold text-[var(--text)]">{message.from.name}</span>
-              <span className="text-sm text-[var(--muted-text)]">{message.from.address}</span>
-            </div>
-            <div className="mt-0.5 text-sm text-[var(--muted-text)]">
-              <span className="text-[var(--muted-text)]">To:</span>{' '}
-              <span className="text-[var(--text)]">{recipientList(message.to)}</span>
-            </div>
-            <div className="mt-0.5 text-xs text-[var(--muted-text)]">
-              {formatFullDate(message.date)}
-            </div>
           </div>
         </div>
       </div>

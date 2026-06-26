@@ -181,6 +181,9 @@ export function InlineReply({
       // A forward is a new branch of the conversation, not a reply, so it
       // carries no In-Reply-To header.
       inReplyToMessageId: isForward ? null : (message.messageId ?? null),
+      classificationId: message.classificationId,
+      isEncrypted: message.isEncrypted,
+      isSigned: message.isSigned,
     });
     if (result.success) {
       setStatus('sent');
@@ -220,6 +223,9 @@ export function InlineReply({
       inReplyToMessageId: isForward ? null : (message.messageId ?? null),
       fromEmail: fromEmail ?? accountEmail ?? undefined,
       signatureId: signature?.id ?? null,
+      classificationId: message.classificationId,
+      isEncrypted: message.isEncrypted,
+      isSigned: message.isSigned,
     });
     onClose();
   }, [

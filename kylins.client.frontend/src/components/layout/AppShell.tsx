@@ -8,10 +8,7 @@ import { FolderPane } from './FolderPane';
 import { MessageList } from './MessageList';
 import { ReadingPane } from './ReadingPane';
 import { StatusBar } from './StatusBar';
-import {
-  ReadingPaneLayout,
-  FolderExpandStrip,
-} from '../../features/view/components/ReadingPaneLayout';
+import { ReadingPaneLayout } from '../../features/view/components/ReadingPaneLayout';
 import { Composer } from '../composer/Composer';
 import { UndoSendToast } from '../composer/UndoSendToast';
 import { CalendarPage } from '../calendar/CalendarPage';
@@ -42,7 +39,6 @@ export function AppShell() {
               <ContactsPage />
             ) : (
               <>
-                {!folderPaneVisible && <FolderExpandStrip />}
                 <ReadingPaneLayout
                   position={readingPanePosition}
                   folderPaneVisible={folderPaneVisible}

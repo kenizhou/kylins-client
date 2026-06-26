@@ -24,9 +24,11 @@ import { ScheduleSendDialog } from './ScheduleSendDialog';
 import { SignatureSelector } from './SignatureSelector';
 import { TemplatePicker } from './TemplatePicker';
 import { FromSelector } from './FromSelector';
+import { ClassificationSelector } from '@/features/composer/ClassificationSelector';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
+import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
@@ -82,6 +84,7 @@ export function Composer({ windowed = false }: ComposerProps) {
   const viewMode = useComposerStore((s) => s.viewMode);
   const signatureHtml = useComposerStore((s) => s.signatureHtml);
   const signatureId = useComposerStore((s) => s.signatureId);
+  const classificationId = useComposerStore((s) => s.classificationId);
   const isSaving = useComposerStore((s) => s.isSaving);
   const lastSavedAt = useComposerStore((s) => s.lastSavedAt);
   // bodyHtml is intentionally NOT subscribed — TipTap owns editor state.
@@ -98,6 +101,10 @@ export function Composer({ windowed = false }: ComposerProps) {
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
+
+  const { getLevelById, getDefaultLevel } = useClassification();
+  const currentLevel = getLevelById(classificationId) ?? getDefaultLevel();
+  const isConfidential = currentLevel.id === 'confidential';
 
   const enableRichText = usePreferencesStore((s) => s.enableRichText);
   const checkSpelling = usePreferencesStore((s) => s.checkSpelling);
@@ -335,6 +342,9 @@ export function Composer({ windowed = false }: ComposerProps) {
               size: a.size,
             }))
           : undefined,
+      classificationId: state.classificationId,
+      isEncrypted: state.isEncrypted,
+      isSigned: state.isSigned,
     };
 
     const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
@@ -510,6 +520,9 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.draftId) params.set('draftId', state.draftId);
       if (state.fromEmail) params.set('fromEmail', state.fromEmail);
       if (state.signatureId) params.set('signatureId', state.signatureId);
+      if (state.classificationId) params.set('classificationId', state.classificationId);
+      params.set('isEncrypted', state.isEncrypted ? '1' : '0');
+      params.set('isSigned', state.isSigned ? '1' : '0');
       const bodyHtml = editor?.getHTML() ?? '';
       if (bodyHtml) params.set('body', btoa(unescape(encodeURIComponent(bodyHtml))));
 
@@ -565,6 +578,11 @@ export function Composer({ windowed = false }: ComposerProps) {
             ? 'h-full max-w-5xl w-full'
             : 'h-[min(760px,85vh)] w-[min(900px,92vw)]'
       } ${isDragging ? 'border-2 border-[var(--primary)]' : 'border-[var(--border)]'}`}
+      style={{
+        borderTopWidth: '3px',
+        borderTopColor: currentLevel.color,
+        backgroundColor: isConfidential ? `${currentLevel.color}10` : undefined,
+      }}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -689,7 +707,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       {/* Subject */}
       <div className="border-b border-[var(--border)] px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <span className="w-8 shrink-0 text-xs text-[var(--muted-foreground)]">Sub</span>
+          <ClassificationSelector />
           <input
             type="text"
             value={subject}
