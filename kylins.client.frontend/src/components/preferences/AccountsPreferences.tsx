@@ -4,6 +4,7 @@ import { useAccountSetupStore } from '../../stores/accountSetupStore';
 import { getAllAccounts } from '../../services/accounts';
 import { AccountSetupFlow } from '../account-setup/AccountSetupFlow';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
+import { PreferencesTabLayout, PreferencesTabColumns } from './PreferencesTabLayout';
 import { AccountDetailsEditor } from './AccountDetailsEditor';
 import { ProviderBadge } from './ProviderBadge';
 import { PreferencesAccountsIcon, PlusIcon, CloseIcon } from '../icons';
@@ -52,7 +53,7 @@ export function AccountsPreferences() {
 
   if (accounts.length === 0 && !isLoading) {
     return (
-      <div className="p-6">
+      <PreferencesTabLayout>
         <PreferencesSectionCard title="Accounts" icon={PreferencesAccountsIcon}>
           <p className="text-sm text-[var(--muted-text)] mb-4">
             No accounts configured yet.
@@ -69,15 +70,16 @@ export function AccountsPreferences() {
             <SetupOverlay onClose={handleCloseSetup} onComplete={handleSetupComplete} />
           )}
         </PreferencesSectionCard>
-      </div>
+      </PreferencesTabLayout>
     );
   }
 
   return (
-    <div className="p-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5" style={{ alignItems: 'start' }}>
-        <div className="space-y-5">
-          <PreferencesSectionCard title="Your accounts" icon={PreferencesAccountsIcon}>
+    <PreferencesTabLayout>
+      <PreferencesTabColumns
+        left={
+          <>
+            <PreferencesSectionCard title="Your accounts" icon={PreferencesAccountsIcon}>
             {isLoading ? (
               <div className="text-sm text-[var(--muted-text)]">Loading…</div>
             ) : accounts.length === 0 ? (
@@ -143,10 +145,11 @@ export function AccountsPreferences() {
               Add account
             </button>
           </PreferencesSectionCard>
-        </div>
-
-        <div className="space-y-5">
-          {selectedAccount ? (
+          </>
+        }
+        right={
+          <>
+            {selectedAccount ? (
             <AccountDetailsEditor
               key={selectedAccount.id}
               account={selectedAccount}
@@ -157,13 +160,14 @@ export function AccountsPreferences() {
               <p className="text-sm text-[var(--muted-text)]">Select an account to view details.</p>
             </PreferencesSectionCard>
           )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {showSetup && (
         <SetupOverlay onClose={handleCloseSetup} onComplete={handleSetupComplete} />
       )}
-    </div>
+    </PreferencesTabLayout>
   );
 }
 

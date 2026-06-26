@@ -5,19 +5,12 @@ import { SETTING_KEYS } from '../services/settingsKeys';
 export type PreferenceTab =
   | 'General'
   | 'Accounts'
-  | 'Subscription'
   | 'Appearance'
   | 'Shortcuts'
   | 'Mail Rules'
-  | 'Folders'
   | 'Signatures'
   | 'Templates'
-  | 'Contacts'
-  | 'Notifications'
-  | 'Composing'
-  | 'Privacy & Security'
-  | 'Startup'
-  | 'Storage';
+  | 'Contacts';
 
 interface BoolField {
   key: string;

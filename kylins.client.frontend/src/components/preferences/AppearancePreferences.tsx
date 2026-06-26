@@ -8,10 +8,10 @@ import { SKINS, DEFAULT_SKIN, type SkinId } from '../../styles/skins';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { CheckboxRow } from './PreferenceRows';
 import { SegmentedControl } from '../ui/SegmentedControl';
+import { PreferencesTabLayout, PreferencesTabColumns } from './PreferencesTabLayout';
 import {
   PreferencesAppearanceIcon,
   PreferencesSystemIcon,
-  PreferencesFoldersIcon,
   PreferencesReadingIcon,
   PreferencesMailRulesIcon,
   MailIcon,
@@ -89,10 +89,11 @@ export function AppearancePreferences() {
   }, [resetToDefaults, setTheme, setSkin]);
 
   return (
-    <div className="p-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5" style={{ alignItems: 'start' }}>
-        <div className="space-y-5">
-          <PreferencesSectionCard title="Mode" icon={PreferencesSystemIcon}>
+    <PreferencesTabLayout>
+      <PreferencesTabColumns
+        left={
+          <>
+            <PreferencesSectionCard title="Mode" icon={PreferencesSystemIcon}>
             <SegmentedControl options={THEME_OPTIONS} value={theme} onChange={handleThemeChange} />
           </PreferencesSectionCard>
 
@@ -140,10 +141,11 @@ export function AppearancePreferences() {
               />
             </div>
           </PreferencesSectionCard>
-        </div>
-
-        <div className="space-y-5">
-          <PreferencesSectionCard title="Layout" icon={PreferencesFoldersIcon}>
+          </>
+        }
+        right={
+          <>
+            <PreferencesSectionCard title="Layout" icon={PreferencesAppearanceIcon}>
             <div className="space-y-3">
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs text-[var(--muted-text)]">Reading pane position</span>
@@ -187,8 +189,9 @@ export function AppearancePreferences() {
               Reset appearance and layout
             </button>
           </PreferencesSectionCard>
-        </div>
-      </div>
-    </div>
+          </>
+        }
+      />
+    </PreferencesTabLayout>
   );
 }

@@ -11,6 +11,7 @@ export interface ModalProps {
   size?: 'md' | 'lg' | 'xl' | 'full';
   className?: string;
   contentClassName?: string;
+  disableBackdropClose?: boolean;
 }
 
 const SIZE_CLASSES: Record<NonNullable<ModalProps['size']>, string> = {
@@ -31,12 +32,13 @@ export function Modal({
   size = 'md',
   className = '',
   contentClassName = '',
+  disableBackdropClose = false,
 }: ModalProps) {
   useEffect(() => {
     if (!isOpen) return;
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !disableBackdropClose) {
         onClose();
       }
     }
@@ -53,7 +55,7 @@ export function Modal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) {
+        if (!disableBackdropClose && e.target === e.currentTarget) {
           onClose();
         }
       }}

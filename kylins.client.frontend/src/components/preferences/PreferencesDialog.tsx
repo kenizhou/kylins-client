@@ -5,46 +5,27 @@ import { ShortcutsPreferences } from './ShortcutsPreferences';
 import { SignaturesPreferences } from './SignaturesPreferences';
 import { AccountsPreferences } from './AccountsPreferences';
 import { ContactsPreferences } from './ContactsPreferences';
-import { NotificationsPreferences } from './NotificationsPreferences';
-import { ComposingPreferences } from './ComposingPreferences';
-import { PrivacySecurityPreferences } from './PrivacySecurityPreferences';
-import { StartupPreferences } from './StartupPreferences';
-import { StoragePreferences } from './StoragePreferences';
 import { Modal } from '../ui/Modal';
 import {
   PreferencesGeneralIcon,
   PreferencesAccountsIcon,
-  PreferencesSubscriptionIcon,
   PreferencesAppearanceIcon,
   PreferencesShortcutsIcon,
   PreferencesMailRulesIcon,
-  PreferencesFoldersIcon,
   PreferencesSignaturesIcon,
   PreferencesTemplatesIcon,
   ContactsIcon,
-  PreferencesNotificationsIcon,
-  PreferencesComposingIcon,
-  PreferencesPrivacySecurityIcon,
-  PreferencesSystemIcon,
-  PreferencesLocalDataIcon,
 } from '../icons';
 
 const TABS: { id: PreferenceTab; icon: React.ComponentType<{ size?: number }> }[] = [
   { id: 'General', icon: PreferencesGeneralIcon },
   { id: 'Accounts', icon: PreferencesAccountsIcon },
-  { id: 'Subscription', icon: PreferencesSubscriptionIcon },
   { id: 'Appearance', icon: PreferencesAppearanceIcon },
   { id: 'Shortcuts', icon: PreferencesShortcutsIcon },
   { id: 'Mail Rules', icon: PreferencesMailRulesIcon },
-  { id: 'Folders', icon: PreferencesFoldersIcon },
   { id: 'Signatures', icon: PreferencesSignaturesIcon },
   { id: 'Templates', icon: PreferencesTemplatesIcon },
   { id: 'Contacts', icon: ContactsIcon },
-  { id: 'Notifications', icon: PreferencesNotificationsIcon },
-  { id: 'Composing', icon: PreferencesComposingIcon },
-  { id: 'Privacy & Security', icon: PreferencesPrivacySecurityIcon },
-  { id: 'Startup', icon: PreferencesSystemIcon },
-  { id: 'Storage', icon: PreferencesLocalDataIcon },
 ];
 
 const TAB_COMPONENTS: Record<string, React.ComponentType> = {
@@ -54,11 +35,6 @@ const TAB_COMPONENTS: Record<string, React.ComponentType> = {
   Shortcuts: ShortcutsPreferences,
   Signatures: SignaturesPreferences,
   Contacts: ContactsPreferences,
-  Notifications: NotificationsPreferences,
-  Composing: ComposingPreferences,
-  'Privacy & Security': PrivacySecurityPreferences,
-  Startup: StartupPreferences,
-  Storage: StoragePreferences,
 };
 
 function ComingSoonTab({ tab }: { tab: string }) {
@@ -86,6 +62,7 @@ export function PreferencesDialog() {
       subtitle="Customize your Kylins experience"
       icon={PreferencesGeneralIcon}
       size="lg"
+      disableBackdropClose
       footer={
         <>
           <span className="text-xs text-[var(--muted-text)]">Changes are applied automatically.</span>

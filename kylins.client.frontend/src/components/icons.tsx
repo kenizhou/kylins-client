@@ -61,7 +61,6 @@ import {
   Folder01Icon,
   UserAccountIcon,
   Search01Icon,
-  CreditCardIcon,
   PaintBoardIcon,
   KeyboardIcon,
   FilterIcon,
@@ -167,11 +166,9 @@ export const PopOutIcon = makeIcon(ArrowUpRight01Icon);
 
 export const PreferencesGeneralIcon = makeIcon(Settings01Icon);
 export const PreferencesAccountsIcon = makeIcon(UserAccountIcon);
-export const PreferencesSubscriptionIcon = makeIcon(CreditCardIcon);
 export const PreferencesAppearanceIcon = makeIcon(PaintBoardIcon);
 export const PreferencesShortcutsIcon = makeIcon(KeyboardIcon);
 export const PreferencesMailRulesIcon = makeIcon(FilterIcon);
-export const PreferencesFoldersIcon = makeIcon(Folder01Icon);
 export const PreferencesSignaturesIcon = makeIcon(SignatureIcon);
 export const PreferencesTemplatesIcon = makeIcon(File01Icon);
 
@@ -179,7 +176,6 @@ export const PreferencesReadingIcon = makeIcon(MailOpen01Icon);
 export const PreferencesSendingIcon = makeIcon(MailSend01Icon);
 export const PreferencesComposingIcon = makeIcon(PencilEdit01Icon);
 export const PreferencesNotificationsIcon = makeIcon(Notification03Icon);
-export const PreferencesAttachmentsIcon = makeIcon(Attachment01Icon);
 export const PreferencesLanguageIcon = makeIcon(GlobeIcon);
 export const PreferencesLocalDataIcon = makeIcon(Database01Icon);
 export const PreferencesSystemIcon = makeIcon(UserCircleIcon);
