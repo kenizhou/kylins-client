@@ -141,6 +141,10 @@ pub fn run() {
             db::commands::db_dequeue_pending,
             db::commands::db_mark_op_completed,
             db::commands::db_mark_op_failed,
+            sync_engine::commands::sync_start,
+            sync_engine::commands::sync_stop,
+            sync_engine::commands::sync_account_now,
+            sync_engine::commands::sync_request_bodies,
         ])
         .setup(|app| {
             {
@@ -171,7 +175,12 @@ pub fn run() {
                 let pool = tauri::async_runtime::block_on(async {
                     db::init_db(&data_dir).await.expect("db init")
                 });
-                app.manage(pool);
+                app.manage(pool.clone());
+                // SyncEngine owns one polling worker per account. The frontend starts
+                // it (sync_start) once accounts are loaded; events flow via AppHandle.
+                let engine =
+                    sync_engine::engine::SyncEngine::new_tauri(pool, app.handle().clone());
+                app.manage(engine);
             }
 
             #[cfg(not(target_os = "linux"))]

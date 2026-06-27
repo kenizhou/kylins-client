@@ -4,7 +4,9 @@
 // capability differences are declared via capabilities() and the scheduler picks a
 // RealtimeStrategy (idle / ping / poll) accordingly.
 
+pub mod commands;
 pub mod eas_source;
+pub mod engine;
 pub mod imap_source;
 pub mod mock_source;
 
@@ -58,7 +60,7 @@ impl Cursor {
 
 /// A folder in the source's own terms (pre-adapter; the engine maps this to a `labels`
 /// row via db::labels).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteFolder {
     pub remote_id: String,

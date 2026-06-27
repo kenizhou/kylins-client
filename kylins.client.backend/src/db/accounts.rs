@@ -651,6 +651,16 @@ pub async fn get_default(pool: &SqlitePool) -> Result<Option<Account>, String> {
     row.map(|r| row_to_account(&r)).transpose()
 }
 
+/// Stamp `last_sync_at` (and `updated_at`) after a successful sync round.
+pub async fn touch_last_sync(pool: &SqlitePool, id: &str) -> Result<(), String> {
+    sqlx::query("UPDATE accounts SET last_sync_at = unixepoch(), updated_at = unixepoch() WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Type-erased bind value for the dynamic [`update`] builder.
 enum SqliteValue {
     Text(String),
