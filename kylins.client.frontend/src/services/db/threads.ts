@@ -69,6 +69,10 @@ export interface DbMessageRow {
   classification_id: string | null;
   is_encrypted: number;
   is_signed: number;
+  /** IMAP UID (snake_case from Rust MessageRow). Null for non-IMAP sources. */
+  imap_uid?: number | null;
+  /** IMAP folder path the message lives in (e.g. "INBOX"). Null for non-IMAP. */
+  imap_folder?: string | null;
 }
 
 /**

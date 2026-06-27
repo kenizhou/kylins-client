@@ -2,6 +2,7 @@
 // (Rust) owns all sync; the frontend is a reactive view layer.
 //   sync:delta   -> a folder changed on disk -> reload folder list + open thread page
 //   sync:new-mail-> new unread in an Inbox-equivalent -> OS notification
+//   sync:queue   -> pending-operations count changed -> update uiStore.pendingCount
 //   tray-check-mail (tray menu) -> nudge every account to sync now
 //
 // No-op outside Tauri (tests/jsdom).
@@ -13,6 +14,7 @@ import { sendNotification } from '@tauri-apps/plugin-notification';
 import { useFolderStore } from '../stores/folderStore';
 import { useThreadStore } from '../stores/threadStore';
 import { useAccountStore } from '../stores/accountStore';
+import { useUIStore } from '../stores/uiStore';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -55,6 +57,15 @@ export function useSyncEvents(): void {
               }
             },
           ),
+        );
+
+        unlisteners.push(
+          await listen<{ accountId: string; pending: number }>('sync:queue', (e) => {
+            // Pending-operations count for this account changed. The status bar
+            // shows the aggregate; we keep it simple and surface the latest
+            // account's count (multi-account aggregation is a later refinement).
+            useUIStore.getState().setPendingCount(e.payload.pending);
+          }),
         );
 
         unlisteners.push(

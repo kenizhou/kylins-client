@@ -148,6 +148,16 @@ pub struct MessageRow {
     pub classification_id: Option<String>,
     pub is_encrypted: bool,
     pub is_signed: bool,
+    /// IMAP UID of the message in `imap_folder` (NULL when the message is not
+    /// from an IMAP source, e.g. an EAS account). Surfaced so the frontend can
+    /// pass it into `sync_apply_mutation` ops (markRead/move/delete) for remote
+    /// replay — without it the replay worker cannot address the server message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imap_uid: Option<i64>,
+    /// IMAP folder path the message lives in (e.g. "INBOX", "Sent"). Surfaced
+    /// for the same reason as `imap_uid`: the `folderPath` field of mutation ops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imap_folder: Option<String>,
 }
 
 /// Map a raw `threads`-join-`messages` row to a [`Thread`]. Mirrors
@@ -198,6 +208,8 @@ fn row_to_message(row: &SqliteRow) -> MessageRow {
         classification_id: row.try_get("classification_id").ok().flatten(),
         is_encrypted: row.try_get::<i64, _>("is_encrypted").unwrap_or(0) == 1,
         is_signed: row.try_get::<i64, _>("is_signed").unwrap_or(0) == 1,
+        imap_uid: row.try_get("imap_uid").ok().flatten(),
+        imap_folder: row.try_get("imap_folder").ok().flatten(),
     }
 }
 
@@ -822,6 +834,8 @@ mod tests {
             classification_id: None,
             is_encrypted: false,
             is_signed: true,
+            imap_uid: Some(4242),
+            imap_folder: Some("INBOX".into()),
             ..Default::default()
         };
         let json = serde_json::to_value(&m).unwrap();
@@ -843,9 +857,13 @@ mod tests {
             "message_id_header",
             "is_encrypted",
             "is_signed",
+            "imap_uid",
+            "imap_folder",
         ] {
             assert!(obj.contains_key(key), "expected snake_case key {key}");
         }
+        assert_eq!(json["imap_uid"], 4242);
+        assert_eq!(json["imap_folder"], "INBOX");
         // camelCase must NOT leak for the snake_case DTO.
         for key in [
             "accountId",

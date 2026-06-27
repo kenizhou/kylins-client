@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useThreadStore } from '../../src/stores/threadStore';
 import { useViewStore } from '../../src/features/view/viewStore';
-import { getThreads, getMessagesForThread, markThreadRead } from '../../src/services/db/threads';
+import { getThreads, getMessagesForThread } from '../../src/services/db/threads';
 import { getMessageBody } from '../../src/services/db/messageBodies';
 import type { Thread } from '../../src/services/db/threads';
+import { invoke } from '@tauri-apps/api/core';
+
+// `selectThread` now routes mark-read through the Rust sync engine via
+// `sync_apply_mutation` (the engine owns the durable write + replay). Mock the
+// Tauri invoke at the service boundary so the test asserts the op shape.
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 vi.mock('../../src/services/db/threads', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/db/threads')>(
@@ -13,7 +19,6 @@ vi.mock('../../src/services/db/threads', async () => {
     ...actual,
     getThreads: vi.fn(),
     getMessagesForThread: vi.fn(),
-    markThreadRead: vi.fn(),
   };
 });
 
@@ -55,8 +60,9 @@ beforeEach(() => {
   reset();
   vi.mocked(getThreads).mockReset();
   vi.mocked(getMessagesForThread).mockReset();
-  vi.mocked(markThreadRead).mockReset();
   vi.mocked(getMessageBody).mockReset();
+  vi.mocked(invoke).mockReset();
+  vi.mocked(invoke).mockResolvedValue(undefined as never);
 });
 
 describe('threadStore.loadThreads', () => {
@@ -100,7 +106,7 @@ describe('threadStore.loadMore', () => {
 });
 
 describe('threadStore.selectThread', () => {
-  it('loads the latest message + body, bridges to selectedMessage, marks unread read', async () => {
+  it('loads the latest message + body, bridges to selectedMessage, marks unread read via sync_apply_mutation', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: false })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
       {
@@ -117,6 +123,8 @@ describe('threadStore.selectThread', () => {
         is_read: 0,
         is_starred: 0,
         body_text: 'txt',
+        imap_uid: 4242,
+        imap_folder: 'INBOX',
       },
     ]);
     vi.mocked(getMessageBody).mockResolvedValue({
@@ -131,9 +139,31 @@ describe('threadStore.selectThread', () => {
     expect(getMessagesForThread).toHaveBeenCalledWith('a1', 't1');
     expect(getMessageBody).toHaveBeenCalledWith('a1', 'm1');
     expect(useViewStore.getState().selectedMessage?.html).toBe('<p>h</p>');
-    expect(markThreadRead).toHaveBeenCalledWith('a1', 't1');
+    // The durable mark-read now flows through the sync engine (one invoke with
+    // a MutationOp), NOT the legacy `db_mark_thread_read` invoke.
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: true,
+      },
+    });
     // optimistic read state
     expect(useThreadStore.getState().threads[0]!.isRead).toBe(true);
+  });
+
+  it('does NOT invoke sync_apply_mutation when the thread is already read', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
 

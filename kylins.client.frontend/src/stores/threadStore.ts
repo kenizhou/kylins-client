@@ -3,10 +3,10 @@
 // and mark-as-read on open. Bodies are lazy-fetched on selection.
 
 import { create } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
 import {
   getThreads,
   getMessagesForThread,
-  markThreadRead,
   mapMessageToMailMessage,
   type Thread,
   type ThreadCursor,
@@ -84,12 +84,26 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       } else {
         useViewStore.getState().setSelectedMessage(null);
       }
-      // Mark as read (optimistic UI + DB + decrement the folder's unread badge).
+      // Mark as read (optimistic UI + durable write via the sync engine).
+      // The engine applies locally (threads+messages is_read=1) and enqueues a
+      // per-message replay row so the IMAP \Seen flag is set server-side. uids
+      // + folderPath are required for remote replay; fall back to empty/0 when
+      // the message has no IMAP provenance (e.g. an EAS-sourced message row).
       if (!thread.isRead) {
         set((s) => ({
           threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: true } : t)),
         }));
-        void markThreadRead(thread.accountId, thread.id);
+        void invoke('sync_apply_mutation', {
+          accountId: thread.accountId,
+          op: {
+            type: 'markRead',
+            threadId: thread.id,
+            messageIds: messages.map((m) => m.id),
+            folderPath: messages[0]?.imap_folder ?? '',
+            uids: messages.map((m) => m.imap_uid ?? 0),
+            read: true,
+          },
+        }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
         const labelId = get().currentQuery?.labelId;
         if (labelId) useFolderStore.getState().decrementUnread(thread.accountId, labelId);
       }
