@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAccountSetupStore } from '../../stores/accountSetupStore';
 import { ProviderPicker } from './ProviderPicker';
 import { CredentialsGate } from './CredentialsGate';
@@ -329,11 +330,17 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         <SetupStepTransition>
           <WelcomeScreen
             onDone={async () => {
-              // Folder/message sync for the newly-created account is handled by
-              // the Rust sync engine (Tasks 9–10). Here we just refresh the
-              // account list, reset the setup flow, and hand control back.
+              // Folder/message sync for the newly-created account is handled by the
+              // Rust sync engine. Here we refresh the account list, nudge the engine
+              // to spawn a worker + sync this account immediately, then hand off.
               const refreshed = await getAllAccounts();
               useAccountStore.getState().setAccounts(refreshed);
+              const created = refreshed.find((a) => a.email === s.email);
+              if (created) {
+                invoke('sync_account_now', { accountId: created.id }).catch((err) =>
+                  console.error('sync_account_now failed:', err),
+                );
+              }
               s.reset();
               onComplete();
             }}

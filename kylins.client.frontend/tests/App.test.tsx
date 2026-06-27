@@ -12,7 +12,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 
 // Mock the services and stores App.tsx pulls in at module scope.
-vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
+vi.mock('@tauri-apps/api/event', () => ({
+  // listen resolves to an unlisten stub; useSyncEvents ignores failures.
+  listen: vi.fn(() => Promise.resolve(() => Promise.resolve())),
+}));
+vi.mock('@tauri-apps/plugin-notification', () => ({
+  sendNotification: vi.fn(() => Promise.resolve()),
+}));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn(() => Promise.resolve()) }));
 
 vi.mock('../src/services/db/migrations', () => ({ runMigrations: vi.fn(() => Promise.resolve()) }));

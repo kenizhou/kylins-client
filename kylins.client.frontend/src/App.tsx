@@ -22,7 +22,9 @@ import { MessageViewerWindow } from './components/viewer/MessageViewerWindow';
 import { Toaster } from './components/ui/Toaster';
 import { isSkinId, DEFAULT_SKIN, type SkinId } from './styles/skins';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useSyncEvents } from './hooks/useSyncEvents';
 import { useShortcutStore } from './stores/shortcutStore';
+import { invoke } from '@tauri-apps/api/core';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -84,6 +86,7 @@ export default function App() {
   const accounts = useAccountStore((s) => s.accounts);
   useViewSettings();
   useKeyboardShortcuts();
+  useSyncEvents();
 
   // Dev-only helper to recover from corrupt/duplicate test accounts.
   useEffect(() => {
@@ -163,6 +166,9 @@ export default function App() {
             // already-configured accounts on startup.
             if (isMounted.current) {
               await refreshAccounts();
+              // Start the Rust SyncEngine (one polling worker per account). The engine
+              // emits sync:* events; useSyncEvents() below refreshes stores on them.
+              await invoke('sync_start').catch((err) => console.error('sync_start failed:', err));
             }
           }
         }
