@@ -7,10 +7,10 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git push*)",
             "command": "bash .claude/hooks/simplify-gate.sh",
             "timeout": 10,
-            "statusMessage": "Checking /simplify gate before commit"
+            "statusMessage": "Checking /simplify gate before push"
           }
         ]
       }
