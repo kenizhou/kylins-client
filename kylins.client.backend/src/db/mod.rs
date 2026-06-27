@@ -23,6 +23,7 @@ pub mod image_allowlist;
 pub mod labels;
 pub mod message_bodies;
 pub mod messages;
+pub mod mutations;
 pub mod queue;
 pub mod scheduled_emails;
 pub mod send_as_aliases;
