@@ -11,6 +11,7 @@ use tauri_plugin_autostart::MacosLauncher;
 
 pub mod commands;
 pub mod crypto;
+pub mod db;
 pub mod eas;
 pub mod mail;
 pub mod oauth;
@@ -119,6 +120,23 @@ pub fn run() {
                         .level_for("sqlx::query", log::LevelFilter::Warn)
                         .build(),
                 )?;
+            }
+
+            // Open the SQLite database (creates mailclient.db + WAL files if
+            // absent) and run embedded sqlx migrations. The pool is exposed to
+            // later Tauri commands via State<'_, DbPool>. Tauri's setup runs
+            // synchronously, so we block on the async init here. The frontend
+            // still uses plugin-sql for now (Task 5 will cut it over); this
+            // init is additive and the migrations are idempotent.
+            {
+                let data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .expect("app data dir should be resolvable");
+                let pool = tauri::async_runtime::block_on(async {
+                    db::init_db(&data_dir).await.expect("db init")
+                });
+                app.manage(pool);
             }
 
             #[cfg(not(target_os = "linux"))]

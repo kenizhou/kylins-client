@@ -65,6 +65,13 @@ thiserror = "1"
 # vCard UID generation
 uuid = { version = "1", features = ["v4"] }
 
+# Database (Phase 0 mail-sync-engine: Rust owns the SQLite DB via sqlx).
+# Runtime queries only (sqlx::query / query_as + FromRow derive) — the
+# compile-time `query!` macro is NOT used (no offline cache, no DATABASE_URL),
+# so `macros` is here only to support `#[derive(sqlx::FromRow)]`.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+async-trait = "0.1"
+
 [dev-dependencies]
 # WBXML codec + EAS command fixture tests
 tokio-test = "0.4"
@@ -75,6 +82,8 @@ chrono = "0.4"
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 mail-parser = "0.9"
+# Temp dirs for db migration tests
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_UI_Shell"] }
