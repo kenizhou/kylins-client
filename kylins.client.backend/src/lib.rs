@@ -16,6 +16,7 @@ pub mod eas;
 pub mod mail;
 pub mod oauth;
 pub mod sync;
+pub mod sync_engine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
