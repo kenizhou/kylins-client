@@ -17,7 +17,9 @@ use crate::db::accounts::{
     self, Account, AccountUpdates, CreateAccountInput,
 };
 use crate::db::labels::{self, MailFolder};
+use crate::db::message_bodies;
 use crate::db::settings;
+use crate::db::threads::{self, GetThreadsOptions, MessageRow, ThreadsPage};
 
 #[tauri::command]
 pub async fn db_get_all_accounts(pool: State<'_, SqlitePool>) -> Result<Vec<Account>, String> {
@@ -212,4 +214,72 @@ pub async fn db_delete_folder(
     label_id: String,
 ) -> Result<(), String> {
     labels::delete_folder(&pool, &account_id, &label_id).await
+}
+
+// ---- threads (reads) + message_bodies ----
+
+/// Load one page of threads for an account, optionally filtered to a label.
+/// Mirrors the TS `getThreads` return shape `{ threads, nextCursor }`. The
+/// `opts` payload is deserialized directly into [`GetThreadsOptions`] (camelCase
+/// via serde), so a TS caller passes `{ labelId, limit, cursor }`.
+#[tauri::command]
+pub async fn db_get_threads(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    opts: GetThreadsOptions,
+) -> Result<ThreadsPage, String> {
+    threads::get_threads(&pool, &account_id, opts).await
+}
+
+/// Load a thread's message metadata (no body_html), oldest→newest. Mirrors the
+/// TS `getMessagesForThread`.
+#[tauri::command]
+pub async fn db_get_messages_for_thread(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    thread_id: String,
+) -> Result<Vec<MessageRow>, String> {
+    threads::get_messages_for_thread(&pool, &account_id, &thread_id).await
+}
+
+/// Mark every message in a thread (and the thread row) as read, atomically.
+/// Mirrors the TS `markThreadRead`.
+#[tauri::command]
+pub async fn db_mark_thread_read(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    thread_id: String,
+) -> Result<(), String> {
+    threads::mark_thread_read(&pool, &account_id, &thread_id).await
+}
+
+/// Fetch the cached HTML body for a message, or `None` if not present.
+#[tauri::command]
+pub async fn db_get_message_body(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<Option<message_bodies::MessageBody>, String> {
+    message_bodies::get_message_body(&pool, &account_id, &message_id).await
+}
+
+/// Store/refresh a body and mark the message as body_cached, atomically.
+#[tauri::command]
+pub async fn db_set_message_body(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+    body_html: String,
+) -> Result<(), String> {
+    message_bodies::set_message_body(&pool, &account_id, &message_id, &body_html).await
+}
+
+/// Drop a cached body (re-fetched on next open) and clear body_cached.
+#[tauri::command]
+pub async fn db_evict_body(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<(), String> {
+    message_bodies::evict_body(&pool, &account_id, &message_id).await
 }

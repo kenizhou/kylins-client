@@ -130,6 +130,12 @@ pub fn run() {
             db::commands::db_create_folder,
             db::commands::db_rename_folder,
             db::commands::db_delete_folder,
+            db::commands::db_get_threads,
+            db::commands::db_get_messages_for_thread,
+            db::commands::db_mark_thread_read,
+            db::commands::db_get_message_body,
+            db::commands::db_set_message_body,
+            db::commands::db_evict_body,
         ])
         .setup(|app| {
             {
