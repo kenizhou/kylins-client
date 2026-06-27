@@ -245,6 +245,7 @@ export default function App() {
           <Modal
             isOpen={accountSetupOpen}
             onClose={handleCloseSetup}
+            disableBackdropClose
             size="md"
             contentClassName="bg-[var(--background)]"
           >

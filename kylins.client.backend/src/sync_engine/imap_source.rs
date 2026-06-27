@@ -113,7 +113,10 @@ fn parent_of(path: &str, delimiter: &str) -> Option<String> {
 
 fn imap_folder_to_remote(f: ImapFolder) -> RemoteFolder {
     let remote_id = if f.raw_path.is_empty() { f.path.clone() } else { f.raw_path.clone() };
-    let parent_id = parent_of(&f.path, &f.delimiter);
+    // parent_id must be computed from the SAME source as remote_id so it
+    // matches the parent's remote_id column. Using decoded path would produce
+    // mismatched values for non-ASCII (IMAP modified UTF-7) names.
+    let parent_id = parent_of(&remote_id, &f.delimiter);
     let role = role_from_special_use(f.special_use.as_deref()).or_else(|| role_from_name(&f.name));
     RemoteFolder {
         remote_id,
@@ -213,9 +216,16 @@ impl MailSource for ImapSource {
         let mut added = Vec::new();
         for chunk in to_fetch.chunks(100) {
             let range = uid_set(chunk);
-            let res = imap_client::fetch_messages(&mut session, &folder.remote_id, &range)
-                .await
-                .map_err(other)?;
+            let res = match imap_client::fetch_messages(&mut session, &folder.remote_id, &range).await {
+                Ok(r) => r,
+                Err(e) if e.starts_with("ASYNC_IMAP_EMPTY:") => {
+                    log::info!("[sync] async-imap returned empty; falling back to raw TCP fetch for {} UIDs {range}", folder.remote_id);
+                    imap_client::raw_fetch_messages(&config, &folder.remote_id, &range)
+                        .await
+                        .map_err(other)?
+                }
+                Err(e) => return Err(other(e)),
+            };
             for m in res.messages {
                 added.push(imap_message_to_remote(m));
             }

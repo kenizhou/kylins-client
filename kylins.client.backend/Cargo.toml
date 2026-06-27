@@ -55,7 +55,6 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 # Secrets (kylins original — AES-256-GCM via OS keyring)
 aes-gcm = "0.10"
 rand = "0.8"
-keyring = { version = "3", features = ["async-secret-service"] }
 hex = "0.4"
 
 # Error handling for EAS client
@@ -70,6 +69,12 @@ uuid = { version = "1", features = ["v4"] }
 # so `macros` is here only to support `#[derive(sqlx::FromRow)]`.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 async-trait = "0.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
 
 [dev-dependencies]
 # WBXML codec + EAS command fixture tests
@@ -88,4 +93,5 @@ tempfile = "3"
 windows = { version = "0.58", features = ["Win32_UI_Shell"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
 tray-item = { version = "0.10.0", default-features = false, features = ["ksni"] }

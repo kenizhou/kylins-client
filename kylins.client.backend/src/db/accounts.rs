@@ -248,14 +248,13 @@ pub struct AccountUpdates {
 
 /// Map a raw row to an [`Account`], decrypting the four secret fields.
 ///
-/// Returns `Err` if any secret is present but undecryptable. Callers decide
-/// how to handle that: [`get_all`] skips the row, [`get_by_email`] falls back
-/// to a minimal stub.
+/// Secrets that fail to decrypt are treated as `None` so account metadata
+/// survives even when the master key changes (e.g. keyring reset).
 fn row_to_account(row: &SqliteRow) -> Result<Account, String> {
-    let access_token = dec_opt(row.try_get("access_token").ok().flatten())?;
-    let refresh_token = dec_opt(row.try_get("refresh_token").ok().flatten())?;
-    let imap_password = dec_opt(row.try_get("imap_password").ok().flatten())?;
-    let oauth_client_secret = dec_opt(row.try_get("oauth_client_secret").ok().flatten())?;
+    let access_token = dec_opt_graceful(row.try_get("access_token").ok().flatten(), "access_token");
+    let refresh_token = dec_opt_graceful(row.try_get("refresh_token").ok().flatten(), "refresh_token");
+    let imap_password = dec_opt_graceful(row.try_get("imap_password").ok().flatten(), "imap_password");
+    let oauth_client_secret = dec_opt_graceful(row.try_get("oauth_client_secret").ok().flatten(), "oauth_client_secret");
 
     Ok(Account {
         id: row.try_get("id").unwrap_or_default(),
@@ -302,6 +301,15 @@ fn dec_opt(stored: Option<&str>) -> Result<Option<String>, String> {
         Some(cipher) => decrypt(cipher).map(Some),
         None => Ok(None),
     }
+}
+
+/// Like [`dec_opt`] but returns `None` on decrypt failure so account metadata
+/// survives a master-key reset. The warning helps operators spot stale secrets.
+fn dec_opt_graceful(stored: Option<&str>, field: &str) -> Option<String> {
+    dec_opt(stored).unwrap_or_else(|e| {
+        log::warn!("[accounts] failed to decrypt {field}, treating as empty: {e}");
+        None
+    })
 }
 
 /// Encrypt an optional plaintext. `None` passes through.
@@ -888,9 +896,17 @@ mod tests {
         insert_row_direct(&pool, "bad-id", "bad@x.com", Some("not-real-cipher"), None).await;
 
         let all = get_all(&pool).await.unwrap();
-        // Only the good row survives.
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].email, "good@x.com");
+        // Both rows survive — the corrupt one has empty secrets instead of being
+        // dropped, so account metadata is preserved even when the master key changes.
+        assert_eq!(all.len(), 2);
+        // Good row has its decrypted password.
+        let good = all.iter().find(|a| a.email == "good@x.com").unwrap();
+        assert_eq!(good.imap_password.as_deref(), Some("pw"));
+        // Corrupt row survives with empty secrets (not skipped).
+        let bad = all.iter().find(|a| a.email == "bad@x.com").unwrap();
+        assert_eq!(bad.id, "bad-id");
+        assert!(bad.access_token.is_none());
+        assert!(bad.imap_password.is_none());
     }
 
     #[tokio::test]

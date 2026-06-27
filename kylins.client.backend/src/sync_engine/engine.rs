@@ -23,7 +23,7 @@ const POLL_INTERVAL_SECS: u64 = 60;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DeltaEvent {
+pub struct DeltaEvent {
     op: String,
     table: String,
     account_id: String,
@@ -33,7 +33,7 @@ struct DeltaEvent {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct NewMailEvent {
+pub struct NewMailEvent {
     account_id: String,
     folder_id: String,
     count: i64,
@@ -41,7 +41,7 @@ struct NewMailEvent {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StatusEvent {
+pub struct StatusEvent {
     account_id: String,
     state: String,
 }
@@ -366,6 +366,77 @@ mod tests {
             sync_state::get_imap_cursor(&pool, "a", "INBOX").await,
             Cursor::Imap { uidvalidity: 0, highest_uid: 1, highest_modseq: 0 }
         );
+    }
+
+    /// Regression: parent_id stores the parent's remote_id (provider-native id),
+    /// which the frontend `buildFolderTree` matches against sibling `remoteId` values.
+    /// The parent_id must be the raw IMAP path (e.g. "INBOX") not the label's DB id
+    /// (e.g. "a:INBOX"), because the frontend lookup is keyed by remoteId.
+    #[tokio::test]
+    async fn parent_id_stores_parent_remote_id_for_frontend_tree_matching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+
+        // Parent folder (INBOX) — system folder
+        let parent = RemoteFolder {
+            remote_id: "INBOX".into(),
+            name: "Inbox".into(),
+            delimiter: "/".into(),
+            role: Some("inbox".into()),
+            parent_id: None,
+            ..Default::default()
+        };
+        upsert_folder_label(&pool, "a", "imap", &parent).await.unwrap();
+
+        // Child folder (sub-folder of INBOX) — user folder
+        let child = RemoteFolder {
+            remote_id: "INBOX/KylinsTest".into(),
+            name: "KylinsTest".into(),
+            delimiter: "/".into(),
+            role: None,
+            parent_id: Some("INBOX".into()), // parent's remote_id (raw IMAP path)
+            ..Default::default()
+        };
+        upsert_folder_label(&pool, "a", "imap", &child).await.unwrap();
+
+        // A top-level folder with the same leaf name (different path, no parent)
+        let top_level = RemoteFolder {
+            remote_id: "KylinsTest".into(),
+            name: "KylinsTest".into(),
+            delimiter: "/".into(),
+            role: None,
+            parent_id: None,
+            ..Default::default()
+        };
+        upsert_folder_label(&pool, "a", "imap", &top_level).await.unwrap();
+
+        // Verify: child's parent_id stores the parent's remote_id (the IMAP path)
+        let (child_parent_id,): (Option<String>,) = sqlx::query_as(
+            "SELECT parent_id FROM labels WHERE account_id = 'a' AND remote_id = 'INBOX/KylinsTest'"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(child_parent_id.as_deref(), Some("INBOX"),
+            "sub-folder parent_id must be the parent's remote_id, matching frontend buildFolderTree lookup");
+
+        // Verify: the parent's remote_id column holds the IMAP path
+        let (parent_remote_id,): (String,) = sqlx::query_as(
+            "SELECT remote_id FROM labels WHERE account_id = 'a' AND id = 'a:INBOX'"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(parent_remote_id, "INBOX",
+            "parent remote_id must match what child's parent_id references");
+
+        // Verify: top-level folder has no parent
+        let (top_parent_id,): (Option<String>,) = sqlx::query_as(
+            "SELECT parent_id FROM labels WHERE account_id = 'a' AND remote_id = 'KylinsTest'"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(top_parent_id, None,
+            "top-level folder with same name must not get a parent_id");
+
+        // Verify: both "KylinsTest" folders exist and are distinct
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM labels WHERE account_id = 'a' AND name = 'KylinsTest'"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 2, "two distinct folders named KylinsTest expected");
     }
 
     #[tokio::test]

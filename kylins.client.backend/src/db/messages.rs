@@ -76,8 +76,16 @@ async fn upsert_message(
     label_id: &str,
     m: &RemoteMessage,
 ) -> Result<(), String> {
-    let message_id = m.message_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let thread_id = message_id.clone();
+    // Stable PK: imap-{account}-{folder}-{uid} (Velo pattern — IMAP identity is UID+folder,
+    // not Message-ID header, which calendar items and server notifications lack).
+    let message_id = format!("imap-{}-{}-{}", account_id, m.folder, m.uid);
+
+    // RFC 2822 Message-ID header (for JWZ threading). Fall back to a synthetic
+    // deterministic ID when the server sent no header (drafts, calendar items, etc.).
+    let rfc2822_message_id = m
+        .message_id
+        .clone()
+        .unwrap_or_else(|| format!("synthetic-{}-{}-{}@kylins.local", account_id, m.folder, m.uid));
     let has_attachments: i64 = if m.has_attachments { 1 } else { 0 };
     let is_read: i64 = if m.is_read { 1 } else { 0 };
     let is_starred: i64 = if m.is_starred { 1 } else { 0 };
@@ -96,7 +104,7 @@ async fn upsert_message(
            is_important = excluded.is_important, has_attachments = excluded.has_attachments,
            from_name = excluded.from_name, from_address = excluded.from_address",
     )
-    .bind(&thread_id)
+    .bind(&message_id)
     .bind(account_id)
     .bind(&m.subject)
     .bind(&m.snippet)
@@ -125,11 +133,12 @@ async fn upsert_message(
            subject = excluded.subject, snippet = excluded.snippet, date = excluded.date,
            is_read = excluded.is_read, is_starred = excluded.is_starred,
            body_text = excluded.body_text, raw_size = excluded.raw_size,
+           message_id_header = excluded.message_id_header,
            imap_uid = excluded.imap_uid, imap_folder = excluded.imap_folder",
     )
     .bind(&message_id)
     .bind(account_id)
-    .bind(&thread_id)
+    .bind(&message_id)
     .bind(&m.from_address)
     .bind(&m.from_name)
     .bind(&m.to_addresses)
@@ -144,14 +153,14 @@ async fn upsert_message(
     .bind(&m.body_text)
     .bind(body_cached)
     .bind(m.raw_size as i64)
-    .bind(&m.message_id)
+    .bind(&rfc2822_message_id)
     .bind(&m.in_reply_to)
     .bind(&m.references)
     .bind(&m.list_unsubscribe)
     .bind(&m.list_unsubscribe_post)
     .bind(&m.auth_results)
     .bind(m.uid as i64)
-    .bind(folder_path_label(account_id, &m.folder))
+    .bind(&m.folder)
     .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
@@ -162,7 +171,7 @@ async fn upsert_message(
          VALUES (?, ?, ?)
          ON CONFLICT(account_id, thread_id, label_id) DO NOTHING",
     )
-    .bind(&thread_id)
+    .bind(&message_id)
     .bind(account_id)
     .bind(label_id)
     .execute(&mut **tx)
@@ -184,13 +193,6 @@ async fn upsert_message(
     }
 
     Ok(())
-}
-
-/// The `imap_folder` column stores the raw IMAP path (the message's own folder). It is
-/// NOT namespaced by account in the legacy schema, but we keep it verbatim from the
-/// source. (Helper kept explicit for clarity.)
-fn folder_path_label(_account_id: &str, folder: &str) -> String {
-    folder.to_string()
 }
 
 #[cfg(test)]
