@@ -86,6 +86,86 @@ pub enum MutationOp {
 }
 
 impl MutationOp {
+    /// Reconstruct the op for replay from a pending row. The row encodes one
+    /// message (`resource_id`) worth of params — i.e. the per-message fan-out
+    /// form produced by [`MutationOp::encode_params`], not the batch form the
+    /// frontend originally sent. We decode `params` JSON and rebuild a
+    /// single-message variant: `message_ids`/`uids` are single-element vecs
+    /// scoped to `resource_id` / the first encoded uid.
+    ///
+    /// For `MarkRead`, the row's `resource_id` is the thread id (see
+    /// [`MutationOp::resource_id`]); we mirror that into both `thread_id` and
+    /// `message_ids` so `exec_via_source` has what it needs (it only reads
+    /// `folder_path`/`uids`/`read` for the remote call).
+    pub fn from_pending(row: &crate::db::queue::PendingOperation) -> Result<Self, String> {
+        let v: serde_json::Value =
+            serde_json::from_str(&row.params).map_err(|e| e.to_string())?;
+        let uid = v
+            .get("uids")
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as u32;
+        let folder = v
+            .get("folderPath")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(match row.operation_type.as_str() {
+            "markRead" => MutationOp::MarkRead {
+                thread_id: row.resource_id.clone(),
+                message_ids: vec![row.resource_id.clone()],
+                folder_path: folder,
+                uids: vec![uid],
+                read: v.get("read").and_then(|x| x.as_i64()).unwrap_or(0) == 1,
+            },
+            "setFlag" => MutationOp::SetFlag {
+                message_ids: vec![row.resource_id.clone()],
+                folder_path: folder,
+                uids: vec![uid],
+                flag: v
+                    .get("flag")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("\\Flagged")
+                    .to_string(),
+                add: v.get("add").and_then(|x| x.as_bool()).unwrap_or(true),
+            },
+            "move" => MutationOp::Move {
+                message_ids: vec![row.resource_id.clone()],
+                src_label: String::new(),
+                dst_label: v
+                    .get("dstLabel")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                src_folder_path: v
+                    .get("srcFolderPath")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                dst_folder_path: v
+                    .get("dstFolderPath")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                uids: vec![uid],
+            },
+            "delete" => MutationOp::Delete {
+                message_ids: vec![row.resource_id.clone()],
+                folder_path: folder,
+                uids: vec![uid],
+            },
+            "send" => MutationOp::Send {
+                raw_base64url: v
+                    .get("rawBase64url")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            },
+            other => return Err(format!("unknown op type {other}")),
+        })
+    }
+
     /// The operation type tag stored in `pending_operations.operation_type`.
     /// Matches the lowercase strings `queue::compact_queue` keys on.
     pub fn op_type(&self) -> &'static str {

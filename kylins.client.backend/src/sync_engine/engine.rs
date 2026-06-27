@@ -46,11 +46,21 @@ pub struct StatusEvent {
     state: String,
 }
 
+/// Per-account pending-queue count, emitted after every replay round so the
+/// UI can render "Offline — N pending" badges. Mirrors the other sync:* events.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueEvent {
+    account_id: String,
+    pending: i64,
+}
+
 /// Emit seam. Production impl wraps a Tauri `AppHandle`; tests collect into vectors.
 pub trait EventSink: Send + Sync {
     fn emit_delta(&self, evt: DeltaEvent);
     fn emit_new_mail(&self, evt: NewMailEvent);
     fn emit_status(&self, evt: StatusEvent);
+    fn emit_queue(&self, evt: QueueEvent);
 }
 
 struct TauriSink(AppHandle);
@@ -63,6 +73,9 @@ impl EventSink for TauriSink {
     }
     fn emit_status(&self, e: StatusEvent) {
         let _ = self.0.emit("sync:status", e);
+    }
+    fn emit_queue(&self, e: QueueEvent) {
+        let _ = self.0.emit("sync:queue", e);
     }
 }
 
@@ -165,12 +178,74 @@ impl SyncEngine {
             let _ = w.tx.send(SyncOp::Shutdown).await;
         }
     }
+
+    /// Fan a `sync:queue` event through the sink. Called by [`run_replay_round`]
+    /// after each round so the UI's per-account pending badge stays in sync.
+    fn emit_queue(&self, account_id: &str, pending: i64) {
+        self.sink.emit_queue(QueueEvent {
+            account_id: account_id.into(),
+            pending,
+        });
+    }
 }
 
 /// Production round: resolve the source via the factory, then run.
 async fn run_sync_round(engine: &Arc<SyncEngine>, account_id: &str, provider: &str) -> Result<(), String> {
     let src = source_for_account(&engine.pool, account_id).await?;
     run_sync_round_with_source(engine, account_id, provider, src.as_ref()).await
+}
+
+/// Drain this account's pending_operations queue through the `MailSource`.
+/// Called at the end of every sync round (poll tick or `SyncNow`) so the
+/// worker both pulls new mail and pushes queued writes in the same wake.
+///
+/// Mirrors [`run_sync_round_with_source`]'s test-seam shape: an explicit `src`
+/// is passed in so unit tests can drive this without the source factory.
+///
+/// Flow per round:
+/// 1. `compact_queue` — drop cancel-out toggle pairs (markRead/setFlag).
+/// 2. `dequeue_pending_for_account` — up to 50 due rows, oldest-first.
+/// 3. For each row: `MutationOp::from_pending` → `exec_via_source` →
+///    `mark_completed` on Ok / `mark_failed` (with backoff) on Err.
+/// 4. `pending_count_for_account` → `engine.emit_queue` so the UI badge updates.
+async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn MailSource) {
+    let pool = &engine.pool;
+    if let Err(e) = crate::db::queue::compact_queue(pool, account_id).await {
+        log::warn!("[sync] {account_id} compact_queue failed: {e}");
+    }
+    let ops = match crate::db::queue::dequeue_pending_for_account(pool, account_id, 50).await {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!("[sync] {account_id} dequeue failed: {e}");
+            return;
+        }
+    };
+    for op in ops {
+        let mop = match crate::db::mutations::MutationOp::from_pending(&op) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!("[sync] decode op {} failed: {e}", op.id);
+                continue;
+            }
+        };
+        match mop.exec_via_source(src).await {
+            Ok(()) => {
+                if let Err(e) = crate::db::queue::mark_completed(pool, &op.id).await {
+                    log::warn!("[sync] mark_completed {} failed: {e}", op.id);
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if let Err(e2) = crate::db::queue::mark_failed(pool, &op.id, &msg).await {
+                    log::warn!("[sync] mark_failed {} failed: {e2}", op.id);
+                }
+            }
+        }
+    }
+    let pending = crate::db::queue::pending_count_for_account(pool, account_id)
+        .await
+        .unwrap_or(0);
+    engine.emit_queue(account_id, pending);
 }
 
 /// One sync round against an explicit source (test seam + reused by production).
@@ -240,6 +315,13 @@ async fn run_sync_round_with_source(
 
     let _ = accounts::touch_last_sync(&engine.pool, account_id).await;
     engine.sink.emit_status(StatusEvent { account_id: account_id.into(), state: "idle".into() });
+
+    // Phase 1 Task 4: drain queued offline operations through the same source
+    // we just used for the sync round. Runs on every poll tick AND on SyncNow,
+    // since this is the tail of `run_sync_round_with_source`. Failures are
+    // logged + retained with backoff (see `run_replay_round`).
+    run_replay_round(engine, account_id, src).await;
+
     Ok(())
 }
 
@@ -288,6 +370,7 @@ mod tests {
         deltas: std::sync::Mutex<Vec<DeltaEvent>>,
         new_mails: std::sync::Mutex<Vec<NewMailEvent>>,
         statuses: std::sync::Mutex<Vec<StatusEvent>>,
+        queues: std::sync::Mutex<Vec<QueueEvent>>,
     }
     impl TestSink {
         fn new() -> Self {
@@ -295,6 +378,7 @@ mod tests {
                 deltas: std::sync::Mutex::new(vec![]),
                 new_mails: std::sync::Mutex::new(vec![]),
                 statuses: std::sync::Mutex::new(vec![]),
+                queues: std::sync::Mutex::new(vec![]),
             }
         }
     }
@@ -302,6 +386,7 @@ mod tests {
         fn emit_delta(&self, e: DeltaEvent) { self.deltas.lock().unwrap().push(e); }
         fn emit_new_mail(&self, e: NewMailEvent) { self.new_mails.lock().unwrap().push(e); }
         fn emit_status(&self, e: StatusEvent) { self.statuses.lock().unwrap().push(e); }
+        fn emit_queue(&self, e: QueueEvent) { self.queues.lock().unwrap().push(e); }
     }
 
     async fn seed_account(pool: &SqlitePool, id: &str) {
@@ -456,5 +541,133 @@ mod tests {
         // Second round: MockSource drained, no new deltas.
         run_sync_round_with_source(&engine, "a", "imap", &src).await.unwrap();
         assert_eq!(sink.deltas.lock().unwrap().len(), 1); // unchanged
+    }
+
+    // ---- Phase 1 Task 4: AccountWorker replay loop + sync:queue ----
+
+    /// Seed one pending markRead op (one message = one row, matching how Task 3
+    /// fans out). Used by the replay tests.
+    async fn seed_pending_markread(pool: &SqlitePool, account_id: &str, op_id: &str, resource_id: &str, uid: u32, read: bool) {
+        let params = serde_json::json!({
+            "folderPath": "INBOX",
+            "read": if read { 1 } else { 0 },
+            "uids": [uid],
+        }).to_string();
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES (?, ?, 'markRead', ?, ?, 'pending', 1)",
+        )
+        .bind(op_id)
+        .bind(account_id)
+        .bind(resource_id)
+        .bind(&params)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_replay_round_drains_pending_op_and_emits_queue_with_zero_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_pending_markread(&pool, "a", "op-1", "msg-1", 42, true).await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        let src = MockSource::new(vec![], vec![]);
+
+        run_replay_round(&engine, "a", &src).await;
+
+        // Op was completed (deleted from the queue).
+        let (cnt,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cnt, 0, "completed op should be removed from the queue");
+
+        // MockSource observed the set_flags call (markRead → \\Seen, add=read).
+        assert_eq!(
+            src.recorded_calls(),
+            vec![crate::sync_engine::mock_source::RecordedCall::SetFlags {
+                folder: "INBOX".into(),
+                uids: vec![42],
+                flag: "\\Seen".into(),
+                add: true,
+            }]
+        );
+
+        // sync:queue fired with pending=0.
+        let qs = sink.queues.lock().unwrap().clone();
+        assert_eq!(qs.len(), 1, "exactly one queue event should fire");
+        assert_eq!(qs[0].account_id, "a");
+        assert_eq!(qs[0].pending, 0);
+    }
+
+    #[tokio::test]
+    async fn run_replay_round_failure_retains_op_and_applies_mark_failed_backoff() {
+        // A MailSource whose set_flags always returns Unsupported → markRead replay fails.
+        use async_trait::async_trait;
+        struct FailingSource;
+        #[async_trait]
+        impl MailSource for FailingSource {
+            fn capabilities(&self) -> crate::sync_engine::Capabilities {
+                crate::sync_engine::Capabilities::default()
+            }
+            async fn list_folders(&self) -> Result<Vec<RemoteFolder>, crate::sync_engine::SourceError> {
+                Ok(vec![])
+            }
+            async fn sync_folder(&self, _f: &RemoteFolder, _c: crate::sync_engine::Cursor) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn fetch_body(&self, _f: &RemoteFolder, _u: u32) -> Result<Option<String>, crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn set_flags(&self, _f: &RemoteFolder, _u: &[u32], _flag: &str, _add: bool) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn move_messages(&self, _s: &RemoteFolder, _u: &[u32], _d: &RemoteFolder) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn delete_messages(&self, _f: &RemoteFolder, _u: &[u32]) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn append(&self, _f: &RemoteFolder, _r: &[u8], _fl: &[&str]) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_pending_markread(&pool, "a", "op-1", "msg-1", 42, true).await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        let src = FailingSource;
+
+        run_replay_round(&engine, "a", &src).await;
+
+        // Op retained (still pending) but retry_count bumped to 1 and next_retry_at scheduled.
+        let row: (String, i64, Option<i64>) = sqlx::query_as(
+            "SELECT status, retry_count, next_retry_at FROM pending_operations WHERE id = 'op-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "pending", "status stays pending (1 < max_retries)");
+        assert_eq!(row.1, 1, "retry_count incremented via mark_failed");
+        assert!(row.2.is_some(), "next_retry_at scheduled by backoff");
+
+        // sync:queue still fires — with pending=1, because the op is retained.
+        let qs = sink.queues.lock().unwrap().clone();
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].account_id, "a");
+        assert_eq!(qs[0].pending, 1, "retained op counts toward pending");
     }
 }

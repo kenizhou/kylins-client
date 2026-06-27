@@ -106,6 +106,7 @@ mod tests {
         fn emit_delta(&self, _: crate::sync_engine::engine::DeltaEvent) {}
         fn emit_new_mail(&self, _: crate::sync_engine::engine::NewMailEvent) {}
         fn emit_status(&self, _: crate::sync_engine::engine::StatusEvent) {}
+        fn emit_queue(&self, _: crate::sync_engine::engine::QueueEvent) {}
     }
 
     async fn seed_account(pool: &SqlitePool, id: &str) {
