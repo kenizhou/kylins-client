@@ -22,7 +22,6 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
 }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn(() => Promise.resolve()) }));
 
-vi.mock('../src/services/db/migrations', () => ({ runMigrations: vi.fn(() => Promise.resolve()) }));
 vi.mock('../src/services/settings', () => ({ getSetting: vi.fn(() => Promise.resolve(null)) }));
 vi.mock('../src/services/accounts', () => ({
   getAllAccounts: vi.fn(() => Promise.resolve([])),

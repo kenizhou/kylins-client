@@ -116,6 +116,128 @@ export function defaultDbResult(cmd: string, args: Record<string, unknown> | und
     case 'db_mark_op_failed':
       return undefined;
 
+    // contacts (groups + CRUD) — empty/null defaults so list/get helpers
+    // don't throw in components that call them during render.
+    case 'db_list_contacts':
+    case 'db_search_contacts':
+      return [];
+    case 'db_get_contact_by_id':
+    case 'db_get_contact_by_email':
+    case 'db_get_contact_by_external_id':
+      return null;
+    case 'db_create_contact':
+      return {
+        id: 'c-1',
+        email: (args?.input as { email?: string } | undefined)?.email ?? 'c@x.com',
+        displayName: null,
+        avatarUrl: null,
+        frequency: 0,
+        lastContactedAt: null,
+        firstContactedAt: null,
+        notes: null,
+        accountId: null,
+        source: 'local',
+        externalId: null,
+        etag: null,
+        rawVCard: null,
+        isHidden: false,
+        isReadonly: false,
+        company: null,
+        jobTitle: null,
+        emails: [],
+        phones: [],
+        addresses: [],
+        createdAt: 1,
+        updatedAt: 1,
+      };
+    case 'db_update_contact':
+    case 'db_delete_contact':
+    case 'db_upsert_contact':
+    case 'db_update_contact_avatar':
+    case 'db_update_contact_notes':
+      return undefined;
+    case 'db_get_contact_stats':
+      return { emailCount: 0, firstEmail: null, lastEmail: null };
+    case 'db_get_recent_threads_with_contact':
+    case 'db_get_attachments_from_contact':
+    case 'db_get_contacts_from_same_domain':
+      return [];
+    case 'db_get_latest_auth_result':
+      return null;
+    case 'db_get_contact_groups':
+    case 'db_get_groups_for_contact':
+      return [];
+    case 'db_get_contact_group_by_id':
+      return null;
+    case 'db_create_contact_group':
+      return {
+        id: 'g-1',
+        accountId: null,
+        source: 'local',
+        externalId: null,
+        name: 'Group',
+        etag: null,
+        isReadonly: false,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+    case 'db_rename_contact_group':
+    case 'db_delete_contact_group':
+    case 'db_add_contact_to_group':
+    case 'db_remove_contact_from_group':
+      return undefined;
+    case 'db_get_contact_ids_for_group':
+      return [];
+
+    // signatures / drafts / aliases / calendar / scheduled / templates /
+    // contact_sync_state / image_allowlist / ai_cache / search — sane empty
+    // defaults so any component calling them during render doesn't blow up.
+    case 'db_get_signatures_for_account':
+    case 'db_get_aliases_for_account':
+    case 'db_get_calendar_events_for_account':
+    case 'db_get_calendar_events_in_range':
+    case 'db_get_pending_scheduled_emails':
+    case 'db_get_scheduled_emails_for_account':
+    case 'db_get_templates_for_account':
+    case 'db_search_messages':
+    case 'db_list_drafts_for_account':
+      return [];
+    case 'db_get_default_signature':
+    case 'db_get_calendar_event_by_id':
+    case 'db_get_draft':
+    case 'db_get_latest_scheduled_email_for_account':
+    case 'db_get_contact_sync_state':
+      return null;
+    case 'db_insert_signature':
+    case 'db_insert_alias':
+    case 'db_insert_calendar_event':
+    case 'db_insert_scheduled_email':
+    case 'db_insert_template':
+    case 'db_create_draft':
+      return 'new-id';
+    case 'db_update_signature':
+    case 'db_delete_signature':
+    case 'db_update_draft':
+    case 'db_delete_draft':
+    case 'db_update_alias':
+    case 'db_delete_alias':
+    case 'db_update_calendar_event':
+    case 'db_delete_calendar_event':
+    case 'db_update_scheduled_email_status':
+    case 'db_delete_scheduled_email':
+    case 'db_set_scheduled_email_attachment_paths':
+    case 'db_update_template':
+    case 'db_delete_template':
+    case 'db_set_contact_sync_state':
+    case 'db_add_to_image_allowlist':
+    case 'db_remove_from_image_allowlist':
+    case 'db_cache_ai_result':
+      return undefined;
+    case 'db_is_image_allowlisted':
+      return false;
+    case 'db_get_cached_ai_result':
+      return null;
+
     default:
       return undefined;
   }

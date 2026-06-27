@@ -463,9 +463,9 @@ pub async fn create(pool: &SqlitePool, input: CreateAccountInput) -> Result<Acco
 
     // Seed a default signature so the composer always has something to offer.
     // This replaces the frontend `insertSignature` call that used to live in
-    // `accounts.ts:createAccount` (removed during the Task 5 cutover because
-    // `signatures` is a tangential table still on plugin-sql, and we don't want
-    // a cross-dependency from the Rust-owned create path back to the frontend).
+    // `accounts.ts:createAccount` (removed during the Task 5 cutover so the
+    // Rust-owned create path doesn't cross back into the frontend). The
+    // `signatures` table is now also Rust-owned (see `db::signatures`).
     // Faithful to the TS default: name='Default',
     // body_html='<p>Sent from Kylins Mail</p>', is_default=1, context='all'.
     // Best-effort: a failure here is logged but does not fail the account

@@ -48,7 +48,6 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -141,6 +140,70 @@ pub fn run() {
             db::commands::db_dequeue_pending,
             db::commands::db_mark_op_completed,
             db::commands::db_mark_op_failed,
+            db::commands::db_list_contacts,
+            db::commands::db_search_contacts,
+            db::commands::db_get_contact_by_id,
+            db::commands::db_get_contact_by_email,
+            db::commands::db_get_contact_by_external_id,
+            db::commands::db_create_contact,
+            db::commands::db_update_contact,
+            db::commands::db_delete_contact,
+            db::commands::db_upsert_contact,
+            db::commands::db_update_contact_avatar,
+            db::commands::db_update_contact_notes,
+            db::commands::db_get_contact_stats,
+            db::commands::db_get_recent_threads_with_contact,
+            db::commands::db_get_attachments_from_contact,
+            db::commands::db_get_contacts_from_same_domain,
+            db::commands::db_get_latest_auth_result,
+            db::commands::db_get_contact_groups,
+            db::commands::db_get_contact_group_by_id,
+            db::commands::db_create_contact_group,
+            db::commands::db_rename_contact_group,
+            db::commands::db_delete_contact_group,
+            db::commands::db_add_contact_to_group,
+            db::commands::db_remove_contact_from_group,
+            db::commands::db_get_contact_ids_for_group,
+            db::commands::db_get_groups_for_contact,
+            db::commands::db_get_signatures_for_account,
+            db::commands::db_get_default_signature,
+            db::commands::db_insert_signature,
+            db::commands::db_update_signature,
+            db::commands::db_delete_signature,
+            db::commands::db_create_draft,
+            db::commands::db_update_draft,
+            db::commands::db_delete_draft,
+            db::commands::db_get_draft,
+            db::commands::db_list_drafts_for_account,
+            db::commands::db_get_aliases_for_account,
+            db::commands::db_insert_alias,
+            db::commands::db_update_alias,
+            db::commands::db_delete_alias,
+            db::commands::db_search_messages,
+            db::commands::db_get_calendar_events_for_account,
+            db::commands::db_get_calendar_events_in_range,
+            db::commands::db_get_calendar_event_by_id,
+            db::commands::db_insert_calendar_event,
+            db::commands::db_update_calendar_event,
+            db::commands::db_delete_calendar_event,
+            db::commands::db_get_pending_scheduled_emails,
+            db::commands::db_get_scheduled_emails_for_account,
+            db::commands::db_insert_scheduled_email,
+            db::commands::db_update_scheduled_email_status,
+            db::commands::db_delete_scheduled_email,
+            db::commands::db_get_latest_scheduled_email_for_account,
+            db::commands::db_set_scheduled_email_attachment_paths,
+            db::commands::db_get_templates_for_account,
+            db::commands::db_insert_template,
+            db::commands::db_update_template,
+            db::commands::db_delete_template,
+            db::commands::db_get_contact_sync_state,
+            db::commands::db_set_contact_sync_state,
+            db::commands::db_add_to_image_allowlist,
+            db::commands::db_is_image_allowlisted,
+            db::commands::db_remove_from_image_allowlist,
+            db::commands::db_get_cached_ai_result,
+            db::commands::db_cache_ai_result,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,
@@ -164,9 +227,9 @@ pub fn run() {
             // Open the SQLite database (creates mailclient.db + WAL files if
             // absent) and run embedded sqlx migrations. The pool is exposed to
             // later Tauri commands via State<'_, DbPool>. Tauri's setup runs
-            // synchronously, so we block on the async init here. The frontend
-            // still uses plugin-sql for now (Task 5 will cut it over); this
-            // init is additive and the migrations are idempotent.
+            // synchronously, so we block on the async init here. Rust is the
+            // sole writer of every table; the frontend `invoke`s the `db_*`
+            // commands declared in `db::commands`.
             {
                 let data_dir = app
                     .path()

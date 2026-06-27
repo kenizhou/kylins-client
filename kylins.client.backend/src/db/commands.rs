@@ -327,3 +327,593 @@ pub async fn db_mark_op_failed(
 ) -> Result<(), String> {
     queue::mark_failed(&pool, &id, &error).await
 }
+
+// ---- contacts ----
+
+use crate::db::contacts::{
+    self, Contact, ContactAttachment, ContactGroup, ContactListOptions, ContactStats,
+    ContactThread, CreateContactInput, DbContactRaw, SameDomainContact, UpdateContactInput,
+};
+
+#[tauri::command]
+pub async fn db_list_contacts(
+    pool: State<'_, SqlitePool>,
+    options: Option<ContactListOptions>,
+) -> Result<Vec<Contact>, String> {
+    contacts::list(&pool, options.unwrap_or_default()).await
+}
+
+#[tauri::command]
+pub async fn db_search_contacts(
+    pool: State<'_, SqlitePool>,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<DbContactRaw>, String> {
+    contacts::search(&pool, &query, limit.unwrap_or(10)).await
+}
+
+#[tauri::command]
+pub async fn db_get_contact_by_id(pool: State<'_, SqlitePool>, id: String) -> Result<Option<Contact>, String> {
+    contacts::get_by_id(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_get_contact_by_email(
+    pool: State<'_, SqlitePool>,
+    email: String,
+) -> Result<Option<Contact>, String> {
+    contacts::get_by_email(&pool, &email).await
+}
+
+#[tauri::command]
+pub async fn db_get_contact_by_external_id(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    source: String,
+    external_id: String,
+) -> Result<Option<Contact>, String> {
+    contacts::get_by_external_id(&pool, &account_id, &source, &external_id).await
+}
+
+#[tauri::command]
+pub async fn db_create_contact(
+    pool: State<'_, SqlitePool>,
+    input: CreateContactInput,
+) -> Result<Contact, String> {
+    contacts::create(&pool, input).await
+}
+
+#[tauri::command]
+pub async fn db_update_contact(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    updates: UpdateContactInput,
+) -> Result<(), String> {
+    contacts::update(&pool, &id, updates).await
+}
+
+#[tauri::command]
+pub async fn db_delete_contact(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    contacts::delete(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_upsert_contact(
+    pool: State<'_, SqlitePool>,
+    email: String,
+    display_name: Option<String>,
+) -> Result<(), String> {
+    contacts::upsert(&pool, &email, display_name.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_update_contact_avatar(
+    pool: State<'_, SqlitePool>,
+    email: String,
+    avatar_url: String,
+) -> Result<(), String> {
+    contacts::update_avatar(&pool, &email, &avatar_url).await
+}
+
+#[tauri::command]
+pub async fn db_update_contact_notes(
+    pool: State<'_, SqlitePool>,
+    email: String,
+    notes: Option<String>,
+) -> Result<(), String> {
+    contacts::update_notes(&pool, &email, notes.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_get_contact_stats(
+    pool: State<'_, SqlitePool>,
+    email: String,
+) -> Result<ContactStats, String> {
+    contacts::get_stats(&pool, &email).await
+}
+
+#[tauri::command]
+pub async fn db_get_recent_threads_with_contact(
+    pool: State<'_, SqlitePool>,
+    email: String,
+    limit: Option<i64>,
+) -> Result<Vec<ContactThread>, String> {
+    contacts::recent_threads_with(&pool, &email, limit.unwrap_or(5)).await
+}
+
+#[tauri::command]
+pub async fn db_get_attachments_from_contact(
+    pool: State<'_, SqlitePool>,
+    email: String,
+    limit: Option<i64>,
+) -> Result<Vec<ContactAttachment>, String> {
+    contacts::attachments_from(&pool, &email, limit.unwrap_or(5)).await
+}
+
+#[tauri::command]
+pub async fn db_get_contacts_from_same_domain(
+    pool: State<'_, SqlitePool>,
+    email: String,
+    limit: Option<i64>,
+) -> Result<Vec<SameDomainContact>, String> {
+    contacts::same_domain(&pool, &email, limit.unwrap_or(5)).await
+}
+
+#[tauri::command]
+pub async fn db_get_latest_auth_result(
+    pool: State<'_, SqlitePool>,
+    email: String,
+) -> Result<Option<String>, String> {
+    contacts::latest_auth_result(&pool, &email).await
+}
+
+// contact groups
+
+#[tauri::command]
+pub async fn db_get_contact_groups(
+    pool: State<'_, SqlitePool>,
+    account_id: Option<String>,
+) -> Result<Vec<ContactGroup>, String> {
+    contacts::list_groups(&pool, account_id.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_get_contact_group_by_id(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<Option<ContactGroup>, String> {
+    contacts::get_group_by_id(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_create_contact_group(
+    pool: State<'_, SqlitePool>,
+    name: String,
+    account_id: Option<String>,
+    source: Option<String>,
+) -> Result<ContactGroup, String> {
+    contacts::create_group(
+        &pool,
+        &name,
+        account_id.as_deref(),
+        source.as_deref().unwrap_or("local"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn db_rename_contact_group(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    contacts::rename_group(&pool, &id, &name).await
+}
+
+#[tauri::command]
+pub async fn db_delete_contact_group(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    contacts::delete_group(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_add_contact_to_group(
+    pool: State<'_, SqlitePool>,
+    contact_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    contacts::add_to_group(&pool, &contact_id, &group_id).await
+}
+
+#[tauri::command]
+pub async fn db_remove_contact_from_group(
+    pool: State<'_, SqlitePool>,
+    contact_id: String,
+    group_id: String,
+) -> Result<(), String> {
+    contacts::remove_from_group(&pool, &contact_id, &group_id).await
+}
+
+#[tauri::command]
+pub async fn db_get_contact_ids_for_group(
+    pool: State<'_, SqlitePool>,
+    group_id: String,
+) -> Result<Vec<String>, String> {
+    contacts::contact_ids_for_group(&pool, &group_id).await
+}
+
+#[tauri::command]
+pub async fn db_get_groups_for_contact(
+    pool: State<'_, SqlitePool>,
+    contact_id: String,
+) -> Result<Vec<ContactGroup>, String> {
+    contacts::groups_for_contact(&pool, &contact_id).await
+}
+
+// ---- signatures ----
+
+use crate::db::signatures::{
+    self, InsertSignatureInput, Signature, SignatureContext, UpdateSignatureInput,
+};
+
+#[tauri::command]
+pub async fn db_get_signatures_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Vec<Signature>, String> {
+    signatures::list_for_account(&pool, &account_id).await
+}
+
+#[tauri::command]
+pub async fn db_get_default_signature(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    context: Option<SignatureContext>,
+) -> Result<Option<Signature>, String> {
+    signatures::get_default(&pool, &account_id, context.unwrap_or_default()).await
+}
+
+#[tauri::command]
+pub async fn db_insert_signature(
+    pool: State<'_, SqlitePool>,
+    input: InsertSignatureInput,
+) -> Result<String, String> {
+    signatures::insert(&pool, input).await
+}
+
+#[tauri::command]
+pub async fn db_update_signature(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    updates: UpdateSignatureInput,
+) -> Result<(), String> {
+    signatures::update(&pool, &id, updates).await
+}
+
+#[tauri::command]
+pub async fn db_delete_signature(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    signatures::delete(&pool, &id).await
+}
+
+// ---- drafts (local_drafts) ----
+
+use crate::db::drafts::{self, Draft, DraftInput};
+
+#[tauri::command]
+pub async fn db_create_draft(pool: State<'_, SqlitePool>, input: DraftInput) -> Result<String, String> {
+    drafts::create(&pool, input).await
+}
+
+#[tauri::command]
+pub async fn db_update_draft(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    input: DraftInput,
+) -> Result<(), String> {
+    drafts::update(&pool, &id, input).await
+}
+
+#[tauri::command]
+pub async fn db_delete_draft(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    drafts::delete(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_get_draft(pool: State<'_, SqlitePool>, id: String) -> Result<Option<Draft>, String> {
+    drafts::get(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_list_drafts_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Vec<Draft>, String> {
+    drafts::list_for_account(&pool, &account_id).await
+}
+
+// ---- send_as_aliases ----
+
+use crate::db::send_as_aliases::{self, Alias, CreateAliasInput, UpdateAliasInput};
+
+#[tauri::command]
+pub async fn db_get_aliases_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Vec<Alias>, String> {
+    send_as_aliases::list_for_account(&pool, &account_id).await
+}
+
+#[tauri::command]
+pub async fn db_insert_alias(
+    pool: State<'_, SqlitePool>,
+    input: CreateAliasInput,
+) -> Result<String, String> {
+    send_as_aliases::insert(&pool, input).await
+}
+
+#[tauri::command]
+pub async fn db_update_alias(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    updates: UpdateAliasInput,
+) -> Result<(), String> {
+    send_as_aliases::update(&pool, &id, updates).await
+}
+
+#[tauri::command]
+pub async fn db_delete_alias(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    send_as_aliases::delete(&pool, &id).await
+}
+
+// ---- search (FTS5) ----
+
+use crate::db::search::{self, MessageSearchResult};
+
+#[tauri::command]
+pub async fn db_search_messages(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<MessageSearchResult>, String> {
+    search::search_messages(&pool, &account_id, &query, limit.unwrap_or(50)).await
+}
+
+// ---- calendar_events ----
+
+use crate::db::calendar_events::{self, CalendarEvent, UpsertCalendarEventInput};
+
+#[tauri::command]
+pub async fn db_get_calendar_events_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Vec<CalendarEvent>, String> {
+    calendar_events::list_for_account(&pool, &account_id).await
+}
+
+#[tauri::command]
+pub async fn db_get_calendar_events_in_range(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    range_start: i64,
+    range_end: i64,
+) -> Result<Vec<CalendarEvent>, String> {
+    calendar_events::list_in_range(&pool, &account_id, range_start, range_end).await
+}
+
+#[tauri::command]
+pub async fn db_get_calendar_event_by_id(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<Option<CalendarEvent>, String> {
+    calendar_events::get_by_id(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_insert_calendar_event(
+    pool: State<'_, SqlitePool>,
+    input: UpsertCalendarEventInput,
+) -> Result<String, String> {
+    calendar_events::insert(&pool, input).await
+}
+
+#[tauri::command]
+pub async fn db_update_calendar_event(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    updates: UpsertCalendarEventInput,
+) -> Result<(), String> {
+    calendar_events::update(&pool, &id, updates).await
+}
+
+#[tauri::command]
+pub async fn db_delete_calendar_event(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    calendar_events::delete(&pool, &id).await
+}
+
+// ---- scheduled_emails ----
+
+use crate::db::scheduled_emails::{self, InsertScheduledEmailInput, ScheduledEmail};
+
+#[tauri::command]
+pub async fn db_get_pending_scheduled_emails(
+    pool: State<'_, SqlitePool>,
+) -> Result<Vec<ScheduledEmail>, String> {
+    scheduled_emails::list_pending(&pool).await
+}
+
+#[tauri::command]
+pub async fn db_get_scheduled_emails_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Vec<ScheduledEmail>, String> {
+    scheduled_emails::list_for_account(&pool, &account_id).await
+}
+
+#[tauri::command]
+pub async fn db_insert_scheduled_email(
+    pool: State<'_, SqlitePool>,
+    email: InsertScheduledEmailInput,
+) -> Result<String, String> {
+    scheduled_emails::insert(&pool, email).await
+}
+
+#[tauri::command]
+pub async fn db_update_scheduled_email_status(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    status: String,
+) -> Result<(), String> {
+    scheduled_emails::update_status(&pool, &id, &status).await
+}
+
+#[tauri::command]
+pub async fn db_delete_scheduled_email(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    scheduled_emails::delete(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_get_latest_scheduled_email_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Option<ScheduledEmail>, String> {
+    scheduled_emails::latest_for_account(&pool, &account_id).await
+}
+
+#[tauri::command]
+pub async fn db_set_scheduled_email_attachment_paths(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    attachment_paths: String,
+) -> Result<(), String> {
+    scheduled_emails::set_attachment_paths(&pool, &id, &attachment_paths).await
+}
+
+// ---- templates ----
+
+use crate::db::templates::{self, InsertTemplateInput, Template, UpdateTemplateInput};
+
+#[tauri::command]
+pub async fn db_get_templates_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Vec<Template>, String> {
+    templates::list_for_account(&pool, &account_id).await
+}
+
+#[tauri::command]
+pub async fn db_insert_template(
+    pool: State<'_, SqlitePool>,
+    tmpl: InsertTemplateInput,
+) -> Result<String, String> {
+    templates::insert(&pool, tmpl).await
+}
+
+#[tauri::command]
+pub async fn db_update_template(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    updates: UpdateTemplateInput,
+) -> Result<(), String> {
+    templates::update(&pool, &id, updates).await
+}
+
+#[tauri::command]
+pub async fn db_delete_template(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    templates::delete(&pool, &id).await
+}
+
+// ---- contact_sync_state ----
+
+use crate::db::contact_sync_state::{self, ContactSyncState};
+
+#[tauri::command]
+pub async fn db_get_contact_sync_state(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    source: String,
+) -> Result<Option<ContactSyncState>, String> {
+    contact_sync_state::get(&pool, &account_id, &source).await
+}
+
+#[tauri::command]
+pub async fn db_set_contact_sync_state(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    source: String,
+    sync_token: Option<String>,
+    last_sync_at: Option<i64>,
+) -> Result<(), String> {
+    contact_sync_state::set(
+        &pool,
+        &account_id,
+        &source,
+        sync_token.as_deref(),
+        last_sync_at,
+    )
+    .await
+}
+
+// ---- image_allowlist ----
+
+#[tauri::command]
+pub async fn db_add_to_image_allowlist(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    sender_address: String,
+) -> Result<(), String> {
+    crate::db::image_allowlist::add(&pool, &account_id, &sender_address).await
+}
+
+#[tauri::command]
+pub async fn db_is_image_allowlisted(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    sender_address: String,
+) -> Result<bool, String> {
+    crate::db::image_allowlist::is_allowlisted(&pool, &account_id, &sender_address).await
+}
+
+#[tauri::command]
+pub async fn db_remove_from_image_allowlist(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    sender_address: String,
+) -> Result<(), String> {
+    crate::db::image_allowlist::remove(&pool, &account_id, &sender_address).await
+}
+
+// ---- ai_cache ----
+
+#[tauri::command]
+pub async fn db_get_cached_ai_result(
+    pool: State<'_, SqlitePool>,
+    account_id: Option<String>,
+    thread_id: String,
+    cache_type: String,
+) -> Result<Option<String>, String> {
+    crate::db::ai_cache::get_cached(
+        &pool,
+        account_id.as_deref(),
+        &thread_id,
+        &cache_type,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn db_cache_ai_result(
+    pool: State<'_, SqlitePool>,
+    account_id: Option<String>,
+    thread_id: String,
+    cache_type: String,
+    content: String,
+) -> Result<(), String> {
+    crate::db::ai_cache::cache(
+        &pool,
+        account_id.as_deref(),
+        &thread_id,
+        &cache_type,
+        &content,
+    )
+    .await
+}

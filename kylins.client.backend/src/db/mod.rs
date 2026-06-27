@@ -1,27 +1,37 @@
 //! Database layer for the Kylins Client backend.
 //!
-//! Owns the SQLite connection pool and the embedded sqlx migrations. As of
-//! Task 5 (Option C cutover), Rust is the sole writer of every
-//! **sync-relevant** table (accounts, settings, labels/folders, threads reads,
-//! message_bodies, pending_operations). The frontend `invoke`s the `db_*`
-//! commands declared in [`commands`] for those tables. Tangential subsystems
-//! (contacts, signatures, drafts, send-as aliases, scheduled emails, etc.)
-//! still use `@tauri-apps/plugin-sql` from the frontend; their tables are
-//! disjoint from sync data so the two-writer concern that motivated the
-//! cutover does not apply. A later follow-up will finish the cutover for them.
+//! Owns the SQLite connection pool and the embedded sqlx migrations. As of the
+//! plugin-sql clean cut (Task 5 Option C completion), Rust is the **sole**
+//! writer of every table. The frontend `invoke`s the `db_*` commands declared
+//! in [`commands`] for all subsystems: accounts, settings, labels/folders,
+//! threads, message_bodies, pending_operations, contacts (+ groups),
+//! signatures, drafts, send-as aliases, calendar_events, scheduled_emails,
+//! templates, contact_sync_state, image_allowlist, ai_cache, and FTS5 search.
+//! `@tauri-apps/plugin-sql` is no longer a dependency on either side.
 //!
 //! Migrations live in `kylins.client.backend/migrations/` and are embedded at
 //! compile time via `sqlx::migrate!`.
 
 pub mod accounts;
+pub mod ai_cache;
+pub mod calendar_events;
 pub mod commands;
+pub mod contact_sync_state;
+pub mod contacts;
+pub mod drafts;
+pub mod image_allowlist;
 pub mod labels;
 pub mod message_bodies;
 pub mod messages;
 pub mod queue;
+pub mod scheduled_emails;
+pub mod send_as_aliases;
 pub mod settings;
+pub mod signatures;
 pub mod sync_state;
+pub mod templates;
 pub mod threads;
+pub mod search;
 
 use std::path::Path;
 use sqlx::{
@@ -31,6 +41,101 @@ use sqlx::{
 
 /// Alias for the connection pool type used across the crate.
 pub type DbPool = SqlitePool;
+
+/// A typed, owned bind value used by the dynamic UPDATE builders in the
+/// per-table modules. Each variant corresponds to a SQLite column type we
+/// actually write. All variants implement `sqlx::Encode<Sqlite> + Type<Sqlite>`
+/// so a `Vec<BindValue>` can be spread into `query.bind(...)` in order.
+///
+/// Using an owned enum (rather than `SqliteArgumentValue<'_>`) sidesteps the
+/// lifetime gymnastics that the low-level argument API would require, and keeps
+/// the dynamic SET-clause builders readable.
+pub enum BindValue {
+    Null,
+    Int(i64),
+    Text(String),
+}
+
+/// Build a dynamic `UPDATE {table} SET col1=$1, col2=$2, ... WHERE {id_col}=$n`
+/// statement from `(column, BindValue)` pairs and execute it. Mirrors the TS
+/// `buildDynamicUpdate` helper in `services/db/connection.ts`. Returns Ok(())
+/// if `sets` is empty (no-op), matching the TS `if (fields.length === 0) return null`.
+pub async fn exec_dynamic_update(
+    pool: &SqlitePool,
+    table: &str,
+    id_col: &str,
+    id_val: &str,
+    sets: Vec<(&str, BindValue)>,
+) -> Result<(), String> {
+    if sets.is_empty() {
+        return Ok(());
+    }
+    let clauses: Vec<String> = sets
+        .iter()
+        .enumerate()
+        .map(|(i, (col, _))| format!("{} = ${}", col, i + 1))
+        .collect();
+    let id_idx = sets.len() + 1;
+    let sql = format!(
+        "UPDATE {} SET {} WHERE {} = ${}",
+        table,
+        clauses.join(", "),
+        id_col,
+        id_idx
+    );
+    let mut q = sqlx::query(&sql);
+    for (_, v) in &sets {
+        match v {
+            BindValue::Null => q = q.bind(None::<String>),
+            BindValue::Int(n) => q = q.bind(*n),
+            BindValue::Text(s) => q = q.bind(s.clone()),
+        }
+    }
+    q = q.bind(id_val);
+    q.execute(pool).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Same as [`exec_dynamic_update`] but for a dynamic `SELECT * FROM {table}
+/// WHERE ... LIMIT $n OFFSET $n+1` driven by filter pairs. Mirrors the
+/// `getContacts` filter-building logic.
+pub async fn exec_dynamic_select_filter(
+    pool: &SqlitePool,
+    table: &str,
+    where_binds: Vec<(&str, BindValue)>,
+    extra_where: Vec<String>,
+    order_by: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<sqlx::sqlite::SqliteRow>, String> {
+    let mut clauses: Vec<String> = where_binds
+        .iter()
+        .enumerate()
+        .map(|(i, (col, _))| format!("{} = ${}", col, i + 1))
+        .collect();
+    clauses.extend(extra_where);
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+    let limit_idx = where_binds.len() + 1;
+    let offset_idx = where_binds.len() + 2;
+    let sql = format!(
+        "SELECT * FROM {table} {where_clause} ORDER BY {order_by} LIMIT ${limit_idx} OFFSET ${offset_idx}"
+    );
+    let mut q = sqlx::query(&sql);
+    for (_, v) in &where_binds {
+        match v {
+            BindValue::Null => q = q.bind(None::<String>),
+            BindValue::Int(n) => q = q.bind(*n),
+            BindValue::Text(s) => q = q.bind(s.clone()),
+        }
+    }
+    q = q.bind(limit);
+    q = q.bind(offset);
+    q.fetch_all(pool).await.map_err(|e| e.to_string())
+}
 
 /// Open (or create) `mailclient.db` in `dir`, configure WAL + busy_timeout +
 /// foreign_keys, and run embedded migrations. Idempotent — safe on a DB

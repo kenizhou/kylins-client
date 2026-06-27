@@ -1,43 +1,53 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Task 5 clean-cut: search.ts now routes through `invoke('db_search_messages')`
+// instead of getDb(). Mock invoke and assert the wrapper forwards the right
+// command + args and passes the Rust return value through unchanged.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { searchMessages } from '../../../src/services/db/search';
-import { getDb } from '../../../src/services/db/connection';
-import type Database from '@tauri-apps/plugin-sql';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 
-vi.mock('../../../src/services/db/connection', () => ({ getDb: vi.fn() }));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = { select: vi.fn() };
-
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.select.mockReset();
-});
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 describe('searchMessages', () => {
-  it('returns [] for an empty query without hitting the DB', async () => {
+  it('returns [] for an empty query without invoking', async () => {
+    // Empty-query guard is TS-side (matches the historical early return); it
+    // must short-circuit before invoke.
     expect(await searchMessages('a1', '   ')).toEqual([]);
-    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it('builds a MATCH + snippet + rank query', async () => {
-    mockDb.select.mockResolvedValue([
+  it('forwards to db_search_messages with accountId, query, limit', async () => {
+    mockInvoke.mockResolvedValueOnce([
       {
         id: 'm1',
-        thread_id: 't1',
+        threadId: 't1',
         subject: 'S',
-        from_name: 'Bob',
-        from_address: 'b@x.com',
+        fromName: 'Bob',
+        fromAddress: 'b@x.com',
         date: 100,
         preview: 'a <mark>match</mark> here',
         rank: -1,
       },
     ]);
     const results = await searchMessages('a1', 'match');
-    const [sql, params] = mockDb.select.mock.calls[0]!;
-    expect(String(sql)).toContain('messages_fts MATCH');
-    expect(String(sql)).toContain('snippet(messages_fts');
-    expect(String(sql)).toContain('ORDER BY rank');
-    expect(params).toContain('match');
-    expect(params).toContain('a1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_search_messages', {
+      accountId: 'a1',
+      query: 'match',
+      limit: 50,
+    });
     expect(results[0]!.preview).toContain('<mark>');
+  });
+
+  it('passes a custom limit through', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await searchMessages('a1', 'match', 10);
+    expect(mockInvoke).toHaveBeenCalledWith('db_search_messages', {
+      accountId: 'a1',
+      query: 'match',
+      limit: 10,
+    });
   });
 });
