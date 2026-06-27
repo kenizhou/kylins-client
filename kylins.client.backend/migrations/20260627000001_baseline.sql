@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS threads (
   is_important INTEGER DEFAULT 0,
   has_attachments INTEGER DEFAULT 0,
   is_snoozed INTEGER DEFAULT 0,
+  from_address TEXT,
+  from_name TEXT,
   snooze_until INTEGER,
   is_pinned INTEGER DEFAULT 0,
   is_muted INTEGER DEFAULT 0,
