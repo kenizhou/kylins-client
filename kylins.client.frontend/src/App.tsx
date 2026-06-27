@@ -6,7 +6,7 @@ import { Composer } from './components/composer/Composer';
 import { Modal } from './components/ui/Modal';
 import { runMigrations } from './services/db/migrations';
 import { getSetting } from './services/settings';
-import { getAllAccounts } from './services/accounts';
+import { getAllAccounts, deleteAccountByEmail } from './services/accounts';
 import { themeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { useUIStore } from './stores/uiStore';
@@ -85,6 +85,13 @@ export default function App() {
   const accounts = useAccountStore((s) => s.accounts);
   useViewSettings();
   useKeyboardShortcuts();
+
+  // Dev-only helper to recover from corrupt/duplicate test accounts.
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__deleteAccountByEmail = deleteAccountByEmail;
+    }
+  }, []);
 
   useEffect(() => {
     isMounted.current = true;

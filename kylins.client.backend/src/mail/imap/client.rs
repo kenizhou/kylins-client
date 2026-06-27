@@ -466,6 +466,23 @@ pub async fn move_messages(
     }
 }
 
+pub async fn copy_messages(
+    session: &mut ImapSession,
+    source_folder: &str,
+    uid_set: &str,
+    dest_folder: &str,
+) -> Result<(), String> {
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(source_folder))
+        .await
+        .map_err(|_| format!("SELECT {source_folder} timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("SELECT {source_folder} failed: {e}"))?;
+
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_copy(uid_set, dest_folder))
+        .await
+        .map_err(|_| format!("UID COPY timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("UID COPY failed: {e}"))
+}
+
 pub async fn delete_messages(
     session: &mut ImapSession,
     folder: &str,
@@ -524,6 +541,30 @@ pub async fn append_message(
         )
     })?
     .map_err(|e| format!("APPEND failed: {e}"))
+}
+
+pub async fn create_folder(session: &mut ImapSession, folder: &str) -> Result<(), String> {
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.create(folder))
+        .await
+        .map_err(|_| {
+            format!(
+                "CREATE {folder} timed out after {}s — check your server settings or network connection",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("CREATE {folder} failed: {e}"))
+}
+
+pub async fn delete_folder(session: &mut ImapSession, folder: &str) -> Result<(), String> {
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.delete(folder))
+        .await
+        .map_err(|_| {
+            format!(
+                "DELETE {folder} timed out after {}s — check your server settings or network connection",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("DELETE {folder} failed: {e}"))
 }
 
 pub async fn get_folder_status(

@@ -17,7 +17,13 @@ import {
   buildEasAccount,
   newDeviceId,
 } from '../../services/auth/accountSetupFlows';
-import { createAccount, getAllAccounts, type CreateAccountInput } from '../../services/accounts';
+import {
+  createAccount,
+  getAllAccounts,
+  deleteAccountByEmail,
+  type CreateAccountInput,
+} from '../../services/accounts';
+import { syncAccountFolders, syncFolderMessages } from '../../services/mail/folderSync';
 import { useAccountStore } from '../../stores/accountStore';
 import type { Account } from '../../types';
 
@@ -55,13 +61,17 @@ async function runWithVerification(
   s: ReturnType<typeof useAccountSetupStore.getState>,
   work: () => Promise<void>,
 ): Promise<void> {
+  console.log('[runWithVerification] setting verifying');
   s.setStep('verifying');
   s.setError(null);
   try {
     await work();
+    console.log('[runWithVerification] work succeeded, setting welcome');
     s.setStep('welcome');
   } catch (e) {
-    s.setError((e as Error).message);
+    const message = e instanceof Error ? e.message : String(e);
+    console.log('[runWithVerification] work failed', e);
+    s.setError(message);
     s.setStep('error');
   }
 }
@@ -73,6 +83,13 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
   const [oauthAuthUrl, setOauthAuthUrl] = useState<string>('');
   // Stable fallback so we don't regenerate a device ID on every render.
   const [deviceIdFallback] = useState<string>(() => newDeviceId());
+  // Inline test-connection state for the manual IMAP form.
+  const [testState, setTestState] = useState<{
+    isTesting: boolean;
+    result: { success: boolean; message: string } | null;
+  }>({ isTesting: false, result: null });
+  // Account created during this flow; used on the welcome screen to sync folders.
+  const [createdAccount, setCreatedAccount] = useState<Account | null>(null);
 
   async function handleOAuth(): Promise<void> {
     if (!s.config || s.config.authType !== 'oauth2') return;
@@ -98,7 +115,8 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         tokens,
         s.advancedClientId || config.bundledClientId,
       );
-      await createAccount(input);
+      const account = await createAccount(input);
+      setCreatedAccount(account);
       s.setStep('welcome');
     } catch (e) {
       s.setError((e as Error).message);
@@ -110,7 +128,12 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
     if (!s.config || s.config.authType !== 'password') return;
     const config = s.config;
     await runWithVerification(s, async () => {
+      console.log('[handleImapPassword] building account input', {
+        useManual,
+        provider: config.id,
+      });
       const input = buildImapAccount(config, s.email, s.password);
+      input.acceptInvalidCerts = s.acceptInvalidCerts;
       if (useManual) {
         input.imapHost = s.imapHost;
         input.imapPort = Number(s.imapPort) || 993;
@@ -119,9 +142,43 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         input.smtpPort = Number(s.smtpPort) || 587;
         input.smtpSecurity = s.smtpSecurity;
       }
+      console.log('[handleImapPassword] testing connection', {
+        imapHost: input.imapHost,
+        imapPort: input.imapPort,
+        imapSecurity: input.imapSecurity,
+        smtpHost: input.smtpHost,
+        smtpPort: input.smtpPort,
+        smtpSecurity: input.smtpSecurity,
+        acceptInvalidCerts: input.acceptInvalidCerts,
+      });
       await testImapConnection(toTestAccount(input, s.email));
-      await createAccount(input);
+      console.log('[handleImapPassword] connection test passed, creating account');
+      const account = await createAccount(input);
+      setCreatedAccount(account);
+      console.log('[handleImapPassword] account created', account.id);
     });
+  }
+
+  async function handleTestConnection(): Promise<void> {
+    if (!s.config || s.config.authType !== 'password') return;
+    setTestState({ isTesting: true, result: null });
+    try {
+      const input = buildImapAccount(s.config, s.email, s.password);
+      input.acceptInvalidCerts = s.acceptInvalidCerts;
+      input.imapHost = s.imapHost;
+      input.imapPort = Number(s.imapPort) || 993;
+      input.imapSecurity = s.imapSecurity;
+      input.smtpHost = s.smtpHost;
+      input.smtpPort = Number(s.smtpPort) || 587;
+      input.smtpSecurity = s.smtpSecurity;
+      await testImapConnection(toTestAccount(input, s.email));
+      setTestState({
+        isTesting: false,
+        result: { success: true, message: 'IMAP and SMTP connections verified.' },
+      });
+    } catch (e) {
+      setTestState({ isTesting: false, result: { success: false, message: (e as Error).message } });
+    }
   }
 
   async function handleEas(): Promise<void> {
@@ -144,7 +201,8 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
     await runWithVerification(s, async () => {
       const input = buildEasAccount(s.email, s.password, server, deviceId, s.config!.id);
       await testEasConnection(toTestAccount(input, s.email));
-      await createAccount(input);
+      const account = await createAccount(input);
+      setCreatedAccount(account);
     });
   }
 
@@ -158,6 +216,18 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
   function onManualSetup(): void {
     if (!s.config) return;
     s.setStep(s.config.id === 'exchange' ? 'eas-manual' : 'imap-manual');
+  }
+
+  async function handleReplace(): Promise<void> {
+    try {
+      console.log('[AccountSetupFlow] replacing existing account', s.email);
+      await deleteAccountByEmail(s.email);
+      console.log('[AccountSetupFlow] existing account deleted');
+      s.setStep('gateway');
+    } catch (e) {
+      console.error('[AccountSetupFlow] replace failed', e);
+      s.setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   return (
@@ -212,6 +282,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
               smtpHost: s.smtpHost,
               smtpPort: s.smtpPort,
               smtpSecurity: s.smtpSecurity,
+              acceptInvalidCerts: s.acceptInvalidCerts,
             }}
             onChange={(patch) => {
               if (patch.imapHost !== undefined) s.setImap({ imapHost: patch.imapHost });
@@ -220,10 +291,15 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
               if (patch.smtpHost !== undefined) s.setSmtp({ smtpHost: patch.smtpHost });
               if (patch.smtpPort !== undefined) s.setSmtp({ smtpPort: patch.smtpPort });
               if (patch.smtpSecurity !== undefined) s.setSmtp({ smtpSecurity: patch.smtpSecurity });
+              if (patch.acceptInvalidCerts !== undefined)
+                s.setAcceptInvalidCerts(patch.acceptInvalidCerts);
             }}
             onSubmit={() => void handleImapPassword(true)}
+            onTestConnection={() => void handleTestConnection()}
             onBack={s.back}
             canSubmit={!!s.imapHost && !!s.smtpHost}
+            isTesting={testState.isTesting}
+            testResult={testState.result}
           />
         </SetupStepTransition>
       )}
@@ -250,6 +326,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
             error={s.step === 'error' ? s.error : null}
             onRetry={() => s.setStep('gateway')}
             onBack={s.back}
+            onReplace={() => void handleReplace()}
           />
         </SetupStepTransition>
       )}
@@ -258,6 +335,21 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         <SetupStepTransition>
           <WelcomeScreen
             onDone={async () => {
+              if (createdAccount) {
+                try {
+                  console.log('[AccountSetupFlow] syncing folders for', createdAccount.id);
+                  const folders = await syncAccountFolders(createdAccount);
+                  console.log('[AccountSetupFlow] folders synced');
+                  const inbox = folders.find((f) => f.role === 'inbox');
+                  if (inbox) {
+                    console.log('[AccountSetupFlow] syncing inbox messages', inbox.remoteId);
+                    const count = await syncFolderMessages(createdAccount, inbox);
+                    console.log('[AccountSetupFlow] inbox messages synced', count);
+                  }
+                } catch (err) {
+                  console.error('[AccountSetupFlow] folder/message sync failed', err);
+                }
+              }
               const refreshed = await getAllAccounts();
               useAccountStore.getState().setAccounts(refreshed);
               s.reset();

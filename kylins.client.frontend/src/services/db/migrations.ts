@@ -1032,6 +1032,17 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE local_drafts ADD COLUMN is_signed INTEGER DEFAULT 0;
     `,
   },
+  {
+    version: 36,
+    description:
+      'kylins: Add missing accounts columns (account_label, setup_provider_id, is_default, sort_order)',
+    sql: `
+      ALTER TABLE accounts ADD COLUMN account_label TEXT;
+      ALTER TABLE accounts ADD COLUMN setup_provider_id TEXT;
+      ALTER TABLE accounts ADD COLUMN is_default INTEGER DEFAULT 0;
+      ALTER TABLE accounts ADD COLUMN sort_order INTEGER DEFAULT 0;
+    `,
+  },
 ];
 
 /**

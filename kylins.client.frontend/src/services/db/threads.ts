@@ -5,6 +5,7 @@
 // messageBodies.ts + getMessagesForThread (metadata only).
 
 import { getDb, withTransaction } from './connection';
+import type { ImapMessage } from '../../types';
 import type { MailMessage } from '../../features/view/viewStore';
 
 export interface Thread {
@@ -202,6 +203,127 @@ export function parseAddresses(
       }
       return { name: s, address: s };
     });
+}
+
+/** Persist a batch of IMAP/EAS messages into threads, messages, thread_labels,
+ *  and message_bodies. Minimal grouping: one thread per message (stable id from
+ *  Message-ID header). Re-syncs upsert in place.
+ *
+ *  TODO: group related messages into real conversation threads by References/In-Reply-To. */
+export async function upsertImapMessages(
+  accountId: string,
+  labelId: string,
+  messages: ImapMessage[],
+): Promise<void> {
+  if (messages.length === 0) return;
+  await withTransaction(async (tx) => {
+    for (const m of messages) {
+      const messageId = m.message_id ?? crypto.randomUUID();
+      const threadId = messageId;
+      const hasAttachments = m.attachments && m.attachments.length > 0 ? 1 : 0;
+      const now = Math.floor(Date.now() / 1000);
+
+      await tx.execute(
+        `INSERT INTO threads (
+          id, account_id, subject, snippet, last_message_at, message_count,
+          is_read, is_starred, is_important, has_attachments, is_snoozed,
+          from_name, from_address, classification_id, is_encrypted, is_signed
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        ON CONFLICT(account_id, id) DO UPDATE SET
+          subject = excluded.subject,
+          snippet = excluded.snippet,
+          last_message_at = excluded.last_message_at,
+          message_count = excluded.message_count,
+          is_read = excluded.is_read,
+          is_starred = excluded.is_starred,
+          is_important = excluded.is_important,
+          has_attachments = excluded.has_attachments,
+          from_name = excluded.from_name,
+          from_address = excluded.from_address`,
+        [
+          threadId,
+          accountId,
+          m.subject ?? null,
+          m.snippet ?? null,
+          m.date,
+          1,
+          m.is_read ? 1 : 0,
+          m.is_starred ? 1 : 0,
+          0,
+          hasAttachments,
+          0,
+          m.from_name ?? null,
+          m.from_address ?? null,
+          null,
+          0,
+          0,
+        ],
+      );
+
+      await tx.execute(
+        `INSERT INTO messages (
+          id, account_id, thread_id, from_address, from_name, to_addresses, cc_addresses,
+          bcc_addresses, reply_to, subject, snippet, date, is_read, is_starred,
+          body_text, body_cached, raw_size, message_id_header, in_reply_to_header,
+          references_header, list_unsubscribe, list_unsubscribe_post, auth_results
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+        ON CONFLICT(account_id, id) DO UPDATE SET
+          from_address = excluded.from_address,
+          from_name = excluded.from_name,
+          to_addresses = excluded.to_addresses,
+          cc_addresses = excluded.cc_addresses,
+          bcc_addresses = excluded.bcc_addresses,
+          reply_to = excluded.reply_to,
+          subject = excluded.subject,
+          snippet = excluded.snippet,
+          date = excluded.date,
+          is_read = excluded.is_read,
+          is_starred = excluded.is_starred,
+          body_text = excluded.body_text,
+          raw_size = excluded.raw_size`,
+        [
+          messageId,
+          accountId,
+          threadId,
+          m.from_address ?? null,
+          m.from_name ?? null,
+          m.to_addresses ?? null,
+          m.cc_addresses ?? null,
+          m.bcc_addresses ?? null,
+          m.reply_to ?? null,
+          m.subject ?? null,
+          m.snippet ?? null,
+          m.date,
+          m.is_read ? 1 : 0,
+          m.is_starred ? 1 : 0,
+          m.body_text ?? null,
+          m.body_html ? 1 : 0,
+          m.raw_size,
+          m.message_id ?? null,
+          m.in_reply_to ?? null,
+          m.references ?? null,
+          m.list_unsubscribe ?? null,
+          m.list_unsubscribe_post ?? null,
+          m.auth_results ?? null,
+        ],
+      );
+
+      await tx.execute(
+        `INSERT INTO thread_labels (thread_id, account_id, label_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT(account_id, thread_id, label_id) DO NOTHING`,
+        [threadId, accountId, labelId],
+      );
+
+      if (m.body_html) {
+        await tx.execute(
+          `INSERT OR REPLACE INTO message_bodies (account_id, message_id, body_html, fetched_at)
+           VALUES ($1, $2, $3, $4)`,
+          [accountId, messageId, m.body_html, now],
+        );
+      }
+    }
+  });
 }
 
 /** Map a DB message row (+ lazily-fetched HTML body) to the app's MailMessage. */

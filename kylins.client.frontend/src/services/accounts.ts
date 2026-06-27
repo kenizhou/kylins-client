@@ -97,73 +97,100 @@ export interface CreateAccountInput {
 }
 
 export async function createAccount(input: CreateAccountInput): Promise<Account> {
+  console.log('[createAccount] start', input.email, input.provider);
   const db = await getDb();
+  console.log('[createAccount] db obtained');
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
 
   // First account automatically becomes the default so "send from default account"
   // always resolves to something.
+  console.log('[createAccount] counting existing accounts');
   const isDefault = input.isDefault ?? (await getAccountCount()) === 0;
+  console.log('[createAccount] isDefault', isDefault);
+
+  // Detect duplicates early so the UI shows a friendly message instead of a raw
+  // SQLite UNIQUE constraint error.
+  const existing = await getAccountByEmail(input.email);
+  if (existing) {
+    throw new Error(`An account for ${input.email} already exists.`);
+  }
 
   // Encrypt the 4 secret fields concurrently; each is an independent IPC round-trip.
+  console.log('[createAccount] encrypting secrets');
   const [accessToken, refreshToken, imapPassword, oauthClientSecret] = await Promise.all([
     input.accessToken ? encryptSecret(input.accessToken) : Promise.resolve(null),
     input.refreshToken ? encryptSecret(input.refreshToken) : Promise.resolve(null),
     input.imapPassword ? encryptSecret(input.imapPassword) : Promise.resolve(null),
     input.oauthClientSecret ? encryptSecret(input.oauthClientSecret) : Promise.resolve(null),
   ]);
+  console.log('[createAccount] secrets encrypted');
 
-  await db.execute(
-    `INSERT INTO accounts (
-      id, email, display_name, account_label, provider, setup_provider_id,
-      access_token, refresh_token, token_expires_at,
-      is_active, is_default, sort_order, created_at, updated_at,
-      imap_host, imap_port, imap_security,
-      smtp_host, smtp_port, smtp_security,
-      auth_method, imap_password, imap_username,
-      oauth_provider, oauth_client_id, oauth_client_secret,
-      accept_invalid_certs,
-      eas_url, eas_protocol_version, eas_device_id
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`,
-    [
-      id,
-      input.email,
-      input.displayName ?? null,
-      input.accountLabel ?? null,
-      input.provider,
-      input.setupProviderId ?? null,
-      accessToken,
-      refreshToken,
-      input.tokenExpiresAt ?? null,
-      (input.isActive ?? true) ? 1 : 0,
-      isDefault ? 1 : 0,
-      input.sortOrder ?? 0,
-      now,
-      now,
-      input.imapHost ?? null,
-      input.imapPort ?? null,
-      input.imapSecurity ?? null,
-      input.smtpHost ?? null,
-      input.smtpPort ?? null,
-      input.smtpSecurity ?? null,
-      input.authMethod ?? null,
-      imapPassword,
-      input.imapUsername ?? null,
-      input.oauthProvider ?? null,
-      input.oauthClientId ?? null,
-      oauthClientSecret,
-      input.acceptInvalidCerts ? 1 : 0,
-      input.easUrl ?? null,
-      input.easProtocolVersion ?? null,
-      input.easDeviceId ?? null,
-    ],
-  );
+  console.log('[createAccount] inserting account row');
+  try {
+    await db.execute(
+      `INSERT INTO accounts (
+        id, email, display_name, account_label, provider, setup_provider_id,
+        access_token, refresh_token, token_expires_at,
+        is_active, is_default, sort_order, created_at, updated_at,
+        imap_host, imap_port, imap_security,
+        smtp_host, smtp_port, smtp_security,
+        auth_method, imap_password, imap_username,
+        oauth_provider, oauth_client_id, oauth_client_secret,
+        accept_invalid_certs,
+        eas_url, eas_protocol_version, eas_device_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`,
+      [
+        id,
+        input.email,
+        input.displayName ?? null,
+        input.accountLabel ?? null,
+        input.provider,
+        input.setupProviderId ?? null,
+        accessToken,
+        refreshToken,
+        input.tokenExpiresAt ?? null,
+        (input.isActive ?? true) ? 1 : 0,
+        isDefault ? 1 : 0,
+        input.sortOrder ?? 0,
+        now,
+        now,
+        input.imapHost ?? null,
+        input.imapPort ?? null,
+        input.imapSecurity ?? null,
+        input.smtpHost ?? null,
+        input.smtpPort ?? null,
+        input.smtpSecurity ?? null,
+        input.authMethod ?? null,
+        imapPassword,
+        input.imapUsername ?? null,
+        input.oauthProvider ?? null,
+        input.oauthClientId ?? null,
+        oauthClientSecret,
+        input.acceptInvalidCerts ? 1 : 0,
+        input.easUrl ?? null,
+        input.easProtocolVersion ?? null,
+        input.easDeviceId ?? null,
+      ],
+    );
+  } catch (err) {
+    console.error('[createAccount] insert failed', err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes('UNIQUE constraint failed') && errMsg.includes('accounts.email')) {
+      throw new Error(`An account for ${input.email} already exists.`, { cause: err });
+    }
+    throw err;
+  }
+  console.log('[createAccount] account row inserted');
 
+  console.log('[createAccount] reading back created account');
   const created = await getAccountById(id);
   if (!created) throw new Error('Failed to read back created account');
+  console.log('[createAccount] account read back', created.id);
 
   // Seed a default signature so the composer always has something to offer.
   try {
+    console.log('[createAccount] seeding default signature');
     await insertSignature({
       accountId: id,
       name: 'Default',
@@ -171,10 +198,12 @@ export async function createAccount(input: CreateAccountInput): Promise<Account>
       isDefault: true,
       context: 'all',
     });
+    console.log('[createAccount] default signature seeded');
   } catch (e) {
     console.warn('Failed to seed default signature:', e);
   }
 
+  console.log('[createAccount] done');
   return created;
 }
 
@@ -208,6 +237,31 @@ export async function getAccountById(id: string): Promise<Account | null> {
   const db = await getDb();
   const rows = await db.select<DbAccountRow[]>('SELECT * FROM accounts WHERE id = $1', [id]);
   return rows[0] ? await rowToAccount(rows[0]) : null;
+}
+
+export async function getAccountByEmail(email: string): Promise<Account | null> {
+  const db = await getDb();
+  const rows = await db.select<DbAccountRow[]>('SELECT * FROM accounts WHERE email = $1 LIMIT 1', [
+    email,
+  ]);
+  if (!rows[0]) return null;
+  try {
+    return await rowToAccount(rows[0]);
+  } catch (e) {
+    // The row exists but its secrets are undecryptable (e.g. master key changed).
+    // Still report it as "found" so callers treat it as a duplicate.
+    console.warn(`[accounts] account ${email} exists but is corrupt; treating as duplicate`, e);
+    return {
+      id: rows[0].id,
+      email: rows[0].email,
+      provider: rows[0].provider as MailProvider,
+    } as Account;
+  }
+}
+
+export async function deleteAccountByEmail(email: string): Promise<void> {
+  const db = await getDb();
+  await db.execute('DELETE FROM accounts WHERE email = $1', [email]);
 }
 
 export type AccountUpdates = Partial<Omit<Account, 'id' | 'createdAt'>>;
@@ -297,6 +351,9 @@ export async function setDefaultAccount(id: string): Promise<void> {
 
 export async function getDefaultAccount(): Promise<Account | null> {
   const db = await getDb();
-  const rows = await db.select<DbAccountRow[]>('SELECT * FROM accounts WHERE is_default = 1 LIMIT 1', []);
+  const rows = await db.select<DbAccountRow[]>(
+    'SELECT * FROM accounts WHERE is_default = 1 LIMIT 1',
+    [],
+  );
   return rows[0] ? await rowToAccount(rows[0]) : null;
 }

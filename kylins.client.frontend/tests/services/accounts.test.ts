@@ -8,7 +8,6 @@ import {
   getAccountById,
   updateAccount,
   deleteAccount,
-  setDefaultAccount,
   getDefaultAccount,
   type CreateAccountInput,
 } from '../../src/services/accounts';
@@ -43,16 +42,19 @@ beforeEach(() => {
 describe('accounts', () => {
   it('encrypts secret fields on create', async () => {
     mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'a',
-        email: 'e@x.com',
-        provider: 'imap',
-        is_active: 1,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
+    mockDb.select
+      .mockResolvedValueOnce([{ count: 0 }]) // count
+      .mockResolvedValueOnce([]) // duplicate check
+      .mockResolvedValueOnce([
+        {
+          id: 'a',
+          email: 'e@x.com',
+          provider: 'imap',
+          is_active: 1,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
     await createAccount({
       email: 'e@x.com',
       provider: 'imap',
@@ -96,16 +98,19 @@ describe('accounts', () => {
 
   it('creates an account', async () => {
     mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'acc-1',
-        email: 'test@example.com',
-        provider: 'eas',
-        is_active: 1,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
+    mockDb.select
+      .mockResolvedValueOnce([{ count: 0 }]) // count
+      .mockResolvedValueOnce([]) // duplicate check
+      .mockResolvedValueOnce([
+        {
+          id: 'acc-1',
+          email: 'test@example.com',
+          provider: 'eas',
+          is_active: 1,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
     const account = await createAccount({
       email: 'test@example.com',
       provider: 'eas',
@@ -328,6 +333,7 @@ describe('accounts', () => {
     mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
     mockDb.select
       .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([]) // duplicate check
       .mockResolvedValueOnce([
         {
           id: 'acc-1',
@@ -352,18 +358,20 @@ describe('accounts', () => {
 
   it('does not override explicit isDefault on create', async () => {
     mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'acc-2',
-        email: 'second@example.com',
-        provider: 'imap',
-        is_active: 1,
-        is_default: 1,
-        sort_order: 3,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
+    mockDb.select
+      .mockResolvedValueOnce([]) // duplicate check
+      .mockResolvedValueOnce([
+        {
+          id: 'acc-2',
+          email: 'second@example.com',
+          provider: 'imap',
+          is_active: 1,
+          is_default: 1,
+          sort_order: 3,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
     const account = await createAccount({
       email: 'second@example.com',
       provider: 'imap',
@@ -374,18 +382,44 @@ describe('accounts', () => {
     expect(account.sortOrder).toBe(3);
   });
 
-  it('sets default account and clears previous default', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    await setDefaultAccount('acc-2');
-    expect(mockDb.execute).toHaveBeenCalledTimes(2); // clear + set
-    const calls = mockDb.execute.mock.calls;
-    const clearCall = calls.find(([sql]) => String(sql).includes('UPDATE accounts SET is_default = 0'));
-    const setCall = calls.find(
-      ([sql, params]) =>
-        String(sql).includes('is_default = 1') && (params as unknown[]).includes('acc-2'),
+  it('rejects creating a duplicate account by email', async () => {
+    mockDb.select
+      .mockResolvedValueOnce([{ count: 0 }]) // count
+      .mockResolvedValueOnce([
+        {
+          id: 'existing',
+          email: 'dup@example.com',
+          provider: 'imap',
+          is_active: 1,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
+    await expect(createAccount({ email: 'dup@example.com', provider: 'imap' })).rejects.toThrow(
+      'An account for dup@example.com already exists.',
     );
-    expect(clearCall).toBeDefined();
-    expect(setCall).toBeDefined();
+    expect(mockDb.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects creating a duplicate even when existing row is corrupt', async () => {
+    vi.mocked(decryptSecret).mockRejectedValueOnce(new Error('aead::Error'));
+    mockDb.select
+      .mockResolvedValueOnce([{ count: 0 }]) // count
+      .mockResolvedValueOnce([
+        {
+          id: 'existing',
+          email: 'corrupt@example.com',
+          provider: 'imap',
+          access_token: 'bad',
+          is_active: 1,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
+    await expect(createAccount({ email: 'corrupt@example.com', provider: 'imap' })).rejects.toThrow(
+      'An account for corrupt@example.com already exists.',
+    );
+    expect(mockDb.execute).not.toHaveBeenCalled();
   });
 
   it('gets the default account', async () => {
@@ -411,6 +445,7 @@ describe('accounts', () => {
     mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
     mockDb.select
       .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([]) // duplicate check
       .mockResolvedValueOnce([
         {
           id: 'acc-1',

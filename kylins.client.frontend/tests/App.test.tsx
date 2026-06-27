@@ -19,6 +19,7 @@ vi.mock('../src/services/db/migrations', () => ({ runMigrations: vi.fn(() => Pro
 vi.mock('../src/services/settings', () => ({ getSetting: vi.fn(() => Promise.resolve(null)) }));
 vi.mock('../src/services/accounts', () => ({
   getAllAccounts: vi.fn(() => Promise.resolve([])),
+  deleteAccountByEmail: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../src/services/theme/themeManager', () => ({
   themeManager: {

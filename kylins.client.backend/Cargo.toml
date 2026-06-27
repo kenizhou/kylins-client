@@ -69,6 +69,12 @@ uuid = { version = "1", features = ["v4"] }
 # WBXML codec + EAS command fixture tests
 tokio-test = "0.4"
 env_logger = "0.11"
+# IMAP/SMTP integration tests against live mail servers
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+chrono = "0.4"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+mail-parser = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_UI_Shell"] }

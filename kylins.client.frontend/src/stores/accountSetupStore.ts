@@ -71,6 +71,7 @@ export interface AccountSetupState {
   ) => void;
   setEasServer: (v: string) => void;
   setDeviceId: (v: string) => void;
+  setAcceptInvalidCerts: (v: boolean) => void;
   setError: (e: string | null) => void;
   back: () => void;
   canSubmit: () => boolean;
@@ -151,6 +152,7 @@ export const useAccountSetupStore = create<AccountSetupState>((set, get) => ({
   setSmtp: (patch) => set(patch),
   setEasServer: (easServer) => set({ easServer }),
   setDeviceId: (deviceId) => set({ deviceId }),
+  setAcceptInvalidCerts: (acceptInvalidCerts) => set({ acceptInvalidCerts }),
   setError: (error) => set({ error }),
   back: () => {
     const s = get();
