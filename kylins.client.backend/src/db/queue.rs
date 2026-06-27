@@ -89,6 +89,133 @@ pub async fn dequeue_pending(
     Ok(rows.iter().map(row_to_op).collect())
 }
 
+/// Like [`dequeue_pending`] but scoped to a single account. Used by the per-account
+/// replay worker so a slow account's queue can't starve others.
+pub async fn dequeue_pending_for_account(
+    pool: &SqlitePool,
+    account_id: &str,
+    limit: i64,
+) -> Result<Vec<PendingOperation>, String> {
+    let rows = sqlx::query(
+        "SELECT * FROM pending_operations
+         WHERE account_id = ? AND status = 'pending'
+           AND (next_retry_at IS NULL OR next_retry_at <= unixepoch())
+         ORDER BY created_at ASC LIMIT ?",
+    )
+    .bind(account_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(row_to_op).collect())
+}
+
+/// Count of `status='pending'` rows for an account — used by the UI to show
+/// per-account pending state and by the worker to know when to back off.
+pub async fn pending_count_for_account(pool: &SqlitePool, account_id: &str) -> Result<i64, String> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM pending_operations WHERE account_id = ? AND status = 'pending'",
+    )
+    .bind(account_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+/// Resource write-lock helper: returns true if any pending op already targets
+/// `(account_id, resource_id)`. The caller uses this to decide whether to
+/// enqueue a new op or wait (avoiding interleaved mutations of the same row).
+pub async fn has_pending_for_resource(
+    pool: &SqlitePool,
+    account_id: &str,
+    resource_id: &str,
+) -> bool {
+    let row: Result<(i64,), _> = sqlx::query_as(
+        "SELECT COUNT(*) FROM pending_operations
+         WHERE account_id = ? AND resource_id = ? AND status = 'pending'",
+    )
+    .bind(account_id)
+    .bind(resource_id)
+    .fetch_one(pool)
+    .await;
+    matches!(row, Ok((n,)) if n > 0)
+}
+
+/// Compact an account's queue by dropping cancel-out toggle pairs:
+/// a `markRead`/`setFlag` op with `params.read = 1` followed by one with
+/// `params.read = 0` on the same `resource_id` (and same `operation_type`) are
+/// mutually annihilated.
+///
+/// The pair is detected via a self-join on the table ordered by `id` (UUIDs are
+/// monotonically ordered by creation in practice, but `a.id < b.id` keeps the
+/// match deterministic across re-runs).
+///
+/// **Implementation note (deviation from a naive two-DELETE form):** We first
+/// materialize the paired ids via a SELECT, then issue two DELETEs — one per
+/// side of the pair — bound against that snapshot. A sequential pair of
+/// `DELETE ... WHERE id IN (subquery)` statements is *not* sufficient here:
+/// once the first DELETE removes the `a` (read=1) row, the second DELETE's
+/// self-join has no `a` to match against `b`, so `b` would survive. Hoisting
+/// the id collection makes both DELETEs order-independent while keeping them as
+/// two separate statements (per the brief: "two DELETEs, do not collapse").
+///
+/// `params` JSON must carry a top-level `read` field (0/1) for the toggle to
+/// match. Task 3's `MutationOp::encode_params` produces this for both
+/// `markRead` and `setFlag`; legacy frontend rows using `{}` params are simply
+/// left untouched (json_extract returns NULL, not 0).
+pub async fn compact_queue(pool: &SqlitePool, account_id: &str) -> Result<(), String> {
+    // Snapshot the cancel-out pairs up front. `a` is the read=1 side, `b` the
+    // read=0 side; we collect both ids.
+    let pairs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT a.id, b.id FROM pending_operations a
+         JOIN pending_operations b
+           ON a.account_id = b.account_id AND a.resource_id = b.resource_id
+          AND a.operation_type = b.operation_type AND a.id < b.id
+         WHERE a.account_id = ? AND a.status = 'pending' AND b.status = 'pending'
+           AND a.operation_type IN ('markRead','setFlag')
+           AND json_extract(a.params, '$.read') = 1
+           AND json_extract(b.params, '$.read') = 0",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if pairs.is_empty() {
+        return Ok(());
+    }
+
+    // Delete the read=1 sides, then the read=0 sides. Two separate DELETE
+    // statements (do not collapse); each is bound against the pre-snapshot ids
+    // so the second still fires even though the first already removed its rows.
+    let a_ids: Vec<String> = pairs.iter().map(|(a, _)| a.clone()).collect();
+    let b_ids: Vec<String> = pairs.iter().map(|(_, b)| b.clone()).collect();
+    delete_ids(pool, &a_ids).await?;
+    delete_ids(pool, &b_ids).await?;
+    Ok(())
+}
+
+/// `DELETE FROM pending_operations WHERE id IN (?, ?, ...)`. Used by
+/// [`compact_queue`] to delete each side of a cancel-out pair. Empty input is
+/// a no-op.
+async fn delete_ids(pool: &SqlitePool, ids: &[String]) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("DELETE FROM pending_operations WHERE id IN ({placeholders})");
+    let mut q = sqlx::query(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    q.execute(pool).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Remove a completed operation.
 pub async fn mark_completed(pool: &SqlitePool, id: &str) -> Result<(), String> {
     sqlx::query("DELETE FROM pending_operations WHERE id = ?")
@@ -328,5 +455,158 @@ mod tests {
             (230..=250).contains(&delta),
             "expected ~240s backoff (pre-increment shift=2), got {delta}"
         );
+    }
+
+    // ---- Phase 1: per-account queue reads + resource write-lock + compact ----
+
+    #[tokio::test]
+    async fn dequeue_pending_for_account_filters_by_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a1").await;
+        seed_account(&pool, "a2").await;
+        for (id, acc) in [("o1", "a1"), ("o2", "a1"), ("o3", "a2")] {
+            sqlx::query(
+                "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+                 VALUES (?,?,'x','r','{}','pending', 1)",
+            )
+            .bind(id)
+            .bind(acc)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let ops = dequeue_pending_for_account(&pool, "a1", 50).await.unwrap();
+        let ids: Vec<&str> = ops.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, vec!["o1", "o2"]);
+    }
+
+    #[tokio::test]
+    async fn pending_count_for_account_counts_only_pending_rows_for_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a1").await;
+        seed_account(&pool, "a2").await;
+        for (id, acc, status) in [
+            ("p1", "a1", "pending"),
+            ("p2", "a1", "pending"),
+            ("p3", "a1", "failed"),
+            ("p4", "a2", "pending"),
+        ] {
+            sqlx::query(
+                "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+                 VALUES (?,?,'x','r','{}',?, 1)",
+            )
+            .bind(id)
+            .bind(acc)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(pending_count_for_account(&pool, "a1").await.unwrap(), 2);
+        assert_eq!(pending_count_for_account(&pool, "a2").await.unwrap(), 1);
+        assert_eq!(pending_count_for_account(&pool, "zzz").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn has_pending_for_resource_is_exact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a1").await;
+        assert!(!has_pending_for_resource(&pool, "a1", "msg-1").await);
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('p','a1','markRead','msg-1','{}','pending',1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(has_pending_for_resource(&pool, "a1", "msg-1").await);
+        assert!(!has_pending_for_resource(&pool, "a1", "msg-2").await);
+        // 'failed' rows must NOT count as pending for a resource.
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('f','a1','markRead','msg-9','{}','failed',1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            !has_pending_for_resource(&pool, "a1", "msg-9").await,
+            "failed rows are not pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_queue_cancels_markread_toggle_pair() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a1").await;
+        // add=true first (id 'op-a' sorts before 'op-b'), add=false second.
+        // The brief's compact join keys on `a.id < b.id` where `a` is the
+        // read=1 row and `b` is the read=0 row, so the read=1 row must sort
+        // first — matching how `enqueue` assigns monotonic-ish UUIDs in
+        // practice (earlier op = smaller id).
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('op-a','a1','markRead','msg-1','{\"read\":1}','pending',10)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('op-b','a1','markRead','msg-1','{\"read\":0}','pending',20)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        compact_queue(&pool, "a1").await.unwrap();
+
+        let (cnt,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cnt, 0, "cancel-out pair should be fully dropped");
+    }
+
+    #[tokio::test]
+    async fn compact_queue_is_noop_when_no_cancelable_pairs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a1").await;
+        // Two unrelated markRead ops on different resources — no cancel pair.
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('r1','a1','markRead','msg-1','{\"read\":1}','pending',10)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('r2','a1','markRead','msg-2','{\"read\":1}','pending',20)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // A non-toggle op type must not be touched.
+        sqlx::query(
+            "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('r3','a1','archive','msg-1','{\"read\":1}','pending',30)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        compact_queue(&pool, "a1").await.unwrap();
+
+        let (cnt,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cnt, 3, "nothing should be removed");
     }
 }
