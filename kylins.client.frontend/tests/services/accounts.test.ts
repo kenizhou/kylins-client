@@ -1,61 +1,53 @@
-// Ported from velo (https://github.com/avihaymenahem/velo)
+// Ported from velo (https://github.com/aviyahmenahem/velo)
 // Licensed under Apache-2.0. See ATTRIBUTIONS.md.
+//
+// Task 5 cutover: accounts.ts now routes through `invoke('db_*')`. Rust owns
+// encryption of the four secret fields (verified by the Rust db::accounts
+// tests with a real sqlite DB), so these frontend tests no longer assert on
+// encrypt/decrypt — they assert the wrapper forwards the right command + args
+// and passes the Rust Account return value through unchanged.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   createAccount,
   getAllAccounts,
   getAccountById,
+  getAccountByEmail,
   updateAccount,
   deleteAccount,
+  deleteAccountByEmail,
+  getAccountCount,
+  setDefaultAccount,
   getDefaultAccount,
   type CreateAccountInput,
+  type AccountUpdates,
 } from '../../src/services/accounts';
-import { getDb } from '../../src/services/db/connection';
-import { encryptSecret, decryptSecret } from '../../src/services/crypto';
-import type Database from '@tauri-apps/plugin-sql';
+import { wireDefaultDbResults } from '../../src/test/mockInvoke';
+import type { Account } from '../../src/types';
 
-vi.mock('../../src/services/db/connection', () => ({
-  getDb: vi.fn(),
-  withTransaction: vi.fn(async (fn: (db: unknown) => Promise<void>) => {
-    const db = vi.mocked(getDb)();
-    return db.then((d) => fn(d));
-  }),
-}));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-vi.mock('../../src/services/crypto', () => ({
-  encryptSecret: vi.fn((plain: string) => Promise.resolve(`enc:${plain}`)),
-  decryptSecret: vi.fn((cipher: string) => Promise.resolve(cipher.replace(/^enc:/, ''))),
-}));
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
-const mockDb = {
-  select: vi.fn(),
-  execute: vi.fn(),
-};
-
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.select.mockReset();
-  mockDb.execute.mockReset();
-});
+function makeAccount(over: Partial<Account> = {}): Account {
+  return {
+    id: 'acc-1',
+    email: 'e@x.com',
+    provider: 'imap',
+    isActive: true,
+    isDefault: false,
+    sortOrder: 0,
+    createdAt: 1,
+    updatedAt: 1,
+    acceptInvalidCerts: false,
+    ...over,
+  };
+}
 
 describe('accounts', () => {
-  it('encrypts secret fields on create', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select
-      .mockResolvedValueOnce([{ count: 0 }]) // count
-      .mockResolvedValueOnce([]) // duplicate check
-      .mockResolvedValueOnce([
-        {
-          id: 'a',
-          email: 'e@x.com',
-          provider: 'imap',
-          is_active: 1,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ]);
-    await createAccount({
+  it('createAccount invokes db_create_account with the input payload (no FE-side encrypt)', async () => {
+    const input: CreateAccountInput = {
       email: 'e@x.com',
       provider: 'imap',
       authMethod: 'password',
@@ -63,426 +55,151 @@ describe('accounts', () => {
       accessToken: 'tok',
       refreshToken: 'ref',
       oauthClientSecret: 'cs',
-    } satisfies CreateAccountInput);
-    const params = mockDb.execute.mock.calls[0][1] as unknown[];
-    // encrypted values written, never plaintext
-    expect(params).toContain('enc:secret');
-    expect(params).toContain('enc:tok');
-    expect(params).toContain('enc:ref');
-    expect(params).toContain('enc:cs');
-    expect(params).not.toContain('secret');
-    expect(encryptSecret).toHaveBeenCalledWith('secret');
+    };
+    mockInvoke.mockResolvedValueOnce(makeAccount({ ...input, id: 'acc-1' }));
+    const account = await createAccount(input);
+    expect(mockInvoke).toHaveBeenCalledWith('db_create_account', { input });
+    // The wrapper must NOT have encrypted anything — secrets are passed as
+    // plaintext for Rust to encrypt.
+    const forwarded = (mockInvoke.mock.calls[0]![1] as { input: CreateAccountInput }).input;
+    expect(forwarded.imapPassword).toBe('secret');
+    expect(forwarded.accessToken).toBe('tok');
+    expect(account.id).toBe('acc-1');
   });
 
-  it('decrypts secret fields on read', async () => {
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'a',
-        email: 'e@x.com',
-        provider: 'imap',
-        auth_method: 'password',
-        imap_password: 'enc:secret',
-        access_token: 'enc:tok',
-        refresh_token: 'enc:ref',
-        is_active: 1,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
-    const account = await getAccountById('a');
-    expect(account!.imapPassword).toBe('secret');
-    expect(account!.accessToken).toBe('tok');
-    expect(account!.refreshToken).toBe('ref');
-    expect(decryptSecret).toHaveBeenCalledWith('enc:secret');
-  });
-
-  it('creates an account', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select
-      .mockResolvedValueOnce([{ count: 0 }]) // count
-      .mockResolvedValueOnce([]) // duplicate check
-      .mockResolvedValueOnce([
-        {
-          id: 'acc-1',
-          email: 'test@example.com',
-          provider: 'eas',
-          is_active: 1,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ]);
-    const account = await createAccount({
-      email: 'test@example.com',
-      provider: 'eas',
-    });
-    expect(account.email).toBe('test@example.com');
-    expect(account.provider).toBe('eas');
-    expect(account.isActive).toBe(true);
-  });
-
-  it('lists all accounts', async () => {
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'acc-1',
-        email: 'test@example.com',
-        provider: 'eas',
-        is_active: 1,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
+  it('getAllAccounts invokes db_get_all_accounts and returns the list', async () => {
+    const rows = [makeAccount({ id: 'acc-1', email: 'a@x.com' })];
+    mockInvoke.mockResolvedValueOnce(rows);
     const accounts = await getAllAccounts();
-    expect(accounts).toHaveLength(1);
-    expect(accounts[0].email).toBe('test@example.com');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_all_accounts');
+    expect(accounts).toEqual(rows);
   });
 
-  it('getAllAccounts skips a row whose secret fails to decrypt', async () => {
-    // One corrupt row (undecryptable access_token) must not sink the rest.
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(decryptSecret).mockImplementation((cipher: string) => {
-      if (cipher === 'CORRUPT') return Promise.reject(new Error('decrypt failed'));
-      return Promise.resolve(cipher.replace(/^enc:/, ''));
-    });
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'good',
-        email: 'good@example.com',
-        provider: 'imap',
-        access_token: 'enc:tok',
-        is_active: 1,
-        created_at: 1,
-        updated_at: 1,
-      },
-      {
-        id: 'bad',
-        email: 'bad@example.com',
-        provider: 'imap',
-        access_token: 'CORRUPT',
-        is_active: 1,
-        created_at: 2,
-        updated_at: 2,
-      },
-    ]);
+  it('getAllAccounts returns an empty list when Rust returns []', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
     const accounts = await getAllAccounts();
-    expect(accounts).toHaveLength(1);
-    expect(accounts[0]!.id).toBe('good');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[accounts] skipping corrupt row'),
-      expect.any(Error),
-    );
-    warnSpy.mockRestore();
+    expect(accounts).toEqual([]);
   });
 
-  it('gets an account by id', async () => {
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'acc-1',
-        email: 'test@example.com',
-        display_name: 'Test User',
-        provider: 'gmail_api',
-        access_token: 'tok',
-        refresh_token: 'ref',
-        token_expires_at: 1234567890,
-        is_active: 1,
-        created_at: 1,
-        updated_at: 2,
-      },
-    ]);
+  it('getAccountById invokes db_get_account_by_id with id', async () => {
+    mockInvoke.mockResolvedValueOnce(makeAccount({ id: 'acc-1' }));
     const account = await getAccountById('acc-1');
-    expect(account).not.toBeNull();
-    expect(account!.id).toBe('acc-1');
-    expect(account!.email).toBe('test@example.com');
-    expect(account!.displayName).toBe('Test User');
-    expect(account!.provider).toBe('gmail_api');
-    expect(account!.accessToken).toBe('tok');
-    expect(account!.refreshToken).toBe('ref');
-    expect(account!.tokenExpiresAt).toBe(1234567890);
-    expect(account!.isActive).toBe(true);
-    expect(account!.createdAt).toBe(1);
-    expect(account!.updatedAt).toBe(2);
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_account_by_id', { id: 'acc-1' });
+    expect(account?.id).toBe('acc-1');
   });
 
-  it('gets an IMAP account with connection settings', async () => {
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'acc-imap',
-        email: 'user@imap.example.com',
-        provider: 'imap',
-        imap_host: 'imap.example.com',
-        imap_port: 993,
-        imap_security: 'tls',
-        smtp_host: 'smtp.example.com',
-        smtp_port: 587,
-        smtp_security: 'starttls',
-        auth_method: 'password',
-        imap_password: 'secret',
-        accept_invalid_certs: 0,
-        is_active: 1,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
-    const account = await getAccountById('acc-imap');
-    expect(account).not.toBeNull();
-    expect(account!.imapHost).toBe('imap.example.com');
-    expect(account!.imapPort).toBe(993);
-    expect(account!.imapSecurity).toBe('tls');
-    expect(account!.smtpHost).toBe('smtp.example.com');
-    expect(account!.authMethod).toBe('password');
-    expect(account!.imapPassword).toBe('secret');
-    expect(account!.acceptInvalidCerts).toBe(false);
+  it('getAccountById returns null when not found', async () => {
+    mockInvoke.mockResolvedValueOnce(null);
+    expect(await getAccountById('missing')).toBeNull();
   });
 
-  it('gets an EAS account with connection settings', async () => {
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'acc-eas',
-        email: 'user@exchange.example.com',
-        provider: 'eas',
-        eas_url: 'https://exchange.example.com/Microsoft-Server-ActiveSync',
-        eas_protocol_version: '16.1',
-        eas_device_id: 'KYLINS-DEV-001',
-        is_active: 1,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
-    const account = await getAccountById('acc-eas');
-    expect(account).not.toBeNull();
-    expect(account!.easUrl).toBe('https://exchange.example.com/Microsoft-Server-ActiveSync');
-    expect(account!.easProtocolVersion).toBe('16.1');
-    expect(account!.easDeviceId).toBe('KYLINS-DEV-001');
+  it('getAccountByEmail invokes db_get_account_by_email with email', async () => {
+    mockInvoke.mockResolvedValueOnce(makeAccount({ email: 'e@x.com' }));
+    const account = await getAccountByEmail('e@x.com');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_account_by_email', { email: 'e@x.com' });
+    expect(account?.email).toBe('e@x.com');
   });
 
-  it('returns null when account not found', async () => {
-    mockDb.select.mockResolvedValue([]);
-    const account = await getAccountById('missing');
-    expect(account).toBeNull();
-  });
-
-  it('updates an account', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    await updateAccount('acc-1', {
-      email: 'new@example.com',
-      displayName: 'New Name',
-      provider: 'imap',
+  it('updateAccount invokes db_update_account with (id, updates)', async () => {
+    const updates: AccountUpdates = {
+      email: 'new@x.com',
+      displayName: 'New',
       accessToken: 'new-tok',
-      refreshToken: 'new-ref',
-      tokenExpiresAt: 9999999999,
       isActive: false,
-    });
-    expect(mockDb.execute).toHaveBeenCalledOnce();
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(sql).toContain('UPDATE accounts SET');
-    expect(sql).toContain('email = $1');
-    expect(sql).toContain('display_name = $2');
-    expect(sql).toContain('provider = $3');
-    expect(sql).toContain('access_token = $4');
-    expect(sql).toContain('refresh_token = $5');
-    expect(sql).toContain('token_expires_at = $6');
-    expect(sql).toContain('is_active = $7');
-    expect(sql).toContain('updated_at = $8');
-    expect(sql).toContain('WHERE id = $9');
-    expect(params).toEqual([
-      'new@example.com',
-      'New Name',
-      'imap',
-      'enc:new-tok',
-      'enc:new-ref',
-      9999999999,
-      0,
-      expect.any(Number),
-      'acc-1',
-    ]);
+    };
+    await updateAccount('acc-1', updates);
+    expect(mockInvoke).toHaveBeenCalledWith('db_update_account', { id: 'acc-1', updates });
+    // Secrets forwarded as plaintext for Rust to encrypt.
+    expect((mockInvoke.mock.calls[0]![1] as { updates: AccountUpdates }).updates.accessToken).toBe(
+      'new-tok',
+    );
   });
 
-  it('updates an IMAP account with connection settings', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    await updateAccount('acc-imap', {
-      imapHost: 'new.imap.example.com',
+  it('deleteAccount invokes db_delete_account with id', async () => {
+    await deleteAccount('acc-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_delete_account', { id: 'acc-1' });
+  });
+
+  it('deleteAccountByEmail invokes db_delete_account_by_email with email', async () => {
+    await deleteAccountByEmail('e@x.com');
+    expect(mockInvoke).toHaveBeenCalledWith('db_delete_account_by_email', { email: 'e@x.com' });
+  });
+
+  it('getAccountCount invokes db_get_account_count and returns the number', async () => {
+    mockInvoke.mockResolvedValueOnce(3);
+    const count = await getAccountCount();
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_account_count');
+    expect(count).toBe(3);
+  });
+
+  it('setDefaultAccount invokes db_set_default_account with id', async () => {
+    await setDefaultAccount('acc-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_set_default_account', { id: 'acc-1' });
+  });
+
+  it('getDefaultAccount invokes db_get_default_account and returns the account', async () => {
+    mockInvoke.mockResolvedValueOnce(makeAccount({ id: 'acc-default', isDefault: true }));
+    const account = await getDefaultAccount();
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_default_account');
+    expect(account?.id).toBe('acc-default');
+    expect(account?.isDefault).toBe(true);
+  });
+
+  it('getDefaultAccount returns null when there is no default', async () => {
+    mockInvoke.mockResolvedValueOnce(null);
+    expect(await getDefaultAccount()).toBeNull();
+  });
+
+  it('passes IMAP/EAS connection fields through to db_create_account', async () => {
+    const input: CreateAccountInput = {
+      email: 'user@imap.example.com',
+      provider: 'imap',
+      imapHost: 'imap.example.com',
       imapPort: 993,
       imapSecurity: 'tls',
-      smtpHost: 'new.smtp.example.com',
-      smtpPort: 465,
-      smtpSecurity: 'tls',
+      smtpHost: 'smtp.example.com',
+      smtpPort: 587,
+      smtpSecurity: 'starttls',
       authMethod: 'password',
-      imapPassword: 'new-secret',
-    });
-    expect(mockDb.execute).toHaveBeenCalledOnce();
-    const [sql] = mockDb.execute.mock.calls[0];
-    expect(sql).toContain('imap_host =');
-    expect(sql).toContain('imap_port =');
-    expect(sql).toContain('imap_security =');
-    expect(sql).toContain('smtp_host =');
-    expect(sql).toContain('smtp_port =');
-    expect(sql).toContain('smtp_security =');
-    expect(sql).toContain('auth_method =');
-    expect(sql).toContain('imap_password =');
+      imapPassword: 'pw',
+      imapUsername: 'user',
+      acceptInvalidCerts: false,
+    };
+    mockInvoke.mockResolvedValueOnce(makeAccount({ ...input, id: 'acc-imap' }));
+    await createAccount(input);
+    const forwarded = (mockInvoke.mock.calls[0]![1] as { input: CreateAccountInput }).input;
+    expect(forwarded.imapHost).toBe('imap.example.com');
+    expect(forwarded.imapPort).toBe(993);
+    expect(forwarded.smtpHost).toBe('smtp.example.com');
   });
 
-  it('deletes an account', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    await deleteAccount('acc-1');
-    expect(mockDb.execute).toHaveBeenCalledOnce();
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(sql).toBe('DELETE FROM accounts WHERE id = $1');
-    expect(params).toEqual(['acc-1']);
+  it('passes EAS connection fields through to db_create_account', async () => {
+    const input: CreateAccountInput = {
+      email: 'user@exchange.example.com',
+      provider: 'eas',
+      easUrl: 'https://exchange.example.com/Microsoft-Server-ActiveSync',
+      easProtocolVersion: '16.1',
+      easDeviceId: 'KYLINS-DEV-001',
+    };
+    mockInvoke.mockResolvedValueOnce(makeAccount({ ...input, id: 'acc-eas' }));
+    await createAccount(input);
+    const forwarded = (mockInvoke.mock.calls[0]![1] as { input: CreateAccountInput }).input;
+    expect(forwarded.easUrl).toBe('https://exchange.example.com/Microsoft-Server-ActiveSync');
+    expect(forwarded.easProtocolVersion).toBe('16.1');
+    expect(forwarded.easDeviceId).toBe('KYLINS-DEV-001');
   });
 
-  it('sets the first created account as default', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select
-      .mockResolvedValueOnce([{ count: 0 }])
-      .mockResolvedValueOnce([]) // duplicate check
-      .mockResolvedValueOnce([
-        {
-          id: 'acc-1',
-          email: 'first@example.com',
-          provider: 'imap',
-          is_active: 1,
-          is_default: 1,
-          sort_order: 0,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ]);
-    const account = await createAccount({
-      email: 'first@example.com',
-      provider: 'imap',
-    });
-    expect(account.isDefault).toBe(true);
-    expect(account.sortOrder).toBe(0);
-    const [, params] = mockDb.execute.mock.calls[0];
-    expect(params).toContain(1); // is_default = 1
-  });
-
-  it('does not override explicit isDefault on create', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select
-      .mockResolvedValueOnce([]) // duplicate check
-      .mockResolvedValueOnce([
-        {
-          id: 'acc-2',
-          email: 'second@example.com',
-          provider: 'imap',
-          is_active: 1,
-          is_default: 1,
-          sort_order: 3,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ]);
-    const account = await createAccount({
-      email: 'second@example.com',
-      provider: 'imap',
-      isDefault: true,
-      sortOrder: 3,
-    });
-    expect(account.isDefault).toBe(true);
-    expect(account.sortOrder).toBe(3);
-  });
-
-  it('rejects creating a duplicate account by email', async () => {
-    mockDb.select
-      .mockResolvedValueOnce([{ count: 0 }]) // count
-      .mockResolvedValueOnce([
-        {
-          id: 'existing',
-          email: 'dup@example.com',
-          provider: 'imap',
-          is_active: 1,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ]);
-    await expect(createAccount({ email: 'dup@example.com', provider: 'imap' })).rejects.toThrow(
-      'An account for dup@example.com already exists.',
-    );
-    expect(mockDb.execute).not.toHaveBeenCalled();
-  });
-
-  it('rejects creating a duplicate even when existing row is corrupt', async () => {
-    vi.mocked(decryptSecret).mockRejectedValueOnce(new Error('aead::Error'));
-    mockDb.select
-      .mockResolvedValueOnce([{ count: 0 }]) // count
-      .mockResolvedValueOnce([
-        {
-          id: 'existing',
-          email: 'corrupt@example.com',
-          provider: 'imap',
-          access_token: 'bad',
-          is_active: 1,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ]);
-    await expect(createAccount({ email: 'corrupt@example.com', provider: 'imap' })).rejects.toThrow(
-      'An account for corrupt@example.com already exists.',
-    );
-    expect(mockDb.execute).not.toHaveBeenCalled();
-  });
-
-  it('gets the default account', async () => {
-    mockDb.select.mockResolvedValue([
-      {
-        id: 'acc-default',
-        email: 'default@example.com',
-        provider: 'imap',
-        is_active: 1,
-        is_default: 1,
-        sort_order: 0,
-        created_at: 1,
-        updated_at: 1,
-      },
-    ]);
-    const account = await getDefaultAccount();
-    expect(account).not.toBeNull();
-    expect(account!.id).toBe('acc-default');
-    expect(account!.isDefault).toBe(true);
-  });
-
-  it('persists account label and setup provider id', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select
-      .mockResolvedValueOnce([{ count: 0 }])
-      .mockResolvedValueOnce([]) // duplicate check
-      .mockResolvedValueOnce([
-        {
-          id: 'acc-1',
-          email: 'e@x.com',
-          account_label: 'Work',
-          provider: 'imap',
-          setup_provider_id: 'gmail',
-          is_active: 1,
-          is_default: 1,
-          sort_order: 0,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ]);
-    const account = await createAccount({
+  it('forwards account label + setup provider id on create', async () => {
+    const input: CreateAccountInput = {
       email: 'e@x.com',
       provider: 'imap',
       accountLabel: 'Work',
       setupProviderId: 'gmail',
-    });
-    expect(account.accountLabel).toBe('Work');
-    expect(account.setupProviderId).toBe('gmail');
-  });
-
-  it('updates account label and default flag', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    await updateAccount('acc-1', {
-      accountLabel: 'Personal',
-      isDefault: true,
-      sortOrder: 2,
-    });
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(sql).toContain('account_label =');
-    expect(sql).toContain('is_default =');
-    expect(sql).toContain('sort_order =');
-    expect(params).toContain('Personal');
-    expect(params).toContain(1);
-    expect(params).toContain(2);
+    };
+    mockInvoke.mockResolvedValueOnce(makeAccount({ ...input }));
+    await createAccount(input);
+    const forwarded = (mockInvoke.mock.calls[0]![1] as { input: CreateAccountInput }).input;
+    expect(forwarded.accountLabel).toBe('Work');
+    expect(forwarded.setupProviderId).toBe('gmail');
   });
 });

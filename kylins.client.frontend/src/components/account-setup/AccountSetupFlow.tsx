@@ -23,7 +23,6 @@ import {
   deleteAccountByEmail,
   type CreateAccountInput,
 } from '../../services/accounts';
-import { syncAccountFolders, syncFolderMessages } from '../../services/mail/folderSync';
 import { useAccountStore } from '../../stores/accountStore';
 import type { Account } from '../../types';
 
@@ -88,8 +87,6 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
     isTesting: boolean;
     result: { success: boolean; message: string } | null;
   }>({ isTesting: false, result: null });
-  // Account created during this flow; used on the welcome screen to sync folders.
-  const [createdAccount, setCreatedAccount] = useState<Account | null>(null);
 
   async function handleOAuth(): Promise<void> {
     if (!s.config || s.config.authType !== 'oauth2') return;
@@ -115,8 +112,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         tokens,
         s.advancedClientId || config.bundledClientId,
       );
-      const account = await createAccount(input);
-      setCreatedAccount(account);
+      await createAccount(input);
       s.setStep('welcome');
     } catch (e) {
       s.setError((e as Error).message);
@@ -154,7 +150,6 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
       await testImapConnection(toTestAccount(input, s.email));
       console.log('[handleImapPassword] connection test passed, creating account');
       const account = await createAccount(input);
-      setCreatedAccount(account);
       console.log('[handleImapPassword] account created', account.id);
     });
   }
@@ -201,8 +196,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
     await runWithVerification(s, async () => {
       const input = buildEasAccount(s.email, s.password, server, deviceId, s.config!.id);
       await testEasConnection(toTestAccount(input, s.email));
-      const account = await createAccount(input);
-      setCreatedAccount(account);
+      await createAccount(input);
     });
   }
 
@@ -335,21 +329,9 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         <SetupStepTransition>
           <WelcomeScreen
             onDone={async () => {
-              if (createdAccount) {
-                try {
-                  console.log('[AccountSetupFlow] syncing folders for', createdAccount.id);
-                  const folders = await syncAccountFolders(createdAccount);
-                  console.log('[AccountSetupFlow] folders synced');
-                  const inbox = folders.find((f) => f.role === 'inbox');
-                  if (inbox) {
-                    console.log('[AccountSetupFlow] syncing inbox messages', inbox.remoteId);
-                    const count = await syncFolderMessages(createdAccount, inbox);
-                    console.log('[AccountSetupFlow] inbox messages synced', count);
-                  }
-                } catch (err) {
-                  console.error('[AccountSetupFlow] folder/message sync failed', err);
-                }
-              }
+              // Folder/message sync for the newly-created account is handled by
+              // the Rust sync engine (Tasks 9–10). Here we just refresh the
+              // account list, reset the setup flow, and hand control back.
               const refreshed = await getAllAccounts();
               useAccountStore.getState().setAccounts(refreshed);
               s.reset();

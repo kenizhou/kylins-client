@@ -1,20 +1,24 @@
 //! Database layer for the Kylins Client backend.
 //!
-//! Owns the SQLite connection pool and the embedded sqlx migrations. The
-//! frontend still uses `@tauri-apps/plugin-sql` for the time being; later tasks
-//! in the mail-sync-engine Phase 0 will move all DB access here and remove the
-//! plugin-sql dependency. For now this module only inits the pool, runs the
-//! idempotent baseline migration, and exposes it via Tauri `State`.
+//! Owns the SQLite connection pool and the embedded sqlx migrations. As of
+//! Task 5 (Option C cutover), Rust is the sole writer of every
+//! **sync-relevant** table (accounts, settings, labels/folders, threads reads,
+//! message_bodies, pending_operations). The frontend `invoke`s the `db_*`
+//! commands declared in [`commands`] for those tables. Tangential subsystems
+//! (contacts, signatures, drafts, send-as aliases, scheduled emails, etc.)
+//! still use `@tauri-apps/plugin-sql` from the frontend; their tables are
+//! disjoint from sync data so the two-writer concern that motivated the
+//! cutover does not apply. A later follow-up will finish the cutover for them.
 //!
-//! Submodules (`accounts`, `settings`, `labels`, ...) are per-domain query
-//! layers filled in by later tasks. They are currently empty stubs so the
-//! module compiles today.
+//! Migrations live in `kylins.client.backend/migrations/` and are embedded at
+//! compile time via `sqlx::migrate!`.
 
 pub mod accounts;
 pub mod commands;
 pub mod labels;
 pub mod message_bodies;
 pub mod messages;
+pub mod queue;
 pub mod settings;
 pub mod sync_state;
 pub mod threads;

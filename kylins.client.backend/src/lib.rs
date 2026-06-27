@@ -136,6 +136,10 @@ pub fn run() {
             db::commands::db_get_message_body,
             db::commands::db_set_message_body,
             db::commands::db_evict_body,
+            db::commands::db_enqueue_op,
+            db::commands::db_dequeue_pending,
+            db::commands::db_mark_op_completed,
+            db::commands::db_mark_op_failed,
         ])
         .setup(|app| {
             {

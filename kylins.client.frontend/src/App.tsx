@@ -4,7 +4,6 @@ import { AccountSetupFlow } from './components/account-setup/AccountSetupFlow';
 import { PreferencesDialog } from './components/preferences/PreferencesDialog';
 import { Composer } from './components/composer/Composer';
 import { Modal } from './components/ui/Modal';
-import { runMigrations } from './services/db/migrations';
 import { getSetting } from './services/settings';
 import { getAllAccounts, deleteAccountByEmail } from './services/accounts';
 import { themeManager } from './services/theme/themeManager';
@@ -143,7 +142,8 @@ export default function App() {
 
             hydrateBackground(applyAppearance);
           } else {
-            await runMigrations();
+            // Rust runs the embedded sqlx migrations on startup (db::init_db in
+            // lib.rs setup), so the frontend no longer calls runMigrations.
 
             const [savedTheme, savedSkin] = await Promise.all([
               getSetting('theme'),

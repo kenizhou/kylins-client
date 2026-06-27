@@ -384,7 +384,9 @@ pub async fn get_by_email(pool: &SqlitePool, email: &str) -> Result<Option<Accou
 }
 
 /// Insert a new account. Encrypts the four secret fields, auto-sets
-/// `is_default` when this is the first account, and rejects duplicate emails.
+/// `is_default` when this is the first account, rejects duplicate emails, and
+/// seeds a default signature row (faithful to the legacy frontend
+/// `insertSignature` call that used to follow account creation).
 pub async fn create(pool: &SqlitePool, input: CreateAccountInput) -> Result<Account, String> {
     // Duplicate check first — uses get_by_email so a corrupt row still counts
     // as "exists".
@@ -458,6 +460,28 @@ pub async fn create(pool: &SqlitePool, input: CreateAccountInput) -> Result<Acco
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    // Seed a default signature so the composer always has something to offer.
+    // This replaces the frontend `insertSignature` call that used to live in
+    // `accounts.ts:createAccount` (removed during the Task 5 cutover because
+    // `signatures` is a tangential table still on plugin-sql, and we don't want
+    // a cross-dependency from the Rust-owned create path back to the frontend).
+    // Faithful to the TS default: name='Default',
+    // body_html='<p>Sent from Kylins Mail</p>', is_default=1, context='all'.
+    // Best-effort: a failure here is logged but does not fail the account
+    // creation (matches the TS try/catch around insertSignature).
+    let sig_id = uuid::Uuid::new_v4().to_string();
+    if let Err(e) = sqlx::query(
+        "INSERT INTO signatures (id, account_id, name, body_html, is_default, context)
+         VALUES (?, ?, 'Default', '<p>Sent from Kylins Mail</p>', 1, 'all')",
+    )
+    .bind(&sig_id)
+    .bind(&id)
+    .execute(pool)
+    .await
+    {
+        log::warn!("[accounts] failed to seed default signature for {id}: {e}");
+    }
 
     get_by_id(pool, &id)
         .await?
@@ -691,6 +715,37 @@ mod tests {
             !cipher.as_deref().unwrap_or("").contains("secret"),
             "plaintext leaked into DB"
         );
+    }
+
+    #[tokio::test]
+    async fn create_seeds_default_signature() {
+        // Task 5 moved signature seeding from the frontend `insertSignature`
+        // call into Rust `create`. Verify a default signature row is inserted
+        // with the faithful TS defaults.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        let created = create(
+            &pool,
+            CreateAccountInput {
+                email: "sig@x.com".into(),
+                provider: "imap".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let row: (String, String, i64, String) = sqlx::query_as(
+            "SELECT name, body_html, is_default, context FROM signatures WHERE account_id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Default");
+        assert_eq!(row.1, "<p>Sent from Kylins Mail</p>");
+        assert_eq!(row.2, 1, "seeded signature should be the default");
+        assert_eq!(row.3, "all");
     }
 
     #[tokio::test]

@@ -18,6 +18,7 @@ use crate::db::accounts::{
 };
 use crate::db::labels::{self, MailFolder};
 use crate::db::message_bodies;
+use crate::db::queue::{self, PendingOperation};
 use crate::db::settings;
 use crate::db::threads::{self, GetThreadsOptions, MessageRow, ThreadsPage};
 
@@ -282,4 +283,47 @@ pub async fn db_evict_body(
     message_id: String,
 ) -> Result<(), String> {
     message_bodies::evict_body(&pool, &account_id, &message_id).await
+}
+
+// ---- offline queue (pending_operations) ----
+
+/// Enqueue a pending operation. `params` is a JSON string. Returns the
+/// generated operation id.
+#[tauri::command]
+pub async fn db_enqueue_op(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    operation_type: String,
+    resource_id: String,
+    params: String,
+) -> Result<String, String> {
+    queue::enqueue(&pool, &account_id, &operation_type, &resource_id, &params).await
+}
+
+/// Dequeue up to `limit` due pending operations, oldest-first.
+#[tauri::command]
+pub async fn db_dequeue_pending(
+    pool: State<'_, SqlitePool>,
+    limit: Option<i64>,
+) -> Result<Vec<PendingOperation>, String> {
+    queue::dequeue_pending(&pool, limit.unwrap_or(50)).await
+}
+
+/// Remove a completed operation.
+#[tauri::command]
+pub async fn db_mark_op_completed(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    queue::mark_completed(&pool, &id).await
+}
+
+/// Mark an operation as failed, bumping retry_count, scheduling the next retry
+/// with exponential backoff, and flipping status to 'failed' once
+/// retry_count + 1 >= max_retries. See [`queue::mark_failed`] for the
+/// load-bearing pre-increment backoff semantics.
+#[tauri::command]
+pub async fn db_mark_op_failed(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    error: String,
+) -> Result<(), String> {
+    queue::mark_failed(&pool, &id, &error).await
 }
