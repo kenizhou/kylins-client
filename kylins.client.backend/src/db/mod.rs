@@ -11,6 +11,7 @@
 //! module compiles today.
 
 pub mod accounts;
+pub mod commands;
 pub mod labels;
 pub mod message_bodies;
 pub mod messages;
