@@ -27,6 +27,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+use crate::sync_engine::{MailSource, RemoteFolder, SourceError};
+
 /// One mail mutation. Variants cover the five operations the mail sync engine
 /// performs: marking a thread read/unread, toggling an IMAP flag (currently
 /// only `\Flagged` is reflected into `messages.is_starred`), moving messages
@@ -302,6 +304,58 @@ impl MutationOp {
         };
         tx.commit().await.map_err(|e| e.to_string())?;
         Ok(affected)
+    }
+
+    /// Execute the remote (server) side of the op via the [`MailSource`] trait.
+    /// Called by the Task 4 replay worker after it dequeues a row and rebuilds
+    /// the op. Each variant maps to exactly one `MailSource` mutation method.
+    ///
+    /// - `MarkRead`     → `set_flags(flag="\\Seen", add=read)`
+    /// - `SetFlag`      → `set_flags(flag=<op.flag>, add=add)`
+    /// - `Move`         → `move_messages(src, uids, dst)`
+    /// - `Delete`       → `delete_messages(folder, uids)`
+    /// - `Send`         → `send(raw_base64url)`
+    ///
+    /// Folder paths from the op are wrapped into [`RemoteFolder`] values via
+    /// [`folder_remote`]; the adapter only reads `remote_id` for IMAP, so the
+    /// minimal struct (remote_id + delimiter) is sufficient.
+    pub async fn exec_via_source(&self, src: &dyn MailSource) -> Result<(), SourceError> {
+        match self {
+            MutationOp::MarkRead { folder_path, uids, read, .. } => {
+                let f = folder_remote(folder_path);
+                src.set_flags(&f, uids, "\\Seen", *read).await
+            }
+            MutationOp::SetFlag { folder_path, uids, flag, add, .. } => {
+                let f = folder_remote(folder_path);
+                src.set_flags(&f, uids, flag, *add).await
+            }
+            MutationOp::Move { src_folder_path, dst_folder_path, uids, .. } => {
+                src.move_messages(
+                    &folder_remote(src_folder_path),
+                    uids,
+                    &folder_remote(dst_folder_path),
+                )
+                .await
+            }
+            MutationOp::Delete { folder_path, uids, .. } => {
+                src.delete_messages(&folder_remote(folder_path), uids).await
+            }
+            MutationOp::Send { raw_base64url } => src.send(raw_base64url).await,
+        }
+    }
+}
+
+/// Build a minimal [`RemoteFolder`] from a folder-path string. Used by
+/// [`MutationOp::exec_via_source`] to feed folder paths into the `MailSource`
+/// trait methods, which take `&RemoteFolder`. Only `remote_id` and `delimiter`
+/// are consulted by the IMAP adapter for the mutation calls; the other fields
+/// default.
+fn folder_remote(path: &str) -> RemoteFolder {
+    RemoteFolder {
+        remote_id: path.into(),
+        name: path.into(),
+        delimiter: "/".into(),
+        ..Default::default()
     }
 }
 
@@ -825,5 +879,186 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(other, 0, "thr-2 must remain unread");
+    }
+
+    // ---- exec_via_source: dispatches each variant to the right MailSource method ----
+
+    use crate::sync_engine::mock_source::{MockSource, RecordedCall};
+    use crate::sync_engine::MailSource;
+
+    /// Build a MockSource with no folders/messages — exec_via_source only uses the
+    /// mutation methods, which are no-ops that record into `calls`.
+    fn recorder_src() -> MockSource {
+        MockSource::new(vec![], vec![])
+    }
+
+    #[tokio::test]
+    async fn exec_via_source_markread_dispatches_set_flags_seen_with_read_value() {
+        // read=true → set_flags(flag="\\Seen", add=true)
+        let src = recorder_src();
+        let op = MutationOp::MarkRead {
+            thread_id: "t".into(),
+            message_ids: vec![],
+            folder_path: "INBOX".into(),
+            uids: vec![5, 6],
+            read: true,
+        };
+        op.exec_via_source(&src).await.unwrap();
+        assert_eq!(
+            src.recorded_calls(),
+            vec![RecordedCall::SetFlags {
+                folder: "INBOX".into(),
+                uids: vec![5, 6],
+                flag: "\\Seen".into(),
+                add: true,
+            }]
+        );
+
+        // read=false → set_flags(flag="\\Seen", add=false)
+        let src2 = recorder_src();
+        let op_off = MutationOp::MarkRead {
+            thread_id: "t".into(),
+            message_ids: vec![],
+            folder_path: "INBOX".into(),
+            uids: vec![5],
+            read: false,
+        };
+        op_off.exec_via_source(&src2).await.unwrap();
+        assert_eq!(
+            src2.recorded_calls(),
+            vec![RecordedCall::SetFlags {
+                folder: "INBOX".into(),
+                uids: vec![5],
+                flag: "\\Seen".into(),
+                add: false,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_via_source_setflag_dispatches_set_flags_with_op_flag() {
+        let src = recorder_src();
+        let op = MutationOp::SetFlag {
+            message_ids: vec![],
+            folder_path: "Archive".into(),
+            uids: vec![7, 8],
+            flag: "\\Flagged".into(),
+            add: true,
+        };
+        op.exec_via_source(&src).await.unwrap();
+        assert_eq!(
+            src.recorded_calls(),
+            vec![RecordedCall::SetFlags {
+                folder: "Archive".into(),
+                uids: vec![7, 8],
+                flag: "\\Flagged".into(),
+                add: true,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_via_source_move_dispatches_move_messages_with_src_and_dst() {
+        let src = recorder_src();
+        let op = MutationOp::Move {
+            message_ids: vec![],
+            src_label: "INBOX".into(),
+            dst_label: "Archive".into(),
+            src_folder_path: "INBOX".into(),
+            dst_folder_path: "Archive".into(),
+            uids: vec![1, 2, 3],
+        };
+        op.exec_via_source(&src).await.unwrap();
+        assert_eq!(
+            src.recorded_calls(),
+            vec![RecordedCall::Move {
+                src: "INBOX".into(),
+                uids: vec![1, 2, 3],
+                dest: "Archive".into(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_via_source_delete_dispatches_delete_messages() {
+        let src = recorder_src();
+        let op = MutationOp::Delete {
+            message_ids: vec![],
+            folder_path: "Trash".into(),
+            uids: vec![42],
+        };
+        op.exec_via_source(&src).await.unwrap();
+        assert_eq!(
+            src.recorded_calls(),
+            vec![RecordedCall::Delete {
+                folder: "Trash".into(),
+                uids: vec![42],
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_via_source_send_dispatches_send_with_raw() {
+        let src = recorder_src();
+        let op = MutationOp::Send {
+            raw_base64url: "Zm9vYmFy".into(),
+        };
+        op.exec_via_source(&src).await.unwrap();
+        assert_eq!(
+            src.recorded_calls(),
+            vec![RecordedCall::Send {
+                raw_base64url: "Zm9vYmFy".into(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_via_source_propagates_source_error() {
+        // A source that returns Unsupported on every mutation. Use a minimal
+        // anonymous impl to avoid coupling to MockSource's success behavior.
+        use async_trait::async_trait;
+
+        struct AlwaysUnsupported;
+        #[async_trait]
+        impl MailSource for AlwaysUnsupported {
+            fn capabilities(&self) -> crate::sync_engine::Capabilities {
+                crate::sync_engine::Capabilities::default()
+            }
+            async fn list_folders(&self) -> Result<Vec<crate::sync_engine::RemoteFolder>, crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn sync_folder(&self, _f: &crate::sync_engine::RemoteFolder, _c: crate::sync_engine::Cursor) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn fetch_body(&self, _f: &crate::sync_engine::RemoteFolder, _u: u32) -> Result<Option<String>, crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn set_flags(&self, _f: &crate::sync_engine::RemoteFolder, _u: &[u32], _flag: &str, _add: bool) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn move_messages(&self, _s: &crate::sync_engine::RemoteFolder, _u: &[u32], _d: &crate::sync_engine::RemoteFolder) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn delete_messages(&self, _f: &crate::sync_engine::RemoteFolder, _u: &[u32]) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn append(&self, _f: &crate::sync_engine::RemoteFolder, _r: &[u8], _fl: &[&str]) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+        }
+
+        let src = AlwaysUnsupported;
+        let op = MutationOp::MarkRead {
+            thread_id: "t".into(),
+            message_ids: vec![],
+            folder_path: "INBOX".into(),
+            uids: vec![1],
+            read: true,
+        };
+        let err = op.exec_via_source(&src).await.unwrap_err();
+        assert!(matches!(err, crate::sync_engine::SourceError::Unsupported));
     }
 }

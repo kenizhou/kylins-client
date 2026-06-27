@@ -208,6 +208,7 @@ pub fn run() {
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,
             sync_engine::commands::sync_request_bodies,
+            sync_engine::commands::sync_apply_mutation,
         ])
         .setup(|app| {
             {
