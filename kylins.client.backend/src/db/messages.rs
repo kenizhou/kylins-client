@@ -80,6 +80,25 @@ async fn upsert_message(
     // not Message-ID header, which calendar items and server notifications lack).
     let message_id = format!("imap-{}-{}-{}", account_id, m.folder, m.uid);
 
+    // Write-lock (24-hr guarantee): if a local mutation for this exact
+    // resource is still pending replay, skip the upsert so the server delta
+    // cannot revert the local edit. The check runs inside this transaction
+    // (against `&mut **tx`) so the lock decision is consistent with the writes
+    // that follow. `resource_id` matches what `sync_apply_mutation` enqueues —
+    // the frontend-sent message id, which is the same `imap-{a}-{f}-{uid}`.
+    let locked: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM pending_operations
+         WHERE account_id = ? AND resource_id = ? AND status = 'pending'",
+    )
+    .bind(account_id)
+    .bind(&message_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if locked.0 > 0 {
+        return Ok(());
+    }
+
     // RFC 2822 Message-ID header (for JWZ threading). Fall back to a synthetic
     // deterministic ID when the server sent no header (drafts, calendar items, etc.).
     let rfc2822_message_id = m
@@ -264,6 +283,66 @@ mod tests {
         apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta).await.unwrap();
         assert_eq!(count(&pool, "messages").await, 1);
         assert_eq!(count(&pool, "threads").await, 1);
+    }
+
+    /// Write-lock: when a message has a pending local mutation in
+    /// `pending_operations`, an incoming server delta for the same
+    /// `imap-{account}-{folder}-{uid}` resource_id must NOT overwrite the
+    /// locally-edited row. This is the "24-hr lock" guarantee — the local edit
+    /// survives until the op is replayed.
+    #[tokio::test]
+    async fn write_lock_skips_upsert_when_pending_op_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+
+        // 1. Seed an existing server message (is_read = false).
+        let seed_delta = FolderDelta {
+            added: vec![msg(7, "<m7>", false)],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &seed_delta)
+            .await
+            .unwrap();
+
+        // 2. Apply the local edit directly: flip is_read to true on the row.
+        //    The frontend would have done this through sync_apply_mutation and
+        //    also enqueued a pending op with resource_id = the message id.
+        let message_id = "imap-acc-INBOX-7";
+        sqlx::query("UPDATE messages SET is_read = 1 WHERE id = ?")
+            .bind(message_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO pending_operations
+                (id, account_id, operation_type, resource_id, params, status, created_at)
+             VALUES ('p1','acc','markRead',?,'{\"read\":true}','pending',1)",
+        )
+        .bind(message_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 3. Server delta arrives claiming is_read = false. The write-lock must
+        //    skip this upsert so the pending local edit (is_read = true) wins.
+        let server_delta = FolderDelta {
+            updated: vec![msg(7, "<m7>", false)], // server says still unread
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &server_delta)
+            .await
+            .unwrap();
+
+        let (is_read,): (i64,) = sqlx::query_as("SELECT is_read FROM messages WHERE id = ?")
+            .bind(message_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            is_read, 1,
+            "local edit must survive server delta while op is pending"
+        );
     }
 
     #[tokio::test]
