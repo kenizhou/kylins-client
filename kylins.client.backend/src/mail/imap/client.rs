@@ -391,49 +391,6 @@ pub async fn search_all_uids(session: &mut ImapSession, folder: &str) -> Result<
     Ok(result)
 }
 
-/// Lightweight fetch: UID + FLAGS only (no body). Returns (uid, is_read, is_starred).
-/// Used to detect flag changes on existing messages without downloading bodies.
-pub async fn fetch_flags_chunk(
-    session: &mut ImapSession,
-    folder: &str,
-    uid_range: &str,
-) -> Result<Vec<(u32, bool, bool)>, String> {
-    let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
-        let stream = session
-            .uid_fetch(uid_range, "UID FLAGS")
-            .await
-            .map_err(|e| format!("UID FETCH FLAGS {folder} failed: {e}"))?;
-        Ok::<_, String>(stream.collect::<Vec<_>>().await)
-    })
-    .await
-    .map_err(|_| {
-        format!(
-            "UID FETCH FLAGS {folder} timed out after {}s",
-            IMAP_FETCH_TIMEOUT.as_secs()
-        )
-    })??;
-
-    let mut result = Vec::new();
-    for r in fetches {
-        match r {
-            Ok(f) => {
-                let uid = match f.uid {
-                    Some(u) => u,
-                    None => continue,
-                };
-                let flags: Vec<_> = f.flags().collect();
-                let is_read = flags.iter().any(|fl| matches!(fl, async_imap::types::Flag::Seen));
-                let is_starred = flags.iter().any(|fl| matches!(fl, async_imap::types::Flag::Flagged));
-                result.push((uid, is_read, is_starred));
-            }
-            Err(e) => {
-                log::warn!("IMAP FETCH FLAGS {folder} stream error: {e}");
-            }
-        }
-    }
-    Ok(result)
-}
-
 pub async fn set_flags(
     session: &mut ImapSession,
     folder: &str,

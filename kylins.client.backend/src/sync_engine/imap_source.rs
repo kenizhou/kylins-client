@@ -242,7 +242,6 @@ impl MailSource for ImapSource {
                 added: vec![],
                 updated: vec![],
                 vanished_uids: vec![],
-                server_uids: vec![],
                 next_cursor: Cursor::Imap {
                     uidvalidity: status.uidvalidity,
                     highest_uid: 0,
@@ -276,51 +275,12 @@ impl MailSource for ImapSource {
         }
 
         let new_high = added.iter().map(|m| m.uid).max().unwrap_or(since_high);
-
-        // Detect flag changes on existing messages by fetching all UIDs + FLAGS.
-        let server_uids = imap_client::search_all_uids(&mut session, &folder.remote_id)
-            .await
-            .map_err(other)?;
-
-        let mut updated = Vec::new();
-        let existing_high = since_high.min(new_high);
-        let existing_uids: Vec<u32> = server_uids
-            .iter()
-            .copied()
-            .filter(|&u| u <= existing_high)
-            .collect();
-
-        // Fetch flags for existing UIDs in chunks and compare with known state.
-        // We don't have DB access here, so we create lightweight RemoteMessage
-        // entries with just uid+folder+flags. The engine applies these via
-        // upsert_message which updates the flags columns via ON CONFLICT DO UPDATE.
-        for chunk in existing_uids.chunks(100) {
-            let range = uid_set(chunk);
-            let flags = match imap_client::fetch_flags_chunk(&mut session, &folder.remote_id, &range).await {
-                Ok(f) => f,
-                Err(e) => {
-                    log::warn!("[sync] fetch_flags_chunk {} failed: {e}", folder.remote_id);
-                    continue;
-                }
-            };
-            for (uid, is_read, is_starred) in flags {
-                updated.push(RemoteMessage {
-                    uid,
-                    folder: folder.remote_id.clone(),
-                    is_read,
-                    is_starred,
-                    ..Default::default()
-                });
-            }
-        }
-
         let _ = session.logout().await;
 
         Ok(FolderDelta {
             added,
-            updated,
+            updated: vec![],
             vanished_uids: vec![],
-            server_uids,
             next_cursor: Cursor::Imap {
                 uidvalidity: status.uidvalidity,
                 highest_uid: new_high,

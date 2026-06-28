@@ -10,10 +10,18 @@ import {
   mapMessageToMailMessage,
   type Thread,
   type ThreadCursor,
+  type DbMessageRow,
 } from '../services/db/threads';
 import { getMessageBody } from '../services/db/messageBodies';
 import { useViewStore } from '../features/view/viewStore';
 import { useFolderStore } from './folderStore';
+
+async function getThreadMessages(
+  thread: Thread,
+  messages?: DbMessageRow[],
+): Promise<DbMessageRow[]> {
+  return messages ?? (await getMessagesForThread(thread.accountId, thread.id));
+}
 
 interface ThreadQuery {
   accountId: string;
@@ -32,6 +40,11 @@ interface ThreadState {
   loadMore: () => Promise<void>;
   selectThread: (thread: Thread) => Promise<void>;
   refresh: () => Promise<void>;
+
+  // ---- User-driven thread mutations ----
+  markThreadRead: (thread: Thread, read: boolean, messages?: DbMessageRow[]) => Promise<void>;
+  toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
+  deleteThread: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
 }
 
 export const useThreadStore = create<ThreadState>((set, get) => ({
@@ -84,28 +97,10 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       } else {
         useViewStore.getState().setSelectedMessage(null);
       }
-      // Mark as read (optimistic UI + durable write via the sync engine).
-      // The engine applies locally (threads+messages is_read=1) and enqueues a
-      // per-message replay row so the IMAP \Seen flag is set server-side. uids
-      // + folderPath are required for remote replay; fall back to empty/0 when
-      // the message has no IMAP provenance (e.g. an EAS-sourced message row).
+      // Opening a thread marks it read. Pass already-loaded messages so we don't
+      // fetch them twice.
       if (!thread.isRead) {
-        set((s) => ({
-          threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: true } : t)),
-        }));
-        void invoke('sync_apply_mutation', {
-          accountId: thread.accountId,
-          op: {
-            type: 'markRead',
-            threadId: thread.id,
-            messageIds: messages.map((m) => m.id),
-            folderPath: messages[0]?.imap_folder ?? '',
-            uids: messages.map((m) => m.imap_uid ?? 0),
-            read: true,
-          },
-        }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
-        const labelId = get().currentQuery?.labelId;
-        if (labelId) useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+        await get().markThreadRead(thread, true, messages);
       }
     } catch (e) {
       console.error('Failed to load thread messages:', e);
@@ -115,5 +110,72 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   refresh: async () => {
     const q = get().currentQuery;
     if (q) await get().loadThreads(q.accountId, q.labelId);
+  },
+
+  // ---- User-driven thread mutations ----
+
+  markThreadRead: async (thread, read, messages) => {
+    if (thread.isRead === read) return;
+    const msgs = await getThreadMessages(thread, messages);
+    set((s) => ({
+      threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: read } : t)),
+    }));
+    void invoke('sync_apply_mutation', {
+      accountId: thread.accountId,
+      op: {
+        type: 'markRead',
+        threadId: thread.id,
+        messageIds: msgs.map((m) => m.id),
+        folderPath: msgs[0]?.imap_folder ?? '',
+        uids: msgs.map((m) => m.imap_uid ?? 0),
+        read,
+      },
+    }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
+    const labelId = get().currentQuery?.labelId;
+    if (labelId) {
+      const folderStore = useFolderStore.getState();
+      if (read) folderStore.decrementUnread(thread.accountId, labelId);
+      else folderStore.incrementUnread(thread.accountId, labelId);
+    }
+  },
+
+  toggleThreadStarred: async (thread, messages) => {
+    const nextStarred = !thread.isStarred;
+    const msgs = await getThreadMessages(thread, messages);
+    set((s) => ({
+      threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isStarred: nextStarred } : t)),
+    }));
+    void invoke('sync_apply_mutation', {
+      accountId: thread.accountId,
+      op: {
+        type: 'setFlag',
+        messageIds: msgs.map((m) => m.id),
+        folderPath: msgs[0]?.imap_folder ?? '',
+        uids: msgs.map((m) => m.imap_uid ?? 0),
+        flag: '\\Flagged',
+        add: nextStarred,
+      },
+    }).catch((e) => console.error('sync_apply_mutation setFlag failed', e));
+  },
+
+  deleteThread: async (thread, messages) => {
+    const msgs = await getThreadMessages(thread, messages);
+    set((s) => ({
+      threads: s.threads.filter((t) => t.id !== thread.id),
+      selectedThreadId: s.selectedThreadId === thread.id ? null : s.selectedThreadId,
+    }));
+    void invoke('sync_apply_mutation', {
+      accountId: thread.accountId,
+      op: {
+        type: 'delete',
+        messageIds: msgs.map((m) => m.id),
+        folderPath: msgs[0]?.imap_folder ?? '',
+        uids: msgs.map((m) => m.imap_uid ?? 0),
+      },
+    }).catch((e) => console.error('sync_apply_mutation delete failed', e));
+    const labelId = get().currentQuery?.labelId;
+    if (labelId && !thread.isRead) {
+      useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+    }
   },
 }));

@@ -145,7 +145,6 @@ impl MailSource for EasSource {
             added: vec![],
             updated: vec![],
             vanished_uids: vec![],
-            server_uids: vec![],
             next_cursor: Cursor::initial_eas(&folder.remote_id),
             uidvalidity_changed: false,
         })

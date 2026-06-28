@@ -82,6 +82,8 @@ export interface FolderState {
   deleteFolder: (accountId: string, labelId: string) => Promise<void>;
   /** Decrement one folder's unread badge by 1 (used when a thread is read). */
   decrementUnread: (accountId: string, labelId: string) => void;
+  /** Increment one folder's unread badge by 1 (used when a thread is marked unread). */
+  incrementUnread: (accountId: string, labelId: string) => void;
   /** Best-effort message fetch via the account provider; toasts the result. */
   syncFolder: (folder: MailFolder) => Promise<void>;
 }
@@ -217,6 +219,12 @@ export const useFolderStore = create<FolderState>((set, get) => ({
     if (cur && cur > 0) {
       set((s) => ({ unreadCounts: { ...s.unreadCounts, [key]: cur - 1 } }));
     }
+  },
+
+  incrementUnread: (accountId, labelId) => {
+    const key = favKey(accountId, labelId);
+    const cur = get().unreadCounts[key] ?? 0;
+    set((s) => ({ unreadCounts: { ...s.unreadCounts, [key]: cur + 1 } }));
   },
 
   syncFolder: async (folder) => {
