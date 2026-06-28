@@ -12,6 +12,15 @@ on:
         type: string
         required: false
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v0.1.0)"
+        type: string
+        required: true
+      release_id:
+        description: "Existing release ID to upload to (optional)"
+        type: string
+        required: false
   release:
     types: [created]
 
@@ -176,3 +185,29 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target universal-apple-darwin
+
+  notify:
+    name: Notify
+    needs: [build, build-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send email notification
+        if: env.SMTP_HOST
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT || '587' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[Kylins Release] ${{ needs.build.result == 'success' && needs.build-macos.result == 'success' && 'SUCCESS' || 'FAILURE' }} — ${{ inputs.tag_name || github.ref_name }}"
+          to: kenizhou@hotmail.com
+          from: Kylins CI <ci@kylins.app>
+          body: |
+            Release build completed for ${{ github.repository }}
+
+            Tag: ${{ inputs.tag_name || github.ref_name }}
+            Windows/Linux (build): ${{ needs.build.result }}
+            macOS (build-macos): ${{ needs.build-macos.result }}
+
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
