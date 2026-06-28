@@ -14,10 +14,10 @@ use std::time::Duration;
 use serde::Serialize;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 
 use crate::db::{accounts, labels, messages, sync_state};
-use crate::sync_engine::{Cursor, MailSource, RemoteFolder, source_for_account};
+use crate::sync_engine::{source_for_account, Cursor, MailSource, RemoteFolder};
 
 const POLL_INTERVAL_SECS: u64 = 60;
 
@@ -206,7 +206,10 @@ impl SyncEngine {
         // once the first sync round has populated the caps cache.
         self.workers.lock().await.insert(
             account_id.clone(),
-            WorkerHandle { tx: tx.clone(), idle_watcher: None },
+            WorkerHandle {
+                tx: tx.clone(),
+                idle_watcher: None,
+            },
         );
         tokio::spawn(async move {
             // Initial sync immediately — this also warms the source's caps
@@ -220,10 +223,14 @@ impl SyncEngine {
             // loop below stays as the background sweep for non-INBOX folders
             // + the fallback when IDLE is unavailable.
             let idle_watcher = {
-                let src = crate::sync_engine::source_for_account(&engine.pool, &aid).await.ok();
+                let src = crate::sync_engine::source_for_account(&engine.pool, &aid)
+                    .await
+                    .ok();
                 let caps = src.as_ref().map(|s| s.capabilities());
                 match (src, caps) {
-                    (Some(src), Some(caps)) if pick_realtime_strategy(&caps) == RealtimeStrategy::Idle => {
+                    (Some(src), Some(caps))
+                        if pick_realtime_strategy(&caps) == RealtimeStrategy::Idle =>
+                    {
                         let engine2 = Arc::clone(&engine);
                         let aid2 = aid.clone();
                         let src2 = Arc::clone(&src);
@@ -244,8 +251,12 @@ impl SyncEngine {
                                 // `remote_id` (which always falls back to the label id
                                 // on read — see `row_to_folder`).
                                 let inbox = match crate::db::labels::get_folder_by_role(
-                                    &engine2.pool, &aid2, "inbox",
-                                ).await {
+                                    &engine2.pool,
+                                    &aid2,
+                                    "inbox",
+                                )
+                                .await
+                                {
                                     Ok(Some(f)) => f,
                                     _ => {
                                         // No inbox row yet (initial sync may not have
@@ -258,7 +269,10 @@ impl SyncEngine {
                                 let folder = RemoteFolder {
                                     remote_id: inbox.remote_id.clone(),
                                     name: inbox.name.clone(),
-                                    delimiter: inbox.delimiter.clone().unwrap_or_else(|| "/".into()),
+                                    delimiter: inbox
+                                        .delimiter
+                                        .clone()
+                                        .unwrap_or_else(|| "/".into()),
                                     role: Some("inbox".into()),
                                     ..Default::default()
                                 };
@@ -340,7 +354,11 @@ impl SyncEngine {
 }
 
 /// Production round: resolve the source via the factory, then run.
-async fn run_sync_round(engine: &Arc<SyncEngine>, account_id: &str, provider: &str) -> Result<(), String> {
+async fn run_sync_round(
+    engine: &Arc<SyncEngine>,
+    account_id: &str,
+    provider: &str,
+) -> Result<(), String> {
     let src = source_for_account(&engine.pool, account_id).await?;
     run_sync_round_with_source(engine, account_id, provider, src.as_ref()).await
 }
@@ -405,13 +423,19 @@ async fn run_sync_round_with_source(
     provider: &str,
     src: &dyn MailSource,
 ) -> Result<(), String> {
-    engine.sink.emit_status(StatusEvent { account_id: account_id.into(), state: "syncing".into() });
+    engine.sink.emit_status(StatusEvent {
+        account_id: account_id.into(),
+        state: "syncing".into(),
+    });
 
     let folders = match src.list_folders().await {
         Ok(f) => f,
         Err(e) => {
             log::warn!("[sync] {account_id} list_folders failed: {e}");
-            engine.sink.emit_status(StatusEvent { account_id: account_id.into(), state: "error".into() });
+            engine.sink.emit_status(StatusEvent {
+                account_id: account_id.into(),
+                state: "error".into(),
+            });
             return Err(e.to_string());
         }
     };
@@ -420,7 +444,12 @@ async fn run_sync_round_with_source(
     for f in &folders {
         upsert_folder_label(&engine.pool, account_id, provider, f)
             .await
-            .unwrap_or_else(|e| log::warn!("[sync] {account_id} upsert label {} failed: {e}", f.remote_id));
+            .unwrap_or_else(|e| {
+                log::warn!(
+                    "[sync] {account_id} upsert label {} failed: {e}",
+                    f.remote_id
+                )
+            });
     }
 
     // Prune local labels whose remote_id is no longer on the server (renamed
@@ -455,20 +484,47 @@ async fn run_sync_round_with_source(
         let delta = match src.sync_folder(f, cursor).await {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("[sync] {account_id} sync_folder {} failed: {e}", f.remote_id);
+                log::warn!(
+                    "[sync] {account_id} sync_folder {} failed: {e}",
+                    f.remote_id
+                );
                 continue;
             }
         };
-        let counts = match messages::apply_folder_delta(&engine.pool, account_id, &label_id, &f.remote_id, &delta).await {
+        let counts = match messages::apply_folder_delta(
+            &engine.pool,
+            account_id,
+            &label_id,
+            &f.remote_id,
+            &delta,
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("[sync] {account_id} apply_folder_delta {} failed: {e}", f.remote_id);
+                log::warn!(
+                    "[sync] {account_id} apply_folder_delta {} failed: {e}",
+                    f.remote_id
+                );
                 continue;
             }
         };
         // Advance the cursor (IMAP path; EAS cursors are advanced by EasSource in Task 10).
-        if let Cursor::Imap { uidvalidity, highest_uid, highest_modseq } = &delta.next_cursor {
-            let _ = sync_state::advance_imap_cursor(&engine.pool, account_id, &f.remote_id, *uidvalidity, *highest_uid, *highest_modseq).await;
+        if let Cursor::Imap {
+            uidvalidity,
+            highest_uid,
+            highest_modseq,
+        } = &delta.next_cursor
+        {
+            let _ = sync_state::advance_imap_cursor(
+                &engine.pool,
+                account_id,
+                &f.remote_id,
+                *uidvalidity,
+                *highest_uid,
+                *highest_modseq,
+            )
+            .await;
         }
         if counts.added > 0 {
             engine.sink.emit_delta(DeltaEvent {
@@ -489,7 +545,10 @@ async fn run_sync_round_with_source(
     }
 
     let _ = accounts::touch_last_sync(&engine.pool, account_id).await;
-    engine.sink.emit_status(StatusEvent { account_id: account_id.into(), state: "idle".into() });
+    engine.sink.emit_status(StatusEvent {
+        account_id: account_id.into(),
+        state: "idle".into(),
+    });
 
     // Phase 1 Task 4: drain queued offline operations through the same source
     // we just used for the sync round. Runs on every poll tick AND on SyncNow,
@@ -502,7 +561,12 @@ async fn run_sync_round_with_source(
 
 /// Map a RemoteFolder to a `labels` row (id = "{account}:{remote_id}").
 /// Uses INSERT ON CONFLICT so repeated calls are idempotent.
-async fn upsert_folder_label(pool: &SqlitePool, account_id: &str, source: &str, f: &RemoteFolder) -> Result<(), String> {
+async fn upsert_folder_label(
+    pool: &SqlitePool,
+    account_id: &str,
+    source: &str,
+    f: &RemoteFolder,
+) -> Result<(), String> {
     let id = format!("{account_id}:{}", f.remote_id);
     let ty = if f.role.is_some() { "system" } else { "user" };
     sqlx::query(
@@ -559,10 +623,18 @@ mod tests {
         }
     }
     impl EventSink for TestSink {
-        fn emit_delta(&self, e: DeltaEvent) { self.deltas.lock().unwrap().push(e); }
-        fn emit_new_mail(&self, e: NewMailEvent) { self.new_mails.lock().unwrap().push(e); }
-        fn emit_status(&self, e: StatusEvent) { self.statuses.lock().unwrap().push(e); }
-        fn emit_queue(&self, e: QueueEvent) { self.queues.lock().unwrap().push(e); }
+        fn emit_delta(&self, e: DeltaEvent) {
+            self.deltas.lock().unwrap().push(e);
+        }
+        fn emit_new_mail(&self, e: NewMailEvent) {
+            self.new_mails.lock().unwrap().push(e);
+        }
+        fn emit_status(&self, e: StatusEvent) {
+            self.statuses.lock().unwrap().push(e);
+        }
+        fn emit_queue(&self, e: QueueEvent) {
+            self.queues.lock().unwrap().push(e);
+        }
     }
 
     async fn seed_account(pool: &SqlitePool, id: &str) {
@@ -602,7 +674,9 @@ mod tests {
         }];
         let src = MockSource::new(vec![folder], msgs);
 
-        run_sync_round_with_source(&engine, "a", "imap", &src).await.unwrap();
+        run_sync_round_with_source(&engine, "a", "imap", &src)
+            .await
+            .unwrap();
 
         // Message landed in the DB.
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id = 'a'")
@@ -619,13 +693,23 @@ mod tests {
         // Events fired.
         assert!(!sink.deltas.lock().unwrap().is_empty());
         assert!(!sink.new_mails.lock().unwrap().is_empty());
-        let states: Vec<String> = sink.statuses.lock().unwrap().iter().map(|s| s.state.clone()).collect();
+        let states: Vec<String> = sink
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.state.clone())
+            .collect();
         assert!(states.contains(&"syncing".to_string()));
         assert!(states.contains(&"idle".to_string()));
         // Cursor advanced.
         assert_eq!(
             sync_state::get_imap_cursor(&pool, "a", "INBOX").await,
-            Cursor::Imap { uidvalidity: 0, highest_uid: 1, highest_modseq: 0 }
+            Cursor::Imap {
+                uidvalidity: 0,
+                highest_uid: 1,
+                highest_modseq: 0
+            }
         );
     }
 
@@ -648,7 +732,9 @@ mod tests {
             parent_id: None,
             ..Default::default()
         };
-        upsert_folder_label(&pool, "a", "imap", &parent).await.unwrap();
+        upsert_folder_label(&pool, "a", "imap", &parent)
+            .await
+            .unwrap();
 
         // Child folder (sub-folder of INBOX) — user folder
         let child = RemoteFolder {
@@ -659,7 +745,9 @@ mod tests {
             parent_id: Some("INBOX".into()), // parent's remote_id (raw IMAP path)
             ..Default::default()
         };
-        upsert_folder_label(&pool, "a", "imap", &child).await.unwrap();
+        upsert_folder_label(&pool, "a", "imap", &child)
+            .await
+            .unwrap();
 
         // A top-level folder with the same leaf name (different path, no parent)
         let top_level = RemoteFolder {
@@ -670,7 +758,9 @@ mod tests {
             parent_id: None,
             ..Default::default()
         };
-        upsert_folder_label(&pool, "a", "imap", &top_level).await.unwrap();
+        upsert_folder_label(&pool, "a", "imap", &top_level)
+            .await
+            .unwrap();
 
         // Verify: child's parent_id stores the parent's remote_id (the IMAP path)
         let (child_parent_id,): (Option<String>,) = sqlx::query_as(
@@ -681,22 +771,35 @@ mod tests {
 
         // Verify: the parent's remote_id column holds the IMAP path
         let (parent_remote_id,): (String,) = sqlx::query_as(
-            "SELECT remote_id FROM labels WHERE account_id = 'a' AND id = 'a:INBOX'"
-        ).fetch_one(&pool).await.unwrap();
-        assert_eq!(parent_remote_id, "INBOX",
-            "parent remote_id must match what child's parent_id references");
+            "SELECT remote_id FROM labels WHERE account_id = 'a' AND id = 'a:INBOX'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            parent_remote_id, "INBOX",
+            "parent remote_id must match what child's parent_id references"
+        );
 
         // Verify: top-level folder has no parent
         let (top_parent_id,): (Option<String>,) = sqlx::query_as(
-            "SELECT parent_id FROM labels WHERE account_id = 'a' AND remote_id = 'KylinsTest'"
-        ).fetch_one(&pool).await.unwrap();
-        assert_eq!(top_parent_id, None,
-            "top-level folder with same name must not get a parent_id");
+            "SELECT parent_id FROM labels WHERE account_id = 'a' AND remote_id = 'KylinsTest'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            top_parent_id, None,
+            "top-level folder with same name must not get a parent_id"
+        );
 
         // Verify: both "KylinsTest" folders exist and are distinct
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM labels WHERE account_id = 'a' AND name = 'KylinsTest'"
-        ).fetch_one(&pool).await.unwrap();
+            "SELECT COUNT(*) FROM labels WHERE account_id = 'a' AND name = 'KylinsTest'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(count, 2, "two distinct folders named KylinsTest expected");
     }
 
@@ -707,16 +810,32 @@ mod tests {
         seed_account(&pool, "a").await;
         let sink = Arc::new(TestSink::new());
         let engine = SyncEngine::new(pool.clone(), sink.clone());
-        let folder = RemoteFolder { remote_id: "INBOX".into(), name: "INBOX".into(), delimiter: "/".into(), role: None, ..Default::default() };
+        let folder = RemoteFolder {
+            remote_id: "INBOX".into(),
+            name: "INBOX".into(),
+            delimiter: "/".into(),
+            role: None,
+            ..Default::default()
+        };
         let src = MockSource::new(
             vec![folder],
-            vec![RemoteMessage { uid: 1, folder: "INBOX".into(), message_id: Some("<m1>".into()), date: 1, ..Default::default() }],
+            vec![RemoteMessage {
+                uid: 1,
+                folder: "INBOX".into(),
+                message_id: Some("<m1>".into()),
+                date: 1,
+                ..Default::default()
+            }],
         );
-        run_sync_round_with_source(&engine, "a", "imap", &src).await.unwrap();
+        run_sync_round_with_source(&engine, "a", "imap", &src)
+            .await
+            .unwrap();
         // Round 1: 1 message delta + 1 label delta
         assert_eq!(sink.deltas.lock().unwrap().len(), 2);
         // Round 2: no new messages + 1 label delta (emitted unconditionally per round)
-        run_sync_round_with_source(&engine, "a", "imap", &src).await.unwrap();
+        run_sync_round_with_source(&engine, "a", "imap", &src)
+            .await
+            .unwrap();
         assert_eq!(sink.deltas.lock().unwrap().len(), 3);
     }
 
@@ -724,12 +843,20 @@ mod tests {
 
     /// Seed one pending markRead op (one message = one row, matching how Task 3
     /// fans out). Used by the replay tests.
-    async fn seed_pending_markread(pool: &SqlitePool, account_id: &str, op_id: &str, resource_id: &str, uid: u32, read: bool) {
+    async fn seed_pending_markread(
+        pool: &SqlitePool,
+        account_id: &str,
+        op_id: &str,
+        resource_id: &str,
+        uid: u32,
+        read: bool,
+    ) {
         let params = serde_json::json!({
             "folderPath": "INBOX",
             "read": if read { 1 } else { 0 },
             "uids": [uid],
-        }).to_string();
+        })
+        .to_string();
         sqlx::query(
             "INSERT INTO pending_operations (id, account_id, operation_type, resource_id, params, status, created_at)
              VALUES (?, ?, 'markRead', ?, ?, 'pending', 1)",
@@ -757,12 +884,11 @@ mod tests {
         run_replay_round(&engine, "a", &src).await;
 
         // Op was completed (deleted from the queue).
-        let (cnt,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (cnt,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(cnt, 0, "completed op should be removed from the queue");
 
         // MockSource observed the set_flags call (markRead → \\Seen, add=read).
@@ -793,25 +919,56 @@ mod tests {
             fn capabilities(&self) -> crate::sync_engine::Capabilities {
                 crate::sync_engine::Capabilities::default()
             }
-            async fn list_folders(&self) -> Result<Vec<RemoteFolder>, crate::sync_engine::SourceError> {
+            async fn list_folders(
+                &self,
+            ) -> Result<Vec<RemoteFolder>, crate::sync_engine::SourceError> {
                 Ok(vec![])
             }
-            async fn sync_folder(&self, _f: &RemoteFolder, _c: crate::sync_engine::Cursor) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError> {
+            async fn sync_folder(
+                &self,
+                _f: &RemoteFolder,
+                _c: crate::sync_engine::Cursor,
+            ) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError>
+            {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn fetch_body(&self, _f: &RemoteFolder, _u: u32) -> Result<Option<String>, crate::sync_engine::SourceError> {
+            async fn fetch_body(
+                &self,
+                _f: &RemoteFolder,
+                _u: u32,
+            ) -> Result<Option<String>, crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn set_flags(&self, _f: &RemoteFolder, _u: &[u32], _flag: &str, _add: bool) -> Result<(), crate::sync_engine::SourceError> {
+            async fn set_flags(
+                &self,
+                _f: &RemoteFolder,
+                _u: &[u32],
+                _flag: &str,
+                _add: bool,
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn move_messages(&self, _s: &RemoteFolder, _u: &[u32], _d: &RemoteFolder) -> Result<(), crate::sync_engine::SourceError> {
+            async fn move_messages(
+                &self,
+                _s: &RemoteFolder,
+                _u: &[u32],
+                _d: &RemoteFolder,
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn delete_messages(&self, _f: &RemoteFolder, _u: &[u32]) -> Result<(), crate::sync_engine::SourceError> {
+            async fn delete_messages(
+                &self,
+                _f: &RemoteFolder,
+                _u: &[u32],
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn append(&self, _f: &RemoteFolder, _r: &[u8], _fl: &[&str]) -> Result<(), crate::sync_engine::SourceError> {
+            async fn append(
+                &self,
+                _f: &RemoteFolder,
+                _r: &[u8],
+                _fl: &[&str],
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
             async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
@@ -860,22 +1017,33 @@ mod tests {
     #[test]
     fn pick_realtime_strategy_idle_when_source_advertises_idle() {
         // A MockSource configured with `idle: true` → strategy is Idle.
-        let src = MockSource::new(vec![], vec![])
-            .with_caps(Capabilities { idle: true, ..Default::default() });
-        assert_eq!(pick_realtime_strategy(&src.capabilities()), RealtimeStrategy::Idle);
+        let src = MockSource::new(vec![], vec![]).with_caps(Capabilities {
+            idle: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            pick_realtime_strategy(&src.capabilities()),
+            RealtimeStrategy::Idle
+        );
     }
 
     #[test]
     fn pick_realtime_strategy_poll_when_source_has_no_idle() {
         // Default caps (idle: false) → strategy is Poll (poll-only).
         let src = MockSource::new(vec![], vec![]);
-        assert_eq!(pick_realtime_strategy(&src.capabilities()), RealtimeStrategy::Poll);
+        assert_eq!(
+            pick_realtime_strategy(&src.capabilities()),
+            RealtimeStrategy::Poll
+        );
     }
 
     #[test]
     fn pick_realtime_strategy_poll_for_empty_default_caps() {
         // Bare default caps (no source) — the case before the first sync round
         // warms the ImapSource caps cache. Must be Poll so no watcher spawns.
-        assert_eq!(pick_realtime_strategy(&Capabilities::default()), RealtimeStrategy::Poll);
+        assert_eq!(
+            pick_realtime_strategy(&Capabilities::default()),
+            RealtimeStrategy::Poll
+        );
     }
 }

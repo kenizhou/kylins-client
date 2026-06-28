@@ -16,9 +16,7 @@ use async_trait::async_trait;
 
 use crate::db::accounts::Account;
 use crate::eas::client::EasClient;
-use crate::eas::types::{
-    EasConfig, EasFolder, PingCollection, PingRequest,
-};
+use crate::eas::types::{EasConfig, EasFolder, PingCollection, PingRequest};
 
 use super::{Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, SourceError};
 
@@ -150,19 +148,43 @@ impl MailSource for EasSource {
         })
     }
 
-    async fn fetch_body(&self, _folder: &RemoteFolder, _uid: u32) -> Result<Option<String>, SourceError> {
+    async fn fetch_body(
+        &self,
+        _folder: &RemoteFolder,
+        _uid: u32,
+    ) -> Result<Option<String>, SourceError> {
         Err(nyi())
     }
-    async fn set_flags(&self, _folder: &RemoteFolder, _uids: &[u32], _flag: &str, _add: bool) -> Result<(), SourceError> {
+    async fn set_flags(
+        &self,
+        _folder: &RemoteFolder,
+        _uids: &[u32],
+        _flag: &str,
+        _add: bool,
+    ) -> Result<(), SourceError> {
         Err(nyi())
     }
-    async fn move_messages(&self, _src: &RemoteFolder, _uids: &[u32], _dest: &RemoteFolder) -> Result<(), SourceError> {
+    async fn move_messages(
+        &self,
+        _src: &RemoteFolder,
+        _uids: &[u32],
+        _dest: &RemoteFolder,
+    ) -> Result<(), SourceError> {
         Err(nyi())
     }
-    async fn delete_messages(&self, _folder: &RemoteFolder, _uids: &[u32]) -> Result<(), SourceError> {
+    async fn delete_messages(
+        &self,
+        _folder: &RemoteFolder,
+        _uids: &[u32],
+    ) -> Result<(), SourceError> {
         Err(nyi())
     }
-    async fn append(&self, _folder: &RemoteFolder, _raw: &[u8], _flags: &[&str]) -> Result<(), SourceError> {
+    async fn append(
+        &self,
+        _folder: &RemoteFolder,
+        _raw: &[u8],
+        _flags: &[&str],
+    ) -> Result<(), SourceError> {
         Err(nyi())
     }
     async fn send(&self, _raw_base64url: &str) -> Result<(), SourceError> {
@@ -297,7 +319,10 @@ mod tests {
         };
         let src = EasSource::new(account);
         let cfg = src.eas_config();
-        assert_eq!(cfg.url, "https://mail.example.com/Microsoft-Server-ActiveSync");
+        assert_eq!(
+            cfg.url,
+            "https://mail.example.com/Microsoft-Server-ActiveSync"
+        );
         assert_eq!(cfg.username, "user@example.com");
         assert_eq!(cfg.password, "hunter2");
         assert_eq!(cfg.protocol_version, "14.1");
@@ -350,7 +375,10 @@ mod tests {
         };
         let src = EasSource::new(account);
         let res = src.list_folders().await;
-        assert!(res.is_err(), "list_folders against an unreachable host must error");
+        assert!(
+            res.is_err(),
+            "list_folders against an unreachable host must error"
+        );
         match res {
             Err(SourceError::Other(_)) => {}
             other => panic!("expected SourceError::Other, got {other:?}"),

@@ -21,7 +21,10 @@ pub async fn sync_stop(engine: State<'_, Arc<SyncEngine>>) -> Result<(), String>
 }
 
 #[tauri::command]
-pub async fn sync_account_now(engine: State<'_, Arc<SyncEngine>>, account_id: String) -> Result<(), String> {
+pub async fn sync_account_now(
+    engine: State<'_, Arc<SyncEngine>>,
+    account_id: String,
+) -> Result<(), String> {
     engine.sync_account_now(account_id).await;
     Ok(())
 }
@@ -121,7 +124,13 @@ mod tests {
         .unwrap();
     }
 
-    async fn seed_thread_with_message(pool: &SqlitePool, account_id: &str, thread_id: &str, folder: &str, uid: u32) {
+    async fn seed_thread_with_message(
+        pool: &SqlitePool,
+        account_id: &str,
+        thread_id: &str,
+        folder: &str,
+        uid: u32,
+    ) {
         seed_thread_with_messages(pool, account_id, thread_id, folder, &[uid]).await;
     }
 
@@ -183,13 +192,16 @@ mod tests {
             uids: vec![10, 11],
             read: true,
         };
-        apply_mutation_inner(engine, &pool, "acct".into(), op).await.unwrap();
-
-        // Local: thread + messages now read.
-        let (tr,): (i64,) = sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr'")
-            .fetch_one(&pool)
+        apply_mutation_inner(engine, &pool, "acct".into(), op)
             .await
             .unwrap();
+
+        // Local: thread + messages now read.
+        let (tr,): (i64,) =
+            sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(tr, 1);
 
         // Queue: one row per affected message_id, op_type=markRead, params has read=1.
@@ -221,7 +233,9 @@ mod tests {
         let op = MutationOp::Send {
             raw_base64url: "YWJj".into(),
         };
-        apply_mutation_inner(engine, &pool, "acct".into(), op).await.unwrap();
+        apply_mutation_inner(engine, &pool, "acct".into(), op)
+            .await
+            .unwrap();
 
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT resource_id, operation_type FROM pending_operations WHERE account_id='acct'",
@@ -230,7 +244,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(rows.len(), 1, "Send enqueues exactly one row");
-        assert!(rows[0].0.starts_with("send:"), "resource_id starts with 'send:'");
+        assert!(
+            rows[0].0.starts_with("send:"),
+            "resource_id starts with 'send:'"
+        );
         assert_eq!(rows[0].1, "send");
     }
 
@@ -248,7 +265,9 @@ mod tests {
             folder_path: "INBOX".into(),
             uids: vec![5],
         };
-        apply_mutation_inner(engine, &pool, "acct".into(), op).await.unwrap();
+        apply_mutation_inner(engine, &pool, "acct".into(), op)
+            .await
+            .unwrap();
 
         // Message gone.
         let (mn,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct'")

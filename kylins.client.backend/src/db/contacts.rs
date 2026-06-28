@@ -17,10 +17,7 @@
 //! re-serialize to JSON on the Rust side to match the historical behavior.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Trim + lowercase an email address. Mirrors `normalizeEmail` in
 /// `utils/emailUtils.ts`.
@@ -140,8 +137,12 @@ pub struct ContactListOptions {
 
 fn row_to_contact(row: &SqliteRow) -> Contact {
     let emails_json: String = row.try_get("emails_json").unwrap_or_else(|_| "[]".into());
-    let phones_json: String = row.try_get("phone_numbers_json").unwrap_or_else(|_| "[]".into());
-    let addresses_json: String = row.try_get("addresses_json").unwrap_or_else(|_| "[]".into());
+    let phones_json: String = row
+        .try_get("phone_numbers_json")
+        .unwrap_or_else(|_| "[]".into());
+    let addresses_json: String = row
+        .try_get("addresses_json")
+        .unwrap_or_else(|_| "[]".into());
     let emails = serde_json::from_str(&emails_json).unwrap_or(serde_json::Value::Array(vec![]));
     let phones = serde_json::from_str(&phones_json).unwrap_or(serde_json::Value::Array(vec![]));
     let addresses =
@@ -236,8 +237,12 @@ fn row_to_db_contact_raw(row: &SqliteRow) -> DbContactRaw {
         company: row.try_get("company").unwrap_or(None),
         job_title: row.try_get("job_title").unwrap_or(None),
         emails_json: row.try_get("emails_json").unwrap_or_else(|_| "[]".into()),
-        phone_numbers_json: row.try_get("phone_numbers_json").unwrap_or_else(|_| "[]".into()),
-        addresses_json: row.try_get("addresses_json").unwrap_or_else(|_| "[]".into()),
+        phone_numbers_json: row
+            .try_get("phone_numbers_json")
+            .unwrap_or_else(|_| "[]".into()),
+        addresses_json: row
+            .try_get("addresses_json")
+            .unwrap_or_else(|_| "[]".into()),
         created_at: row.try_get("created_at").unwrap_or(0),
         updated_at: row.try_get("updated_at").unwrap_or(0),
     }
@@ -468,10 +473,16 @@ pub async fn update(
         ));
     }
     if let Some(v) = updates.is_hidden {
-        sets.push(("is_hidden", crate::db::BindValue::Int(if v { 1 } else { 0 })));
+        sets.push((
+            "is_hidden",
+            crate::db::BindValue::Int(if v { 1 } else { 0 }),
+        ));
     }
     if let Some(v) = updates.is_readonly {
-        sets.push(("is_readonly", crate::db::BindValue::Int(if v { 1 } else { 0 })));
+        sets.push((
+            "is_readonly",
+            crate::db::BindValue::Int(if v { 1 } else { 0 }),
+        ));
     }
 
     crate::db::exec_dynamic_update(pool, "contacts", "id", id, sets).await
@@ -515,20 +526,14 @@ pub async fn upsert(
 }
 
 /// Update avatar for a contact (by email). Mirrors `updateContactAvatar`.
-pub async fn update_avatar(
-    pool: &SqlitePool,
-    email: &str,
-    avatar_url: &str,
-) -> Result<(), String> {
+pub async fn update_avatar(pool: &SqlitePool, email: &str, avatar_url: &str) -> Result<(), String> {
     let normalized = normalize_email(email);
-    sqlx::query(
-        "UPDATE contacts SET avatar_url = $1, updated_at = unixepoch() WHERE email = $2",
-    )
-    .bind(avatar_url)
-    .bind(&normalized)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE contacts SET avatar_url = $1, updated_at = unixepoch() WHERE email = $2")
+        .bind(avatar_url)
+        .bind(&normalized)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -879,12 +884,14 @@ pub async fn add_to_group(
     contact_id: &str,
     group_id: &str,
 ) -> Result<(), String> {
-    sqlx::query("INSERT OR IGNORE INTO contact_group_members (group_id, contact_id) VALUES ($1, $2)")
-        .bind(group_id)
-        .bind(contact_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO contact_group_members (group_id, contact_id) VALUES ($1, $2)",
+    )
+    .bind(group_id)
+    .bind(contact_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

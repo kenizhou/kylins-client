@@ -7,10 +7,7 @@
 //! byte-for-byte with `#[serde(rename_all = "snake_case")]`.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Template row. Mirrors TS `DbTemplate`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

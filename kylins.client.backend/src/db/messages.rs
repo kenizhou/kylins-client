@@ -101,10 +101,12 @@ async fn upsert_message(
 
     // RFC 2822 Message-ID header (for JWZ threading). Fall back to a synthetic
     // deterministic ID when the server sent no header (drafts, calendar items, etc.).
-    let rfc2822_message_id = m
-        .message_id
-        .clone()
-        .unwrap_or_else(|| format!("synthetic-{}-{}-{}@kylins.local", account_id, m.folder, m.uid));
+    let rfc2822_message_id = m.message_id.clone().unwrap_or_else(|| {
+        format!(
+            "synthetic-{}-{}-{}@kylins.local",
+            account_id, m.folder, m.uid
+        )
+    });
     let has_attachments: i64 = if m.has_attachments { 1 } else { 0 };
     let is_read: i64 = if m.is_read { 1 } else { 0 };
     let is_starred: i64 = if m.is_starred { 1 } else { 0 };
@@ -262,7 +264,9 @@ mod tests {
             next_cursor: Cursor::initial_imap(),
             uidvalidity_changed: false,
         };
-        let counts = apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta).await.unwrap();
+        let counts = apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
         assert_eq!(counts.added, 2);
         assert_eq!(count(&pool, "threads").await, 2);
         assert_eq!(count(&pool, "messages").await, 2);
@@ -279,8 +283,12 @@ mod tests {
             added: vec![msg(1, "<m1>", false)],
             ..Default::default()
         };
-        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta).await.unwrap();
-        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta).await.unwrap();
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
         assert_eq!(count(&pool, "messages").await, 1);
         assert_eq!(count(&pool, "threads").await, 1);
     }
@@ -350,8 +358,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
         seed(&pool, "acc").await;
-        let seed = FolderDelta { added: vec![msg(1, "<m1>", false), msg(2, "<m2>", false)], ..Default::default() };
-        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &seed).await.unwrap();
+        let seed = FolderDelta {
+            added: vec![msg(1, "<m1>", false), msg(2, "<m2>", false)],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &seed)
+            .await
+            .unwrap();
         assert_eq!(count(&pool, "messages").await, 2);
         // UIDVALIDITY changed -> wipe, then add one fresh.
         let wipe = FolderDelta {
@@ -359,7 +372,9 @@ mod tests {
             uidvalidity_changed: true,
             ..Default::default()
         };
-        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &wipe).await.unwrap();
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &wipe)
+            .await
+            .unwrap();
         assert_eq!(count(&pool, "messages").await, 1);
         assert_eq!(count(&pool, "threads").await, 1);
     }

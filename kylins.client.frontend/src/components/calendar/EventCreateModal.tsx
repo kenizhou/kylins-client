@@ -32,7 +32,9 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
   const [error, setError] = useState<string | null>(null);
 
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {

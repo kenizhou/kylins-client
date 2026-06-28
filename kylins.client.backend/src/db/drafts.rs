@@ -10,10 +10,7 @@
 //! the JSON itself.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -68,7 +65,9 @@ fn row_to_draft(row: &SqliteRow) -> Draft {
         is_signed: row.try_get("is_signed").unwrap_or(0),
         created_at: row.try_get("created_at").unwrap_or(0),
         updated_at: row.try_get("updated_at").unwrap_or(0),
-        sync_status: row.try_get("sync_status").unwrap_or_else(|_| "pending".into()),
+        sync_status: row
+            .try_get("sync_status")
+            .unwrap_or_else(|_| "pending".into()),
     }
 }
 
@@ -189,10 +188,7 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Draft>, String> {
 }
 
 /// List drafts for an account, newest-first by updated_at.
-pub async fn list_for_account(
-    pool: &SqlitePool,
-    account_id: &str,
-) -> Result<Vec<Draft>, String> {
+pub async fn list_for_account(pool: &SqlitePool, account_id: &str) -> Result<Vec<Draft>, String> {
     let rows =
         sqlx::query("SELECT * FROM local_drafts WHERE account_id = $1 ORDER BY updated_at DESC")
             .bind(account_id)

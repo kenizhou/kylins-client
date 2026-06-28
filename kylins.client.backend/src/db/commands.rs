@@ -13,9 +13,7 @@ use tauri::State;
 
 use sqlx::SqlitePool;
 
-use crate::db::accounts::{
-    self, Account, AccountUpdates, CreateAccountInput,
-};
+use crate::db::accounts::{self, Account, AccountUpdates, CreateAccountInput};
 use crate::db::labels::{self, MailFolder};
 use crate::db::message_bodies;
 use crate::db::queue::{self, PendingOperation};
@@ -79,15 +77,14 @@ pub async fn db_get_account_count(pool: State<'_, SqlitePool>) -> Result<i64, St
 }
 
 #[tauri::command]
-pub async fn db_set_default_account(
-    pool: State<'_, SqlitePool>,
-    id: String,
-) -> Result<(), String> {
+pub async fn db_set_default_account(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
     accounts::set_default(&pool, &id).await
 }
 
 #[tauri::command]
-pub async fn db_get_default_account(pool: State<'_, SqlitePool>) -> Result<Option<Account>, String> {
+pub async fn db_get_default_account(
+    pool: State<'_, SqlitePool>,
+) -> Result<Option<Account>, String> {
     accounts::get_default(&pool).await
 }
 
@@ -353,7 +350,10 @@ pub async fn db_search_contacts(
 }
 
 #[tauri::command]
-pub async fn db_get_contact_by_id(pool: State<'_, SqlitePool>, id: String) -> Result<Option<Contact>, String> {
+pub async fn db_get_contact_by_id(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<Option<Contact>, String> {
     contacts::get_by_id(&pool, &id).await
 }
 
@@ -511,7 +511,10 @@ pub async fn db_rename_contact_group(
 }
 
 #[tauri::command]
-pub async fn db_delete_contact_group(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+pub async fn db_delete_contact_group(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<(), String> {
     contacts::delete_group(&pool, &id).await
 }
 
@@ -599,7 +602,10 @@ pub async fn db_delete_signature(pool: State<'_, SqlitePool>, id: String) -> Res
 use crate::db::drafts::{self, Draft, DraftInput};
 
 #[tauri::command]
-pub async fn db_create_draft(pool: State<'_, SqlitePool>, input: DraftInput) -> Result<String, String> {
+pub async fn db_create_draft(
+    pool: State<'_, SqlitePool>,
+    input: DraftInput,
+) -> Result<String, String> {
     drafts::create(&pool, input).await
 }
 
@@ -618,7 +624,10 @@ pub async fn db_delete_draft(pool: State<'_, SqlitePool>, id: String) -> Result<
 }
 
 #[tauri::command]
-pub async fn db_get_draft(pool: State<'_, SqlitePool>, id: String) -> Result<Option<Draft>, String> {
+pub async fn db_get_draft(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<Option<Draft>, String> {
     drafts::get(&pool, &id).await
 }
 
@@ -726,7 +735,10 @@ pub async fn db_update_calendar_event(
 }
 
 #[tauri::command]
-pub async fn db_delete_calendar_event(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+pub async fn db_delete_calendar_event(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<(), String> {
     calendar_events::delete(&pool, &id).await
 }
 
@@ -767,7 +779,10 @@ pub async fn db_update_scheduled_email_status(
 }
 
 #[tauri::command]
-pub async fn db_delete_scheduled_email(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+pub async fn db_delete_scheduled_email(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<(), String> {
     scheduled_emails::delete(&pool, &id).await
 }
 
@@ -891,13 +906,7 @@ pub async fn db_get_cached_ai_result(
     thread_id: String,
     cache_type: String,
 ) -> Result<Option<String>, String> {
-    crate::db::ai_cache::get_cached(
-        &pool,
-        account_id.as_deref(),
-        &thread_id,
-        &cache_type,
-    )
-    .await
+    crate::db::ai_cache::get_cached(&pool, account_id.as_deref(), &thread_id, &cache_type).await
 }
 
 #[tauri::command]

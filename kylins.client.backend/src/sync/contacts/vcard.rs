@@ -88,9 +88,13 @@ fn split_structured(value: &str) -> Vec<String> {
 }
 
 fn address_from_parts(parts: &[Option<String>]) -> ContactAddress {
-    let get = |i: usize| parts.get(i).and_then(|o| o.clone()).filter(|s| !s.is_empty());
-    let street_parts: Vec<String> =
-        [get(2), get(1)].into_iter().flatten().collect();
+    let get = |i: usize| {
+        parts
+            .get(i)
+            .and_then(|o| o.clone())
+            .filter(|s| !s.is_empty())
+    };
+    let street_parts: Vec<String> = [get(2), get(1)].into_iter().flatten().collect();
     ContactAddress {
         label: None,
         street: if street_parts.is_empty() {
@@ -148,8 +152,10 @@ fn parse_vcard_block(block: &str) -> ParsedContact {
                 value: prop.value,
             }),
             "ADR" => {
-                let parts: Vec<Option<String>> =
-                    split_structured(&prop.value).into_iter().map(Some).collect();
+                let parts: Vec<Option<String>> = split_structured(&prop.value)
+                    .into_iter()
+                    .map(Some)
+                    .collect();
                 let mut addr = address_from_parts(&parts);
                 addr.label = prop.label;
                 contact.addresses.push(addr);
@@ -228,7 +234,10 @@ pub fn export_vcard(contacts: &[ParsedContact]) -> String {
         output.push_str("BEGIN:VCARD\r\n");
         output.push_str("VERSION:3.0\r\n");
 
-        let id = contact.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let id = contact
+            .id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         output.push_str(&format!("UID:{}\r\n", escape_vcard(&id)));
 
         let display = contact.display_name.clone().unwrap_or_default();

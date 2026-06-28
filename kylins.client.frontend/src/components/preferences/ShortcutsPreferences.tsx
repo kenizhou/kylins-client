@@ -73,7 +73,9 @@ function ShortcutRow({
   return (
     <div className="flex items-center justify-between gap-4 py-2.5 border-b border-[var(--border)] last:border-b-0">
       <div className="flex flex-col gap-0.5 min-w-0">
-        <span className="text-sm text-[var(--foreground)] truncate">{command?.label ?? commandId}</span>
+        <span className="text-sm text-[var(--foreground)] truncate">
+          {command?.label ?? commandId}
+        </span>
         {conflictId && (
           <span className="text-[11px] text-[var(--destructive)]">
             Conflicts with {getCommandById(conflictId)?.label ?? conflictId}
@@ -126,7 +128,9 @@ export function ShortcutsPreferences() {
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const recordingIdRef = useRef(recordingId);
-  recordingIdRef.current = recordingId;
+  useEffect(() => {
+    recordingIdRef.current = recordingId;
+  }, [recordingId]);
 
   const hasCustomizations = useMemo(() => {
     const overrides = shortcutManager.getOverrides()[activeSet];
@@ -193,12 +197,18 @@ export function ShortcutsPreferences() {
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between gap-4">
               <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-[var(--foreground)]">Active platform set</span>
+                <span className="text-sm font-medium text-[var(--foreground)]">
+                  Active platform set
+                </span>
                 <span className="text-xs text-[var(--muted-text)]">
                   Defaults and display labels switch to match the selected platform.
                 </span>
               </div>
-              <SegmentedControl options={SET_OPTIONS} value={activeSet} onChange={handleSetActiveSet} />
+              <SegmentedControl
+                options={SET_OPTIONS}
+                value={activeSet}
+                onChange={handleSetActiveSet}
+              />
             </div>
 
             <div className="flex items-center justify-between gap-4">
@@ -226,10 +236,7 @@ export function ShortcutsPreferences() {
           const commands = getCommandsByCategory(category).filter((cmd) => {
             const term = search.trim().toLowerCase();
             if (!term) return true;
-            return (
-              cmd.label.toLowerCase().includes(term) ||
-              cmd.id.toLowerCase().includes(term)
-            );
+            return cmd.label.toLowerCase().includes(term) || cmd.id.toLowerCase().includes(term);
           });
           if (commands.length === 0) return null;
           return (

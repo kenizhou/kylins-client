@@ -105,7 +105,10 @@ pub fn request_notification_permission(app: tauri::AppHandle) -> Result<bool, St
         .notification()
         .request_permission()
         .map_err(|e| format!("failed to request notification permission: {e}"))?;
-    Ok(matches!(requested, tauri_plugin_notification::PermissionState::Granted))
+    Ok(matches!(
+        requested,
+        tauri_plugin_notification::PermissionState::Granted
+    ))
 }
 
 fn dir_size(path: &std::path::Path) -> std::io::Result<u64> {
@@ -148,11 +151,14 @@ pub fn clear_cache(app: tauri::AppHandle) -> Result<(), String> {
     if !cache_dir.exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(&cache_dir).map_err(|e| format!("failed to read cache dir: {e}"))? {
+    for entry in
+        std::fs::read_dir(&cache_dir).map_err(|e| format!("failed to read cache dir: {e}"))?
+    {
         let entry = entry.map_err(|e| format!("failed to read cache entry: {e}"))?;
         let path = entry.path();
         if path.is_dir() {
-            std::fs::remove_dir_all(&path).map_err(|e| format!("failed to remove {path:?}: {e}"))?;
+            std::fs::remove_dir_all(&path)
+                .map_err(|e| format!("failed to remove {path:?}: {e}"))?;
         } else {
             std::fs::remove_file(&path).map_err(|e| format!("failed to remove {path:?}: {e}"))?;
         }
