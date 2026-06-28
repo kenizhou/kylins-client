@@ -78,6 +78,10 @@ jobs:
             target: ""
 
     runs-on: ${{ matrix.platform }}
+    env:
+      LANG: C.UTF-8
+      RELEASE_ID: ${{ inputs.release_id || github.event.release.id }}
+      TAG_NAME: ${{ inputs.tag_name || github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,23 +114,23 @@ jobs:
         run: npm ci
 
       - name: Build and upload to existing release
-        if: inputs.release_id
+        if: env.RELEASE_ID
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: kylins.client.backend
-          releaseId: ${{ inputs.release_id }}
+          releaseId: ${{ env.RELEASE_ID }}
 
       - name: Build and create release
-        if: ${{ !inputs.release_id }}
+        if: ${{ env.RELEASE_ID == '' }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: kylins.client.backend
-          tagName: v__VERSION__
-          releaseName: "Kylins Mail v__VERSION__"
+          tagName: ${{ env.TAG_NAME }}
+          releaseName: "Kylins Mail ${{ env.TAG_NAME }}"
           releaseBody: "See the assets below to download for your platform."
           releaseDraft: false
           prerelease: false
@@ -134,6 +138,9 @@ jobs:
   build-macos:
     needs: test
     runs-on: macos-latest
+    env:
+      RELEASE_ID: ${{ inputs.release_id || github.event.release.id }}
+      TAG_NAME: ${{ inputs.tag_name || github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -156,24 +163,24 @@ jobs:
         run: npm ci
 
       - name: Build and upload (unsigned universal)
-        if: inputs.release_id
+        if: env.RELEASE_ID
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: kylins.client.backend
-          releaseId: ${{ inputs.release_id }}
+          releaseId: ${{ env.RELEASE_ID }}
           args: --target universal-apple-darwin
 
       - name: Build and release (unsigned universal)
-        if: ${{ !inputs.release_id }}
+        if: ${{ env.RELEASE_ID == '' }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: kylins.client.backend
-          tagName: v__VERSION__
-          releaseName: "Kylins Mail v__VERSION__"
+          tagName: ${{ env.TAG_NAME }}
+          releaseName: "Kylins Mail ${{ env.TAG_NAME }}"
           releaseBody: |
             See the assets below to download for your platform.
 
