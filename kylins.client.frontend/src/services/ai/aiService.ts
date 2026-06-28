@@ -1,4 +1,10 @@
-import { getDb } from '../db/connection';
+// Task 5 (Option C) clean-cut cutover: the cache read/write half of this
+// service now delegates to Rust `db_*` Tauri commands (see
+// `kylins.client.backend/src/db/ai_cache.rs`). The LLM provider invocation
+// (`chat` / `summarize`) stays TS-side — it streams from the provider and only
+// touches the DB to read/write the cache row.
+
+import { invoke } from '@tauri-apps/api/core';
 import type { LLMProvider, ChatMessage, ChatOptions } from './providers/base';
 
 export class AIService {
@@ -9,12 +15,11 @@ export class AIService {
     threadId: string,
     type: string,
   ): Promise<string | null> {
-    const db = await getDb();
-    const rows = await db.select<{ content: string }[]>(
-      'SELECT content FROM ai_cache WHERE account_id = $1 AND thread_id = $2 AND type = $3',
-      [accountId ?? null, threadId, type],
-    );
-    return rows[0]?.content ?? null;
+    return invoke<string | null>('db_get_cached_ai_result', {
+      accountId: accountId ?? null,
+      threadId,
+      cacheType: type,
+    });
   }
 
   async cacheResult(
@@ -23,12 +28,12 @@ export class AIService {
     type: string,
     content: string,
   ): Promise<void> {
-    const db = await getDb();
-    await db.execute(
-      `INSERT OR REPLACE INTO ai_cache (account_id, thread_id, type, content)
-       VALUES ($1, $2, $3, $4)`,
-      [accountId ?? null, threadId, type, content],
-    );
+    await invoke<void>('db_cache_ai_result', {
+      accountId: accountId ?? null,
+      threadId,
+      cacheType: type,
+      content,
+    });
   }
 
   async chat(

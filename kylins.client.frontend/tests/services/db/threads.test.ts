@@ -1,4 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Task 5 cutover: the read paths (getThreads, getMessagesForThread,
+// markThreadRead) now route through `invoke('db_*')`. Tests assert the wrapper
+// forwards the right command + args and passes the Rust return value through.
+// The pure helpers (parseAddresses, mapMessageToMailMessage) keep their
+// original unit tests — they consume the snake_case MessageRow Rust returns.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   getThreads,
   getMessagesForThread,
@@ -7,98 +13,85 @@ import {
   mapMessageToMailMessage,
   type ThreadCursor,
 } from '../../../src/services/db/threads';
-import { getDb } from '../../../src/services/db/connection';
-import type Database from '@tauri-apps/plugin-sql';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 
-vi.mock('../../../src/services/db/connection', () => {
-  const getDb = vi.fn();
-  const withTransaction = vi.fn(async (fn: (db: unknown) => Promise<void>) => fn(await getDb()));
-  return { getDb, withTransaction };
-});
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = { select: vi.fn(), execute: vi.fn() };
-
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.select.mockReset();
-  mockDb.execute.mockReset();
-});
-
-const row = (over: Record<string, unknown> = {}) => ({
-  id: 't1',
-  account_id: 'a1',
-  subject: 'S',
-  snippet: 'sn',
-  last_message_at: 100,
-  message_count: 1,
-  is_read: 0,
-  is_starred: 0,
-  is_important: 0,
-  has_attachments: 0,
-  is_snoozed: 0,
-  from_name: 'Bob',
-  from_address: 'b@x.com',
-  ...over,
-});
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 describe('getThreads', () => {
-  it('joins thread_labels + orders + limits on the first page (no cursor)', async () => {
-    mockDb.select.mockResolvedValue([row({ is_starred: 1 })]);
-    const { threads, nextCursor } = await getThreads('a1', { labelId: 'inbox' });
-    expect(threads[0]!.isStarred).toBe(true);
-    expect(threads[0]!.fromName).toBe('Bob');
-    const [sql, params] = mockDb.select.mock.calls[0]!;
-    expect(String(sql)).toContain('INNER JOIN thread_labels');
-    expect(String(sql)).toContain('ORDER BY t.last_message_at DESC, t.id DESC');
-    expect(String(sql)).toContain('LIMIT');
-    expect(params).toContain('a1');
-    expect(params).toContain('inbox');
-    expect(nextCursor).toBeNull(); // 1 row < default limit 50
+  it('invokes db_get_threads with accountId + opts (labelId passed through)', async () => {
+    mockInvoke.mockResolvedValueOnce({ threads: [], nextCursor: null });
+    await getThreads('a1', { labelId: 'inbox' });
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_threads', {
+      accountId: 'a1',
+      opts: { labelId: 'inbox', limit: undefined, cursor: null },
+    });
   });
 
-  it('omits the label join when no labelId', async () => {
-    mockDb.select.mockResolvedValue([]);
-    await getThreads('a1', {});
-    expect(String(mockDb.select.mock.calls[0]![0])).not.toContain('INNER JOIN thread_labels');
+  it('passes the Rust return value through (threads + nextCursor)', async () => {
+    const thread = {
+      id: 't1',
+      accountId: 'a1',
+      subject: 'S',
+      snippet: 'sn',
+      lastMessageAt: 100,
+      messageCount: 1,
+      isRead: false,
+      isStarred: true,
+      isImportant: false,
+      hasAttachments: false,
+      isSnoozed: false,
+      fromName: 'Bob',
+      fromAddress: 'b@x.com',
+      classificationId: null,
+      isEncrypted: false,
+      isSigned: false,
+    };
+    mockInvoke.mockResolvedValueOnce({ threads: [thread], nextCursor: null });
+    const result = await getThreads('a1', { labelId: 'inbox' });
+    expect(result.threads[0]!.isStarred).toBe(true);
+    expect(result.threads[0]!.fromName).toBe('Bob');
+    expect(result.nextCursor).toBeNull();
   });
 
-  it('emits the cursor predicate on subsequent pages', async () => {
-    mockDb.select.mockResolvedValue([]);
+  it('emits the cursor on subsequent pages (passed through to opts)', async () => {
+    mockInvoke.mockResolvedValueOnce({ threads: [], nextCursor: null });
     const cursor: ThreadCursor = { date: 100, id: 't1' };
     await getThreads('a1', { cursor });
-    const [sql, params] = mockDb.select.mock.calls[0]!;
-    expect(String(sql)).toContain('t.last_message_at <');
-    expect(params).toContain(100);
-    expect(params).toContain('t1');
+    const [, args] = mockInvoke.mock.calls[0]!;
+    expect(args).toMatchObject({ opts: { cursor: { date: 100, id: 't1' } } });
   });
 
-  it('returns nextCursor from the last row when the page is full', async () => {
-    mockDb.select.mockResolvedValue([
-      row({ id: 't1', last_message_at: 100 }),
-      row({ id: 't2', last_message_at: 90 }),
-    ]);
+  it('forwards nextCursor from the Rust return shape', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      threads: [],
+      nextCursor: { date: 90, id: 't2' },
+    });
     const { nextCursor } = await getThreads('a1', { limit: 2 });
     expect(nextCursor).toEqual({ date: 90, id: 't2' });
   });
 });
 
 describe('getMessagesForThread', () => {
-  it('queries messages for a thread ordered oldest→newest', async () => {
-    mockDb.select.mockResolvedValue([]);
+  it('invokes db_get_messages_for_thread with (accountId, threadId)', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
     await getMessagesForThread('a1', 't1');
-    const [sql, params] = mockDb.select.mock.calls[0]!;
-    expect(String(sql)).toContain('FROM messages');
-    expect(String(sql)).toContain('ORDER BY date ASC');
-    expect(params).toEqual(['a1', 't1']);
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_messages_for_thread', {
+      accountId: 'a1',
+      threadId: 't1',
+    });
   });
 });
 
 describe('markThreadRead', () => {
-  it('updates the thread and its messages', async () => {
+  it('invokes db_mark_thread_read with (accountId, threadId)', async () => {
     await markThreadRead('a1', 't1');
-    const sqls = mockDb.execute.mock.calls.map((c) => String(c[0]));
-    expect(sqls.some((s) => s.includes('UPDATE threads'))).toBe(true);
-    expect(sqls.some((s) => s.includes('UPDATE messages'))).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('db_mark_thread_read', {
+      accountId: 'a1',
+      threadId: 't1',
+    });
   });
 });
 

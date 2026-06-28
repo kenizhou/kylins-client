@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { PinIcon, PlusIcon, PencilIcon, TrashIcon, FolderIcon } from '../icons';
 import { useAccountStore } from '../../stores/accountStore';
 import { useFolderStore } from '../../stores/folderStore';
@@ -38,7 +38,7 @@ function InlineFolderInput({
   return (
     <div
       className="flex items-center gap-2.5 h-7 pr-2 text-[var(--foreground)]"
-      style={{ paddingLeft: `${12 + depth * 14}px` }}
+      style={{ paddingLeft: `${8 + depth * 14}px` }}
     >
       <FolderIcon size={18} className="shrink-0" />
       <input
@@ -59,6 +59,37 @@ function InlineFolderInput({
         className="flex-1 h-5 rounded border border-[var(--primary)] bg-[var(--background)] px-1.5 text-[13px] text-[var(--foreground)] outline-none"
       />
     </div>
+  );
+}
+
+// ---- Chevron toggle for expand/collapse ----
+
+function ChevronToggle({
+  expanded,
+  onClick,
+}: {
+  expanded: boolean;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="shrink-0 flex items-center justify-center w-3 h-3 text-[var(--muted-text)] hover:text-[var(--foreground)]"
+      aria-label={expanded ? 'Collapse folder' : 'Expand folder'}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={`size-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+      >
+        <path d="M9 6l6 6-6 6" />
+      </svg>
+    </button>
   );
 }
 
@@ -98,9 +129,9 @@ function FolderRow({
           onClick?.();
         }
       }}
-      style={{ paddingLeft: `${12 + depth * 14}px` }}
+      style={{ paddingLeft: `${8 + depth * 14}px` }}
       className={`
-        group relative flex items-center gap-2.5 pr-2 h-7 cursor-pointer
+        group relative flex flex-1 min-w-0 items-center gap-2.5 pr-2 h-7 cursor-pointer
         ${active ? 'bg-[var(--selected)] text-[var(--selected-text)]' : 'text-[var(--text)] hover:bg-[var(--hover)]'}
       `}
     >
@@ -143,6 +174,8 @@ interface FolderNodesProps {
   nodes: FolderTreeNode[];
   depth: number;
   inline: InlineEdit | null;
+  collapsed: Set<string>;
+  toggleCollapsed: (folderId: string) => void;
   isSelected: (folder: MailFolder) => boolean;
   unreadFor: (folder: MailFolder) => number;
   onSelect: (folder: MailFolder) => void;
@@ -155,6 +188,8 @@ function FolderNodes({
   nodes,
   depth,
   inline,
+  collapsed,
+  toggleCollapsed,
   isSelected,
   unreadFor,
   onSelect,
@@ -175,6 +210,8 @@ function FolderNodes({
             : null;
         const creatingChild =
           inline !== null && inline.kind === 'create' && inline.parentId === node.folder.remoteId;
+        const hasChildren = node.children.length > 0;
+        const expanded = !collapsed.has(node.folder.id);
         return (
           <Fragment key={`${node.folder.accountId}:${node.folder.id}`}>
             {renaming ? (
@@ -186,21 +223,44 @@ function FolderNodes({
                 onCancel={onCancelInline}
               />
             ) : (
-              <FolderRow
-                icon={<Icon size={15} />}
-                name={node.folder.name}
-                depth={depth}
-                active={isSelected(node.folder)}
-                unread={unreadFor(node.folder)}
-                onClick={() => onSelect(node.folder)}
-                onContextMenu={(e) => onContextMenu(node.folder, e)}
-              />
+              <div
+                className={`relative flex items-center ${
+                  isSelected(node.folder) ? 'bg-[var(--selected)] text-[var(--selected-text)]' : ''
+                }`}
+                style={{ paddingLeft: `${8 + depth * 14}px` }}
+              >
+                {isSelected(node.folder) && (
+                  <span className="absolute left-0 top-0 bottom-0 w-[2px] bg-[var(--primary)]" />
+                )}
+                {hasChildren ? (
+                  <ChevronToggle
+                    expanded={expanded}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleCollapsed(node.folder.id);
+                    }}
+                  />
+                ) : (
+                  <span className="w-3 shrink-0" />
+                )}
+                <FolderRow
+                  icon={<Icon size={15} />}
+                  name={node.folder.name}
+                  depth={0}
+                  active={false}
+                  unread={unreadFor(node.folder)}
+                  onClick={() => onSelect(node.folder)}
+                  onContextMenu={(e) => onContextMenu(node.folder, e)}
+                />
+              </div>
             )}
-            {node.children.length > 0 && (
+            {hasChildren && expanded && (
               <FolderNodes
                 nodes={node.children}
                 depth={depth + 1}
                 inline={inline}
+                collapsed={collapsed}
+                toggleCollapsed={toggleCollapsed}
                 isSelected={isSelected}
                 unreadFor={unreadFor}
                 onSelect={onSelect}
@@ -243,6 +303,16 @@ export function FolderPane() {
   const [menu, setMenu] = useState<{ folder: MailFolder; x: number; y: number } | null>(null);
   const [inline, setInline] = useState<InlineEdit | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MailFolder | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  const toggleCollapsed = (folderId: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return next;
+    });
+  };
 
   const isSelected = (folder: MailFolder) =>
     selected?.accountId === folder.accountId && selected.labelId === folder.id;
@@ -271,6 +341,14 @@ export function FolderPane() {
       if (favorites.has(`${f.accountId}__${f.id}`)) favoriteFolders.push(f);
     }
   }
+
+  const folderTrees = useMemo(() => {
+    const trees: Record<string, FolderTreeNode[]> = {};
+    for (const [accountId, folders] of Object.entries(byAccount)) {
+      trees[accountId] = buildFolderTree(folders);
+    }
+    return trees;
+  }, [byAccount]);
 
   const totalFolders = Object.values(byAccount).reduce((sum, fs) => sum + fs.length, 0);
 
@@ -353,8 +431,9 @@ export function FolderPane() {
               ) {
                 return null;
               }
-              const systemFolders = folders.filter((f) => f.role !== null);
-              const userTree = buildFolderTree(folders.filter((f) => f.role === null));
+              // Tree pre-built in useMemo above — includes ALL folders so
+              // user sub-folders of system folders can find their parent.
+              const allTree = folderTrees[account.id] ?? [];
               const title = account.accountLabel ?? account.email;
               const topCreate =
                 inline !== null &&
@@ -363,35 +442,6 @@ export function FolderPane() {
                 inline.accountId === account.id;
               return (
                 <FolderGroup key={account.id} title={title}>
-                  {systemFolders.map((folder) => {
-                    const Icon = getFolderIcon(folder.role);
-                    const childCreate =
-                      inline !== null &&
-                      inline.kind === 'create' &&
-                      inline.parentId === folder.remoteId &&
-                      inline.accountId === account.id;
-                    return (
-                      <Fragment key={`${account.id}:${folder.id}`}>
-                        <FolderRow
-                          icon={<Icon size={15} />}
-                          name={folder.name}
-                          active={isSelected(folder)}
-                          unread={unreadFor(folder)}
-                          onClick={() => onSelect(folder)}
-                          onContextMenu={(e) => openMenu(folder, e)}
-                        />
-                        {childCreate && (
-                          <InlineFolderInput
-                            depth={1}
-                            initialValue=""
-                            placeholder="Folder name"
-                            onSubmit={commitInline}
-                            onCancel={cancelInline}
-                          />
-                        )}
-                      </Fragment>
-                    );
-                  })}
                   {topCreate && (
                     <InlineFolderInput
                       depth={0}
@@ -401,23 +451,19 @@ export function FolderPane() {
                       onCancel={cancelInline}
                     />
                   )}
-                  {(userTree.length > 0 ||
-                    (inline !== null &&
-                      inline.kind === 'create' &&
-                      inline.parentId !== null &&
-                      inline.accountId === account.id)) && (
-                    <FolderNodes
-                      nodes={userTree}
-                      depth={0}
-                      inline={inline}
-                      isSelected={isSelected}
-                      unreadFor={unreadFor}
-                      onSelect={onSelect}
-                      onContextMenu={openMenu}
-                      onCommitInline={commitInline}
-                      onCancelInline={cancelInline}
-                    />
-                  )}
+                  <FolderNodes
+                    nodes={allTree}
+                    depth={0}
+                    inline={inline}
+                    collapsed={collapsed}
+                    toggleCollapsed={toggleCollapsed}
+                    isSelected={isSelected}
+                    unreadFor={unreadFor}
+                    onSelect={onSelect}
+                    onContextMenu={openMenu}
+                    onCommitInline={commitInline}
+                    onCancelInline={cancelInline}
+                  />
                 </FolderGroup>
               );
             })}

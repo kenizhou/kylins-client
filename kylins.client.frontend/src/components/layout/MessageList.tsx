@@ -1,32 +1,45 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
 import type { ColumnDef } from '../../features/view/types';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
+import { useAccountStore } from '../../stores/accountStore';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
 import { useSecurityIndicatorIcons } from '../../features/classification/useSecurityIndicatorIcons';
-import { ClassificationIcon } from '../icons';
+import {
+  ClassificationIcon,
+  MailIcon,
+  FlagIcon,
+  TrashIcon,
+  CopyIcon,
+  FileTextIcon,
+  ReplyIcon,
+  ReplyAllIcon,
+  ForwardIcon,
+  TagIcon,
+  SearchIcon,
+  PreferencesMailRulesIcon,
+  MoveIcon,
+  ArchiveIcon,
+  BellIcon,
+} from '../icons';
+import { ContextMenu } from '../ui/ContextMenu';
+import { openComposerForThread } from '../../utils/composerActions';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
 interface MessageRowProps {
-  sender: string;
-  subject: string;
-  time: string;
-  initials: string;
-  state: MessageState;
+  thread: Thread;
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
-  classificationId: string | null;
-  isEncrypted: boolean;
-  isSigned: boolean;
   onClick?: () => void;
   onDoubleClick?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 const RIBBON_COLOR: Record<MessageState, string> = {
@@ -43,30 +56,51 @@ const DENSITY_ROW_CLASSES = {
 };
 
 function MessageRow({
-  sender,
-  subject,
-  time,
-  initials,
-  state,
+  thread,
   selected,
   density,
-  classificationId,
-  isEncrypted,
-  isSigned,
   onClick,
   onDoubleClick,
+  onContextMenu,
 }: MessageRowProps) {
+  const {
+    fromName,
+    fromAddress,
+    subject,
+    snippet,
+    lastMessageAt,
+    isRead,
+    isStarred,
+    isImportant,
+    classificationId,
+    isEncrypted,
+    isSigned,
+  } = thread;
+  const state: MessageState = !isRead
+    ? 'unread'
+    : isStarred
+      ? 'flagged'
+      : isImportant
+        ? 'vip'
+        : 'read';
   const unread = state === 'unread';
   const { getLevelById } = useClassification();
   const { encryptedIcon, signedIcon } = useSecurityIndicatorIcons();
   const level = getLevelById(classificationId);
   const showSecurity = isEncrypted || isSigned;
+  const preview = snippet ?? '';
+  const showPreview = density !== 'compact' && preview.length > 0;
+  const sender = fromName ?? fromAddress ?? 'Unknown';
+  const initials = getInitials(sender);
+  const time =
+    lastMessageAt != null ? formatMessageTime(new Date(lastMessageAt * 1000).toISOString()) : '';
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -83,10 +117,10 @@ function MessageRow({
       <div className="w-7 h-7 rounded-full bg-[var(--border)] grid place-items-center text-[10px] font-bold text-[var(--muted-text)] shrink-0">
         {initials}
       </div>
-      <div className="flex-1 min-w-0 flex flex-col gap-[3px]">
+      <div className="flex-1 min-w-0 flex flex-col gap-[2px]">
         <div className="flex items-baseline justify-between gap-2 min-w-0">
           <span
-            className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
+            className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
           >
             {level && (
               <span className="inline-flex items-center gap-1 mr-1.5 align-[-2px]">
@@ -106,7 +140,7 @@ function MessageRow({
             )}
             {sender}
           </span>
-          <span className="flex items-center gap-1 shrink-0">
+          <span className="flex items-center gap-1.5 shrink-0">
             {showSecurity && (
               <span className="inline-flex items-center gap-0.5 text-[var(--muted-text)]">
                 {isEncrypted && (
@@ -121,14 +155,22 @@ function MessageRow({
                 )}
               </span>
             )}
+            {isStarred && (
+              <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
+                <FlagIcon size={14} />
+              </span>
+            )}
             <span className="text-[11px] font-mono text-[var(--muted-text)]">{time}</span>
           </span>
         </div>
         <span
-          className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
+          className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
         >
-          {subject}
+          {subject ?? '(no subject)'}
         </span>
+        {showPreview && (
+          <span className="text-[12px] truncate text-[var(--muted-text)]">{preview}</span>
+        )}
       </div>
     </div>
   );
@@ -164,13 +206,6 @@ function buildItems(threads: Thread[]): ListItem[] {
   return items;
 }
 
-function threadState(t: Thread): MessageState {
-  if (!t.isRead) return 'unread';
-  if (t.isStarred) return 'flagged';
-  if (t.isImportant) return 'vip';
-  return 'read';
-}
-
 export function MessageList() {
   const density = useViewStore((s) => s.messageListDensity);
   const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
@@ -181,9 +216,13 @@ export function MessageList() {
   const selectedThreadId = useThreadStore((s) => s.selectedThreadId);
   const isLoading = useThreadStore((s) => s.isLoading);
   const cursor = useThreadStore((s) => s.cursor);
+  const accounts = useAccountStore((s) => s.accounts);
   const loadThreads = useThreadStore((s) => s.loadThreads);
   const loadMore = useThreadStore((s) => s.loadMore);
   const selectThread = useThreadStore((s) => s.selectThread);
+  const markThreadRead = useThreadStore((s) => s.markThreadRead);
+  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
+  const deleteThread = useThreadStore((s) => s.deleteThread);
 
   const visibleColumns = visibleColumnIds
     .map((id) => COLUMN_REGISTRY.get(id))
@@ -226,7 +265,63 @@ export function MessageList() {
     if (msg) openViewerWindow(msg);
   };
 
+  const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+
   const showEmpty = !isLoading && items.length === 0;
+
+  const openContextMenu = (thread: Thread, e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ thread, x: e.clientX, y: e.clientY });
+  };
+
+  const menuItems = useMemo(() => {
+    if (!menu) return [];
+    const accountEmail = accounts.find((a) => a.id === menu.thread.accountId)?.email ?? null;
+    return [
+      { label: 'Copy', icon: CopyIcon, disabled: true },
+      { label: 'Quick Print', icon: FileTextIcon, disabled: true },
+      { separator: true },
+      {
+        label: 'Reply',
+        icon: ReplyIcon,
+        onSelect: () => void openComposerForThread(menu.thread, 'reply', accountEmail),
+      },
+      {
+        label: 'Reply All',
+        icon: ReplyAllIcon,
+        onSelect: () => void openComposerForThread(menu.thread, 'replyAll', accountEmail),
+      },
+      {
+        label: 'Forward',
+        icon: ForwardIcon,
+        onSelect: () => void openComposerForThread(menu.thread, 'forward', accountEmail),
+      },
+      {
+        label: menu.thread.isRead ? 'Mark as Unread' : 'Mark as Read',
+        icon: MailIcon,
+        onSelect: () => void markThreadRead(menu.thread, !menu.thread.isRead),
+      },
+      { separator: true },
+      { label: 'Categorize', icon: TagIcon, disabled: true },
+      {
+        label: menu.thread.isStarred ? 'Clear Follow Up' : 'Follow Up',
+        icon: FlagIcon,
+        onSelect: () => void toggleThreadStarred(menu.thread),
+      },
+      { label: 'Find Related', icon: SearchIcon, disabled: true },
+      { label: 'Rules', icon: PreferencesMailRulesIcon, disabled: true },
+      { separator: true },
+      { label: 'Move', icon: MoveIcon, disabled: true },
+      { label: 'Junk', icon: BellIcon, disabled: true },
+      {
+        label: 'Delete',
+        icon: TrashIcon,
+        danger: true,
+        onSelect: () => void deleteThread(menu.thread),
+      },
+      { label: 'Archive', icon: ArchiveIcon, disabled: true },
+    ];
+  }, [menu, accounts, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
     <div className="flex flex-col h-full bg-[var(--card)]">
@@ -277,24 +372,12 @@ export function MessageList() {
                     </div>
                   ) : (
                     <MessageRow
-                      sender={item.thread.fromName ?? item.thread.fromAddress ?? 'Unknown'}
-                      subject={item.thread.subject ?? '(no subject)'}
-                      time={
-                        item.thread.lastMessageAt != null
-                          ? formatMessageTime(
-                              new Date(item.thread.lastMessageAt * 1000).toISOString(),
-                            )
-                          : ''
-                      }
-                      initials={getInitials(item.thread.fromName ?? item.thread.fromAddress ?? '?')}
-                      state={threadState(item.thread)}
+                      thread={item.thread}
                       selected={selectedThreadId === item.thread.id}
                       density={density}
-                      classificationId={item.thread.classificationId}
-                      isEncrypted={item.thread.isEncrypted}
-                      isSigned={item.thread.isSigned}
                       onClick={() => void selectThread(item.thread)}
                       onDoubleClick={() => void handleDoubleClick(item.thread)}
+                      onContextMenu={(e) => openContextMenu(item.thread, e)}
                     />
                   )}
                 </div>
@@ -303,6 +386,10 @@ export function MessageList() {
           </div>
         )}
       </div>
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
     </div>
   );
 }

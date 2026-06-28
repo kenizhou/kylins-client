@@ -5,9 +5,14 @@
 // velo stores drafts server-side via the provider (Gmail API); Kylins persists
 // the editable draft locally first and reserves `remote_draft_id` for future
 // server-side draft sync. Raw MIME is built only at send time (see send.ts).
+//
+// Task 5 (Option C) clean-cut cutover: every function delegates to a Rust
+// `db_*` Tauri command (see `kylins.client.backend/src/db/drafts.rs`). The
+// recipient formatting + attachment serialization stays TS-side (the composer
+// does this before calling); Rust receives pre-serialized JSON strings for the
+// to/cc/bcc/attachments columns, exactly as the historical code wrote them.
 
-import { getDb, buildDynamicUpdate, selectFirstBy } from '@/services/db/connection';
-import { getCurrentUnixTimestamp } from '@/utils/timestamp';
+import { invoke } from '@tauri-apps/api/core';
 import { formatRecipients, type Recipient } from '@/features/composer/contacts';
 
 /**
@@ -64,61 +69,38 @@ export interface DbDraft {
   sync_status: string;
 }
 
-/** Map a DraftInput to [column, value] tuples for UPDATE SET clauses. */
-function inputToColumns(input: DraftInput): [string, unknown][] {
-  return [
-    // Recipients are stored as JSON-encoded RFC address strings ("Name <email>")
-    // so the column stays a string[] regardless of the in-memory Recipient[] model.
-    ['to_addresses', JSON.stringify(formatRecipients(input.to ?? []))],
-    [
-      'cc_addresses',
-      input.cc && input.cc.length > 0 ? JSON.stringify(formatRecipients(input.cc)) : null,
-    ],
-    [
-      'bcc_addresses',
-      input.bcc && input.bcc.length > 0 ? JSON.stringify(formatRecipients(input.bcc)) : null,
-    ],
-    ['subject', input.subject ?? ''],
-    ['body_html', input.bodyHtml ?? ''],
-    ['from_email', input.fromEmail ?? null],
-    ['thread_id', input.threadId ?? null],
-    ['reply_to_message_id', input.inReplyToMessageId ?? null],
-    ['signature_id', input.signatureId ?? null],
-    [
-      'attachments',
+/**
+ * Build the Rust-facing payload from a TS `DraftInput`. Recipients are
+ * serialized as JSON arrays of RFC address strings ("Name <email>"); empty
+ * cc/bcc/attachments become null (matching the historical `inputToColumns`).
+ */
+function toRustInput(input: DraftInput) {
+  return {
+    accountId: input.accountId,
+    // to_addresses is always a non-empty array (composer always has at least the To box)
+    to: JSON.stringify(formatRecipients(input.to ?? [])),
+    cc: input.cc && input.cc.length > 0 ? JSON.stringify(formatRecipients(input.cc)) : null,
+    bcc: input.bcc && input.bcc.length > 0 ? JSON.stringify(formatRecipients(input.bcc)) : null,
+    subject: input.subject ?? '',
+    bodyHtml: input.bodyHtml ?? '',
+    fromEmail: input.fromEmail ?? null,
+    threadId: input.threadId ?? null,
+    replyToMessageId: input.inReplyToMessageId ?? null,
+    signatureId: input.signatureId ?? null,
+    attachments:
       input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null,
-    ],
-    ['classification_id', input.classificationId ?? null],
-    ['is_encrypted', input.isEncrypted ? 1 : 0],
-    ['is_signed', input.isSigned ? 1 : 0],
-  ];
+    classificationId: input.classificationId ?? null,
+    isEncrypted: input.isEncrypted ?? false,
+    isSigned: input.isSigned ?? false,
+  };
 }
 
 export async function createDraft(input: DraftInput): Promise<string> {
-  const db = await getDb();
-  const id = crypto.randomUUID();
-  // Reuse inputToColumns — single source of truth for the DraftInput→column map.
-  const cols: [string, unknown][] = [['account_id', input.accountId], ...inputToColumns(input)];
-  const colNames = ['id', ...cols.map(([c]) => c)].join(', ');
-  const placeholders = cols.map((_, i) => `$${i + 2}`).join(', '); // $1 = id
-  const params: unknown[] = [id, ...cols.map(([, v]) => v)];
-  await db.execute(
-    `INSERT INTO local_drafts (${colNames}, sync_status) VALUES ($1, ${placeholders}, 'pending')`,
-    params,
-  );
-  return id;
+  return invoke<string>('db_create_draft', { input: toRustInput(input) });
 }
 
 export async function updateDraft(id: string, input: DraftInput): Promise<void> {
-  const db = await getDb();
-  const fields: [string, unknown][] = [
-    ...inputToColumns(input),
-    ['updated_at', getCurrentUnixTimestamp()],
-  ];
-  const query = buildDynamicUpdate('local_drafts', 'id', id, fields);
-  if (query) {
-    await db.execute(query.sql, query.params);
-  }
+  await invoke<void>('db_update_draft', { id, input: toRustInput(input) });
 }
 
 /**
@@ -137,18 +119,13 @@ export async function saveDraft(input: DraftInput, existingId?: string | null): 
 }
 
 export async function deleteDraft(id: string): Promise<void> {
-  const db = await getDb();
-  await db.execute('DELETE FROM local_drafts WHERE id = $1', [id]);
+  await invoke<void>('db_delete_draft', { id });
 }
 
 export async function getDraft(id: string): Promise<DbDraft | null> {
-  return selectFirstBy<DbDraft>('SELECT * FROM local_drafts WHERE id = $1', [id]);
+  return invoke<DbDraft | null>('db_get_draft', { id });
 }
 
 export async function listDraftsForAccount(accountId: string): Promise<DbDraft[]> {
-  const db = await getDb();
-  return db.select<DbDraft[]>(
-    'SELECT * FROM local_drafts WHERE account_id = $1 ORDER BY updated_at DESC',
-    [accountId],
-  );
+  return invoke<DbDraft[]>('db_list_drafts_for_account', { accountId });
 }

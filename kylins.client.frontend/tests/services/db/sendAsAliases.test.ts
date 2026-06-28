@@ -1,54 +1,46 @@
+// Task 5 clean-cut: sendAsAliases.ts now routes through `invoke('db_*')`
+// instead of getDb(). Mock invoke and assert the wrapper forwards the right
+// command + args. The pure TS helpers (mapDbAlias, accountAsAlias) are still
+// tested directly with raw row fixtures.
+
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { getDb } from '../../../src/services/db/connection';
 import {
   getMappedAliasesForAccount,
+  getAliasesForAccount,
   insertAlias,
   updateAlias,
   deleteAlias,
+  mapDbAlias,
+  accountAsAlias,
+  type DbSendAsAlias,
 } from '../../../src/services/db/sendAsAliases';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
+import type { Account } from '../../../src/types';
 
-vi.mock('@tauri-apps/plugin-sql', () => ({
-  default: {
-    load: vi.fn().mockResolvedValue({
-      execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
-      select: vi.fn().mockResolvedValue([]),
-    }),
-  },
-}));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-function mockSelect(rows: unknown[]) {
-  return vi.mocked(getDb)().then((db) => {
-    vi.mocked(db.select).mockResolvedValue(rows);
-  });
-}
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
-beforeEach(async () => {
-  const db = await getDb();
-  vi.mocked(db.execute).mockClear();
-  vi.mocked(db.select).mockClear();
-});
+const rawRow: DbSendAsAlias = {
+  id: 'a1',
+  account_id: 'acc1',
+  email: 'alias@example.com',
+  display_name: 'Alias Name',
+  reply_to_address: 'reply@example.com',
+  signature_id: null,
+  is_primary: 0,
+  is_default: 1,
+  treat_as_alias: 1,
+  verification_status: 'accepted',
+  created_at: 1,
+};
 
 describe('sendAsAliases service', () => {
-  describe('getMappedAliasesForAccount', () => {
-    it('maps raw rows to SendAsAlias objects', async () => {
-      await mockSelect([
-        {
-          id: 'a1',
-          account_id: 'acc1',
-          email: 'alias@example.com',
-          display_name: 'Alias Name',
-          reply_to_address: 'reply@example.com',
-          signature_id: null,
-          is_primary: 0,
-          is_default: 1,
-          treat_as_alias: 1,
-          verification_status: 'accepted',
-          created_at: 1,
-        },
-      ]);
-      const aliases = await getMappedAliasesForAccount('acc1');
-      expect(aliases).toHaveLength(1);
-      expect(aliases[0]).toMatchObject({
+  describe('mapDbAlias (pure)', () => {
+    it('maps a raw snake_case row to a SendAsAlias', () => {
+      const alias = mapDbAlias(rawRow);
+      expect(alias).toMatchObject({
         id: 'a1',
         email: 'alias@example.com',
         displayName: 'Alias Name',
@@ -59,10 +51,41 @@ describe('sendAsAliases service', () => {
     });
   });
 
+  describe('accountAsAlias (pure)', () => {
+    it('synthesizes a primary alias from an account', () => {
+      const account = { id: 'acc1', email: 'me@x.com', displayName: 'Me' } as Account;
+      const alias = accountAsAlias(account);
+      expect(alias.isPrimary).toBe(true);
+      expect(alias.isDefault).toBe(true);
+      expect(alias.email).toBe('me@x.com');
+    });
+  });
+
+  describe('getAliasesForAccount', () => {
+    it('forwards to db_get_aliases_for_account', async () => {
+      mockInvoke.mockResolvedValueOnce([rawRow]);
+      const rows = await getAliasesForAccount('acc1');
+      expect(rows).toEqual([rawRow]);
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_aliases_for_account', { accountId: 'acc1' });
+    });
+  });
+
+  describe('getMappedAliasesForAccount', () => {
+    it('fetches raw rows and maps them', async () => {
+      mockInvoke.mockResolvedValueOnce([rawRow]);
+      const aliases = await getMappedAliasesForAccount('acc1');
+      expect(aliases).toHaveLength(1);
+      expect(aliases[0]).toMatchObject({
+        id: 'a1',
+        email: 'alias@example.com',
+        isDefault: true,
+      });
+    });
+  });
+
   describe('insertAlias', () => {
-    it('inserts an alias', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([]);
+    it('forwards the input payload (nulls for omitted optionals) and returns the id', async () => {
+      mockInvoke.mockResolvedValueOnce('new-id');
       const id = await insertAlias({
         accountId: 'acc1',
         email: 'alias@example.com',
@@ -71,63 +94,44 @@ describe('sendAsAliases service', () => {
         isDefault: false,
         treatAsAlias: true,
       });
-      expect(id).toBeTypeOf('string');
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO send_as_aliases'),
-        expect.arrayContaining(['acc1', 'alias@example.com', 'Alias', 'reply@example.com', 0, 1]),
-      );
-    });
-
-    it('clears the previous default when inserting a new default', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([]);
-      await insertAlias({
-        accountId: 'acc1',
-        email: 'default@example.com',
-        isDefault: true,
+      expect(id).toBe('new-id');
+      expect(mockInvoke).toHaveBeenCalledWith('db_insert_alias', {
+        input: {
+          accountId: 'acc1',
+          email: 'alias@example.com',
+          displayName: 'Alias',
+          replyTo: 'reply@example.com',
+          isDefault: false,
+          treatAsAlias: true,
+        },
       });
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE send_as_aliases SET is_default = 0 WHERE account_id = $1'),
-        ['acc1'],
-      );
     });
   });
 
   describe('updateAlias', () => {
-    it('updates alias fields', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([{ account_id: 'acc1' }]);
+    it('forwards only the provided fields', async () => {
       await updateAlias('a1', {
         displayName: 'Updated',
         replyTo: 'new@example.com',
         isDefault: false,
         treatAsAlias: false,
       });
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE send_as_aliases SET'),
-        expect.arrayContaining(['Updated', 'new@example.com', 0, 0]),
-      );
-    });
-
-    it('clears previous default when setting a new default', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([{ account_id: 'acc1' }]);
-      await updateAlias('a1', { isDefault: true });
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE send_as_aliases SET is_default = 0 WHERE account_id = $1'),
-        ['acc1'],
-      );
+      expect(mockInvoke).toHaveBeenCalledWith('db_update_alias', {
+        id: 'a1',
+        updates: {
+          displayName: 'Updated',
+          replyTo: 'new@example.com',
+          isDefault: false,
+          treatAsAlias: false,
+        },
+      });
     });
   });
 
   describe('deleteAlias', () => {
     it('deletes by id', async () => {
-      const db = await getDb();
       await deleteAlias('a1');
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        'DELETE FROM send_as_aliases WHERE id = $1',
-        ['a1'],
-      );
+      expect(mockInvoke).toHaveBeenCalledWith('db_delete_alias', { id: 'a1' });
     });
   });
 });

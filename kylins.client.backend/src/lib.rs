@@ -11,10 +11,12 @@ use tauri_plugin_autostart::MacosLauncher;
 
 pub mod commands;
 pub mod crypto;
+pub mod db;
 pub mod eas;
 pub mod mail;
 pub mod oauth;
 pub mod sync;
+pub mod sync_engine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,7 +48,6 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -63,6 +64,7 @@ pub fn run() {
             commands::write_text_file,
             commands::get_autostart_state,
             commands::set_autostart_enabled,
+            commands::send_desktop_notification,
             commands::request_notification_permission,
             commands::get_cache_size,
             commands::clear_cache,
@@ -79,10 +81,13 @@ pub fn run() {
             commands::imap_fetch_raw_message,
             commands::imap_set_flags,
             commands::imap_move_messages,
+            commands::imap_copy_messages,
             commands::imap_delete_messages,
             commands::imap_get_folder_status,
             commands::imap_fetch_attachment,
             commands::imap_append_message,
+            commands::imap_create_folder,
+            commands::imap_delete_folder,
             commands::imap_search_folder,
             commands::imap_sync_folder,
             commands::imap_raw_fetch_diagnostic,
@@ -102,6 +107,109 @@ pub fn run() {
             eas::service::eas_folder_update,
             sync::contacts::commands::parse_vcard,
             sync::contacts::commands::export_vcard,
+            db::commands::db_get_all_accounts,
+            db::commands::db_get_account_by_id,
+            db::commands::db_get_account_by_email,
+            db::commands::db_create_account,
+            db::commands::db_update_account,
+            db::commands::db_delete_account,
+            db::commands::db_delete_account_by_email,
+            db::commands::db_get_account_count,
+            db::commands::db_set_default_account,
+            db::commands::db_get_default_account,
+            db::commands::db_get_setting,
+            db::commands::db_set_setting,
+            db::commands::db_get_setting_bool,
+            db::commands::db_set_setting_bool,
+            db::commands::db_get_setting_number,
+            db::commands::db_set_setting_number,
+            db::commands::db_get_folders_by_account,
+            db::commands::db_get_all_folders,
+            db::commands::db_get_folder_by_role,
+            db::commands::db_get_unread_counts_by_account,
+            db::commands::db_upsert_folders,
+            db::commands::db_create_folder,
+            db::commands::db_rename_folder,
+            db::commands::db_delete_folder,
+            db::commands::db_get_threads,
+            db::commands::db_get_messages_for_thread,
+            db::commands::db_mark_thread_read,
+            db::commands::db_get_message_body,
+            db::commands::db_set_message_body,
+            db::commands::db_evict_body,
+            db::commands::db_enqueue_op,
+            db::commands::db_dequeue_pending,
+            db::commands::db_mark_op_completed,
+            db::commands::db_mark_op_failed,
+            db::commands::db_list_contacts,
+            db::commands::db_search_contacts,
+            db::commands::db_get_contact_by_id,
+            db::commands::db_get_contact_by_email,
+            db::commands::db_get_contact_by_external_id,
+            db::commands::db_create_contact,
+            db::commands::db_update_contact,
+            db::commands::db_delete_contact,
+            db::commands::db_upsert_contact,
+            db::commands::db_update_contact_avatar,
+            db::commands::db_update_contact_notes,
+            db::commands::db_get_contact_stats,
+            db::commands::db_get_recent_threads_with_contact,
+            db::commands::db_get_attachments_from_contact,
+            db::commands::db_get_contacts_from_same_domain,
+            db::commands::db_get_latest_auth_result,
+            db::commands::db_get_contact_groups,
+            db::commands::db_get_contact_group_by_id,
+            db::commands::db_create_contact_group,
+            db::commands::db_rename_contact_group,
+            db::commands::db_delete_contact_group,
+            db::commands::db_add_contact_to_group,
+            db::commands::db_remove_contact_from_group,
+            db::commands::db_get_contact_ids_for_group,
+            db::commands::db_get_groups_for_contact,
+            db::commands::db_get_signatures_for_account,
+            db::commands::db_get_default_signature,
+            db::commands::db_insert_signature,
+            db::commands::db_update_signature,
+            db::commands::db_delete_signature,
+            db::commands::db_create_draft,
+            db::commands::db_update_draft,
+            db::commands::db_delete_draft,
+            db::commands::db_get_draft,
+            db::commands::db_list_drafts_for_account,
+            db::commands::db_get_aliases_for_account,
+            db::commands::db_insert_alias,
+            db::commands::db_update_alias,
+            db::commands::db_delete_alias,
+            db::commands::db_search_messages,
+            db::commands::db_get_calendar_events_for_account,
+            db::commands::db_get_calendar_events_in_range,
+            db::commands::db_get_calendar_event_by_id,
+            db::commands::db_insert_calendar_event,
+            db::commands::db_update_calendar_event,
+            db::commands::db_delete_calendar_event,
+            db::commands::db_get_pending_scheduled_emails,
+            db::commands::db_get_scheduled_emails_for_account,
+            db::commands::db_insert_scheduled_email,
+            db::commands::db_update_scheduled_email_status,
+            db::commands::db_delete_scheduled_email,
+            db::commands::db_get_latest_scheduled_email_for_account,
+            db::commands::db_set_scheduled_email_attachment_paths,
+            db::commands::db_get_templates_for_account,
+            db::commands::db_insert_template,
+            db::commands::db_update_template,
+            db::commands::db_delete_template,
+            db::commands::db_get_contact_sync_state,
+            db::commands::db_set_contact_sync_state,
+            db::commands::db_add_to_image_allowlist,
+            db::commands::db_is_image_allowlisted,
+            db::commands::db_remove_from_image_allowlist,
+            db::commands::db_get_cached_ai_result,
+            db::commands::db_cache_ai_result,
+            sync_engine::commands::sync_start,
+            sync_engine::commands::sync_stop,
+            sync_engine::commands::sync_account_now,
+            sync_engine::commands::sync_request_bodies,
+            sync_engine::commands::sync_apply_mutation,
         ])
         .setup(|app| {
             {
@@ -116,6 +224,28 @@ pub fn run() {
                         .level_for("sqlx::query", log::LevelFilter::Warn)
                         .build(),
                 )?;
+            }
+
+            // Open the SQLite database (creates mailclient.db + WAL files if
+            // absent) and run embedded sqlx migrations. The pool is exposed to
+            // later Tauri commands via State<'_, DbPool>. Tauri's setup runs
+            // synchronously, so we block on the async init here. Rust is the
+            // sole writer of every table; the frontend `invoke`s the `db_*`
+            // commands declared in `db::commands`.
+            {
+                let data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .expect("app data dir should be resolvable");
+                let pool = tauri::async_runtime::block_on(async {
+                    db::init_db(&data_dir).await.expect("db init")
+                });
+                app.manage(pool.clone());
+                // SyncEngine owns one polling worker per account. The frontend starts
+                // it (sync_start) once accounts are loaded; events flow via AppHandle.
+                let engine =
+                    sync_engine::engine::SyncEngine::new_tauri(pool, app.handle().clone());
+                app.manage(engine);
             }
 
             #[cfg(not(target_os = "linux"))]

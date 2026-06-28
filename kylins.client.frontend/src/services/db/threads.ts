@@ -1,10 +1,18 @@
 // Thread list + per-thread message loading for the message list / reading pane.
-// The list query is body-free (sender comes from a latest-message LEFT JOIN) and
-// uses keyset (cursor) pagination on (last_message_at, id) so deep pages stay
-// fast regardless of folder size. Bodies are NOT loaded here — see
-// messageBodies.ts + getMessagesForThread (metadata only).
+//
+// Task 5 (Option C) cutover: the read paths (`getThreads`, `getMessagesForThread`,
+// `markThreadRead`) no longer touch plugin-sql. They delegate to Rust `db_*`
+// commands (see `kylins.client.backend/src/db/commands.rs`). The bulk write
+// path `upsertImapMessages` was DELETED — bulk message persistence moves to
+// the Rust sync engine in a later task, and its sole caller
+// (`services/mail/folderSync.ts`) was also deleted.
+//
+// `mapMessageToMailMessage` + `parseAddresses` are pure helpers kept verbatim;
+// they consume the snake_case `MessageRow` Rust returns from
+// `db_get_messages_for_thread` (Rust intentionally serializes that DTO
+// snake_case so this mapper is unchanged).
 
-import { getDb, withTransaction } from './connection';
+import { invoke } from '@tauri-apps/api/core';
 import type { MailMessage } from '../../features/view/viewStore';
 
 export interface Thread {
@@ -39,101 +47,6 @@ export interface GetThreadsOptions {
   cursor?: ThreadCursor | null;
 }
 
-interface DbThreadRow {
-  id: string;
-  account_id: string;
-  subject: string | null;
-  snippet: string | null;
-  last_message_at: number | null;
-  message_count: number;
-  is_read: number;
-  is_starred: number;
-  is_important: number;
-  has_attachments: number;
-  is_snoozed: number;
-  from_name: string | null;
-  from_address: string | null;
-  classification_id: string | null;
-  is_encrypted: number;
-  is_signed: number;
-}
-
-function mapThread(r: DbThreadRow): Thread {
-  return {
-    id: r.id,
-    accountId: r.account_id,
-    subject: r.subject,
-    snippet: r.snippet,
-    lastMessageAt: r.last_message_at,
-    messageCount: r.message_count,
-    isRead: r.is_read === 1,
-    isStarred: r.is_starred === 1,
-    isImportant: r.is_important === 1,
-    hasAttachments: r.has_attachments === 1,
-    isSnoozed: r.is_snoozed === 1,
-    fromName: r.from_name,
-    fromAddress: r.from_address,
-    classificationId: r.classification_id ?? null,
-    isEncrypted: r.is_encrypted === 1,
-    isSigned: r.is_signed === 1,
-  };
-}
-
-/**
- * Load one page of threads for an account, optionally filtered to a label/folder.
- * Returns the page plus a cursor for the next page (null when the page was short).
- */
-export async function getThreads(
-  accountId: string,
-  opts: GetThreadsOptions = {},
-): Promise<{ threads: Thread[]; nextCursor: ThreadCursor | null }> {
-  const db = await getDb();
-  const limit = opts.limit ?? 50;
-
-  const joins: string[] = [];
-  const where: string[] = ['t.account_id = $1'];
-  const params: unknown[] = [accountId];
-  let p = 2;
-
-  if (opts.labelId) {
-    joins.push(
-      `INNER JOIN thread_labels tl ON tl.account_id = t.account_id AND tl.thread_id = t.id AND tl.label_id = $${p}`,
-    );
-    params.push(opts.labelId);
-    p += 1;
-  }
-  if (opts.cursor) {
-    // Portable cursor form (no SQLite row-value syntax): strictly less than the
-    // (date, id) tuple of the last row on the previous page.
-    where.push(`(t.last_message_at < $${p} OR (t.last_message_at = $${p} AND t.id < $${p + 1}))`);
-    params.push(opts.cursor.date, opts.cursor.id);
-    p += 2;
-  }
-
-  params.push(limit);
-  const sql = `
-    SELECT t.id, t.account_id, t.subject, t.snippet, t.last_message_at, t.message_count,
-           t.is_read, t.is_starred, t.is_important, t.has_attachments, t.is_snoozed,
-           t.classification_id, t.is_encrypted, t.is_signed,
-           m.from_name, m.from_address
-    FROM threads t
-    ${joins.join('\n    ')}
-    LEFT JOIN messages m
-      ON m.account_id = t.account_id AND m.thread_id = t.id
-     AND m.date = (SELECT MAX(m2.date) FROM messages m2
-                   WHERE m2.account_id = t.account_id AND m2.thread_id = t.id)
-    WHERE ${where.join(' AND ')}
-    ORDER BY t.last_message_at DESC, t.id DESC
-    LIMIT $${p}
-  `;
-  const rows = await db.select<DbThreadRow[]>(sql, params);
-  const threads = rows.map(mapThread);
-  const last = rows[rows.length - 1];
-  const nextCursor: ThreadCursor | null =
-    rows.length === limit && last ? { date: last.last_message_at ?? 0, id: last.id } : null;
-  return { threads, nextCursor };
-}
-
 export interface DbMessageRow {
   id: string;
   account_id: string;
@@ -156,6 +69,31 @@ export interface DbMessageRow {
   classification_id: string | null;
   is_encrypted: number;
   is_signed: number;
+  /** IMAP UID (snake_case from Rust MessageRow). Null for non-IMAP sources. */
+  imap_uid?: number | null;
+  /** IMAP folder path the message lives in (e.g. "INBOX"). Null for non-IMAP. */
+  imap_folder?: string | null;
+}
+
+/**
+ * Load one page of threads for an account, optionally filtered to a label/folder.
+ * Returns the page plus a cursor for the next page (null when the page was short).
+ */
+export async function getThreads(
+  accountId: string,
+  opts: GetThreadsOptions = {},
+): Promise<{ threads: Thread[]; nextCursor: ThreadCursor | null }> {
+  // Rust deserializes `{ labelId, limit, cursor }` into GetThreadsOptions; pass
+  // them through verbatim. Null/undefined fields are omitted so Rust sees them
+  // as `None`.
+  return invoke<{ threads: Thread[]; nextCursor: ThreadCursor | null }>('db_get_threads', {
+    accountId,
+    opts: {
+      labelId: opts.labelId ?? null,
+      limit: opts.limit,
+      cursor: opts.cursor ?? null,
+    },
+  });
 }
 
 /** Load a thread's message metadata (no body_html) ordered oldest→newest. */
@@ -163,25 +101,13 @@ export async function getMessagesForThread(
   accountId: string,
   threadId: string,
 ): Promise<DbMessageRow[]> {
-  const db = await getDb();
-  return db.select<DbMessageRow[]>(
-    'SELECT * FROM messages WHERE account_id = $1 AND thread_id = $2 ORDER BY date ASC',
-    [accountId, threadId],
-  );
+  // Rust returns snake_case MessageRow JSON that matches DbMessageRow.
+  return invoke<DbMessageRow[]>('db_get_messages_for_thread', { accountId, threadId });
 }
 
 /** Mark every message in a thread (and the thread row) as read, atomically. */
 export async function markThreadRead(accountId: string, threadId: string): Promise<void> {
-  await withTransaction(async (db) => {
-    await db.execute('UPDATE threads SET is_read = 1 WHERE account_id = $1 AND id = $2', [
-      accountId,
-      threadId,
-    ]);
-    await db.execute('UPDATE messages SET is_read = 1 WHERE account_id = $1 AND thread_id = $2', [
-      accountId,
-      threadId,
-    ]);
-  });
+  await invoke<void>('db_mark_thread_read', { accountId, threadId });
 }
 
 /** Parse a comma-separated address list ("Name <a@x>, b@y") into structured rows. */

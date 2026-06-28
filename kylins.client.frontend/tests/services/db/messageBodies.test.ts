@@ -1,55 +1,57 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Task 5 cutover: messageBodies.ts now routes through `invoke('db_*')`. Tests
+// assert the wrapper forwards the right command + args and passes the Rust
+// return value through. Rust returns the body row already shaped as the
+// camelCase MessageBody interface.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getMessageBody, setMessageBody, evictBody } from '../../../src/services/db/messageBodies';
-import { getDb } from '../../../src/services/db/connection';
-import type Database from '@tauri-apps/plugin-sql';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 
-vi.mock('../../../src/services/db/connection', () => {
-  const getDb = vi.fn();
-  const withTransaction = vi.fn(async (fn: (db: unknown) => Promise<void>) => fn(await getDb()));
-  return { getDb, withTransaction };
-});
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = { select: vi.fn(), execute: vi.fn() };
-
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.select.mockReset();
-  mockDb.execute.mockReset();
-});
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 describe('getMessageBody', () => {
-  it('queries message_bodies by (account_id, message_id)', async () => {
-    mockDb.select.mockResolvedValue([{ body_html: '<p>h</p>', fetched_at: 5 }]);
+  it('invokes db_get_message_body with (accountId, messageId)', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      accountId: 'a1',
+      messageId: 'm1',
+      bodyHtml: '<p>h</p>',
+      fetchedAt: 5,
+    });
     const body = await getMessageBody('a1', 'm1');
-    const [sql, params] = mockDb.select.mock.calls[0]!;
-    expect(String(sql)).toContain('FROM message_bodies');
-    expect(params).toEqual(['a1', 'm1']);
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_message_body', {
+      accountId: 'a1',
+      messageId: 'm1',
+    });
     expect(body?.bodyHtml).toBe('<p>h</p>');
+    expect(body?.fetchedAt).toBe(5);
   });
 
   it('returns null when absent', async () => {
-    mockDb.select.mockResolvedValue([]);
+    mockInvoke.mockResolvedValueOnce(null);
     expect(await getMessageBody('a1', 'm1')).toBeNull();
   });
 });
 
 describe('setMessageBody', () => {
-  it('upserts message_bodies and sets body_cached=1', async () => {
+  it('invokes db_set_message_body with (accountId, messageId, bodyHtml)', async () => {
     await setMessageBody('a1', 'm1', '<p>h</p>');
-    expect(mockDb.execute).toHaveBeenCalledTimes(2);
-    const [insertSql, insertParams] = mockDb.execute.mock.calls[0]!;
-    expect(String(insertSql)).toContain('INSERT OR REPLACE INTO message_bodies');
-    expect(insertParams).toContain('<p>h</p>');
-    const [updateSql] = mockDb.execute.mock.calls[1]!;
-    expect(String(updateSql)).toContain('body_cached = 1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_set_message_body', {
+      accountId: 'a1',
+      messageId: 'm1',
+      bodyHtml: '<p>h</p>',
+    });
   });
 });
 
 describe('evictBody', () => {
-  it('deletes the body and clears body_cached', async () => {
+  it('invokes db_evict_body with (accountId, messageId)', async () => {
     await evictBody('a1', 'm1');
-    expect(mockDb.execute).toHaveBeenCalledTimes(2);
-    expect(String(mockDb.execute.mock.calls[0]![0])).toContain('DELETE FROM message_bodies');
-    expect(String(mockDb.execute.mock.calls[1]![0])).toContain('body_cached = 0');
+    expect(mockInvoke).toHaveBeenCalledWith('db_evict_body', {
+      accountId: 'a1',
+      messageId: 'm1',
+    });
   });
 });

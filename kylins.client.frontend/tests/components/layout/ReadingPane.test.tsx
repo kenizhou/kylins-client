@@ -7,20 +7,6 @@ import { usePreferencesStore } from '../../../src/stores/preferencesStore';
 import { useClassificationStore } from '../../../src/features/classification/classificationStore';
 import type { MailMessage } from '../../../src/features/view/viewStore';
 
-vi.mock('../../../src/services/db/connection', async () => {
-  const mockDb = {
-    select: vi.fn(async () => []),
-    execute: vi.fn(async () => 0),
-  };
-  return {
-    getDb: vi.fn(async () => mockDb),
-    withTransaction: vi.fn(async (fn: (db: unknown) => Promise<void>) => fn(mockDb)),
-    boolToInt: (b: boolean) => (b ? 1 : 0),
-    selectFirstBy: vi.fn(async () => null),
-    buildDynamicUpdate: vi.fn(() => null),
-  };
-});
-
 vi.mock('../../../src/components/plugins/InjectedComponentSet', () => ({
   InjectedComponentSet: () => null,
 }));

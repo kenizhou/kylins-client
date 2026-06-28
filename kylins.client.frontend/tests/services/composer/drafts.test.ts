@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type Database from '@tauri-apps/plugin-sql';
+// Task 5 clean-cut: drafts.ts now routes through `invoke('db_*')` instead of
+// getDb(). Mock invoke and assert the wrapper serializes recipients/attachments
+// to JSON and forwards the right command + payload shape. The saveDraft
+// upsert-vs-update branch (existingId present + row exists) is still exercised.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   createDraft,
   updateDraft,
@@ -8,30 +12,12 @@ import {
   getDraft,
   type DraftInput,
 } from '../../../src/services/composer/drafts';
-import { getDb } from '../../../src/services/db/connection';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 
-// Keep the real pure helpers (buildDynamicUpdate, boolToInt, withTransaction),
-// override `getDb`, and reimplement `selectFirstBy` so it routes through the
-// mocked `getDb` (the real one closes over the module's internal getDb and would
-// bypass the mock).
-vi.mock('../../../src/services/db/connection', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../src/services/db/connection')>();
-  const getDb = vi.fn();
-  return {
-    ...actual,
-    getDb,
-    selectFirstBy: vi.fn(async (sql: string, params: unknown[] = []) => {
-      const db = await getDb();
-      const rows = await db.select(sql, params);
-      return rows[0] ?? null;
-    }),
-  };
-});
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = {
-  execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
-  select: vi.fn().mockResolvedValue([]),
-};
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 const baseInput: DraftInput = {
   accountId: 'acc-1',
@@ -47,59 +33,70 @@ const baseInput: DraftInput = {
   attachments: [{ filename: 'a.txt', mimeType: 'text/plain', content: 'YQ==', size: 1 }],
 };
 
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.execute.mockClear();
-  mockDb.select.mockClear();
-});
-
 describe('composer/drafts', () => {
-  it('createDraft inserts and returns a new id', async () => {
+  it('createDraft forwards a serialized payload and returns the new id', async () => {
+    mockInvoke.mockResolvedValueOnce('draft-1');
     const id = await createDraft(baseInput);
-    expect(id).toBeTruthy();
-    const [sql, params] = mockDb.execute.mock.calls[0]!;
-    expect(sql).toContain('INSERT INTO local_drafts');
-    // account_id is the 2nd positional param; addresses are JSON-encoded.
-    expect(params![1]).toBe('acc-1');
-    expect(params![2]).toBe(JSON.stringify(['alice@example.com']));
-    expect(params![11]).toBe(JSON.stringify(baseInput.attachments));
+    expect(id).toBe('draft-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_create_draft', {
+      input: expect.objectContaining({
+        accountId: 'acc-1',
+        // Recipients are JSON-encoded RFC address strings.
+        to: JSON.stringify(['alice@example.com']),
+        cc: JSON.stringify(['bob@example.com']),
+        bcc: null, // empty bcc → null (matches historical inputToColumns)
+        attachments: JSON.stringify(baseInput.attachments),
+      }),
+    });
   });
 
-  it('updateDraft builds a dynamic UPDATE including updated_at', async () => {
+  it('createDraft nulls out empty cc/attachments', async () => {
+    mockInvoke.mockResolvedValueOnce('draft-2');
+    await createDraft({ ...baseInput, cc: undefined, attachments: undefined });
+    const payload = mockInvoke.mock.calls[0]![1] as { input: Record<string, unknown> };
+    expect(payload.input.cc).toBeNull();
+    expect(payload.input.attachments).toBeNull();
+  });
+
+  it('updateDraft forwards id + serialized payload', async () => {
     await updateDraft('draft-1', baseInput);
-    const [sql] = mockDb.execute.mock.calls[0]!;
-    expect(sql).toContain('UPDATE local_drafts SET');
-    expect(sql).toContain('updated_at =');
-    expect(sql).toContain('WHERE id =');
+    expect(mockInvoke).toHaveBeenCalledWith('db_update_draft', {
+      id: 'draft-1',
+      input: expect.objectContaining({
+        accountId: 'acc-1',
+        to: JSON.stringify(['alice@example.com']),
+      }),
+    });
   });
 
-  it('saveDraft updates when the existing id is present', async () => {
-    mockDb.select.mockResolvedValueOnce([{ id: 'draft-1' }]);
+  it('saveDraft updates when the existing id is present and the row exists', async () => {
+    // getDraft returns a row → saveDraft calls updateDraft.
+    mockInvoke.mockResolvedValueOnce({ id: 'draft-1', subject: 'Hello' }); // db_get_draft
     const id = await saveDraft(baseInput, 'draft-1');
     expect(id).toBe('draft-1');
-    expect(mockDb.execute).toHaveBeenCalledTimes(1);
-    expect(mockDb.execute.mock.calls[0]![0]).toContain('UPDATE local_drafts');
+    // Only one invoke call (the update); no create.
+    expect(mockInvoke).toHaveBeenCalledTimes(2); // get_draft + update_draft
+    expect(mockInvoke.mock.calls[1]![0]).toBe('db_update_draft');
   });
 
-  it('saveDraft creates when the existing id is absent', async () => {
-    // getDraft returns nothing → fall through to create.
-    mockDb.select.mockResolvedValueOnce([]);
+  it('saveDraft creates when the existing id is absent (row not found)', async () => {
+    mockInvoke.mockResolvedValueOnce(null); // db_get_draft returns null
+    mockInvoke.mockResolvedValueOnce('draft-new'); // db_create_draft
     const id = await saveDraft(baseInput, 'draft-missing');
-    expect(id).not.toBe('draft-missing');
-    expect(mockDb.execute.mock.calls[0]![0]).toContain('INSERT INTO local_drafts');
+    expect(id).toBe('draft-new');
+    expect(mockInvoke.mock.calls[1]![0]).toBe('db_create_draft');
   });
 
-  it('getDraft returns the first matching row', async () => {
-    mockDb.select.mockResolvedValueOnce([{ id: 'draft-1', subject: 'Hello' }]);
+  it('getDraft returns the row from db_get_draft', async () => {
+    mockInvoke.mockResolvedValueOnce({ id: 'draft-1', subject: 'Hello' });
     const draft = await getDraft('draft-1');
     expect(draft).not.toBeNull();
     expect(draft!.id).toBe('draft-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_draft', { id: 'draft-1' });
   });
 
-  it('deleteDraft deletes by id', async () => {
+  it('deleteDraft forwards to db_delete_draft', async () => {
     await deleteDraft('draft-1');
-    const [sql, params] = mockDb.execute.mock.calls[0]!;
-    expect(sql).toContain('DELETE FROM local_drafts WHERE id = $1');
-    expect(params![0]).toBe('draft-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_delete_draft', { id: 'draft-1' });
   });
 });

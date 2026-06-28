@@ -1,0 +1,178 @@
+name: Build & Release
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v0.1.0)"
+        type: string
+        required: false
+      release_id:
+        description: "Existing GitHub release ID to upload assets to"
+        type: string
+        required: false
+  workflow_dispatch:
+  release:
+    types: [created]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: kylins.client.frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: kylins.client.backend
+
+      - name: Install Linux deps (WebKit2GTK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev
+
+      - name: Frontend install + type-check
+        working-directory: kylins.client.frontend
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+      - name: Backend check + test
+        working-directory: kylins.client.backend
+        run: |
+          cargo check
+          cargo test
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            target: ""
+          - platform: windows-latest
+            target: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: kylins.client.frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: kylins.client.backend
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        working-directory: kylins.client.frontend
+        run: npm ci
+
+      - name: Build and upload to existing release
+        if: inputs.release_id
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: kylins.client.backend
+          releaseId: ${{ inputs.release_id }}
+
+      - name: Build and create release
+        if: ${{ !inputs.release_id }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: kylins.client.backend
+          tagName: v__VERSION__
+          releaseName: "Kylins Mail v__VERSION__"
+          releaseBody: "See the assets below to download for your platform."
+          releaseDraft: false
+          prerelease: false
+
+  build-macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: kylins.client.frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: kylins.client.backend
+
+      - name: Install frontend dependencies
+        working-directory: kylins.client.frontend
+        run: npm ci
+
+      - name: Build and upload (unsigned universal)
+        if: inputs.release_id
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: kylins.client.backend
+          releaseId: ${{ inputs.release_id }}
+          args: --target universal-apple-darwin
+
+      - name: Build and release (unsigned universal)
+        if: ${{ !inputs.release_id }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: kylins.client.backend
+          tagName: v__VERSION__
+          releaseName: "Kylins Mail v__VERSION__"
+          releaseBody: |
+            See the assets below to download for your platform.
+
+            > **macOS users**: This build is unsigned. After downloading, run:
+            > ```
+            > xattr -cr /Applications/Kylins\ Mail.app
+            > ```
+            > Or right-click the app and select "Open" on first launch.
+          releaseDraft: false
+          prerelease: false
+          args: --target universal-apple-darwin

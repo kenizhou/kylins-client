@@ -1,7 +1,15 @@
 // Ported from velo (https://github.com/avihaymenahem/velo) — Apache-2.0.
 // See ATTRIBUTIONS.md. Adapted for Kylins Client.
+//
+// Task 5 (Option C) clean-cut cutover: every function delegates to a Rust
+// `db_*` Tauri command (see `kylins.client.backend/src/db/signatures.rs`). Rust
+// owns the `signatures` table and returns rows matching the TS `DbSignature`
+// shape (snake_case keys, matching the historical interface). The pure TS
+// helpers (`isSignatureContext`, `signatureContextForComposerMode`, the
+// `SIGNATURE_CONTEXTS` / `CONTEXT_LABELS` constants) stay here — they have no
+// SQL and are imported by the composer/preferences UI.
 
-import { getDb, buildDynamicUpdate, boolToInt } from './connection';
+import { invoke } from '@tauri-apps/api/core';
 
 export type SignatureContext = 'all' | 'new' | 'reply' | 'forward';
 
@@ -18,28 +26,17 @@ export interface DbSignature {
 export const SIGNATURE_CONTEXTS: SignatureContext[] = ['all', 'new', 'reply', 'forward'];
 
 export async function getSignaturesForAccount(accountId: string): Promise<DbSignature[]> {
-  const db = await getDb();
-  return db.select<DbSignature[]>(
-    'SELECT * FROM signatures WHERE account_id = $1 ORDER BY sort_order, created_at',
-    [accountId],
-  );
+  return invoke<DbSignature[]>('db_get_signatures_for_account', { accountId });
 }
 
 export async function getDefaultSignature(
   accountId: string,
   context?: SignatureContext,
 ): Promise<DbSignature | null> {
-  const requestedContext = context ?? 'all';
-  const db = await getDb();
-  const rows = await db.select<DbSignature[]>(
-    `SELECT * FROM signatures
-     WHERE account_id = $1 AND is_default = 1
-       AND (context = $2 OR context = 'all')
-     ORDER BY CASE WHEN context = $2 THEN 0 ELSE 1 END
-     LIMIT 1`,
-    [accountId, requestedContext],
-  );
-  return rows[0] ?? null;
+  return invoke<DbSignature | null>('db_get_default_signature', {
+    accountId,
+    context: context ?? null,
+  });
 }
 
 export async function insertSignature(sig: {
@@ -49,67 +46,43 @@ export async function insertSignature(sig: {
   isDefault: boolean;
   context?: SignatureContext;
 }): Promise<string> {
-  const db = await getDb();
-  const id = crypto.randomUUID();
-  const context = sig.context ?? 'all';
-
-  if (sig.isDefault) {
-    await db.execute(
-      'UPDATE signatures SET is_default = 0 WHERE account_id = $1 AND context = $2',
-      [sig.accountId, context],
-    );
-  }
-
-  await db.execute(
-    'INSERT INTO signatures (id, account_id, name, body_html, is_default, context) VALUES ($1, $2, $3, $4, $5, $6)',
-    [id, sig.accountId, sig.name, sig.bodyHtml, boolToInt(sig.isDefault), context],
-  );
-  return id;
+  return invoke<string>('db_insert_signature', {
+    input: {
+      accountId: sig.accountId,
+      name: sig.name,
+      bodyHtml: sig.bodyHtml,
+      isDefault: sig.isDefault,
+      context: sig.context ?? null,
+    },
+  });
 }
 
 export async function updateSignature(
   id: string,
   updates: { name?: string; bodyHtml?: string; isDefault?: boolean; context?: SignatureContext },
 ): Promise<void> {
-  const db = await getDb();
-
-  if (updates.isDefault || updates.context !== undefined) {
-    // Determine the account and the effective context for default scoping.
-    const rows = await db.select<{ account_id: string; context: SignatureContext }[]>(
-      'SELECT account_id, context FROM signatures WHERE id = $1',
-      [id],
-    );
-    if (rows[0]) {
-      const context = updates.context ?? rows[0].context;
-      await db.execute(
-        'UPDATE signatures SET is_default = 0 WHERE account_id = $1 AND context = $2',
-        [rows[0].account_id, context],
-      );
-    }
-  }
-
-  const fields: [string, unknown][] = [];
-  if (updates.name !== undefined) fields.push(['name', updates.name]);
-  if (updates.bodyHtml !== undefined) fields.push(['body_html', updates.bodyHtml]);
-  if (updates.isDefault !== undefined) fields.push(['is_default', boolToInt(updates.isDefault)]);
-  if (updates.context !== undefined) fields.push(['context', updates.context]);
-
-  const query = buildDynamicUpdate('signatures', 'id', id, fields);
-  if (query) {
-    await db.execute(query.sql, query.params);
-  }
+  // Rust distinguishes "field absent" from "field present" via Option; we only
+  // forward keys that are actually set on the TS side (matching the historical
+  // buildDynamicUpdate behavior).
+  const payload: Record<string, unknown> = {};
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.bodyHtml !== undefined) payload.bodyHtml = updates.bodyHtml;
+  if (updates.isDefault !== undefined) payload.isDefault = updates.isDefault;
+  if (updates.context !== undefined) payload.context = updates.context;
+  await invoke<void>('db_update_signature', { id, updates: payload });
 }
 
 export async function deleteSignature(id: string): Promise<void> {
-  const db = await getDb();
-  await db.execute('DELETE FROM signatures WHERE id = $1', [id]);
+  await invoke<void>('db_delete_signature', { id });
 }
 
 export function isSignatureContext(value: string): value is SignatureContext {
   return SIGNATURE_CONTEXTS.includes(value as SignatureContext);
 }
 
-export function signatureContextForComposerMode(mode: 'new' | 'reply' | 'replyAll' | 'forward'): SignatureContext {
+export function signatureContextForComposerMode(
+  mode: 'new' | 'reply' | 'replyAll' | 'forward',
+): SignatureContext {
   switch (mode) {
     case 'new':
       return 'new';

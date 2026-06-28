@@ -1,15 +1,29 @@
+// Task 5 clean-cut: contacts.ts now routes through `invoke('db_*')` instead of
+// getDb(). Mock invoke and assert the wrapper forwards the right command + args
+// and passes the Rust return value through unchanged. Rust owns email
+// normalization + JSON column parsing; the TS types stay byte-for-byte.
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type Database from '@tauri-apps/plugin-sql';
 import {
   createContact,
   getContacts,
+  getAllContacts,
   getContactById,
   getContactByEmail,
+  getContactByExternalId,
   updateContact,
   deleteContact,
   upsertContact,
   searchContacts,
+  updateContactAvatar,
+  updateContactNotes,
+  getContactStats,
+  getRecentThreadsWithContact,
+  getAttachmentsFromContact,
+  getContactsFromSameDomain,
+  getLatestAuthResult,
   getContactGroups,
+  getContactGroupById,
   createContactGroup,
   renameContactGroup,
   deleteContactGroup,
@@ -17,81 +31,46 @@ import {
   removeContactFromGroup,
   getContactIdsForGroup,
   getGroupsForContact,
+  type Contact,
 } from '../../../src/services/db/contacts';
-import { getDb } from '../../../src/services/db/connection';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 
-vi.mock('../../../src/services/db/connection', () => ({
-  getDb: vi.fn(),
-  withTransaction: vi.fn(async (fn: (db: unknown) => Promise<void>) => {
-    const db = vi.mocked(getDb)();
-    return db.then((d) => fn(d));
-  }),
-  selectFirstBy: vi.fn(async <T>(sql: string, params: unknown[] = []) => {
-    const db = await vi.mocked(getDb)();
-    const rows = await db.select<T[]>(sql, params);
-    return rows[0] ?? null;
-  }),
-  buildDynamicUpdate: vi.fn(
-    (table: string, idColumn: string, idValue: unknown, fields: [string, unknown][]) => {
-      if (fields.length === 0) return null;
-      const sets: string[] = [];
-      const params: unknown[] = [];
-      let idx = 1;
-      for (const [column, value] of fields) {
-        sets.push(`${column} = $${idx++}`);
-        params.push(value);
-      }
-      params.push(idValue);
-      const sql = `UPDATE ${table} SET ${sets.join(', ')} WHERE ${idColumn} = $${idx}`;
-      return { sql, params };
-    },
-  ),
-}));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = {
-  select: vi.fn(),
-  execute: vi.fn(),
-};
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.select.mockReset();
-  mockDb.execute.mockReset();
-});
-
-function contactRow(overrides: Record<string, unknown> = {}) {
+function contactFixture(overrides: Partial<Contact> = {}): Contact {
   return {
     id: 'c-1',
     email: 'ada@example.com',
-    display_name: 'Ada Lovelace',
-    avatar_url: null,
+    displayName: 'Ada Lovelace',
+    avatarUrl: null,
     frequency: 0,
-    last_contacted_at: null,
-    first_contacted_at: null,
+    lastContactedAt: null,
+    firstContactedAt: null,
     notes: null,
-    account_id: null,
+    accountId: null,
     source: 'local',
-    external_id: null,
+    externalId: null,
     etag: null,
-    raw_vcard: null,
-    is_hidden: 0,
-    is_readonly: 0,
+    rawVCard: null,
+    isHidden: false,
+    isReadonly: false,
     company: 'Analytical Engines',
-    job_title: 'Countess',
-    emails_json: '[{"label":"work","value":"ada@example.com","isPrimary":true}]',
-    phone_numbers_json: '[]',
-    addresses_json: '[]',
-    created_at: 1,
-    updated_at: 2,
+    jobTitle: 'Countess',
+    emails: [{ label: 'work', value: 'ada@example.com', isPrimary: true }],
+    phones: [],
+    addresses: [],
+    createdAt: 1,
+    updatedAt: 2,
     ...overrides,
   };
 }
 
 describe('contacts service', () => {
-  it('creates a contact', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    mockDb.select.mockResolvedValue([contactRow()]);
-
+  it('createContact forwards the input and returns the created contact', async () => {
+    mockInvoke.mockResolvedValueOnce(contactFixture());
     const contact = await createContact({
       email: 'Ada@Example.com',
       displayName: 'Ada Lovelace',
@@ -99,154 +78,240 @@ describe('contacts service', () => {
       jobTitle: 'Countess',
       emails: [{ label: 'work', value: 'ada@example.com', isPrimary: true }],
     });
-
     expect(contact.email).toBe('ada@example.com');
     expect(contact.displayName).toBe('Ada Lovelace');
-    expect(contact.company).toBe('Analytical Engines');
-    expect(contact.emails).toHaveLength(1);
-    expect(contact.emails[0]).toMatchObject({ label: 'work', value: 'ada@example.com', isPrimary: true });
+    expect(mockInvoke).toHaveBeenCalledWith('db_create_contact', {
+      input: expect.objectContaining({
+        email: 'Ada@Example.com',
+        displayName: 'Ada Lovelace',
+        company: 'Analytical Engines',
+      }),
+    });
   });
 
-  it('lists contacts', async () => {
-    mockDb.select.mockResolvedValue([contactRow({ id: 'c-1' }), contactRow({ id: 'c-2', email: 'grace@example.com', display_name: 'Grace Hopper' })]);
+  it('getContacts forwards to db_list_contacts with default options', async () => {
+    mockInvoke.mockResolvedValueOnce([contactFixture()]);
     const contacts = await getContacts();
-    expect(contacts).toHaveLength(2);
-    expect(contacts[0]!.email).toBe('ada@example.com');
-  });
-
-  it('filters contacts by source', async () => {
-    mockDb.select.mockResolvedValue([contactRow({ source: 'mail' })]);
-    const contacts = await getContacts({ source: 'mail' });
     expect(contacts).toHaveLength(1);
-    expect(contacts[0]!.source).toBe('mail');
+    expect(mockInvoke).toHaveBeenCalledWith('db_list_contacts', { options: {} });
   });
 
-  it('gets a contact by id', async () => {
-    mockDb.select.mockResolvedValue([contactRow()]);
-    const contact = await getContactById('c-1');
-    expect(contact).not.toBeNull();
-    expect(contact!.id).toBe('c-1');
+  it('getContacts forwards filter options', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await getContacts({ source: 'mail', includeHidden: true });
+    expect(mockInvoke).toHaveBeenCalledWith('db_list_contacts', {
+      options: { source: 'mail', includeHidden: true },
+    });
   });
 
-  it('gets a contact by email normalized', async () => {
-    mockDb.select.mockResolvedValue([contactRow()]);
+  it('getAllContacts passes limit/offset', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await getAllContacts(10, 20);
+    expect(mockInvoke).toHaveBeenCalledWith('db_list_contacts', {
+      options: { limit: 10, offset: 20 },
+    });
+  });
+
+  it('getContactById forwards id', async () => {
+    mockInvoke.mockResolvedValueOnce(contactFixture());
+    await getContactById('c-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_by_id', { id: 'c-1' });
+  });
+
+  it('getContactByEmail forwards email (Rust normalizes)', async () => {
+    mockInvoke.mockResolvedValueOnce(contactFixture());
     const contact = await getContactByEmail('ADA@EXAMPLE.COM');
     expect(contact).not.toBeNull();
-    expect(contact!.email).toBe('ada@example.com');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_by_email', {
+      email: 'ADA@EXAMPLE.COM',
+    });
   });
 
-  it('updates a contact', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('getContactByExternalId forwards the triple', async () => {
+    mockInvoke.mockResolvedValueOnce(null);
+    await getContactByExternalId('acc1', 'carddav', 'ext-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_by_external_id', {
+      accountId: 'acc1',
+      source: 'carddav',
+      externalId: 'ext-1',
+    });
+  });
+
+  it('updateContact forwards only the provided fields', async () => {
     await updateContact('c-1', {
       displayName: 'New Name',
       company: 'New Co',
       emails: [{ value: 'new@example.com' }],
       phones: [{ label: 'cell', value: '+1-555-0100' }],
     });
-    expect(mockDb.execute).toHaveBeenCalledOnce();
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(String(sql)).toContain('UPDATE contacts SET');
-    expect(params).toContain('New Name');
-    expect(params).toContain('New Co');
-    expect(params).toContain('[{"value":"new@example.com"}]');
-    expect(params).toContain('[{"label":"cell","value":"+1-555-0100"}]');
+    expect(mockInvoke).toHaveBeenCalledWith('db_update_contact', {
+      id: 'c-1',
+      updates: expect.objectContaining({
+        displayName: 'New Name',
+        company: 'New Co',
+        emails: [{ value: 'new@example.com' }],
+        phones: [{ label: 'cell', value: '+1-555-0100' }],
+      }),
+    });
   });
 
-  it('deletes a contact', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('deleteContact forwards id', async () => {
     await deleteContact('c-1');
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(sql).toBe('DELETE FROM contacts WHERE id = $1');
-    expect(params).toEqual(['c-1']);
+    expect(mockInvoke).toHaveBeenCalledWith('db_delete_contact', { id: 'c-1' });
   });
 
-  it('upserts a contact and bumps frequency', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('upsertContact forwards email + displayName', async () => {
     await upsertContact('Ada@Example.com', 'Ada Lovelace');
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(String(sql)).toContain('INSERT INTO contacts');
-    expect(String(sql)).toContain('ON CONFLICT(email) DO UPDATE');
-    expect(params).toContain('ada@example.com');
-    expect(params).toContain('Ada Lovelace');
+    expect(mockInvoke).toHaveBeenCalledWith('db_upsert_contact', {
+      email: 'Ada@Example.com',
+      displayName: 'Ada Lovelace',
+    });
   });
 
-  it('searches contacts by query', async () => {
-    mockDb.select.mockResolvedValue([contactRow()]);
-    const results = await searchContacts('ada', 5);
-    expect(results).toHaveLength(1);
-    expect(results[0]!.email).toBe('ada@example.com');
+  it('searchContacts forwards query + limit', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await searchContacts('ada', 5);
+    expect(mockInvoke).toHaveBeenCalledWith('db_search_contacts', { query: 'ada', limit: 5 });
+  });
+
+  it('updateContactAvatar forwards email + url', async () => {
+    await updateContactAvatar('ada@example.com', 'data:...');
+    expect(mockInvoke).toHaveBeenCalledWith('db_update_contact_avatar', {
+      email: 'ada@example.com',
+      avatarUrl: 'data:...',
+    });
+  });
+
+  it('updateContactNotes forwards email + notes (null allowed)', async () => {
+    await updateContactNotes('ada@example.com', null);
+    expect(mockInvoke).toHaveBeenCalledWith('db_update_contact_notes', {
+      email: 'ada@example.com',
+      notes: null,
+    });
+  });
+
+  it('getContactStats returns the stats DTO', async () => {
+    mockInvoke.mockResolvedValueOnce({ emailCount: 3, firstEmail: 1, lastEmail: 5 });
+    const stats = await getContactStats('ada@example.com');
+    expect(stats.emailCount).toBe(3);
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_stats', { email: 'ada@example.com' });
+  });
+
+  it('getRecentThreadsWithContact forwards email + limit', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await getRecentThreadsWithContact('ada@example.com', 5);
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_recent_threads_with_contact', {
+      email: 'ada@example.com',
+      limit: 5,
+    });
+  });
+
+  it('getAttachmentsFromContact forwards email + limit', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await getAttachmentsFromContact('ada@example.com');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_attachments_from_contact', {
+      email: 'ada@example.com',
+      limit: 5,
+    });
+  });
+
+  it('getContactsFromSameDomain forwards email + limit', async () => {
+    mockInvoke.mockResolvedValueOnce([]);
+    await getContactsFromSameDomain('ada@example.com');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_contacts_from_same_domain', {
+      email: 'ada@example.com',
+      limit: 5,
+    });
+  });
+
+  it('getLatestAuthResult forwards email', async () => {
+    mockInvoke.mockResolvedValueOnce('pass');
+    const result = await getLatestAuthResult('ada@example.com');
+    expect(result).toBe('pass');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_latest_auth_result', {
+      email: 'ada@example.com',
+    });
   });
 
   describe('contact groups', () => {
-    function groupRow(overrides: Record<string, unknown> = {}) {
-      return {
+    it('getContactGroups forwards optional accountId (null when omitted)', async () => {
+      mockInvoke.mockResolvedValueOnce([]);
+      await getContactGroups();
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_groups', { accountId: null });
+    });
+
+    it('getContactGroups forwards the supplied accountId', async () => {
+      mockInvoke.mockResolvedValueOnce([]);
+      await getContactGroups('acc1');
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_groups', { accountId: 'acc1' });
+    });
+
+    it('getContactGroupById forwards id', async () => {
+      mockInvoke.mockResolvedValueOnce(null);
+      await getContactGroupById('g-1');
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_group_by_id', { id: 'g-1' });
+    });
+
+    it('createContactGroup forwards name/accountId/source with defaults', async () => {
+      mockInvoke.mockResolvedValueOnce({
         id: 'g-1',
-        account_id: null,
+        accountId: null,
         source: 'local',
-        external_id: null,
+        externalId: null,
         name: 'Engineers',
         etag: null,
-        is_readonly: 0,
-        created_at: 1,
-        updated_at: 2,
-        ...overrides,
-      };
-    }
-
-    it('lists groups', async () => {
-      mockDb.select.mockResolvedValue([groupRow()]);
-      const groups = await getContactGroups();
-      expect(groups).toHaveLength(1);
-      expect(groups[0]!.name).toBe('Engineers');
+        isReadonly: false,
+        createdAt: 1,
+        updatedAt: 2,
+      });
+      await createContactGroup('Engineers');
+      expect(mockInvoke).toHaveBeenCalledWith('db_create_contact_group', {
+        name: 'Engineers',
+        accountId: null,
+        source: 'local',
+      });
     });
 
-    it('creates a group', async () => {
-      mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-      mockDb.select.mockResolvedValue([groupRow()]);
-      const group = await createContactGroup('Engineers');
-      expect(group.name).toBe('Engineers');
-    });
-
-    it('renames a group', async () => {
-      mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    it('renameContactGroup forwards id + name', async () => {
       await renameContactGroup('g-1', 'Scientists');
-      const [sql, params] = mockDb.execute.mock.calls[0];
-      expect(String(sql)).toContain('UPDATE contact_groups SET name = $1');
-      expect(params).toContain('Scientists');
+      expect(mockInvoke).toHaveBeenCalledWith('db_rename_contact_group', {
+        id: 'g-1',
+        name: 'Scientists',
+      });
     });
 
-    it('deletes a group', async () => {
-      mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    it('deleteContactGroup forwards id', async () => {
       await deleteContactGroup('g-1');
-      const [sql, params] = mockDb.execute.mock.calls[0];
-      expect(sql).toBe('DELETE FROM contact_groups WHERE id = $1');
-      expect(params).toEqual(['g-1']);
+      expect(mockInvoke).toHaveBeenCalledWith('db_delete_contact_group', { id: 'g-1' });
     });
 
-    it('adds and removes a contact from a group', async () => {
-      mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+    it('addContactToGroup forwards contactId + groupId', async () => {
       await addContactToGroup('c-1', 'g-1');
-      const [addSql, addParams] = mockDb.execute.mock.calls[0];
-      expect(String(addSql)).toContain('INSERT OR IGNORE INTO contact_group_members');
-      expect(addParams).toEqual(['g-1', 'c-1']);
-
-      await removeContactFromGroup('c-1', 'g-1');
-      const [removeSql, removeParams] = mockDb.execute.mock.calls[1];
-      expect(String(removeSql)).toContain('DELETE FROM contact_group_members');
-      expect(removeParams).toEqual(['g-1', 'c-1']);
+      expect(mockInvoke).toHaveBeenCalledWith('db_add_contact_to_group', {
+        contactId: 'c-1',
+        groupId: 'g-1',
+      });
     });
 
-    it('lists contact ids for a group', async () => {
-      mockDb.select.mockResolvedValue([{ contact_id: 'c-1' }, { contact_id: 'c-2' }]);
+    it('removeContactFromGroup forwards contactId + groupId', async () => {
+      await removeContactFromGroup('c-1', 'g-1');
+      expect(mockInvoke).toHaveBeenCalledWith('db_remove_contact_from_group', {
+        contactId: 'c-1',
+        groupId: 'g-1',
+      });
+    });
+
+    it('getContactIdsForGroup forwards groupId', async () => {
+      mockInvoke.mockResolvedValueOnce(['c-1', 'c-2']);
       const ids = await getContactIdsForGroup('g-1');
       expect(ids).toEqual(['c-1', 'c-2']);
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_contact_ids_for_group', { groupId: 'g-1' });
     });
 
-    it('lists groups for a contact', async () => {
-      mockDb.select.mockResolvedValue([groupRow({ id: 'g-2', name: 'Friends' })]);
-      const groups = await getGroupsForContact('c-1');
-      expect(groups).toHaveLength(1);
-      expect(groups[0]!.name).toBe('Friends');
+    it('getGroupsForContact forwards contactId', async () => {
+      mockInvoke.mockResolvedValueOnce([]);
+      await getGroupsForContact('c-1');
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_groups_for_contact', { contactId: 'c-1' });
     });
   });
 });

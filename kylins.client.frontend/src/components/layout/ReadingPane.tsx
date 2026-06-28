@@ -7,10 +7,12 @@ import {
   CornerUpRightIcon,
   MoreIcon,
   DeleteIcon,
+  FlagIcon,
   ClassificationIcon,
 } from '../icons';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { useThreadStore } from '../../stores/threadStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { EmailRenderer } from '../email/EmailRenderer';
 import { InlineReply } from '../email/InlineReply';
@@ -99,6 +101,10 @@ function SubjectActionButton({
 
 export function ReadingPane() {
   const message = useViewStore((s) => s.selectedMessage);
+  const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === message?.threadId));
+  const markThreadRead = useThreadStore((s) => s.markThreadRead);
+  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
+  const deleteThread = useThreadStore((s) => s.deleteThread);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
@@ -114,6 +120,8 @@ export function ReadingPane() {
     setActiveMsgId(message?.id);
     setComposeMode(null);
   }
+
+  const [moreOpen, setMoreOpen] = useState(false);
 
   if (!message) {
     return (
@@ -267,8 +275,46 @@ export function ReadingPane() {
             />
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
             <SubjectActionButton icon={<Archive size={18} />} title="Archive" />
-            <SubjectActionButton icon={<DeleteIcon size={17} />} title="Delete" />
-            <SubjectActionButton icon={<MoreIcon size={17} />} title="More actions" />
+            <SubjectActionButton
+              icon={<FlagIcon size={17} />}
+              title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
+              className={selectedThread?.isStarred ? 'text-[var(--amber)]' : undefined}
+              onClick={() => {
+                if (selectedThread) void toggleThreadStarred(selectedThread);
+              }}
+            />
+            <SubjectActionButton
+              icon={<DeleteIcon size={17} />}
+              title="Delete"
+              onClick={() => {
+                if (selectedThread) void deleteThread(selectedThread);
+              }}
+            />
+            <div className="relative">
+              <SubjectActionButton
+                icon={<MoreIcon size={17} />}
+                title="More actions"
+                onClick={() => setMoreOpen((v) => !v)}
+              />
+              {moreOpen && (
+                <div className="absolute right-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+                  <button
+                    type="button"
+                    disabled={!selectedThread}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      if (selectedThread) {
+                        void markThreadRead(selectedThread, !selectedThread.isRead);
+                      }
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <MailIcon size={16} />
+                    <span>{selectedThread?.isRead ? 'Mark as unread' : 'Mark as read'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

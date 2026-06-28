@@ -4,9 +4,12 @@ export interface VerifyStepProps {
   error?: string | null;
   onRetry?: () => void;
   onBack?: () => void;
+  onReplace?: () => void;
 }
 
-export function VerifyStep({ error, onRetry, onBack }: VerifyStepProps) {
+export function VerifyStep({ error, onRetry, onBack, onReplace }: VerifyStepProps) {
+  const isDuplicateError = error?.toLowerCase().includes('already exists') ?? false;
+
   return (
     <SetupCard>
       <div className="flex flex-col items-center gap-5 py-6 text-center">
@@ -32,6 +35,9 @@ export function VerifyStep({ error, onRetry, onBack }: VerifyStepProps) {
             </div>
             <div className="mt-2 flex items-center gap-3">
               {onBack && <SetupBackButton onClick={onBack} />}
+              {isDuplicateError && onReplace && (
+                <SetupButton onClick={onReplace}>Replace existing account</SetupButton>
+              )}
               {onRetry && <SetupButton onClick={onRetry}>Retry</SetupButton>}
             </div>
           </>

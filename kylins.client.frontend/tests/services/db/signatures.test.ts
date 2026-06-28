@@ -1,5 +1,10 @@
+// Task 5 clean-cut: signatures.ts now routes through `invoke('db_*')` instead
+// of getDb(). Mock invoke and assert the wrapper forwards the right command +
+// args and passes the Rust return value through unchanged. The pure TS helpers
+// (isSignatureContext, SIGNATURE_CONTEXTS, CONTEXT_LABELS) are still tested
+// directly.
+
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { getDb } from '../../../src/services/db/connection';
 import {
   getSignaturesForAccount,
   getDefaultSignature,
@@ -7,33 +12,21 @@ import {
   updateSignature,
   deleteSignature,
   isSignatureContext,
+  signatureContextForComposerMode,
+  SIGNATURE_CONTEXTS,
+  CONTEXT_LABELS,
   type DbSignature,
 } from '../../../src/services/db/signatures';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 
-vi.mock('@tauri-apps/plugin-sql', () => ({
-  default: {
-    load: vi.fn().mockResolvedValue({
-      execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
-      select: vi.fn().mockResolvedValue([]),
-    }),
-  },
-}));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-function mockSelect(rows: unknown[]) {
-  return vi.mocked(getDb)().then((db) => {
-    vi.mocked(db.select).mockResolvedValue(rows);
-  });
-}
-
-beforeEach(async () => {
-  const db = await getDb();
-  vi.mocked(db.execute).mockClear();
-  vi.mocked(db.select).mockClear();
-});
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 describe('signatures service', () => {
   describe('getSignaturesForAccount', () => {
-    it('orders signatures by sort_order and created_at', async () => {
+    it('forwards to db_get_signatures_for_account and returns rows', async () => {
       const rows: DbSignature[] = [
         {
           id: 's1',
@@ -45,19 +38,17 @@ describe('signatures service', () => {
           context: 'all',
         },
       ];
-      await mockSelect(rows);
+      mockInvoke.mockResolvedValueOnce(rows);
       const result = await getSignaturesForAccount('acc1');
       expect(result).toEqual(rows);
-      const db = await getDb();
-      expect(vi.mocked(db.select)).toHaveBeenCalledWith(
-        expect.stringContaining('ORDER BY sort_order, created_at'),
-        ['acc1'],
-      );
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_signatures_for_account', {
+        accountId: 'acc1',
+      });
     });
   });
 
   describe('getDefaultSignature', () => {
-    it('returns the exact-context default when present', async () => {
+    it('forwards with the supplied context', async () => {
       const replySig: DbSignature = {
         id: 'reply-sig',
         account_id: 'acc1',
@@ -67,46 +58,28 @@ describe('signatures service', () => {
         sort_order: 0,
         context: 'reply',
       };
-      await mockSelect([replySig]);
+      mockInvoke.mockResolvedValueOnce(replySig);
       const result = await getDefaultSignature('acc1', 'reply');
       expect(result).toEqual(replySig);
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_default_signature', {
+        accountId: 'acc1',
+        context: 'reply',
+      });
     });
 
-    it('falls back to the all-context default when no context default exists', async () => {
-      const allSig: DbSignature = {
-        id: 'all-sig',
-        account_id: 'acc1',
-        name: 'Default',
-        body_html: '<p>Default sig</p>',
-        is_default: 1,
-        sort_order: 0,
-        context: 'all',
-      };
-      await mockSelect([allSig]);
-      const result = await getDefaultSignature('acc1', 'new');
-      expect(result).toEqual(allSig);
-      const db = await getDb();
-      expect(vi.mocked(db.select)).toHaveBeenCalledWith(
-        expect.stringContaining("ORDER BY CASE WHEN context = $2 THEN 0 ELSE 1 END"),
-        ['acc1', 'new'],
-      );
-    });
-
-    it('defaults context to all when omitted', async () => {
-      await mockSelect([]);
+    it('defaults context to null (Rust treats null as "all") when omitted', async () => {
+      mockInvoke.mockResolvedValueOnce(null);
       await getDefaultSignature('acc1');
-      const db = await getDb();
-      expect(vi.mocked(db.select)).toHaveBeenCalledWith(
-        expect.stringContaining("context = $2"),
-        ['acc1', 'all'],
-      );
+      expect(mockInvoke).toHaveBeenCalledWith('db_get_default_signature', {
+        accountId: 'acc1',
+        context: null,
+      });
     });
   });
 
   describe('insertSignature', () => {
-    it('inserts a signature with the supplied context', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([]);
+    it('forwards the input payload and returns the new id', async () => {
+      mockInvoke.mockResolvedValueOnce('new-id');
       const id = await insertSignature({
         accountId: 'acc1',
         name: 'Reply',
@@ -114,67 +87,68 @@ describe('signatures service', () => {
         isDefault: false,
         context: 'reply',
       });
-      expect(id).toBeTypeOf('string');
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO signatures'),
-        expect.arrayContaining(['acc1', 'Reply', '<p>Reply</p>', 0, 'reply']),
-      );
+      expect(id).toBe('new-id');
+      expect(mockInvoke).toHaveBeenCalledWith('db_insert_signature', {
+        input: {
+          accountId: 'acc1',
+          name: 'Reply',
+          bodyHtml: '<p>Reply</p>',
+          isDefault: false,
+          context: 'reply',
+        },
+      });
     });
 
-    it('clears the previous default for the same context', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([]);
+    it('defaults context to null when omitted', async () => {
+      mockInvoke.mockResolvedValueOnce('new-id');
       await insertSignature({
         accountId: 'acc1',
-        name: 'New default',
+        name: 'Default',
         bodyHtml: '<p>Default</p>',
         isDefault: true,
-        context: 'new',
       });
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE signatures SET is_default = 0 WHERE account_id = $1 AND context = $2'),
-        ['acc1', 'new'],
-      );
+      expect(mockInvoke).toHaveBeenCalledWith('db_insert_signature', {
+        input: {
+          accountId: 'acc1',
+          name: 'Default',
+          bodyHtml: '<p>Default</p>',
+          isDefault: true,
+          context: null,
+        },
+      });
     });
   });
 
   describe('updateSignature', () => {
-    it('updates name and body', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([
-        { account_id: 'acc1', context: 'all' },
-      ]);
+    it('forwards only the provided fields', async () => {
       await updateSignature('s1', { name: 'Updated', bodyHtml: '<p>Updated</p>' });
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE signatures SET name = $1, body_html = $2 WHERE id = $3'),
-        ['Updated', '<p>Updated</p>', 's1'],
-      );
+      expect(mockInvoke).toHaveBeenCalledWith('db_update_signature', {
+        id: 's1',
+        updates: { name: 'Updated', bodyHtml: '<p>Updated</p>' },
+      });
     });
 
-    it('clears the previous default for the target context', async () => {
-      const db = await getDb();
-      vi.mocked(db.select).mockResolvedValue([
-        { account_id: 'acc1', context: 'reply' },
-      ]);
+    it('forwards isDefault + context together', async () => {
       await updateSignature('s1', { isDefault: true, context: 'reply' });
-      const calls = vi.mocked(db.execute).mock.calls;
-      // Should have two calls: clear-default + dynamic update
-      expect(calls.length).toBe(2);
-      expect(calls[0]).toEqual([
-        expect.stringContaining('UPDATE signatures SET is_default = 0 WHERE account_id = $1 AND context = $2'),
-        ['acc1', 'reply'],
-      ]);
+      expect(mockInvoke).toHaveBeenCalledWith('db_update_signature', {
+        id: 's1',
+        updates: { isDefault: true, context: 'reply' },
+      });
+    });
+
+    it('forwards an empty payload when no fields are set (Rust treats as no-op)', async () => {
+      await updateSignature('s1', {});
+      expect(mockInvoke).toHaveBeenCalledWith('db_update_signature', {
+        id: 's1',
+        updates: {},
+      });
     });
   });
 
   describe('deleteSignature', () => {
     it('deletes by id', async () => {
-      const db = await getDb();
       await deleteSignature('s1');
-      expect(vi.mocked(db.execute)).toHaveBeenCalledWith(
-        'DELETE FROM signatures WHERE id = $1',
-        ['s1'],
-      );
+      expect(mockInvoke).toHaveBeenCalledWith('db_delete_signature', { id: 's1' });
     });
   });
 
@@ -189,6 +163,22 @@ describe('signatures service', () => {
     it('rejects invalid contexts', () => {
       expect(isSignatureContext('replyAll')).toBe(false);
       expect(isSignatureContext('invalid')).toBe(false);
+    });
+  });
+
+  describe('signatureContextForComposerMode', () => {
+    it('maps composer modes to signature contexts', () => {
+      expect(signatureContextForComposerMode('new')).toBe('new');
+      expect(signatureContextForComposerMode('reply')).toBe('reply');
+      expect(signatureContextForComposerMode('replyAll')).toBe('reply');
+      expect(signatureContextForComposerMode('forward')).toBe('forward');
+    });
+  });
+
+  describe('constants', () => {
+    it('exposes the canonical context list and labels', () => {
+      expect(SIGNATURE_CONTEXTS).toEqual(['all', 'new', 'reply', 'forward']);
+      expect(CONTEXT_LABELS.reply).toBe('Reply');
     });
   });
 });
