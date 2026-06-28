@@ -36,6 +36,13 @@ export async function notifyNewMail(sender: string, subject: string): Promise<vo
   }
 }
 
+export function notifyNewMailBatch(count: number): void {
+  const { showNotificationsForNewUnread } = usePreferencesStore.getState();
+  if (!showNotificationsForNewUnread) return;
+
+  sendNotification('New mail', `${count} new message${count === 1 ? '' : 's'}`);
+}
+
 export async function notifyRepeatedOpen(sender: string, subject: string): Promise<void> {
   const { showNotificationsForRepeatedOpens } = usePreferencesStore.getState();
   if (!showNotificationsForRepeatedOpens) return;

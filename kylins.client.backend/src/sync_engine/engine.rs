@@ -416,43 +416,37 @@ async fn run_sync_round_with_source(
         }
     };
 
-    // Persist the folder tree (RemoteFolder -> labels rows). Track whether
-    // any label was newly inserted (vs updated) so we can emit a delta event.
-    let mut labels_changed = false;
+    // Persist the folder tree (RemoteFolder -> labels rows).
     for f in &folders {
-        let inserted = upsert_folder_label(&engine.pool, account_id, provider, f)
+        upsert_folder_label(&engine.pool, account_id, provider, f)
             .await
-            .unwrap_or(false);
-        if inserted {
-            labels_changed = true;
-        }
+            .unwrap_or_else(|e| log::warn!("[sync] {account_id} upsert label {} failed: {e}", f.remote_id));
     }
 
     // Prune local labels whose remote_id is no longer on the server (renamed
     // or deleted from another client).
-    let current_ids: HashSet<String> = folders.iter().map(|f| f.remote_id.clone()).collect();
-    let pruned = labels::prune_stale_labels(&engine.pool, account_id, provider, &current_ids)
+    let current_ids: HashSet<&str> = folders.iter().map(|f| f.remote_id.as_str()).collect();
+    let _pruned = labels::prune_stale_labels(&engine.pool, account_id, provider, &current_ids)
         .await
-        .map_err(|e| {
+        .unwrap_or_else(|e| {
             log::warn!("[sync] {account_id} prune stale labels failed: {e}");
-            e
-        })
-        .unwrap_or(0);
-    if pruned > 0 {
-        labels_changed = true;
-    }
-
-    // If the folder list changed (new/renamed/deleted folders), emit a delta
-    // event so the frontend reloads the folder pane.
-    if labels_changed {
-        engine.sink.emit_delta(DeltaEvent {
-            op: "sync".into(),
-            table: "labels".into(),
-            account_id: account_id.into(),
-            label_id: String::new(),
-            count: 0,
+            0
         });
-    }
+
+    // Emit a labels delta so the frontend reloads the folder pane. We fire
+    // this every round rather than tracking per-folder insert/update state
+    // (which would require an extra SELECT before each INSERT and ~N extra
+    // SQLite round-trips per sync tick). The frontend reload is a single
+    // indexed read, and the event fires once per account per 60 s -- cheaper
+    // than N extra queries per tick.
+    engine.sink.emit_delta(DeltaEvent {
+        op: "sync".into(),
+        table: "labels".into(),
+        account_id: account_id.into(),
+        // Empty label_id = all-labels sentinel (folder-list delta, not a single-label delta).
+        label_id: String::new(),
+        count: 0,
+    });
 
     // Per-folder delta sync.
     for f in &folders {
@@ -507,16 +501,9 @@ async fn run_sync_round_with_source(
 }
 
 /// Map a RemoteFolder to a `labels` row (id = "{account}:{remote_id}").
-/// Returns `true` if a new row was inserted (vs updated).
-async fn upsert_folder_label(pool: &SqlitePool, account_id: &str, source: &str, f: &RemoteFolder) -> Result<bool, String> {
+/// Uses INSERT ON CONFLICT so repeated calls are idempotent.
+async fn upsert_folder_label(pool: &SqlitePool, account_id: &str, source: &str, f: &RemoteFolder) -> Result<(), String> {
     let id = format!("{account_id}:{}", f.remote_id);
-    // Quick existence check so the caller knows whether the label is new.
-    let existed: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM labels WHERE account_id = ? AND id = ?")
-        .bind(account_id)
-        .bind(&id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| e.to_string())?;
     let ty = if f.role.is_some() { "system" } else { "user" };
     sqlx::query(
         "INSERT INTO labels (id, account_id, name, type, visible, sort_order, source, role, parent_id,
@@ -543,7 +530,7 @@ async fn upsert_folder_label(pool: &SqlitePool, account_id: &str, source: &str, 
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(existed.0 == 0)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -726,11 +713,11 @@ mod tests {
             vec![RemoteMessage { uid: 1, folder: "INBOX".into(), message_id: Some("<m1>".into()), date: 1, ..Default::default() }],
         );
         run_sync_round_with_source(&engine, "a", "imap", &src).await.unwrap();
-        // First round: 1 message delta + 1 label delta (new folder upserted)
+        // Round 1: 1 message delta + 1 label delta
         assert_eq!(sink.deltas.lock().unwrap().len(), 2);
-        // Second round: MockSource drained, no new deltas.
+        // Round 2: no new messages + 1 label delta (emitted unconditionally per round)
         run_sync_round_with_source(&engine, "a", "imap", &src).await.unwrap();
-        assert_eq!(sink.deltas.lock().unwrap().len(), 2); // unchanged
+        assert_eq!(sink.deltas.lock().unwrap().len(), 3);
     }
 
     // ---- Phase 1 Task 4: AccountWorker replay loop + sync:queue ----

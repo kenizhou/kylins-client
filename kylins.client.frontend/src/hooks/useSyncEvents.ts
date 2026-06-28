@@ -14,6 +14,7 @@ import { useFolderStore } from '../stores/folderStore';
 import { useThreadStore } from '../stores/threadStore';
 import { useAccountStore } from '../stores/accountStore';
 import { useUIStore } from '../stores/uiStore';
+import { notifyNewMailBatch } from '../services/notifications/notificationManager';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -45,15 +46,7 @@ export function useSyncEvents(): void {
           await listen<{ accountId: string; folderId: string; count: number }>(
             'sync:new-mail',
             (e) => {
-              const n = e.payload.count;
-              try {
-                invoke('send_desktop_notification', {
-                  title: 'New mail',
-                  body: `${n} new message${n === 1 ? '' : 's'}`,
-                }).catch(() => {});
-              } catch {
-                /* notifications are best-effort */
-              }
+              notifyNewMailBatch(e.payload.count);
             },
           ),
         );

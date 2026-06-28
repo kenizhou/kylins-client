@@ -394,7 +394,7 @@ pub async fn prune_stale_labels(
     pool: &SqlitePool,
     account_id: &str,
     source: &str,
-    keep_remote_ids: &HashSet<String>,
+    keep_remote_ids: &HashSet<&str>,
 ) -> Result<u64, String> {
     let rows = sqlx::query(
         "SELECT id, remote_id FROM labels WHERE account_id = ? AND source = ? AND remote_id IS NOT NULL",
@@ -408,7 +408,7 @@ pub async fn prune_stale_labels(
     let mut deleted: u64 = 0;
     for row in &rows {
         let remote_id: String = row.try_get("remote_id").unwrap_or_default();
-        if !keep_remote_ids.contains(&remote_id) {
+        if !keep_remote_ids.contains(remote_id.as_str()) {
             let id: String = row.try_get("id").unwrap_or_default();
             delete_folder(pool, account_id, &id).await?;
             log::info!("[labels] pruned stale label {id} (remote {remote_id})");

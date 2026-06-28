@@ -83,7 +83,6 @@ pub fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(),
 /// the correct AppUserModelID (com.mailclient.app) instead of "Windows PowerShell".
 #[tauri::command]
 pub fn send_desktop_notification(app: tauri::AppHandle, title: String, body: String) {
-    use tauri_plugin_notification::NotificationExt;
     let _ = app
         .notification()
         .builder()
