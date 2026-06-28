@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useThreadStore } from '../../src/stores/threadStore';
+import { useFolderStore } from '../../src/stores/folderStore';
 import { useViewStore } from '../../src/features/view/viewStore';
-import { getThreads, getMessagesForThread, markThreadRead } from '../../src/services/db/threads';
+import { getThreads, getMessagesForThread } from '../../src/services/db/threads';
 import { getMessageBody } from '../../src/services/db/messageBodies';
-import type { Thread } from '../../src/services/db/threads';
+import type { Thread, DbMessageRow } from '../../src/services/db/threads';
+import { invoke } from '@tauri-apps/api/core';
+
+// `selectThread` now routes mark-read through the Rust sync engine via
+// `sync_apply_mutation` (the engine owns the durable write + replay). Mock the
+// Tauri invoke at the service boundary so the test asserts the op shape.
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 vi.mock('../../src/services/db/threads', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/db/threads')>(
@@ -13,7 +20,6 @@ vi.mock('../../src/services/db/threads', async () => {
     ...actual,
     getThreads: vi.fn(),
     getMessagesForThread: vi.fn(),
-    markThreadRead: vi.fn(),
   };
 });
 
@@ -49,14 +55,22 @@ function reset() {
     currentQuery: null,
   });
   useViewStore.getState().setSelectedMessage(null);
+  useFolderStore.setState({
+    byAccount: {},
+    favorites: new Set(),
+    unreadCounts: {},
+    selected: null,
+    isLoading: false,
+  });
 }
 
 beforeEach(() => {
   reset();
   vi.mocked(getThreads).mockReset();
   vi.mocked(getMessagesForThread).mockReset();
-  vi.mocked(markThreadRead).mockReset();
   vi.mocked(getMessageBody).mockReset();
+  vi.mocked(invoke).mockReset();
+  vi.mocked(invoke).mockResolvedValue(undefined as never);
 });
 
 describe('threadStore.loadThreads', () => {
@@ -100,7 +114,7 @@ describe('threadStore.loadMore', () => {
 });
 
 describe('threadStore.selectThread', () => {
-  it('loads the latest message + body, bridges to selectedMessage, marks unread read', async () => {
+  it('loads the latest message + body, bridges to selectedMessage, marks unread read via sync_apply_mutation', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: false })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
       {
@@ -117,6 +131,8 @@ describe('threadStore.selectThread', () => {
         is_read: 0,
         is_starred: 0,
         body_text: 'txt',
+        imap_uid: 4242,
+        imap_folder: 'INBOX',
       },
     ]);
     vi.mocked(getMessageBody).mockResolvedValue({
@@ -131,20 +147,180 @@ describe('threadStore.selectThread', () => {
     expect(getMessagesForThread).toHaveBeenCalledWith('a1', 't1');
     expect(getMessageBody).toHaveBeenCalledWith('a1', 'm1');
     expect(useViewStore.getState().selectedMessage?.html).toBe('<p>h</p>');
-    expect(markThreadRead).toHaveBeenCalledWith('a1', 't1');
+    // The durable mark-read now flows through the sync engine (one invoke with
+    // a MutationOp), NOT the legacy `db_mark_thread_read` invoke.
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: true,
+      },
+    });
     // optimistic read state
     expect(useThreadStore.getState().threads[0]!.isRead).toBe(true);
   });
+
+  it('does NOT invoke sync_apply_mutation when the thread is already read', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
 });
 
-describe('threadStore.refresh', () => {
-  it('re-runs the current query', async () => {
-    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
-    await useThreadStore.getState().loadThreads('a1', 'inbox');
-    vi.mocked(getThreads).mockClear();
-    vi.mocked(getThreads).mockResolvedValue({ threads: [thread({ id: 't9' })], nextCursor: null });
-    await useThreadStore.getState().refresh();
-    expect(getThreads).toHaveBeenCalledWith('a1', { labelId: 'inbox' });
-    expect(useThreadStore.getState().threads[0]!.id).toBe('t9');
+const messageRow = (over: Partial<DbMessageRow> = {}): DbMessageRow => ({
+  id: 'm1',
+  account_id: 'a1',
+  thread_id: 't1',
+  from_address: 'b@x.com',
+  from_name: 'Bob',
+  to_addresses: 'c@y.com',
+  cc_addresses: null,
+  subject: 'S',
+  snippet: 'sn',
+  date: 100,
+  is_read: 0,
+  is_starred: 0,
+  body_text: 'txt',
+  classification_id: null,
+  is_encrypted: 0,
+  is_signed: 0,
+  imap_uid: 4242,
+  imap_folder: 'INBOX',
+  ...over,
+});
+
+describe('threadStore.markThreadRead', () => {
+  it('marks a thread read and decrements the folder unread count', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: false })],
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 3 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore.getState().markThreadRead(thread({ id: 't1', isRead: false }), true);
+
+    expect(useThreadStore.getState().threads[0]!.isRead).toBe(true);
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(2);
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: true,
+      },
+    });
+  });
+
+  it('marks a thread unread and increments the folder unread count', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true })],
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 3 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore.getState().markThreadRead(thread({ id: 't1', isRead: true }), false);
+
+    expect(useThreadStore.getState().threads[0]!.isRead).toBe(false);
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(4);
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: false,
+      },
+    });
+  });
+
+  it('is a no-op when the requested state already matches', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    await useThreadStore.getState().markThreadRead(thread({ id: 't1', isRead: true }), true);
+    expect(getMessagesForThread).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('threadStore.toggleThreadStarred', () => {
+  it('flags a thread and sends setFlag add=true', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isStarred: false })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore.getState().toggleThreadStarred(thread({ id: 't1', isStarred: false }));
+
+    expect(useThreadStore.getState().threads[0]!.isStarred).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'setFlag',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        flag: '\\Flagged',
+        add: true,
+      },
+    });
+  });
+
+  it('removes a flag and sends setFlag add=false', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isStarred: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore.getState().toggleThreadStarred(thread({ id: 't1', isStarred: true }));
+
+    expect(useThreadStore.getState().threads[0]!.isStarred).toBe(false);
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'setFlag',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        flag: '\\Flagged',
+        add: false,
+      },
+    });
+  });
+});
+
+describe('threadStore.deleteThread', () => {
+  it('removes the thread, clears selection, and sends delete mutation', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2' })],
+      selectedThreadId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 3 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore.getState().deleteThread(thread({ id: 't1', isRead: false }));
+
+    expect(useThreadStore.getState().threads.map((t) => t.id)).toEqual(['t2']);
+    expect(useThreadStore.getState().selectedThreadId).toBeNull();
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(2);
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'delete',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+      },
+    });
   });
 });

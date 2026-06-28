@@ -16,22 +16,29 @@ export interface ImapManualValues {
   smtpHost: string;
   smtpPort: string;
   smtpSecurity: SecurityMode;
+  acceptInvalidCerts: boolean;
 }
 
 export interface ImapManualFormProps {
   values: ImapManualValues;
   onChange: (patch: Partial<ImapManualValues>) => void;
   onSubmit: () => void;
+  onTestConnection?: () => void;
   onBack: () => void;
   canSubmit: boolean;
+  isTesting?: boolean;
+  testResult?: { success: boolean; message: string } | null;
 }
 
 export function ImapManualForm({
   values,
   onChange,
   onSubmit,
+  onTestConnection,
   onBack,
   canSubmit,
+  isTesting = false,
+  testResult = null,
 }: ImapManualFormProps) {
   return (
     <SetupCard>
@@ -115,11 +122,54 @@ export function ImapManualForm({
         </fieldset>
       </div>
 
-      <div className="mt-8 flex items-center justify-between">
-        <SetupBackButton onClick={onBack} />
-        <SetupButton onClick={onSubmit} disabled={!canSubmit}>
-          Connect
-        </SetupButton>
+      <div className="mt-8 flex flex-col gap-3">
+        {testResult && (
+          <div
+            className={`rounded-lg border px-3 py-2 text-sm ${
+              testResult.success
+                ? 'border-green-500/20 bg-green-500/10 text-green-700 dark:text-green-400'
+                : 'border-red-500/20 bg-red-500/10 text-[var(--destructive)]'
+            }`}
+          >
+            {testResult.success ? '✓ ' : '✗ '}
+            {testResult.message}
+          </div>
+        )}
+        <div className="flex items-center justify-between">
+          <SetupBackButton onClick={onBack} />
+          <div className="flex items-center gap-2">
+            {onTestConnection && (
+              <SetupButton
+                variant="secondary"
+                onClick={onTestConnection}
+                disabled={!canSubmit || isTesting}
+                loading={isTesting}
+              >
+                Test connection
+              </SetupButton>
+            )}
+            <SetupButton onClick={onSubmit} disabled={!canSubmit || isTesting}>
+              Connect
+            </SetupButton>
+          </div>
+        </div>
+
+        <div className="h-px bg-[var(--border)]" />
+
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-3 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+            checked={values.acceptInvalidCerts}
+            onChange={(e) => onChange({ acceptInvalidCerts: e.target.checked })}
+          />
+          <span className="flex flex-col">
+            <span className="font-medium text-[var(--foreground)]">Allow invalid certificates</span>
+            <span className="text-[var(--muted-text)]">
+              Accept self-signed or mismatched TLS certificates for this server.
+            </span>
+          </span>
+        </label>
       </div>
     </SetupCard>
   );

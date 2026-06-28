@@ -1,23 +1,16 @@
+// Task 5 clean-cut: aiService.ts cache read/write now routes through
+// `invoke('db_*')` instead of getDb(). Mock invoke; the LLM provider stays a
+// real mock object passed into the constructor.
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AIService } from '../../../src/services/ai/aiService';
-import { getDb } from '../../../src/services/db/connection';
-import type Database from '@tauri-apps/plugin-sql';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 import type { ChatMessage, ChatOptions } from '../../../src/services/ai/providers/base';
 
-vi.mock('../../../src/services/db/connection', () => ({
-  getDb: vi.fn(),
-}));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = {
-  select: vi.fn(),
-  execute: vi.fn(),
-};
-
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.select.mockReset();
-  mockDb.execute.mockReset();
-});
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 function createMockProvider(
   overrides?: Partial<{
@@ -37,58 +30,61 @@ function createMockProvider(
 }
 
 describe('AIService', () => {
-  it('getCachedResult returns cached content when a row exists', async () => {
-    mockDb.select.mockResolvedValue([{ content: 'cached summary' }]);
+  it('getCachedResult returns cached content when invoke returns a string', async () => {
+    mockInvoke.mockResolvedValueOnce('cached summary');
     const service = new AIService(createMockProvider());
     const result = await service.getCachedResult('acc-1', 'thread-1', 'summary');
     expect(result).toBe('cached summary');
-    expect(mockDb.select).toHaveBeenCalledWith(
-      'SELECT content FROM ai_cache WHERE account_id = $1 AND thread_id = $2 AND type = $3',
-      ['acc-1', 'thread-1', 'summary'],
-    );
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_cached_ai_result', {
+      accountId: 'acc-1',
+      threadId: 'thread-1',
+      cacheType: 'summary',
+    });
   });
 
-  it('getCachedResult returns null when no row exists', async () => {
-    mockDb.select.mockResolvedValue([]);
+  it('getCachedResult returns null when invoke returns null', async () => {
+    mockInvoke.mockResolvedValueOnce(null);
     const service = new AIService(createMockProvider());
     const result = await service.getCachedResult('acc-1', 'thread-1', 'summary');
     expect(result).toBeNull();
   });
 
-  it('cacheResult inserts a new row', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('getCachedResult forwards undefined accountId as null', async () => {
+    mockInvoke.mockResolvedValueOnce(null);
+    const service = new AIService(createMockProvider());
+    await service.getCachedResult(undefined, 'thread-1', 'summary');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_cached_ai_result', {
+      accountId: null,
+      threadId: 'thread-1',
+      cacheType: 'summary',
+    });
+  });
+
+  it('cacheResult forwards to db_cache_ai_result', async () => {
     const service = new AIService(createMockProvider());
     await service.cacheResult('acc-1', 'thread-1', 'summary', 'new summary');
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      `INSERT OR REPLACE INTO ai_cache (account_id, thread_id, type, content)
-       VALUES ($1, $2, $3, $4)`,
-      ['acc-1', 'thread-1', 'summary', 'new summary'],
-    );
+    expect(mockInvoke).toHaveBeenCalledWith('db_cache_ai_result', {
+      accountId: 'acc-1',
+      threadId: 'thread-1',
+      cacheType: 'summary',
+      content: 'new summary',
+    });
   });
 
-  it('cacheResult updates an existing row (upsert behavior)', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    const service = new AIService(createMockProvider());
-    await service.cacheResult('acc-1', 'thread-1', 'summary', 'updated summary');
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      `INSERT OR REPLACE INTO ai_cache (account_id, thread_id, type, content)
-       VALUES ($1, $2, $3, $4)`,
-      ['acc-1', 'thread-1', 'summary', 'updated summary'],
-    );
-  });
-
-  it('chat returns cached result when available', async () => {
-    mockDb.select.mockResolvedValue([{ content: 'cached chat' }]);
+  it('chat returns cached result when available (no cache write)', async () => {
+    mockInvoke.mockResolvedValueOnce('cached chat'); // getCachedResult hit
     const provider = createMockProvider();
     const service = new AIService(provider);
     const result = await service.chat('acc-1', 'thread-1', [{ role: 'user', content: 'hi' }]);
     expect(result).toBe('cached chat');
-    expect(mockDb.select).toHaveBeenCalledWith(expect.any(String), ['acc-1', 'thread-1', 'chat']);
+    // Only one invoke call: the cache read. No cache write should follow a hit.
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke.mock.calls[0]![0]).toBe('db_get_cached_ai_result');
   });
 
-  it('chat delegates to provider and caches result on miss', async () => {
-    mockDb.select.mockResolvedValue([]);
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('chat delegates to provider and caches the streamed result on miss', async () => {
+    mockInvoke.mockResolvedValueOnce(null); // getCachedResult miss
+    mockInvoke.mockResolvedValueOnce(undefined); // cacheResult
     const provider = createMockProvider({
       chat: async function* () {
         yield 'hello ';
@@ -98,41 +94,40 @@ describe('AIService', () => {
     const service = new AIService(provider);
     const result = await service.chat('acc-1', 'thread-1', [{ role: 'user', content: 'hi' }]);
     expect(result).toBe('hello world');
-    expect(mockDb.execute).toHaveBeenCalledWith(expect.any(String), [
-      'acc-1',
-      'thread-1',
-      'chat',
-      'hello world',
-    ]);
+    // Second invoke is the cache write.
+    expect(mockInvoke.mock.calls[1]![0]).toBe('db_cache_ai_result');
+    expect(mockInvoke.mock.calls[1]![1]).toMatchObject({
+      accountId: 'acc-1',
+      threadId: 'thread-1',
+      cacheType: 'chat',
+      content: 'hello world',
+    });
   });
 
-  it('summarize returns cached result when available', async () => {
-    mockDb.select.mockResolvedValue([{ content: 'cached summary' }]);
+  it('summarize returns cached result when available (no cache write)', async () => {
+    mockInvoke.mockResolvedValueOnce('cached summary');
     const provider = createMockProvider();
     const service = new AIService(provider);
     const result = await service.summarize('acc-1', 'thread-1', 'long text');
     expect(result).toBe('cached summary');
-    expect(mockDb.select).toHaveBeenCalledWith(expect.any(String), [
-      'acc-1',
-      'thread-1',
-      'summary',
-    ]);
+    // Only one invoke call: the cache read. No cache write should follow a hit.
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke.mock.calls[0]![0]).toBe('db_get_cached_ai_result');
   });
 
-  it('summarize delegates to provider and caches result on miss', async () => {
-    mockDb.select.mockResolvedValue([]);
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('summarize delegates to provider and caches the result on miss', async () => {
+    mockInvoke.mockResolvedValueOnce(null); // miss
+    mockInvoke.mockResolvedValueOnce(undefined); // cacheResult
     const provider = createMockProvider({
       summarize: async () => 'short summary',
     });
     const service = new AIService(provider);
     const result = await service.summarize('acc-1', 'thread-1', 'long text');
     expect(result).toBe('short summary');
-    expect(mockDb.execute).toHaveBeenCalledWith(expect.any(String), [
-      'acc-1',
-      'thread-1',
-      'summary',
-      'short summary',
-    ]);
+    expect(mockInvoke.mock.calls[1]![0]).toBe('db_cache_ai_result');
+    expect(mockInvoke.mock.calls[1]![1]).toMatchObject({
+      cacheType: 'summary',
+      content: 'short summary',
+    });
   });
 });

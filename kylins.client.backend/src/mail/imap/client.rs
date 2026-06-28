@@ -466,6 +466,23 @@ pub async fn move_messages(
     }
 }
 
+pub async fn copy_messages(
+    session: &mut ImapSession,
+    source_folder: &str,
+    uid_set: &str,
+    dest_folder: &str,
+) -> Result<(), String> {
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(source_folder))
+        .await
+        .map_err(|_| format!("SELECT {source_folder} timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("SELECT {source_folder} failed: {e}"))?;
+
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_copy(uid_set, dest_folder))
+        .await
+        .map_err(|_| format!("UID COPY timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("UID COPY failed: {e}"))
+}
+
 pub async fn delete_messages(
     session: &mut ImapSession,
     folder: &str,
@@ -524,6 +541,30 @@ pub async fn append_message(
         )
     })?
     .map_err(|e| format!("APPEND failed: {e}"))
+}
+
+pub async fn create_folder(session: &mut ImapSession, folder: &str) -> Result<(), String> {
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.create(folder))
+        .await
+        .map_err(|_| {
+            format!(
+                "CREATE {folder} timed out after {}s — check your server settings or network connection",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("CREATE {folder} failed: {e}"))
+}
+
+pub async fn delete_folder(session: &mut ImapSession, folder: &str) -> Result<(), String> {
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.delete(folder))
+        .await
+        .map_err(|_| {
+            format!(
+                "DELETE {folder} timed out after {}s — check your server settings or network connection",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("DELETE {folder} failed: {e}"))
 }
 
 pub async fn get_folder_status(
@@ -1813,5 +1854,76 @@ fn format_address_list(addr: Option<&mail_parser::Address>) -> Option<String> {
         None
     } else {
         Some(parts.join(", "))
+    }
+}
+
+/// Map a set of IMAP capability strings to the feature flags the sync engine cares
+/// about. Pure so it's unit-testable; `session_capabilities` runs the live command
+/// then delegates here.
+pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(caps: I) -> (bool, bool, bool, bool) {
+    let mut idle = false;
+    let mut condstore = false;
+    let mut qresync = false;
+    let mut vanished = false;
+    for c in caps {
+        let up = c.to_ascii_uppercase();
+        match up.as_str() {
+            "IDLE" => idle = true,
+            "CONDSTORE" => condstore = true,
+            "QRESYNC" => qresync = true,
+            "VANISHED" => vanished = true,
+            _ => {}
+        }
+    }
+    (idle, condstore, qresync, vanished)
+}
+
+/// Run CAPABILITY on an open session and map to the feature tuple
+/// `(idle, condstore, qresync, vanished)`. Uses `has_str` for case-insensitive
+/// matching (async-imap's `Capability` enum has no public `as_str`, so we cannot
+/// route the live `HashSet` through `capabilities_from_strs` directly).
+pub async fn session_capabilities(session: &mut ImapSession) -> Result<(bool, bool, bool, bool), String> {
+    let caps = session.capabilities().await.map_err(|e| e.to_string())?;
+    Ok((
+        caps.has_str("IDLE"),
+        caps.has_str("CONDSTORE"),
+        caps.has_str("QRESYNC"),
+        caps.has_str("VANISHED"),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capabilities_from_strs;
+
+    #[test]
+    fn capabilities_from_strs_maps_known_flags() {
+        let (idle, condstore, qresync, vanished) =
+            capabilities_from_strs(["IMAP4rev1", "IDLE", "CONDSTORE", "QRESYNC", "VANISHED"]);
+        assert!(idle, "IDLE should map to idle");
+        assert!(condstore, "CONDSTORE should map to condstore");
+        assert!(qresync, "QRESYNC should map to qresync");
+        assert!(vanished, "VANISHED should map to vanished");
+    }
+
+    #[test]
+    fn capabilities_from_strs_case_insensitive() {
+        let (idle, _, _, _) = capabilities_from_strs(["idle"]);
+        assert!(idle, "mapping should be case-insensitive");
+        let (_, condstore, _, _) = capabilities_from_strs(["condstore"]);
+        assert!(condstore);
+    }
+
+    #[test]
+    fn capabilities_from_strs_empty_when_no_known_flags() {
+        let (idle, condstore, qresync, vanished) =
+            capabilities_from_strs(["IMAP4rev1", "STARTTLS", "LOGINDISABLED"]);
+        assert!(!idle && !condstore && !qresync && !vanished);
+    }
+
+    #[test]
+    fn capabilities_from_strs_empty_iter() {
+        let (idle, condstore, qresync, vanished) = capabilities_from_strs::<[&str; 0]>([]);
+        assert!(!idle && !condstore && !qresync && !vanished);
     }
 }

@@ -1,4 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Task 5 cutover: settings.ts now routes through `invoke('db_*')` instead of
+// getDb(). These tests mock `@tauri-apps/api/core` invoke (shared helper) and
+// assert the wrapper forwards the right command + args and passes the Rust
+// return value through unchanged.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   getSetting,
   setSetting,
@@ -7,87 +12,70 @@ import {
   getSettingNumber,
   setSettingNumber,
 } from '../../src/services/settings';
-import { getDb } from '../../src/services/db/connection';
-import type Database from '@tauri-apps/plugin-sql';
+import { wireDefaultDbResults } from '../../src/test/mockInvoke';
 
-vi.mock('../../src/services/db/connection', () => ({
-  getDb: vi.fn(),
-}));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = {
-  select: vi.fn(),
-  execute: vi.fn(),
-};
-
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  mockDb.select.mockReset();
-  mockDb.execute.mockReset();
-});
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 describe('settings', () => {
-  it('returns a stored value', async () => {
-    mockDb.select.mockResolvedValue([{ value: 'dark' }]);
+  it('returns a stored value via db_get_setting', async () => {
+    mockInvoke.mockResolvedValueOnce('dark');
     const value = await getSetting('theme');
     expect(value).toBe('dark');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_setting', { key: 'theme' });
   });
 
   it('returns null when key is missing', async () => {
-    mockDb.select.mockResolvedValue([]);
+    mockInvoke.mockResolvedValueOnce(null);
     const value = await getSetting('theme');
     expect(value).toBeNull();
   });
 
-  it('sets a value', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('sets a value via db_set_setting', async () => {
     await setSetting('theme', 'light');
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      'INSERT OR REPLACE INTO settings (key, value) VALUES ($1, $2)',
-      ['theme', 'light'],
-    );
+    expect(mockInvoke).toHaveBeenCalledWith('db_set_setting', { key: 'theme', value: 'light' });
   });
 
-  it('round-trips boolean true', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('round-trips boolean true via db_set_setting_bool', async () => {
     await setSettingBool('launch_on_system_start', true);
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      'INSERT OR REPLACE INTO settings (key, value) VALUES ($1, $2)',
-      ['launch_on_system_start', 'true'],
-    );
+    expect(mockInvoke).toHaveBeenCalledWith('db_set_setting_bool', {
+      key: 'launch_on_system_start',
+      value: true,
+    });
   });
 
-  it('round-trips boolean false', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('round-trips boolean false via db_set_setting_bool', async () => {
     await setSettingBool('launch_on_system_start', false);
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      'INSERT OR REPLACE INTO settings (key, value) VALUES ($1, $2)',
-      ['launch_on_system_start', 'false'],
-    );
+    expect(mockInvoke).toHaveBeenCalledWith('db_set_setting_bool', {
+      key: 'launch_on_system_start',
+      value: false,
+    });
   });
 
-  it('parses boolean from settings', async () => {
-    mockDb.select.mockResolvedValue([{ value: 'true' }]);
+  it('parses boolean from db_get_setting_bool', async () => {
+    mockInvoke.mockResolvedValueOnce(true);
     const value = await getSettingBool('launch_on_system_start');
     expect(value).toBe(true);
   });
 
   it('returns null boolean when key is missing', async () => {
-    mockDb.select.mockResolvedValue([]);
+    mockInvoke.mockResolvedValueOnce(null);
     const value = await getSettingBool('launch_on_system_start');
     expect(value).toBeNull();
   });
 
-  it('round-trips number values', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('round-trips number values via db_set_setting_number', async () => {
     await setSettingNumber('undo_send_duration_seconds', 30);
-    expect(mockDb.execute).toHaveBeenCalledWith(
-      'INSERT OR REPLACE INTO settings (key, value) VALUES ($1, $2)',
-      ['undo_send_duration_seconds', '30'],
-    );
+    expect(mockInvoke).toHaveBeenCalledWith('db_set_setting_number', {
+      key: 'undo_send_duration_seconds',
+      value: 30,
+    });
   });
 
-  it('parses number from settings', async () => {
-    mockDb.select.mockResolvedValue([{ value: '10' }]);
+  it('parses number from db_get_setting_number', async () => {
+    mockInvoke.mockResolvedValueOnce(10);
     const value = await getSettingNumber('undo_send_duration_seconds');
     expect(value).toBe(10);
   });

@@ -16,8 +16,14 @@ import {
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowBendDoubleUpLeft, Archive as PhosphorArchive } from '@phosphor-icons/react';
 import { openComposerWindow } from '../../utils/composeWindow';
+import {
+  openReplyComposer,
+  openReplyAllComposer,
+  openForwardComposer,
+} from '../../utils/composerActions';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { useThreadStore } from '../../stores/threadStore';
 import { useClassification } from '../../features/classification/useClassification';
 import { useEffect, useRef, useState } from 'react';
 import type { ClassificationLevel } from '../../features/classification/classificationTypes';
@@ -101,6 +107,10 @@ function ClassificationMenuItem({
 
 export function CommandRibbon() {
   const selectedMessage = useViewStore((s) => s.selectedMessage);
+  const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
+  const markThreadRead = useThreadStore((s) => s.markThreadRead);
+  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
+  const deleteThread = useThreadStore((s) => s.deleteThread);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
@@ -137,44 +147,21 @@ export function CommandRibbon() {
 
   const handleReply = () => {
     if (!selectedMessage) return;
-    openComposerWindow({
-      mode: 'reply',
-      threadId: selectedMessage.threadId ?? selectedMessage.id,
-      fromEmail: accountEmail,
-      subject: selectedMessage.subject,
-      classificationId: selectedMessage.classificationId ?? undefined,
-      isEncrypted: selectedMessage.isEncrypted,
-      isSigned: selectedMessage.isSigned,
-    });
+    openReplyComposer(selectedMessage, accountEmail);
   };
 
   const handleReplyAll = () => {
     if (!selectedMessage) return;
-    openComposerWindow({
-      mode: 'replyAll',
-      threadId: selectedMessage.threadId ?? selectedMessage.id,
-      fromEmail: accountEmail,
-      subject: selectedMessage.subject,
-      classificationId: selectedMessage.classificationId ?? undefined,
-      isEncrypted: selectedMessage.isEncrypted,
-      isSigned: selectedMessage.isSigned,
-    });
+    openReplyAllComposer(selectedMessage, accountEmail);
   };
 
   const handleForward = () => {
     if (!selectedMessage) return;
-    openComposerWindow({
-      mode: 'forward',
-      threadId: selectedMessage.threadId ?? selectedMessage.id,
-      fromEmail: accountEmail,
-      subject: selectedMessage.subject,
-      classificationId: selectedMessage.classificationId ?? undefined,
-      isEncrypted: selectedMessage.isEncrypted,
-      isSigned: selectedMessage.isSigned,
-    });
+    openForwardComposer(selectedMessage, accountEmail);
   };
 
   const hasMessage = selectedMessage != null;
+  const hasThread = selectedThread != null;
 
   return (
     <nav
@@ -252,7 +239,15 @@ export function CommandRibbon() {
             disabled={!hasMessage}
             title="Archive"
           />
-          <RibbonButton icon={<DeleteIcon size={17} />} disabled={!hasMessage} title="Delete" />
+          <RibbonButton
+            icon={<DeleteIcon size={17} />}
+            disabled={!hasThread}
+            title="Delete"
+            onClick={() => {
+              if (!selectedThread) return;
+              void deleteThread(selectedThread);
+            }}
+          />
           <RibbonButton icon={<MoreIcon size={17} />} disabled={!hasMessage} title="More actions" />
         </RibbonGroup>
 
@@ -269,11 +264,32 @@ export function CommandRibbon() {
         </RibbonGroup>
 
         <RibbonGroup>
-          <RibbonButton icon={<MailIcon />} split>
-            Read/Unread
+          <RibbonButton
+            icon={<MailIcon />}
+            split
+            disabled={!hasThread}
+            title={selectedThread?.isRead ? 'Mark as unread' : 'Mark as read'}
+            onClick={() => {
+              if (!selectedThread) return;
+              void markThreadRead(selectedThread, !selectedThread.isRead);
+            }}
+          >
+            {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
           </RibbonButton>
-          <RibbonButton icon={<FlagIcon />}>Flag</RibbonButton>
-          <RibbonButton icon={<PinIcon />}>Pin</RibbonButton>
+          <RibbonButton
+            icon={<FlagIcon />}
+            disabled={!hasThread}
+            title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
+            onClick={() => {
+              if (!selectedThread) return;
+              void toggleThreadStarred(selectedThread);
+            }}
+          >
+            {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
+          </RibbonButton>
+          <RibbonButton icon={<PinIcon />} disabled={!hasThread}>
+            Pin
+          </RibbonButton>
         </RibbonGroup>
 
         <RibbonGroup>

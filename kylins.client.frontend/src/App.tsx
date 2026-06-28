@@ -4,9 +4,8 @@ import { AccountSetupFlow } from './components/account-setup/AccountSetupFlow';
 import { PreferencesDialog } from './components/preferences/PreferencesDialog';
 import { Composer } from './components/composer/Composer';
 import { Modal } from './components/ui/Modal';
-import { runMigrations } from './services/db/migrations';
 import { getSetting } from './services/settings';
-import { getAllAccounts } from './services/accounts';
+import { getAllAccounts, deleteAccountByEmail } from './services/accounts';
 import { themeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { useUIStore } from './stores/uiStore';
@@ -23,7 +22,9 @@ import { MessageViewerWindow } from './components/viewer/MessageViewerWindow';
 import { Toaster } from './components/ui/Toaster';
 import { isSkinId, DEFAULT_SKIN, type SkinId } from './styles/skins';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useSyncEvents } from './hooks/useSyncEvents';
 import { useShortcutStore } from './stores/shortcutStore';
+import { invoke } from '@tauri-apps/api/core';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -85,6 +86,14 @@ export default function App() {
   const accounts = useAccountStore((s) => s.accounts);
   useViewSettings();
   useKeyboardShortcuts();
+  useSyncEvents();
+
+  // Dev-only helper to recover from corrupt/duplicate test accounts.
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__deleteAccountByEmail = deleteAccountByEmail;
+    }
+  }, []);
 
   useEffect(() => {
     isMounted.current = true;
@@ -136,7 +145,8 @@ export default function App() {
 
             hydrateBackground(applyAppearance);
           } else {
-            await runMigrations();
+            // Rust runs the embedded sqlx migrations on startup (db::init_db in
+            // lib.rs setup), so the frontend no longer calls runMigrations.
 
             const [savedTheme, savedSkin] = await Promise.all([
               getSetting('theme'),
@@ -156,6 +166,9 @@ export default function App() {
             // already-configured accounts on startup.
             if (isMounted.current) {
               await refreshAccounts();
+              // Start the Rust SyncEngine (one polling worker per account). The engine
+              // emits sync:* events; useSyncEvents() below refreshes stores on them.
+              await invoke('sync_start').catch((err) => console.error('sync_start failed:', err));
             }
           }
         }
@@ -232,6 +245,7 @@ export default function App() {
           <Modal
             isOpen={accountSetupOpen}
             onClose={handleCloseSetup}
+            disableBackdropClose
             size="md"
             contentClassName="bg-[var(--background)]"
           >

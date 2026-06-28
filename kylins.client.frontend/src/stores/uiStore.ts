@@ -16,6 +16,8 @@ export interface UIState {
   activeApp: 'mail' | 'calendar' | 'contacts';
   accountSetupOpen: boolean;
   readerZoom: number;
+  /** Count of pending sync operations awaiting replay (0 when fully synced). */
+  pendingCount: number;
   setTheme: (theme: ThemeMode) => void;
   setSkin: (skin: SkinId) => void;
   setActiveApp: (app: 'mail' | 'calendar' | 'contacts') => void;
@@ -27,6 +29,7 @@ export interface UIState {
   setInspectorPaneVisible: (visible: boolean) => void;
   setActiveToolWindow: (id: string | null) => void;
   setActiveMenuCategory: (category: string | null) => void;
+  setPendingCount: (count: number) => void;
 }
 
 import { DEFAULT_SKIN } from '../styles/skins';
@@ -43,6 +46,7 @@ export const useUIStore = create<UIState>((set) => ({
   activeApp: 'mail',
   accountSetupOpen: false,
   readerZoom: 1,
+  pendingCount: 0,
   setTheme: (theme) => set({ theme }),
   setSkin: (skin) => set({ skin }),
   setActiveApp: (activeApp) => set({ activeApp }),
@@ -54,4 +58,5 @@ export const useUIStore = create<UIState>((set) => ({
   setInspectorPaneVisible: (inspectorPaneVisible) => set({ inspectorPaneVisible }),
   setActiveToolWindow: (activeToolWindow) => set({ activeToolWindow }),
   setActiveMenuCategory: (activeMenuCategory) => set({ activeMenuCategory }),
+  setPendingCount: (pendingCount) => set({ pendingCount }),
 }));

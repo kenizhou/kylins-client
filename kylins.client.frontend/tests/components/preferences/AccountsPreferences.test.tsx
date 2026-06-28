@@ -3,15 +3,6 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { AccountsPreferences } from '../../../src/components/preferences/AccountsPreferences';
 import { useAccountStore } from '../../../src/stores/accountStore';
 
-vi.mock('@tauri-apps/plugin-sql', () => ({
-  default: {
-    load: vi.fn().mockResolvedValue({
-      execute: vi.fn().mockResolvedValue({ rowsAffected: 1 }),
-      select: vi.fn().mockResolvedValue([]),
-    }),
-  },
-}));
-
 vi.mock('../../../src/services/accounts', () => ({
   getAllAccounts: vi.fn().mockResolvedValue([]),
   deleteAccount: vi.fn(),
@@ -67,7 +58,10 @@ describe('AccountsPreferences', () => {
       defaultAccountId: null,
     });
     vi.clearAllMocks();
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
   });
 
   it('renders empty state when no accounts', async () => {

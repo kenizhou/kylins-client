@@ -79,6 +79,18 @@ pub fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(),
     }
 }
 
+/// Send a desktop notification from Rust so that Windows toast attribution uses
+/// the correct AppUserModelID (com.mailclient.app) instead of "Windows PowerShell".
+#[tauri::command]
+pub fn send_desktop_notification(app: tauri::AppHandle, title: String, body: String) {
+    let _ = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show();
+}
+
 #[tauri::command]
 pub fn request_notification_permission(app: tauri::AppHandle) -> Result<bool, String> {
     let state = app
@@ -293,6 +305,27 @@ pub async fn imap_set_flags(
 }
 
 #[tauri::command]
+pub async fn imap_copy_messages(
+    config: ImapConfig,
+    folder: String,
+    uids: Vec<u32>,
+    destination: String,
+) -> Result<(), String> {
+    if uids.is_empty() {
+        return Ok(());
+    }
+    let uid_set: String = uids
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut session = imap_client::connect(&config).await?;
+    imap_client::copy_messages(&mut session, &folder, &uid_set, &destination).await?;
+    let _ = session.logout().await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn imap_move_messages(
     config: ImapConfig,
     folder: String,
@@ -376,6 +409,22 @@ pub async fn imap_append_message(
 
     let flags_ref = flags.as_deref();
     imap_client::append_message(&mut session, &folder, flags_ref, &raw_bytes).await?;
+    let _ = session.logout().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn imap_create_folder(config: ImapConfig, folder: String) -> Result<(), String> {
+    let mut session = imap_client::connect(&config).await?;
+    imap_client::create_folder(&mut session, &folder).await?;
+    let _ = session.logout().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn imap_delete_folder(config: ImapConfig, folder: String) -> Result<(), String> {
+    let mut session = imap_client::connect(&config).await?;
+    imap_client::delete_folder(&mut session, &folder).await?;
     let _ = session.logout().await;
     Ok(())
 }

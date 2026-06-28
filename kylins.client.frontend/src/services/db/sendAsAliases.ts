@@ -5,8 +5,14 @@
 // can send from its own address plus any verified aliases (e.g. a shared
 // mailbox or custom "From"). When the table has no rows for an account we
 // synthesize one from the account itself so the From selector always works.
+//
+// Task 5 (Option C) clean-cut cutover: every SQL function delegates to a Rust
+// `db_*` Tauri command (see `kylins.client.backend/src/db/send_as_aliases.rs`).
+// Rust returns raw snake_case `DbSendAsAlias` rows (matching the historical TS
+// interface). The pure TS `mapDbAlias` + `accountAsAlias` helpers stay here —
+// they have no SQL and are imported by the composer preferences UI.
 
-import { getDb, buildDynamicUpdate } from './connection';
+import { invoke } from '@tauri-apps/api/core';
 import type { Account } from '../../types';
 
 export interface DbSendAsAlias {
@@ -64,78 +70,37 @@ export interface CreateAliasInput {
 }
 
 export async function insertAlias(input: CreateAliasInput): Promise<string> {
-  const db = await getDb();
-  const id = crypto.randomUUID();
-
-  if (input.isDefault) {
-    await db.execute('UPDATE send_as_aliases SET is_default = 0 WHERE account_id = $1', [
-      input.accountId,
-    ]);
-  }
-
-  await db.execute(
-    `INSERT INTO send_as_aliases (
-      id, account_id, email, display_name, reply_to_address,
-      is_primary, is_default, treat_as_alias, verification_status, created_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'accepted', $9)`,
-    [
-      id,
-      input.accountId,
-      input.email,
-      input.displayName ?? null,
-      input.replyTo ?? null,
-      0,
-      input.isDefault ? 1 : 0,
-      input.treatAsAlias !== false ? 1 : 0,
-      Math.floor(Date.now() / 1000),
-    ],
-  );
-  return id;
+  return invoke<string>('db_insert_alias', {
+    input: {
+      accountId: input.accountId,
+      email: input.email,
+      displayName: input.displayName ?? null,
+      replyTo: input.replyTo ?? null,
+      isDefault: input.isDefault ?? null,
+      treatAsAlias: input.treatAsAlias ?? null,
+    },
+  });
 }
 
 export async function updateAlias(
   id: string,
   updates: Partial<Omit<CreateAliasInput, 'accountId' | 'email'>>,
 ): Promise<void> {
-  const db = await getDb();
-
-  if (updates.isDefault) {
-    const rows = await db.select<{ account_id: string }[]>(
-      'SELECT account_id FROM send_as_aliases WHERE id = $1',
-      [id],
-    );
-    if (rows[0]) {
-      await db.execute(
-        'UPDATE send_as_aliases SET is_default = 0 WHERE account_id = $1',
-        [rows[0].account_id],
-      );
-    }
-  }
-
-  const fields: [string, unknown][] = [];
-  if (updates.displayName !== undefined) fields.push(['display_name', updates.displayName]);
-  if (updates.replyTo !== undefined) fields.push(['reply_to_address', updates.replyTo]);
-  if (updates.isDefault !== undefined) fields.push(['is_default', updates.isDefault ? 1 : 0]);
-  if (updates.treatAsAlias !== undefined)
-    fields.push(['treat_as_alias', updates.treatAsAlias ? 1 : 0]);
-
-  const query = buildDynamicUpdate('send_as_aliases', 'id', id, fields);
-  if (query) {
-    await db.execute(query.sql, query.params);
-  }
+  // Only forward keys that are actually set (matches historical buildDynamicUpdate).
+  const payload: Record<string, unknown> = {};
+  if (updates.displayName !== undefined) payload.displayName = updates.displayName;
+  if (updates.replyTo !== undefined) payload.replyTo = updates.replyTo;
+  if (updates.isDefault !== undefined) payload.isDefault = updates.isDefault;
+  if (updates.treatAsAlias !== undefined) payload.treatAsAlias = updates.treatAsAlias;
+  await invoke<void>('db_update_alias', { id, updates: payload });
 }
 
 export async function deleteAlias(id: string): Promise<void> {
-  const db = await getDb();
-  await db.execute('DELETE FROM send_as_aliases WHERE id = $1', [id]);
+  await invoke<void>('db_delete_alias', { id });
 }
 
 export async function getAliasesForAccount(accountId: string): Promise<DbSendAsAlias[]> {
-  const db = await getDb();
-  return db.select<DbSendAsAlias[]>(
-    'SELECT * FROM send_as_aliases WHERE account_id = $1 ORDER BY is_default DESC, is_primary DESC, created_at ASC',
-    [accountId],
-  );
+  return invoke<DbSendAsAlias[]>('db_get_aliases_for_account', { accountId });
 }
 
 /**

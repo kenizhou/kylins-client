@@ -1,4 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Task 5 cutover: labels.ts now routes through `invoke('db_*')`. Rust returns
+// ready camelCase MailFolder objects; the TS wrapper sorts them client-side
+// (system-role order, then sort_order, then name) for getFoldersByAccount,
+// matching the pre-cutover contract. These tests assert the wrapper invokes
+// the right command + args and applies the sort correctly.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   getFoldersByAccount,
   getAllFolders,
@@ -9,65 +15,49 @@ import {
   renameFolder,
   deleteFolder,
 } from '../../../src/services/db/labels';
-import { getDb, withTransaction } from '../../../src/services/db/connection';
+import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 import type { MailFolder } from '../../../src/services/mail/folders';
-import type Database from '@tauri-apps/plugin-sql';
 
-vi.mock('../../../src/services/db/connection', () => {
-  const getDb = vi.fn();
-  const withTransaction = vi.fn(async (fn: (db: unknown) => Promise<void>) => {
-    const db = await getDb();
-    return fn(db);
-  });
-  return { getDb, withTransaction };
-});
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
-const mockDb = {
-  select: vi.fn(),
-  execute: vi.fn(),
-};
+beforeEach(() => wireDefaultDbResults(mockInvoke));
 
-beforeEach(() => {
-  vi.mocked(getDb).mockResolvedValue(mockDb as unknown as Database);
-  vi.mocked(withTransaction).mockClear();
-  mockDb.select.mockReset();
-  mockDb.execute.mockReset();
-});
-
-const row = (over: Record<string, unknown> = {}) => ({
+const folder = (over: Partial<MailFolder> = {}): MailFolder => ({
   id: 'inbox',
-  account_id: 'acc-1',
-  name: 'Inbox',
-  type: 'system',
-  visible: 1,
-  sort_order: 0,
+  accountId: 'acc-1',
   source: 'imap',
   role: 'inbox',
-  parent_id: null,
-  remote_id: 'inbox',
+  name: 'Inbox',
+  parentId: null,
+  remoteId: 'inbox',
   delimiter: null,
-  mail_class: 'mail',
-  unread_count: 0,
-  total_count: 0,
-  hierarchical_name: null,
+  unreadCount: 0,
+  totalCount: 0,
+  sortOrder: 0,
+  visible: true,
+  hierarchicalName: null,
+  mailClass: 'mail',
   ...over,
 });
 
 describe('getFoldersByAccount', () => {
-  it('maps rows to MailFolder and orders system-by-role then user-by-name', async () => {
-    mockDb.select.mockResolvedValue([
-      row({ id: 'zebra', name: 'Zebra', role: null, type: 'user', sort_order: 0 }),
-      row({ id: 'inbox', name: 'Inbox', role: 'inbox' }),
-      row({ id: 'newsletters', name: 'Newsletters', role: null, type: 'user', sort_order: 0 }),
-      row({ id: 'sent', name: 'Sent', role: 'sent' }),
+  it('invokes db_get_folders_by_account and sorts system-by-role then user-by-name', async () => {
+    // Rust returns unspecified order; the wrapper must re-sort.
+    mockInvoke.mockResolvedValueOnce([
+      folder({ id: 'zebra', name: 'Zebra', role: null, sortOrder: 0 }),
+      folder({ id: 'inbox', name: 'Inbox', role: 'inbox' }),
+      folder({ id: 'newsletters', name: 'Newsletters', role: null, sortOrder: 0 }),
+      folder({ id: 'sent', name: 'Sent', role: 'sent' }),
     ]);
     const folders = await getFoldersByAccount('acc-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_folders_by_account', { accountId: 'acc-1' });
     expect(folders.map((f) => f.id)).toEqual(['inbox', 'sent', 'newsletters', 'zebra']);
   });
 
-  it('coerces row fields correctly', async () => {
-    mockDb.select.mockResolvedValue([
-      row({ id: 'f1', name: 'F1', role: null, visible: 1, unread_count: 7, source: 'eas' }),
+  it('passes the row fields through unchanged', async () => {
+    mockInvoke.mockResolvedValueOnce([
+      folder({ id: 'f1', name: 'F1', role: null, visible: true, unreadCount: 7, source: 'eas' }),
     ]);
     const [f] = await getFoldersByAccount('acc-1');
     expect(f).toBeDefined();
@@ -79,120 +69,97 @@ describe('getFoldersByAccount', () => {
 });
 
 describe('getAllFolders', () => {
-  it('returns folders across accounts', async () => {
-    mockDb.select.mockResolvedValue([row({ id: 'a' }), row({ id: 'b', account_id: 'acc-2' })]);
+  it('invokes db_get_all_folders and returns the result unsorted (legacy behavior)', async () => {
+    mockInvoke.mockResolvedValueOnce([folder({ id: 'a' }), folder({ id: 'b' })]);
     const folders = await getAllFolders();
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_all_folders');
     expect(folders).toHaveLength(2);
   });
 });
 
 describe('getFolderByRole', () => {
-  it('returns the matching folder', async () => {
-    mockDb.select.mockResolvedValue([row({ id: 'inbox', role: 'inbox' })]);
+  it('invokes db_get_folder_by_role with (accountId, role)', async () => {
+    mockInvoke.mockResolvedValueOnce(folder({ id: 'inbox', role: 'inbox' }));
     const f = await getFolderByRole('acc-1', 'inbox');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_folder_by_role', {
+      accountId: 'acc-1',
+      role: 'inbox',
+    });
     expect(f?.id).toBe('inbox');
   });
 
   it('returns null when not found', async () => {
-    mockDb.select.mockResolvedValue([]);
+    mockInvoke.mockResolvedValueOnce(null);
     expect(await getFolderByRole('acc-1', 'inbox')).toBeNull();
   });
 });
 
 describe('getUnreadCountsByAccount', () => {
-  it('groups unread thread counts by label id', async () => {
-    mockDb.select.mockResolvedValue([
-      { id: 'inbox', unread: 3 },
-      { id: 'newsletters', unread: 1 },
-    ]);
+  it('invokes db_get_unread_counts_by_account and returns the map', async () => {
+    mockInvoke.mockResolvedValueOnce({ inbox: 3, newsletters: 1 });
     const counts = await getUnreadCountsByAccount('acc-1');
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_unread_counts_by_account', {
+      accountId: 'acc-1',
+    });
     expect(counts).toEqual({ inbox: 3, newsletters: 1 });
   });
 });
 
 describe('upsertFolders', () => {
-  it('inserts folders with ON CONFLICT upsert inside a transaction', async () => {
-    const folder: MailFolder = {
-      id: 'acc-1:INBOX',
-      accountId: 'acc-1',
-      source: 'imap',
-      role: 'inbox',
-      name: 'Inbox',
-      parentId: null,
-      remoteId: 'INBOX',
-      delimiter: '/',
-      unreadCount: 0,
-      totalCount: 0,
-      sortOrder: 0,
-      visible: true,
-      hierarchicalName: null,
-      mailClass: 'mail',
-    };
-    await upsertFolders([folder]);
-    expect(withTransaction).toHaveBeenCalledOnce();
-    expect(mockDb.execute).toHaveBeenCalledOnce();
-    const [sql] = mockDb.execute.mock.calls[0];
-    expect(String(sql)).toContain('INSERT INTO labels');
-    expect(String(sql)).toContain('ON CONFLICT(account_id, id)');
-    // Counts are intentionally not overwritten on conflict.
-    expect(String(sql)).not.toContain('unread_count = excluded');
+  it('invokes db_upsert_folders with the folders array', async () => {
+    const input: MailFolder = folder({ id: 'acc-1:INBOX' });
+    await upsertFolders([input]);
+    expect(mockInvoke).toHaveBeenCalledWith('db_upsert_folders', { folders: [input] });
   });
 
-  it('is a no-op for an empty list', async () => {
+  it('is a no-op for an empty list (skips the invoke)', async () => {
     await upsertFolders([]);
-    expect(withTransaction).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 });
 
 describe('createFolder', () => {
-  it('inserts a local user folder appended after the current max sort_order', async () => {
-    mockDb.select.mockResolvedValue([{ m: 5 }]);
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    const folder = await createFolder('acc-1', 'Projects');
-    expect(folder.source).toBe('local');
-    expect(folder.role).toBeNull();
-    expect(folder.parentId).toBeNull();
-    expect(folder.sortOrder).toBe(6);
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(String(sql)).toContain('INSERT INTO labels');
-    expect(String(sql)).toContain("'user'");
-    expect(String(sql)).toContain("'local'");
-    expect(params).toContain('acc-1');
-    expect(params).toContain('Projects');
-    expect(params).toContain(6);
+  it('invokes db_create_folder with (accountId, name, parentId=null) and returns the Rust folder', async () => {
+    const created = folder({ id: 'new', name: 'Projects', source: 'local', role: null });
+    mockInvoke.mockResolvedValueOnce(created);
+    const result = await createFolder('acc-1', 'Projects');
+    expect(mockInvoke).toHaveBeenCalledWith('db_create_folder', {
+      accountId: 'acc-1',
+      name: 'Projects',
+      parentId: null,
+    });
+    expect(result.id).toBe('new');
+    expect(result.source).toBe('local');
   });
 
   it('passes through parentId for a subfolder', async () => {
-    mockDb.select.mockResolvedValue([{ m: null }]);
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
-    const folder = await createFolder('acc-1', 'Apollo', { parentId: 'col-projects' });
-    expect(folder.parentId).toBe('col-projects');
-    expect(folder.sortOrder).toBe(0); // MAX(null) treated as -1
+    mockInvoke.mockResolvedValueOnce(folder({ id: 'sub' }));
+    await createFolder('acc-1', 'Apollo', { parentId: 'col-projects' });
+    expect(mockInvoke).toHaveBeenCalledWith('db_create_folder', {
+      accountId: 'acc-1',
+      name: 'Apollo',
+      parentId: 'col-projects',
+    });
   });
 });
 
 describe('renameFolder', () => {
-  it('updates the name', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('invokes db_rename_folder with (accountId, labelId, newName)', async () => {
     await renameFolder('acc-1', 'fid', 'Renamed');
-    const [sql, params] = mockDb.execute.mock.calls[0];
-    expect(String(sql)).toContain('UPDATE labels SET name =');
-    expect(params).toEqual(['acc-1', 'fid', 'Renamed']);
+    expect(mockInvoke).toHaveBeenCalledWith('db_rename_folder', {
+      accountId: 'acc-1',
+      labelId: 'fid',
+      newName: 'Renamed',
+    });
   });
 });
 
 describe('deleteFolder', () => {
-  it('removes thread_labels then the label, inside a transaction', async () => {
-    mockDb.execute.mockResolvedValue({ rowsAffected: 1 });
+  it('invokes db_delete_folder with (accountId, labelId)', async () => {
     await deleteFolder('acc-1', 'fid');
-    expect(withTransaction).toHaveBeenCalledOnce();
-    expect(mockDb.execute).toHaveBeenCalledTimes(2);
-    const sqls = mockDb.execute.mock.calls.map((c) => String(c[0]));
-    expect(sqls.some((s) => s.includes('DELETE FROM thread_labels'))).toBe(true);
-    expect(sqls.some((s) => s.includes('DELETE FROM labels'))).toBe(true);
-    // Every statement is scoped to the account + label id.
-    for (const [, params] of mockDb.execute.mock.calls) {
-      expect(params).toEqual(['acc-1', 'fid']);
-    }
+    expect(mockInvoke).toHaveBeenCalledWith('db_delete_folder', {
+      accountId: 'acc-1',
+      labelId: 'fid',
+    });
   });
 });

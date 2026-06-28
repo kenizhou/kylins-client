@@ -32,7 +32,7 @@ import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
-import { getDb } from '@/services/db/connection';
+import { invoke } from '@tauri-apps/api/core';
 import { upsertContact } from '@/services/db/contacts';
 import { insertScheduledEmail } from '@/services/db/scheduledEmails';
 import { getDefaultSignature, signatureContextForComposerMode } from '@/services/db/signatures';
@@ -411,16 +411,15 @@ export function Composer({ windowed = false }: ComposerProps) {
       // insertScheduledEmail has no attachment column setter, so persist the
       // serialized attachments on the most recent scheduled row for this account.
       if (attachmentData) {
-        const db = await getDb();
-        const rows = await db.select<{ id: string }[]>(
-          'SELECT id FROM scheduled_emails WHERE account_id = $1 ORDER BY created_at DESC LIMIT 1',
-          [activeAccountId],
+        const latest = await invoke<{ id: string } | null>(
+          'db_get_latest_scheduled_email_for_account',
+          { accountId: activeAccountId },
         );
-        if (rows[0]) {
-          await db.execute('UPDATE scheduled_emails SET attachment_paths = $1 WHERE id = $2', [
-            attachmentData,
-            rows[0].id,
-          ]);
+        if (latest) {
+          await invoke<void>('db_set_scheduled_email_attachment_paths', {
+            id: latest.id,
+            attachmentPaths: attachmentData,
+          });
         }
       }
 
