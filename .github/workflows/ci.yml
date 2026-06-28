@@ -64,6 +64,9 @@ jobs:
       - name: Cargo fmt
         run: cargo fmt --check
 
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Test
         # Accounts tests need OS keyring (DBus on Linux). Skip them in CI
         # until a mock keyring backend is added for testing.

@@ -41,7 +41,7 @@ pub async fn search_messages(
         return Ok(vec![]);
     }
 
-    let rows: Vec<(
+    type SearchRow = (
         String,
         String,
         Option<String>,
@@ -50,7 +50,8 @@ pub async fn search_messages(
         i64,
         Option<String>,
         f64,
-    )> = sqlx::query_as(
+    );
+    let rows: Vec<SearchRow> = sqlx::query_as(
         "SELECT m.id AS id, m.thread_id AS thread_id, m.subject AS subject,
                 m.from_name AS from_name, m.from_address AS from_address, m.date AS date,
                 snippet(messages_fts, 3, '<mark>', '</mark>', '…', 16) AS preview,

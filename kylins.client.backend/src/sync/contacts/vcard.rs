@@ -128,7 +128,7 @@ fn parse_vcard_block(block: &str) -> ParsedContact {
             "N" => {
                 let parts = split_structured(&prop.value);
                 if contact.display_name.is_none() {
-                    let family = parts.get(0).cloned().unwrap_or_default();
+                    let family = parts.first().cloned().unwrap_or_default();
                     let given = parts.get(1).cloned().unwrap_or_default();
                     let name = format!("{} {}", given, family).trim().to_string();
                     if !name.is_empty() {
@@ -166,12 +166,10 @@ fn parse_vcard_block(block: &str) -> ParsedContact {
             }
             "TITLE" => contact.job_title = Some(prop.value),
             "NOTE" => contact.notes = Some(prop.value),
-            "PHOTO" => {
-                // Only capture URI-based photos.
-                if prop.value.starts_with("http") {
-                    contact.avatar_url = Some(prop.value);
-                }
+            "PHOTO" if prop.value.starts_with("http") => {
+                contact.avatar_url = Some(prop.value);
             }
+            "PHOTO" => {}
             _ => {}
         }
     }

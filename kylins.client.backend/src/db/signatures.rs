@@ -12,18 +12,14 @@ use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Signature context (when the signature applies). Mirrors `SignatureContext`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SignatureContext {
+    #[default]
     All,
     New,
     Reply,
     Forward,
-}
-
-impl Default for SignatureContext {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 /// Signature row. Mirrors TS `DbSignature` exactly (snake_case JSON keys) so the
