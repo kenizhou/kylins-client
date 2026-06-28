@@ -17,7 +17,8 @@ use crate::sync_engine::Cursor;
 
 /// Read the stored IMAP cursor for a folder, or `initial_imap()` (uidvalidity 0) if none.
 pub async fn get_imap_cursor(pool: &SqlitePool, account_id: &str, folder_path: &str) -> Cursor {
-    let row: Result<Option<(Option<i64>, Option<i64>, Option<i64>)>, _> = sqlx::query_as(
+    type ImapCursorRow = (Option<i64>, Option<i64>, Option<i64>);
+    let row = sqlx::query_as::<_, ImapCursorRow>(
         "SELECT uidvalidity, last_uid, modseq FROM folder_sync_state WHERE account_id = ? AND folder_path = ?",
     )
     .bind(account_id)

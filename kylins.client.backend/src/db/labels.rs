@@ -108,7 +108,7 @@ fn row_to_folder(row: &SqliteRow) -> MailFolder {
         name: row.try_get("name").unwrap_or_default(),
         parent_id: row.try_get("parent_id").ok().flatten(),
         // remoteId falls back to id when NULL (matches TS `?? row.id`).
-        remote_id: remote_id.unwrap_or_else(|| id),
+        remote_id: remote_id.unwrap_or(id),
         delimiter: row.try_get("delimiter").ok().flatten(),
         unread_count: row.try_get("unread_count").unwrap_or(0),
         total_count: row.try_get("total_count").unwrap_or(0),
