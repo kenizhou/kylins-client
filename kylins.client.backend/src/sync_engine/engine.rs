@@ -85,8 +85,42 @@ enum SyncOp {
     Shutdown,
 }
 
+/// Realtime strategy picked from a source's `Capabilities` after the first
+/// sync round populates the caps cache. `Idle` spawns the per-account IDLE
+/// watcher (Task 3); `Poll` keeps the 60s sweep as the only push path. The
+/// poll loop runs in BOTH cases — it stays as the background sweep for
+/// non-INBOX folders + the fallback when IDLE is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeStrategy {
+    /// Source advertises `IDLE` — spawn the watcher task on INBOX.
+    Idle,
+    /// No real-time cap — poll-only (60s sweep covers every folder).
+    Poll,
+}
+
+/// Pure decision helper: pick the realtime strategy from a source's caps.
+/// Extracted from `spawn_worker` so the decision is unit-testable without
+/// spawning the live watcher task (which needs a real IDLE socket).
+///
+/// The strategy is recomputed only after the first sync round, because that
+/// round is what populates the cached caps on `ImapSource` (a fresh source
+/// reports `Capabilities::default()` until its first connect succeeds — see
+/// `ImapSource::capabilities()`).
+fn pick_realtime_strategy(caps: &crate::sync_engine::Capabilities) -> RealtimeStrategy {
+    if caps.idle {
+        RealtimeStrategy::Idle
+    } else {
+        RealtimeStrategy::Poll
+    }
+}
+
 struct WorkerHandle {
     tx: mpsc::Sender<SyncOp>,
+    /// JoinHandle for the per-account IDLE watcher task, if the source
+    /// advertised IDLE. `None` for poll-only accounts. Aborted in `stop_all`
+    /// (and any future worker-removal path) so the watcher does not outlive
+    /// its account.
+    idle_watcher: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub struct SyncEngine {
@@ -121,8 +155,25 @@ impl SyncEngine {
     /// Ensure a worker exists for the account, then nudge it to sync immediately.
     pub async fn sync_account_now(self: &Arc<Self>, account_id: String) {
         self.ensure_worker(account_id.clone()).await;
-        if let Some(w) = self.workers.lock().await.get(&account_id) {
-            let _ = w.tx.send(SyncOp::SyncNow).await;
+        self.nudge_worker(&account_id).await;
+    }
+
+    /// Send a `SyncNow` to the account's worker if one is running. Does NOT
+    /// spawn a worker (unlike [`sync_account_now`]) — used by the IDLE-watcher
+    /// task, which already lives inside the worker it wants to nudge, so
+    /// re-running `ensure_worker` would be both redundant and (more
+    /// importantly) would make the watcher future `!Send`: `ensure_worker`
+    /// transitively awaits `spawn_worker`, whose outer `tokio::spawn` requires
+    /// the worker-loop future (which contains THIS watcher task) to be `Send`,
+    /// creating a cycle. This helper breaks the cycle by only touching the
+    /// workers map (cloning the sender out of the lock scope before awaiting).
+    async fn nudge_worker(self: &Arc<Self>, account_id: &str) {
+        let tx = {
+            let ws = self.workers.lock().await;
+            ws.get(account_id).map(|w| w.tx.clone())
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(SyncOp::SyncNow).await;
         }
     }
 
@@ -148,9 +199,103 @@ impl SyncEngine {
         let (tx, mut rx) = mpsc::channel::<SyncOp>(16);
         let engine = Arc::clone(self);
         let aid = account_id.clone();
+        // Insert a placeholder handle up front so `ensure_worker`'s
+        // contains_key check sees the worker as running before the spawn
+        // finishes (avoids a double-spawn race if sync_account_now is
+        // called concurrently). The idle_watcher slot is filled in below
+        // once the first sync round has populated the caps cache.
+        self.workers.lock().await.insert(
+            account_id.clone(),
+            WorkerHandle { tx: tx.clone(), idle_watcher: None },
+        );
         tokio::spawn(async move {
-            // Initial sync immediately, then every POLL_INTERVAL_SECS.
+            // Initial sync immediately — this also warms the source's caps
+            // cache (ImapSource caches IDLE/CONDSTORE/etc. on the first
+            // successful connect), so the strategy decision below sees the
+            // server's real capabilities, not the default empty set.
             let _ = run_sync_round(&engine, &aid, &provider).await;
+
+            // Strategy: if the source advertises IDLE, spawn a watcher for
+            // INBOX that nudges a sync round on each notification. The poll
+            // loop below stays as the background sweep for non-INBOX folders
+            // + the fallback when IDLE is unavailable.
+            let idle_watcher = {
+                let src = crate::sync_engine::source_for_account(&engine.pool, &aid).await.ok();
+                let caps = src.as_ref().map(|s| s.capabilities());
+                match (src, caps) {
+                    (Some(src), Some(caps)) if pick_realtime_strategy(&caps) == RealtimeStrategy::Idle => {
+                        let engine2 = Arc::clone(&engine);
+                        let aid2 = aid.clone();
+                        let src2 = Arc::clone(&src);
+                        // CANCELLATION CAVEAT (Phase 2 Task 2): async-imap 0.10.4's
+                        // IDLE `Handle` has no `Drop` impl, so aborting this task
+                        // (dropping the in-flight `watch()` future) leaves a dangling
+                        // IDLE the server times out ~29 min later. This is ACCEPTABLE
+                        // for Phase 2 — `stop_all` aborts the watcher on app shutdown
+                        // and the next `watch()` reconnects cleanly. On the happy path
+                        // (`Ok(())` on NewData) `watch()` calls `done()` cleanly and
+                        // no leak occurs.
+                        Some(tokio::spawn(async move {
+                            loop {
+                                // Resolve the INBOX folder (role=inbox) from the DB.
+                                // The `remote_id` column holds the IMAP path (e.g.
+                                // "INBOX"); `imap_folder_path` is labels-specific and
+                                // only populated by other code paths, so we prefer
+                                // `remote_id` (which always falls back to the label id
+                                // on read — see `row_to_folder`).
+                                let inbox = match crate::db::labels::get_folder_by_role(
+                                    &engine2.pool, &aid2, "inbox",
+                                ).await {
+                                    Ok(Some(f)) => f,
+                                    _ => {
+                                        // No inbox row yet (initial sync may not have
+                                        // persisted labels, e.g. a fresh account whose
+                                        // first connect failed). Back off and retry.
+                                        tokio::time::sleep(Duration::from_secs(60)).await;
+                                        continue;
+                                    }
+                                };
+                                let folder = RemoteFolder {
+                                    remote_id: inbox.remote_id.clone(),
+                                    name: inbox.name.clone(),
+                                    delimiter: inbox.delimiter.clone().unwrap_or_else(|| "/".into()),
+                                    role: Some("inbox".into()),
+                                    ..Default::default()
+                                };
+                                match src2.watch(&folder).await {
+                                    Ok(()) => {
+                                        // Notification (or clean return) — nudge an
+                                        // immediate sync round, then loop back into
+                                        // watch(). We use `nudge_worker` (not
+                                        // `sync_account_now`) because the worker is
+                                        // already running — the watcher IS part of it —
+                                        // and `sync_account_now`'s `ensure_worker` would
+                                        // create a Send-cycle through `spawn_worker`.
+                                        engine2.nudge_worker(&aid2).await;
+                                    }
+                                    Err(e) => {
+                                        log::warn!("[sync] {aid2} IDLE err: {e}");
+                                        // Brief backoff before reconnecting to avoid a
+                                        // hot loop on persistent failures (e.g. server
+                                        // flapping, dead socket).
+                                        tokio::time::sleep(Duration::from_secs(30)).await;
+                                    }
+                                }
+                            }
+                        }))
+                    }
+                    _ => None,
+                }
+            };
+
+            // Publish the watcher JoinHandle so stop_all can abort it.
+            {
+                let mut ws = engine.workers.lock().await;
+                if let Some(h) = ws.get_mut(&aid) {
+                    h.idle_watcher = idle_watcher;
+                }
+            }
+
             let mut tick = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
             // Drop the first immediate tick (we already synced above).
             tick.tick().await;
@@ -167,15 +312,20 @@ impl SyncEngine {
                     }
                 }
             }
+            // (the idle_watcher JoinHandle is aborted by stop_all / worker removal)
         });
-        self.workers.lock().await.insert(account_id, WorkerHandle { tx });
     }
 
-    /// Stop all workers (app shutdown / account removal).
+    /// Stop all workers (app shutdown / account removal). Sends Shutdown to each
+    /// worker's poll loop AND aborts any per-account IDLE watcher task so it does
+    /// not outlive its account.
     pub async fn stop_all(&self) {
         let mut ws = self.workers.lock().await;
         for (_, w) in ws.drain() {
             let _ = w.tx.send(SyncOp::Shutdown).await;
+            if let Some(handle) = w.idle_watcher {
+                handle.abort();
+            }
         }
     }
 
@@ -669,5 +819,36 @@ mod tests {
         assert_eq!(qs.len(), 1);
         assert_eq!(qs[0].account_id, "a");
         assert_eq!(qs[0].pending, 1, "retained op counts toward pending");
+    }
+
+    // ---- Phase 2 Task 3: RealtimeStrategy decision ----
+    //
+    // The live IDLE watcher task needs a real IMAP socket (validated in Task 4
+    // e2e), so the unit test covers only the DECISION: given a source's caps,
+    // does `pick_realtime_strategy` pick `Idle` vs `Poll`? MockSource is used
+    // only to produce caps — we never spawn the real watcher task here.
+
+    use crate::sync_engine::Capabilities;
+
+    #[test]
+    fn pick_realtime_strategy_idle_when_source_advertises_idle() {
+        // A MockSource configured with `idle: true` → strategy is Idle.
+        let src = MockSource::new(vec![], vec![])
+            .with_caps(Capabilities { idle: true, ..Default::default() });
+        assert_eq!(pick_realtime_strategy(&src.capabilities()), RealtimeStrategy::Idle);
+    }
+
+    #[test]
+    fn pick_realtime_strategy_poll_when_source_has_no_idle() {
+        // Default caps (idle: false) → strategy is Poll (poll-only).
+        let src = MockSource::new(vec![], vec![]);
+        assert_eq!(pick_realtime_strategy(&src.capabilities()), RealtimeStrategy::Poll);
+    }
+
+    #[test]
+    fn pick_realtime_strategy_poll_for_empty_default_caps() {
+        // Bare default caps (no source) — the case before the first sync round
+        // warms the ImapSource caps cache. Must be Poll so no watcher spawns.
+        assert_eq!(pick_realtime_strategy(&Capabilities::default()), RealtimeStrategy::Poll);
     }
 }
