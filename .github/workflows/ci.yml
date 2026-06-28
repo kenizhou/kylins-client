@@ -39,7 +39,7 @@ jobs:
         run: npx vitest run
 
   backend:
-    name: Backend (check + fmt + test)
+    name: Backend (check + fmt + clippy + test)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -68,7 +68,30 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        # Accounts tests need OS keyring (DBus on Linux). Skip them in CI
-        # until a mock keyring backend is added for testing.
         run: cargo test -- --skip accounts::tests
 
+  notify:
+    name: Notify
+    needs: [frontend, backend]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send email notification
+        if: env.SMTP_HOST
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT || '587' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[Kylins CI] ${{ needs.frontend.result == 'success' && needs.backend.result == 'success' && 'SUCCESS' || 'FAILURE' }} — ${{ github.ref_name }}"
+          to: kenizhou@hotmail.com
+          from: Kylins CI <ci@kylins.app>
+          body: |
+            CI workflow completed for ${{ github.repository }} @ ${{ github.ref_name }}
+
+            Commit: ${{ github.sha }}
+            Frontend: ${{ needs.frontend.result }}
+            Backend: ${{ needs.backend.result }}
+
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
