@@ -79,6 +79,19 @@ pub fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(),
     }
 }
 
+/// Send a desktop notification from Rust so that Windows toast attribution uses
+/// the correct AppUserModelID (com.mailclient.app) instead of "Windows PowerShell".
+#[tauri::command]
+pub fn send_desktop_notification(app: tauri::AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show();
+}
+
 #[tauri::command]
 pub fn request_notification_permission(app: tauri::AppHandle) -> Result<bool, String> {
     let state = app

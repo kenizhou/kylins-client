@@ -10,7 +10,6 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { sendNotification } from '@tauri-apps/plugin-notification';
 import { useFolderStore } from '../stores/folderStore';
 import { useThreadStore } from '../stores/threadStore';
 import { useAccountStore } from '../stores/accountStore';
@@ -48,10 +47,10 @@ export function useSyncEvents(): void {
             (e) => {
               const n = e.payload.count;
               try {
-                sendNotification({
+                invoke('send_desktop_notification', {
                   title: 'New mail',
                   body: `${n} new message${n === 1 ? '' : 's'}`,
-                });
+                }).catch(() => {});
               } catch {
                 /* notifications are best-effort */
               }

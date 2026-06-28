@@ -1,4 +1,5 @@
-import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
+import { isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
+import { invoke } from '@tauri-apps/api/core';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 
 async function ensurePermission(): Promise<boolean> {
@@ -13,6 +14,12 @@ async function ensurePermission(): Promise<boolean> {
   }
 }
 
+function sendNotification(title: string, body: string) {
+  // Send via Rust command so Windows toast attribution uses the
+  // correct AppUserModelID (com.mailclient.app) instead of "Windows PowerShell".
+  invoke('send_desktop_notification', { title, body }).catch(() => {});
+}
+
 export async function notifyNewMail(sender: string, subject: string): Promise<void> {
   const { showNotificationsForNewUnread, playSoundOnNewMail } = usePreferencesStore.getState();
 
@@ -21,10 +28,7 @@ export async function notifyNewMail(sender: string, subject: string): Promise<vo
   const permitted = await ensurePermission();
   if (!permitted) return;
 
-  sendNotification({
-    title: 'New message',
-    body: `${sender}: ${subject}`,
-  });
+  sendNotification('New message', `${sender}: ${subject}`);
 
   if (playSoundOnNewMail) {
     // Placeholder: wire an actual new-mail sound file once assets are available.
@@ -39,8 +43,5 @@ export async function notifyRepeatedOpen(sender: string, subject: string): Promi
   const permitted = await ensurePermission();
   if (!permitted) return;
 
-  sendNotification({
-    title: 'Message opened again',
-    body: `${sender}: ${subject}`,
-  });
+  sendNotification('Message opened again', `${sender}: ${subject}`);
 }

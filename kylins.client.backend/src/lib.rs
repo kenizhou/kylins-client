@@ -64,6 +64,7 @@ pub fn run() {
             commands::write_text_file,
             commands::get_autostart_state,
             commands::set_autostart_enabled,
+            commands::send_desktop_notification,
             commands::request_notification_permission,
             commands::get_cache_size,
             commands::clear_cache,

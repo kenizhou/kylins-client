@@ -3,8 +3,14 @@
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "condition": "toolInput.command.includes('git push')",
-        "prompt": "Before pushing, run /simplify to review the changes for reuse, simplification, efficiency, and altitude issues. Continue with the push only after applying the cleanup fixes."
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git push*)",
+            "command": "bash .claude/hooks/simplify-gate.sh",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
