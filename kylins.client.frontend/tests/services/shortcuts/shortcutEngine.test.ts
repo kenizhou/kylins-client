@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   parseBinding,
   eventMatchesCombo,
@@ -72,7 +72,9 @@ describe('shortcutEngine', () => {
 
     it('does not match mod+z when extra modifiers are held', () => {
       const combo = parseBinding('mod+z').combos[0]!;
-      expect(eventMatchesCombo(makeEvent({ key: 'z', ctrlKey: true, shiftKey: true }), combo, false)).toBe(false);
+      expect(
+        eventMatchesCombo(makeEvent({ key: 'z', ctrlKey: true, shiftKey: true }), combo, false),
+      ).toBe(false);
     });
 
     it('matches explicit ctrl combos on mac', () => {
@@ -88,7 +90,9 @@ describe('shortcutEngine', () => {
 
   describe('eventMatchesBinding', () => {
     it('matches single combo', () => {
-      expect(eventMatchesBinding(makeEvent({ key: 'n', ctrlKey: true }), 'mod+n', false)).toBe(true);
+      expect(eventMatchesBinding(makeEvent({ key: 'n', ctrlKey: true }), 'mod+n', false)).toBe(
+        true,
+      );
     });
 
     it('matches either combo of a sequence format when passed directly', () => {

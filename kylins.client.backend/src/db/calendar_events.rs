@@ -8,10 +8,7 @@
 //! DTO matches byte-for-byte with `#[serde(rename_all = "snake_case")]`.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Calendar event row. Mirrors TS `DbCalendarEvent` (snake_case JSON keys).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -142,13 +139,8 @@ pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Option<CalendarEve
 
 /// Insert an event. Returns its id. Mirrors `insertCalendarEvent` including the
 /// `google_event_id ?? uid ?? id` fallback for the NOT NULL Google-shaped column.
-pub async fn insert(
-    pool: &SqlitePool,
-    input: UpsertCalendarEventInput,
-) -> Result<String, String> {
-    let id = input
-        .id
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+pub async fn insert(pool: &SqlitePool, input: UpsertCalendarEventInput) -> Result<String, String> {
+    let id = input.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let account_id = input
         .account_id
         .ok_or_else(|| "[calendar] accountId is required".to_string())?;

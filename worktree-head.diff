@@ -1,0 +1,1107 @@
+diff --git a/kylins.client.frontend/src/components/layout/CommandRibbon.tsx b/kylins.client.frontend/src/components/layout/CommandRibbon.tsx
+index 8603acb..e3439bd 100644
+--- a/kylins.client.frontend/src/components/layout/CommandRibbon.tsx
++++ b/kylins.client.frontend/src/components/layout/CommandRibbon.tsx
+@@ -16,8 +16,14 @@ import {
+ import { HugeiconsIcon } from '@hugeicons/react';
+ import { ArrowBendDoubleUpLeft, Archive as PhosphorArchive } from '@phosphor-icons/react';
+ import { openComposerWindow } from '../../utils/composeWindow';
++import {
++  openReplyComposer,
++  openReplyAllComposer,
++  openForwardComposer,
++} from '../../utils/composerActions';
+ import { useViewStore } from '../../features/view/viewStore';
+ import { useAccountStore } from '../../stores/accountStore';
++import { useThreadStore } from '../../stores/threadStore';
+ import { useClassification } from '../../features/classification/useClassification';
+ import { useEffect, useRef, useState } from 'react';
+ import type { ClassificationLevel } from '../../features/classification/classificationTypes';
+@@ -101,6 +107,12 @@ function ClassificationMenuItem({
+ 
+ export function CommandRibbon() {
+   const selectedMessage = useViewStore((s) => s.selectedMessage);
++  const selectedThread = useThreadStore((s) =>
++    s.threads.find((t) => t.id === s.selectedThreadId),
++  );
++  const markThreadRead = useThreadStore((s) => s.markThreadRead);
++  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
++  const deleteThread = useThreadStore((s) => s.deleteThread);
+   const activeAccountId = useAccountStore((s) => s.activeAccountId);
+   const accounts = useAccountStore((s) => s.accounts);
+   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
+@@ -137,44 +149,21 @@ export function CommandRibbon() {
+ 
+   const handleReply = () => {
+     if (!selectedMessage) return;
+-    openComposerWindow({
+-      mode: 'reply',
+-      threadId: selectedMessage.threadId ?? selectedMessage.id,
+-      fromEmail: accountEmail,
+-      subject: selectedMessage.subject,
+-      classificationId: selectedMessage.classificationId ?? undefined,
+-      isEncrypted: selectedMessage.isEncrypted,
+-      isSigned: selectedMessage.isSigned,
+-    });
++    openReplyComposer(selectedMessage, accountEmail);
+   };
+ 
+   const handleReplyAll = () => {
+     if (!selectedMessage) return;
+-    openComposerWindow({
+-      mode: 'replyAll',
+-      threadId: selectedMessage.threadId ?? selectedMessage.id,
+-      fromEmail: accountEmail,
+-      subject: selectedMessage.subject,
+-      classificationId: selectedMessage.classificationId ?? undefined,
+-      isEncrypted: selectedMessage.isEncrypted,
+-      isSigned: selectedMessage.isSigned,
+-    });
++    openReplyAllComposer(selectedMessage, accountEmail);
+   };
+ 
+   const handleForward = () => {
+     if (!selectedMessage) return;
+-    openComposerWindow({
+-      mode: 'forward',
+-      threadId: selectedMessage.threadId ?? selectedMessage.id,
+-      fromEmail: accountEmail,
+-      subject: selectedMessage.subject,
+-      classificationId: selectedMessage.classificationId ?? undefined,
+-      isEncrypted: selectedMessage.isEncrypted,
+-      isSigned: selectedMessage.isSigned,
+-    });
++    openForwardComposer(selectedMessage, accountEmail);
+   };
+ 
+   const hasMessage = selectedMessage != null;
++  const hasThread = selectedThread != null;
+ 
+   return (
+     <nav
+@@ -252,7 +241,15 @@ export function CommandRibbon() {
+             disabled={!hasMessage}
+             title="Archive"
+           />
+-          <RibbonButton icon={<DeleteIcon size={17} />} disabled={!hasMessage} title="Delete" />
++          <RibbonButton
++            icon={<DeleteIcon size={17} />}
++            disabled={!hasThread}
++            title="Delete"
++            onClick={() => {
++              if (!selectedThread) return;
++              void deleteThread(selectedThread);
++            }}
++          />
+           <RibbonButton icon={<MoreIcon size={17} />} disabled={!hasMessage} title="More actions" />
+         </RibbonGroup>
+ 
+@@ -269,11 +266,30 @@ export function CommandRibbon() {
+         </RibbonGroup>
+ 
+         <RibbonGroup>
+-          <RibbonButton icon={<MailIcon />} split>
+-            Read/Unread
++          <RibbonButton
++            icon={<MailIcon />}
++            split
++            disabled={!hasThread}
++            title={selectedThread?.isRead ? 'Mark as unread' : 'Mark as read'}
++            onClick={() => {
++              if (!selectedThread) return;
++              void markThreadRead(selectedThread, !selectedThread.isRead);
++            }}
++          >
++            {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
++          </RibbonButton>
++          <RibbonButton
++            icon={<FlagIcon />}
++            disabled={!hasThread}
++            title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
++            onClick={() => {
++              if (!selectedThread) return;
++              void toggleThreadStarred(selectedThread);
++            }}
++          >
++            {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
+           </RibbonButton>
+-          <RibbonButton icon={<FlagIcon />}>Flag</RibbonButton>
+-          <RibbonButton icon={<PinIcon />}>Pin</RibbonButton>
++          <RibbonButton icon={<PinIcon />} disabled={!hasThread}>Pin</RibbonButton>
+         </RibbonGroup>
+ 
+         <RibbonGroup>
+diff --git a/kylins.client.frontend/src/components/layout/FolderPane.tsx b/kylins.client.frontend/src/components/layout/FolderPane.tsx
+index 38019c3..2a59c02 100644
+--- a/kylins.client.frontend/src/components/layout/FolderPane.tsx
++++ b/kylins.client.frontend/src/components/layout/FolderPane.tsx
+@@ -379,7 +379,7 @@ export function FolderPane() {
+         {
+           label: 'Rename Folder',
+           icon: PencilIcon,
+-          disabled: menu.folder.role !== null,
++          disabled: menu.folder.role != null,
+           onSelect: () =>
+             setInline({ kind: 'rename', folder: menu.folder, name: menu.folder.name }),
+         },
+@@ -387,7 +387,7 @@ export function FolderPane() {
+           label: 'Delete Folder',
+           icon: TrashIcon,
+           danger: true,
+-          disabled: menu.folder.role !== null,
++          disabled: menu.folder.role != null,
+           onSelect: () => setDeleteTarget(menu.folder),
+         },
+       ]
+diff --git a/kylins.client.frontend/src/components/layout/MessageList.tsx b/kylins.client.frontend/src/components/layout/MessageList.tsx
+index b49db9f..6cc053b 100644
+--- a/kylins.client.frontend/src/components/layout/MessageList.tsx
++++ b/kylins.client.frontend/src/components/layout/MessageList.tsx
+@@ -1,25 +1,55 @@
+-import { useEffect, useMemo, useRef } from 'react';
++import { useEffect, useMemo, useRef, useState } from 'react';
+ import { useVirtualizer } from '@tanstack/react-virtual';
+ import { useViewStore } from '../../features/view/viewStore';
+ import { COLUMN_REGISTRY } from '../../features/view/defaults';
+ import type { ColumnDef } from '../../features/view/types';
+ import { useThreadStore } from '../../stores/threadStore';
+ import { useFolderStore } from '../../stores/folderStore';
++import { useAccountStore } from '../../stores/accountStore';
+ import type { Thread } from '../../services/db/threads';
++import {
++  getMessagesForThread,
++  mapMessageToMailMessage,
++} from '../../services/db/threads';
++import { getMessageBody } from '../../services/db/messageBodies';
+ import { getInitials, formatMessageTime } from '../../data/demoMessages';
+ import { openViewerWindow } from '../../utils/viewerWindow';
+ import { useClassification } from '../../features/classification/useClassification';
+ import { useSecurityIndicatorIcons } from '../../features/classification/useSecurityIndicatorIcons';
+-import { ClassificationIcon } from '../icons';
++import {
++  ClassificationIcon,
++  MailIcon,
++  FlagIcon,
++  TrashIcon,
++  CopyIcon,
++  FileTextIcon,
++  ReplyIcon,
++  ReplyAllIcon,
++  ForwardIcon,
++  TagIcon,
++  SearchIcon,
++  PreferencesMailRulesIcon,
++  MoveIcon,
++  ArchiveIcon,
++  BellIcon,
++} from '../icons';
++import { ContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
++import {
++  openReplyComposer,
++  openReplyAllComposer,
++  openForwardComposer,
++} from '../../utils/composerActions';
+ 
+ type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
+ 
+ interface MessageRowProps {
+   sender: string;
+   subject: string;
++  preview: string;
+   time: string;
+   initials: string;
+   state: MessageState;
++  isStarred: boolean;
+   selected?: boolean;
+   density: 'compact' | 'normal' | 'comfortable';
+   classificationId: string | null;
+@@ -27,6 +57,7 @@ interface MessageRowProps {
+   isSigned: boolean;
+   onClick?: () => void;
+   onDoubleClick?: () => void;
++  onContextMenu?: (e: React.MouseEvent) => void;
+ }
+ 
+ const RIBBON_COLOR: Record<MessageState, string> = {
+@@ -45,9 +76,11 @@ const DENSITY_ROW_CLASSES = {
+ function MessageRow({
+   sender,
+   subject,
++  preview,
+   time,
+   initials,
+   state,
++  isStarred,
+   selected,
+   density,
+   classificationId,
+@@ -55,18 +88,24 @@ function MessageRow({
+   isSigned,
+   onClick,
+   onDoubleClick,
++  onContextMenu,
+ }: MessageRowProps) {
+   const unread = state === 'unread';
+   const { getLevelById } = useClassification();
+   const { encryptedIcon, signedIcon } = useSecurityIndicatorIcons();
+   const level = getLevelById(classificationId);
+   const showSecurity = isEncrypted || isSigned;
++  const showPreview = density !== 'compact' && preview.length > 0;
+   return (
+     <div
+       role="button"
+       tabIndex={0}
+       onClick={onClick}
+       onDoubleClick={onDoubleClick}
++      onContextMenu={(e) => {
++        e.preventDefault();
++        onContextMenu?.(e);
++      }}
+       onKeyDown={(e) => {
+         if (e.key === 'Enter' || e.key === ' ') {
+           e.preventDefault();
+@@ -83,10 +122,10 @@ function MessageRow({
+       <div className="w-7 h-7 rounded-full bg-[var(--border)] grid place-items-center text-[10px] font-bold text-[var(--muted-text)] shrink-0">
+         {initials}
+       </div>
+-      <div className="flex-1 min-w-0 flex flex-col gap-[3px]">
++      <div className="flex-1 min-w-0 flex flex-col gap-[2px]">
+         <div className="flex items-baseline justify-between gap-2 min-w-0">
+           <span
+-            className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
++            className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
+           >
+             {level && (
+               <span className="inline-flex items-center gap-1 mr-1.5 align-[-2px]">
+@@ -106,7 +145,7 @@ function MessageRow({
+             )}
+             {sender}
+           </span>
+-          <span className="flex items-center gap-1 shrink-0">
++          <span className="flex items-center gap-1.5 shrink-0">
+             {showSecurity && (
+               <span className="inline-flex items-center gap-0.5 text-[var(--muted-text)]">
+                 {isEncrypted && (
+@@ -121,14 +160,22 @@ function MessageRow({
+                 )}
+               </span>
+             )}
++            {isStarred && (
++              <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
++                <FlagIcon size={14} />
++              </span>
++            )}
+             <span className="text-[11px] font-mono text-[var(--muted-text)]">{time}</span>
+           </span>
+         </div>
+         <span
+-          className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
++          className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
+         >
+           {subject}
+         </span>
++        {showPreview && (
++          <span className="text-[12px] truncate text-[var(--muted-text)]">{preview}</span>
++        )}
+       </div>
+     </div>
+   );
+@@ -184,6 +231,9 @@ export function MessageList() {
+   const loadThreads = useThreadStore((s) => s.loadThreads);
+   const loadMore = useThreadStore((s) => s.loadMore);
+   const selectThread = useThreadStore((s) => s.selectThread);
++  const markThreadRead = useThreadStore((s) => s.markThreadRead);
++  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
++  const deleteThread = useThreadStore((s) => s.deleteThread);
+ 
+   const visibleColumns = visibleColumnIds
+     .map((id) => COLUMN_REGISTRY.get(id))
+@@ -226,8 +276,75 @@ export function MessageList() {
+     if (msg) openViewerWindow(msg);
+   };
+ 
++  const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
++
+   const showEmpty = !isLoading && items.length === 0;
+ 
++  const openContextMenu = (thread: Thread, e: React.MouseEvent) => {
++    e.preventDefault();
++    setMenu({ thread, x: e.clientX, y: e.clientY });
++  };
++
++  const openComposerForThread = async (thread: Thread, mode: 'reply' | 'replyAll' | 'forward') => {
++    const msgs = await getMessagesForThread(thread.accountId, thread.id);
++    const latest = msgs[msgs.length - 1];
++    if (!latest) return;
++    const body = await getMessageBody(thread.accountId, latest.id);
++    const message = mapMessageToMailMessage(latest, body?.bodyHtml ?? null);
++    const accountEmail =
++      useAccountStore.getState().accounts.find((a) => a.id === thread.accountId)?.email ?? null;
++    if (mode === 'reply') openReplyComposer(message, accountEmail);
++    else if (mode === 'replyAll') openReplyAllComposer(message, accountEmail);
++    else openForwardComposer(message, accountEmail);
++  };
++
++  const menuItems: ContextMenuItem[] = menu
++    ? [
++        { label: 'Copy', icon: CopyIcon, disabled: true },
++        { label: 'Quick Print', icon: FileTextIcon, disabled: true },
++        { separator: true },
++        {
++          label: 'Reply',
++          icon: ReplyIcon,
++          onSelect: () => void openComposerForThread(menu.thread, 'reply'),
++        },
++        {
++          label: 'Reply All',
++          icon: ReplyAllIcon,
++          onSelect: () => void openComposerForThread(menu.thread, 'replyAll'),
++        },
++        {
++          label: 'Forward',
++          icon: ForwardIcon,
++          onSelect: () => void openComposerForThread(menu.thread, 'forward'),
++        },
++        {
++          label: menu.thread.isRead ? 'Mark as Unread' : 'Mark as Read',
++          icon: MailIcon,
++          onSelect: () => void markThreadRead(menu.thread, !menu.thread.isRead),
++        },
++        { separator: true },
++        { label: 'Categorize', icon: TagIcon, disabled: true },
++        {
++          label: menu.thread.isStarred ? 'Clear Follow Up' : 'Follow Up',
++          icon: FlagIcon,
++          onSelect: () => void toggleThreadStarred(menu.thread),
++        },
++        { label: 'Find Related', icon: SearchIcon, disabled: true },
++        { label: 'Rules', icon: PreferencesMailRulesIcon, disabled: true },
++        { separator: true },
++        { label: 'Move', icon: MoveIcon, disabled: true },
++        { label: 'Junk', icon: BellIcon, disabled: true },
++        {
++          label: 'Delete',
++          icon: TrashIcon,
++          danger: true,
++          onSelect: () => void deleteThread(menu.thread),
++        },
++        { label: 'Archive', icon: ArchiveIcon, disabled: true },
++      ]
++    : [];
++
+   return (
+     <div className="flex flex-col h-full bg-[var(--card)]">
+       {visibleColumns.length > 0 && (
+@@ -279,6 +396,7 @@ export function MessageList() {
+                     <MessageRow
+                       sender={item.thread.fromName ?? item.thread.fromAddress ?? 'Unknown'}
+                       subject={item.thread.subject ?? '(no subject)'}
++                      preview={item.thread.snippet ?? ''}
+                       time={
+                         item.thread.lastMessageAt != null
+                           ? formatMessageTime(
+@@ -288,6 +406,7 @@ export function MessageList() {
+                       }
+                       initials={getInitials(item.thread.fromName ?? item.thread.fromAddress ?? '?')}
+                       state={threadState(item.thread)}
++                      isStarred={item.thread.isStarred}
+                       selected={selectedThreadId === item.thread.id}
+                       density={density}
+                       classificationId={item.thread.classificationId}
+@@ -295,6 +414,7 @@ export function MessageList() {
+                       isSigned={item.thread.isSigned}
+                       onClick={() => void selectThread(item.thread)}
+                       onDoubleClick={() => void handleDoubleClick(item.thread)}
++                      onContextMenu={(e) => openContextMenu(item.thread, e)}
+                     />
+                   )}
+                 </div>
+@@ -303,6 +423,10 @@ export function MessageList() {
+           </div>
+         )}
+       </div>
++
++      {menu && (
++        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
++      )}
+     </div>
+   );
+ }
+diff --git a/kylins.client.frontend/src/components/layout/ReadingPane.tsx b/kylins.client.frontend/src/components/layout/ReadingPane.tsx
+index b8ec6c7..11396fb 100644
+--- a/kylins.client.frontend/src/components/layout/ReadingPane.tsx
++++ b/kylins.client.frontend/src/components/layout/ReadingPane.tsx
+@@ -7,10 +7,12 @@ import {
+   CornerUpRightIcon,
+   MoreIcon,
+   DeleteIcon,
++  FlagIcon,
+   ClassificationIcon,
+ } from '../icons';
+ import { useViewStore } from '../../features/view/viewStore';
+ import { useAccountStore } from '../../stores/accountStore';
++import { useThreadStore } from '../../stores/threadStore';
+ import { usePreferencesStore } from '../../stores/preferencesStore';
+ import { EmailRenderer } from '../email/EmailRenderer';
+ import { InlineReply } from '../email/InlineReply';
+@@ -99,6 +101,12 @@ function SubjectActionButton({
+ 
+ export function ReadingPane() {
+   const message = useViewStore((s) => s.selectedMessage);
++  const selectedThread = useThreadStore((s) =>
++    s.threads.find((t) => t.id === message?.threadId),
++  );
++  const markThreadRead = useThreadStore((s) => s.markThreadRead);
++  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
++  const deleteThread = useThreadStore((s) => s.deleteThread);
+   const activeAccountId = useAccountStore((s) => s.activeAccountId);
+   const accounts = useAccountStore((s) => s.accounts);
+   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
+@@ -115,6 +123,8 @@ export function ReadingPane() {
+     setComposeMode(null);
+   }
+ 
++  const [moreOpen, setMoreOpen] = useState(false);
++
+   if (!message) {
+     return (
+       <div className="flex h-full flex-col items-center justify-center bg-[var(--card)] min-w-0 text-[var(--muted-text)]">
+@@ -267,8 +277,46 @@ export function ReadingPane() {
+             />
+             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
+             <SubjectActionButton icon={<Archive size={18} />} title="Archive" />
+-            <SubjectActionButton icon={<DeleteIcon size={17} />} title="Delete" />
+-            <SubjectActionButton icon={<MoreIcon size={17} />} title="More actions" />
++            <SubjectActionButton
++              icon={<FlagIcon size={17} />}
++              title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
++              className={selectedThread?.isStarred ? 'text-[var(--amber)]' : undefined}
++              onClick={() => {
++                if (selectedThread) void toggleThreadStarred(selectedThread);
++              }}
++            />
++            <SubjectActionButton
++              icon={<DeleteIcon size={17} />}
++              title="Delete"
++              onClick={() => {
++                if (selectedThread) void deleteThread(selectedThread);
++              }}
++            />
++            <div className="relative">
++              <SubjectActionButton
++                icon={<MoreIcon size={17} />}
++                title="More actions"
++                onClick={() => setMoreOpen((v) => !v)}
++              />
++              {moreOpen && (
++                <div className="absolute right-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
++                  <button
++                    type="button"
++                    disabled={!selectedThread}
++                    onClick={() => {
++                      setMoreOpen(false);
++                      if (selectedThread) {
++                        void markThreadRead(selectedThread, !selectedThread.isRead);
++                      }
++                    }}
++                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover)] disabled:opacity-50 disabled:cursor-not-allowed"
++                  >
++                    <MailIcon size={16} />
++                    <span>{selectedThread?.isRead ? 'Mark as unread' : 'Mark as read'}</span>
++                  </button>
++                </div>
++              )}
++            </div>
+           </div>
+         </div>
+       </div>
+diff --git a/kylins.client.frontend/src/stores/folderStore.ts b/kylins.client.frontend/src/stores/folderStore.ts
+index 3fa8a13..ff14217 100644
+--- a/kylins.client.frontend/src/stores/folderStore.ts
++++ b/kylins.client.frontend/src/stores/folderStore.ts
+@@ -82,6 +82,8 @@ export interface FolderState {
+   deleteFolder: (accountId: string, labelId: string) => Promise<void>;
+   /** Decrement one folder's unread badge by 1 (used when a thread is read). */
+   decrementUnread: (accountId: string, labelId: string) => void;
++  /** Increment one folder's unread badge by 1 (used when a thread is marked unread). */
++  incrementUnread: (accountId: string, labelId: string) => void;
+   /** Best-effort message fetch via the account provider; toasts the result. */
+   syncFolder: (folder: MailFolder) => Promise<void>;
+ }
+@@ -219,6 +221,12 @@ export const useFolderStore = create<FolderState>((set, get) => ({
+     }
+   },
+ 
++  incrementUnread: (accountId, labelId) => {
++    const key = favKey(accountId, labelId);
++    const cur = get().unreadCounts[key] ?? 0;
++    set((s) => ({ unreadCounts: { ...s.unreadCounts, [key]: cur + 1 } }));
++  },
++
+   syncFolder: async (folder) => {
+     const toast = useToastStore.getState();
+     if (folder.source === 'local') {
+diff --git a/kylins.client.frontend/src/stores/threadStore.ts b/kylins.client.frontend/src/stores/threadStore.ts
+index 090cee3..2d61d3b 100644
+--- a/kylins.client.frontend/src/stores/threadStore.ts
++++ b/kylins.client.frontend/src/stores/threadStore.ts
+@@ -10,6 +10,7 @@ import {
+   mapMessageToMailMessage,
+   type Thread,
+   type ThreadCursor,
++  type DbMessageRow,
+ } from '../services/db/threads';
+ import { getMessageBody } from '../services/db/messageBodies';
+ import { useViewStore } from '../features/view/viewStore';
+@@ -32,6 +33,11 @@ interface ThreadState {
+   loadMore: () => Promise<void>;
+   selectThread: (thread: Thread) => Promise<void>;
+   refresh: () => Promise<void>;
++
++  // ---- User-driven thread mutations ----
++  markThreadRead: (thread: Thread, read: boolean, messages?: DbMessageRow[]) => Promise<void>;
++  toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
++  deleteThread: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
+ }
+ 
+ export const useThreadStore = create<ThreadState>((set, get) => ({
+@@ -84,28 +90,10 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
+       } else {
+         useViewStore.getState().setSelectedMessage(null);
+       }
+-      // Mark as read (optimistic UI + durable write via the sync engine).
+-      // The engine applies locally (threads+messages is_read=1) and enqueues a
+-      // per-message replay row so the IMAP \Seen flag is set server-side. uids
+-      // + folderPath are required for remote replay; fall back to empty/0 when
+-      // the message has no IMAP provenance (e.g. an EAS-sourced message row).
++      // Opening a thread marks it read. Pass already-loaded messages so we don't
++      // fetch them twice.
+       if (!thread.isRead) {
+-        set((s) => ({
+-          threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: true } : t)),
+-        }));
+-        void invoke('sync_apply_mutation', {
+-          accountId: thread.accountId,
+-          op: {
+-            type: 'markRead',
+-            threadId: thread.id,
+-            messageIds: messages.map((m) => m.id),
+-            folderPath: messages[0]?.imap_folder ?? '',
+-            uids: messages.map((m) => m.imap_uid ?? 0),
+-            read: true,
+-          },
+-        }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
+-        const labelId = get().currentQuery?.labelId;
+-        if (labelId) useFolderStore.getState().decrementUnread(thread.accountId, labelId);
++        await get().markThreadRead(thread, true, messages);
+       }
+     } catch (e) {
+       console.error('Failed to load thread messages:', e);
+@@ -116,4 +104,71 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
+     const q = get().currentQuery;
+     if (q) await get().loadThreads(q.accountId, q.labelId);
+   },
++
++  // ---- User-driven thread mutations ----
++
++  markThreadRead: async (thread, read, messages) => {
++    if (thread.isRead === read) return;
++    const msgs = messages ?? (await getMessagesForThread(thread.accountId, thread.id));
++    set((s) => ({
++      threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: read } : t)),
++    }));
++    void invoke('sync_apply_mutation', {
++      accountId: thread.accountId,
++      op: {
++        type: 'markRead',
++        threadId: thread.id,
++        messageIds: msgs.map((m) => m.id),
++        folderPath: msgs[0]?.imap_folder ?? '',
++        uids: msgs.map((m) => m.imap_uid ?? 0),
++        read,
++      },
++    }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
++    const labelId = get().currentQuery?.labelId;
++    if (labelId) {
++      const folderStore = useFolderStore.getState();
++      if (read) folderStore.decrementUnread(thread.accountId, labelId);
++      else folderStore.incrementUnread(thread.accountId, labelId);
++    }
++  },
++
++  toggleThreadStarred: async (thread, messages) => {
++    const nextStarred = !thread.isStarred;
++    const msgs = messages ?? (await getMessagesForThread(thread.accountId, thread.id));
++    set((s) => ({
++      threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isStarred: nextStarred } : t)),
++    }));
++    void invoke('sync_apply_mutation', {
++      accountId: thread.accountId,
++      op: {
++        type: 'setFlag',
++        messageIds: msgs.map((m) => m.id),
++        folderPath: msgs[0]?.imap_folder ?? '',
++        uids: msgs.map((m) => m.imap_uid ?? 0),
++        flag: '\\Flagged',
++        add: nextStarred,
++      },
++    }).catch((e) => console.error('sync_apply_mutation setFlag failed', e));
++  },
++
++  deleteThread: async (thread, messages) => {
++    const msgs = messages ?? (await getMessagesForThread(thread.accountId, thread.id));
++    set((s) => ({
++      threads: s.threads.filter((t) => t.id !== thread.id),
++      selectedThreadId: s.selectedThreadId === thread.id ? null : s.selectedThreadId,
++    }));
++    void invoke('sync_apply_mutation', {
++      accountId: thread.accountId,
++      op: {
++        type: 'delete',
++        messageIds: msgs.map((m) => m.id),
++        folderPath: msgs[0]?.imap_folder ?? '',
++        uids: msgs.map((m) => m.imap_uid ?? 0),
++      },
++    }).catch((e) => console.error('sync_apply_mutation delete failed', e));
++    const labelId = get().currentQuery?.labelId;
++    if (labelId && !thread.isRead) {
++      useFolderStore.getState().decrementUnread(thread.accountId, labelId);
++    }
++  },
+ }));
+diff --git a/kylins.client.frontend/tests/components/layout/MessageList.test.tsx b/kylins.client.frontend/tests/components/layout/MessageList.test.tsx
+index 3a15730..ea38f2b 100644
+--- a/kylins.client.frontend/tests/components/layout/MessageList.test.tsx
++++ b/kylins.client.frontend/tests/components/layout/MessageList.test.tsx
+@@ -1,10 +1,14 @@
+ import { describe, it, expect, vi, beforeEach } from 'vitest';
+-import { render, waitFor } from '@testing-library/react';
++import { render, waitFor, fireEvent, screen } from '@testing-library/react';
+ import { MessageList } from '../../../src/components/layout/MessageList';
+ import { useThreadStore } from '../../../src/stores/threadStore';
+ import { useFolderStore } from '../../../src/stores/folderStore';
+-import { getThreads } from '../../../src/services/db/threads';
+-import type { Thread } from '../../../src/services/db/threads';
++import { useAccountStore } from '../../../src/stores/accountStore';
++import { useComposerStore } from '../../../src/stores/composerStore';
++import { getThreads, getMessagesForThread } from '../../../src/services/db/threads';
++import { getMessageBody } from '../../../src/services/db/messageBodies';
++import type { Thread, DbMessageRow } from '../../../src/services/db/threads';
++import type { Account } from '../../../src/types';
+ 
+ // Render every item (no real virtualization) so row logic is testable in jsdom.
+ vi.mock('@tanstack/react-virtual', () => ({
+@@ -16,14 +20,20 @@ vi.mock('@tanstack/react-virtual', () => ({
+   }),
+ }));
+ 
+-// Keep types/mappers real; stub getThreads so the real store doesn't hit the DB.
++// Keep types/mappers real; stub getThreads and getMessagesForThread so the real store doesn't hit the DB.
+ vi.mock('../../../src/services/db/threads', async () => {
+   const actual = await vi.importActual<typeof import('../../../src/services/db/threads')>(
+     '../../../src/services/db/threads',
+   );
+-  return { ...actual, getThreads: vi.fn() };
++  return { ...actual, getThreads: vi.fn(), getMessagesForThread: vi.fn() };
+ });
+ 
++vi.mock('../../../src/services/db/messageBodies', () => ({
++  getMessageBody: vi.fn(),
++  setMessageBody: vi.fn(),
++  evictBody: vi.fn(),
++}));
++
+ const thread = (over: Partial<Thread> = {}): Thread => ({
+   id: 't1',
+   accountId: 'a1',
+@@ -43,6 +53,8 @@ const thread = (over: Partial<Thread> = {}): Thread => ({
+ 
+ beforeEach(() => {
+   vi.mocked(getThreads).mockReset();
++  vi.mocked(getMessagesForThread).mockReset();
++  vi.mocked(getMessageBody).mockReset();
+   useThreadStore.setState({
+     threads: [],
+     selectedThreadId: null,
+@@ -57,6 +69,12 @@ beforeEach(() => {
+     selected: null,
+     isLoading: false,
+   });
++  useAccountStore.setState({
++    accounts: [],
++    activeAccountId: null,
++    defaultAccountId: null,
++  });
++  useComposerStore.getState().closeComposer();
+ });
+ 
+ describe('MessageList', () => {
+@@ -79,6 +97,22 @@ describe('MessageList', () => {
+     await waitFor(() => expect(getByText('No messages in this folder.')).toBeInTheDocument());
+   });
+ 
++  it('shows the preview snippet and flag icon for starred threads', async () => {
++    vi.mocked(getThreads).mockResolvedValue({
++      threads: [
++        thread({ id: 't1', subject: 'Hello', snippet: 'Preview text', isStarred: true }),
++        thread({ id: 't2', subject: 'World', snippet: 'Another preview', isStarred: false }),
++      ],
++      nextCursor: null,
++    });
++    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
++    const { getByText, queryAllByLabelText } = render(<MessageList />);
++    await waitFor(() => expect(getByText('Preview text')).toBeInTheDocument());
++    expect(getByText('Another preview')).toBeInTheDocument();
++    // One flagged row -> exactly one Flagged aria-label.
++    expect(queryAllByLabelText('Flagged')).toHaveLength(1);
++  });
++
+   it('reloads threads when the folder selection changes', async () => {
+     vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+@@ -88,4 +122,153 @@ describe('MessageList', () => {
+     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'sent' } });
+     await waitFor(() => expect(getThreads).toHaveBeenCalledWith('a1', { labelId: 'sent' }));
+   });
++
++  it('opens an expanded Outlook-style context menu on right-click', async () => {
++    vi.mocked(getThreads).mockResolvedValue({
++      threads: [thread({ id: 't1', subject: 'Hello' })],
++      nextCursor: null,
++    });
++    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
++    render(<MessageList />);
++    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
++
++    fireEvent.contextMenu(screen.getByText('Hello'));
++    const items = screen.getAllByRole('menuitem');
++    expect(items.map((i) => i.textContent)).toEqual([
++      'Copy',
++      'Quick Print',
++      'Reply',
++      'Reply All',
++      'Forward',
++      'Mark as Read',
++      'Categorize',
++      'Follow Up',
++      'Find Related',
++      'Rules',
++      'Move',
++      'Junk',
++      'Delete',
++      'Archive',
++    ]);
++    expect(items[0]).toBeDisabled(); // Copy placeholder
++    expect(items[items.length - 2]).not.toBeDisabled(); // Delete
++  });
++
++  it('marks a thread as unread from the context menu', async () => {
++    vi.mocked(getThreads).mockResolvedValue({
++      threads: [thread({ id: 't1', subject: 'Hello', isRead: true })],
++      nextCursor: null,
++    });
++    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
++    const markThreadRead = vi.spyOn(useThreadStore.getState(), 'markThreadRead');
++    render(<MessageList />);
++    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
++
++    fireEvent.contextMenu(screen.getByText('Hello'));
++    const item = screen.getByRole('menuitem', { name: 'Mark as Unread' });
++    fireEvent.click(item);
++    expect(markThreadRead).toHaveBeenCalledWith(
++      expect.objectContaining({ id: 't1', isRead: true }),
++      false,
++    );
++    markThreadRead.mockRestore();
++  });
++
++  it('deletes a thread from the context menu', async () => {
++    vi.mocked(getThreads).mockResolvedValue({
++      threads: [thread({ id: 't1', subject: 'Hello' })],
++      nextCursor: null,
++    });
++    vi.mocked(getMessagesForThread).mockResolvedValue([]);
++    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
++    const deleteThread = vi.spyOn(useThreadStore.getState(), 'deleteThread');
++    render(<MessageList />);
++    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
++
++    fireEvent.contextMenu(screen.getByText('Hello'));
++    const item = screen.getByRole('menuitem', { name: 'Delete' });
++    fireEvent.click(item);
++    expect(deleteThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
++    deleteThread.mockRestore();
++  });
++
++  it('toggles the star / follow-up flag from the context menu', async () => {
++    vi.mocked(getThreads).mockResolvedValue({
++      threads: [thread({ id: 't1', subject: 'Hello', isStarred: false })],
++      nextCursor: null,
++    });
++    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
++    const toggleThreadStarred = vi.spyOn(useThreadStore.getState(), 'toggleThreadStarred');
++    render(<MessageList />);
++    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
++
++    fireEvent.contextMenu(screen.getByText('Hello'));
++    const item = screen.getByRole('menuitem', { name: 'Follow Up' });
++    fireEvent.click(item);
++    expect(toggleThreadStarred).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
++    toggleThreadStarred.mockRestore();
++  });
++
++  it('opens the composer in reply mode from the context menu', async () => {
++    vi.mocked(getThreads).mockResolvedValue({
++      threads: [thread({ id: 't1', subject: 'Hello' })],
++      nextCursor: null,
++    });
++    vi.mocked(getMessagesForThread).mockResolvedValue([
++      {
++        id: 'm1',
++        account_id: 'a1',
++        thread_id: 't1',
++        from_address: 'b@x.com',
++        from_name: 'Bob',
++        to_addresses: 'me@x.com',
++        cc_addresses: null,
++        subject: 'Hello',
++        snippet: 'sn',
++        date: 100,
++        is_read: 1,
++        is_starred: 0,
++        body_text: 'txt',
++        classification_id: null,
++        is_encrypted: 0,
++        is_signed: 0,
++        imap_uid: 4242,
++        imap_folder: 'INBOX',
++        message_id_header: '<msg@m>',
++      } as unknown as DbMessageRow,
++    ]);
++    vi.mocked(getMessageBody).mockResolvedValue({
++      accountId: 'a1',
++      messageId: 'm1',
++      bodyHtml: '<p>body</p>',
++      fetchedAt: 1,
++    });
++    useAccountStore.setState({
++      accounts: [
++        {
++          id: 'a1',
++          email: 'me@x.com',
++          provider: 'imap',
++          isActive: true,
++          isDefault: true,
++          sortOrder: 0,
++          createdAt: 1,
++          updatedAt: 1,
++          displayName: 'Me',
++        } as Account,
++      ],
++      activeAccountId: 'a1',
++      defaultAccountId: 'a1',
++    });
++    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
++    render(<MessageList />);
++    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
++
++    fireEvent.contextMenu(screen.getByText('Hello'));
++    const item = screen.getByRole('menuitem', { name: 'Reply' });
++    fireEvent.click(item);
++    await waitFor(() => expect(useComposerStore.getState().isOpen).toBe(true));
++    expect(useComposerStore.getState().mode).toBe('reply');
++    expect(useComposerStore.getState().threadId).toBe('t1');
++  });
+ });
+diff --git a/kylins.client.frontend/tests/stores/threadStore.test.ts b/kylins.client.frontend/tests/stores/threadStore.test.ts
+index dda3af7..8e52a4b 100644
+--- a/kylins.client.frontend/tests/stores/threadStore.test.ts
++++ b/kylins.client.frontend/tests/stores/threadStore.test.ts
+@@ -1,9 +1,10 @@
+ import { describe, it, expect, vi, beforeEach } from 'vitest';
+ import { useThreadStore } from '../../src/stores/threadStore';
++import { useFolderStore } from '../../src/stores/folderStore';
+ import { useViewStore } from '../../src/features/view/viewStore';
+ import { getThreads, getMessagesForThread } from '../../src/services/db/threads';
+ import { getMessageBody } from '../../src/services/db/messageBodies';
+-import type { Thread } from '../../src/services/db/threads';
++import type { Thread, DbMessageRow } from '../../src/services/db/threads';
+ import { invoke } from '@tauri-apps/api/core';
+ 
+ // `selectThread` now routes mark-read through the Rust sync engine via
+@@ -54,6 +55,13 @@ function reset() {
+     currentQuery: null,
+   });
+   useViewStore.getState().setSelectedMessage(null);
++  useFolderStore.setState({
++    byAccount: {},
++    favorites: new Set(),
++    unreadCounts: {},
++    selected: null,
++    isLoading: false,
++  });
+ }
+ 
+ beforeEach(() => {
+@@ -167,14 +175,152 @@ describe('threadStore.selectThread', () => {
+   });
+ });
+ 
+-describe('threadStore.refresh', () => {
+-  it('re-runs the current query', async () => {
+-    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+-    await useThreadStore.getState().loadThreads('a1', 'inbox');
+-    vi.mocked(getThreads).mockClear();
+-    vi.mocked(getThreads).mockResolvedValue({ threads: [thread({ id: 't9' })], nextCursor: null });
+-    await useThreadStore.getState().refresh();
+-    expect(getThreads).toHaveBeenCalledWith('a1', { labelId: 'inbox' });
+-    expect(useThreadStore.getState().threads[0]!.id).toBe('t9');
++const messageRow = (over: Partial<DbMessageRow> = {}): DbMessageRow => ({
++  id: 'm1',
++  account_id: 'a1',
++  thread_id: 't1',
++  from_address: 'b@x.com',
++  from_name: 'Bob',
++  to_addresses: 'c@y.com',
++  cc_addresses: null,
++  subject: 'S',
++  snippet: 'sn',
++  date: 100,
++  is_read: 0,
++  is_starred: 0,
++  body_text: 'txt',
++  classification_id: null,
++  is_encrypted: 0,
++  is_signed: 0,
++  imap_uid: 4242,
++  imap_folder: 'INBOX',
++  ...over,
++});
++
++describe('threadStore.markThreadRead', () => {
++  it('marks a thread read and decrements the folder unread count', async () => {
++    useThreadStore.setState({
++      threads: [thread({ id: 't1', isRead: false })],
++      currentQuery: { accountId: 'a1', labelId: 'inbox' },
++    });
++    useFolderStore.setState({ unreadCounts: { 'a1__inbox': 3 } });
++    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
++
++    await useThreadStore.getState().markThreadRead(thread({ id: 't1', isRead: false }), true);
++
++    expect(useThreadStore.getState().threads[0]!.isRead).toBe(true);
++    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(2);
++    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
++      accountId: 'a1',
++      op: {
++        type: 'markRead',
++        threadId: 't1',
++        messageIds: ['m1'],
++        folderPath: 'INBOX',
++        uids: [4242],
++        read: true,
++      },
++    });
++  });
++
++  it('marks a thread unread and increments the folder unread count', async () => {
++    useThreadStore.setState({
++      threads: [thread({ id: 't1', isRead: true })],
++      currentQuery: { accountId: 'a1', labelId: 'inbox' },
++    });
++    useFolderStore.setState({ unreadCounts: { 'a1__inbox': 3 } });
++    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
++
++    await useThreadStore.getState().markThreadRead(thread({ id: 't1', isRead: true }), false);
++
++    expect(useThreadStore.getState().threads[0]!.isRead).toBe(false);
++    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(4);
++    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
++      accountId: 'a1',
++      op: {
++        type: 'markRead',
++        threadId: 't1',
++        messageIds: ['m1'],
++        folderPath: 'INBOX',
++        uids: [4242],
++        read: false,
++      },
++    });
++  });
++
++  it('is a no-op when the requested state already matches', async () => {
++    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
++    await useThreadStore.getState().markThreadRead(thread({ id: 't1', isRead: true }), true);
++    expect(getMessagesForThread).not.toHaveBeenCalled();
++    expect(invoke).not.toHaveBeenCalled();
++  });
++});
++
++describe('threadStore.toggleThreadStarred', () => {
++  it('flags a thread and sends setFlag add=true', async () => {
++    useThreadStore.setState({ threads: [thread({ id: 't1', isStarred: false })] });
++    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
++
++    await useThreadStore.getState().toggleThreadStarred(thread({ id: 't1', isStarred: false }));
++
++    expect(useThreadStore.getState().threads[0]!.isStarred).toBe(true);
++    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
++      accountId: 'a1',
++      op: {
++        type: 'setFlag',
++        messageIds: ['m1'],
++        folderPath: 'INBOX',
++        uids: [4242],
++        flag: '\\Flagged',
++        add: true,
++      },
++    });
++  });
++
++  it('removes a flag and sends setFlag add=false', async () => {
++    useThreadStore.setState({ threads: [thread({ id: 't1', isStarred: true })] });
++    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
++
++    await useThreadStore.getState().toggleThreadStarred(thread({ id: 't1', isStarred: true }));
++
++    expect(useThreadStore.getState().threads[0]!.isStarred).toBe(false);
++    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
++      accountId: 'a1',
++      op: {
++        type: 'setFlag',
++        messageIds: ['m1'],
++        folderPath: 'INBOX',
++        uids: [4242],
++        flag: '\\Flagged',
++        add: false,
++      },
++    });
++  });
++});
++
++describe('threadStore.deleteThread', () => {
++  it('removes the thread, clears selection, and sends delete mutation', async () => {
++    useThreadStore.setState({
++      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2' })],
++      selectedThreadId: 't1',
++      currentQuery: { accountId: 'a1', labelId: 'inbox' },
++    });
++    useFolderStore.setState({ unreadCounts: { 'a1__inbox': 3 } });
++    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
++
++    await useThreadStore.getState().deleteThread(thread({ id: 't1', isRead: false }));
++
++    expect(useThreadStore.getState().threads.map((t) => t.id)).toEqual(['t2']);
++    expect(useThreadStore.getState().selectedThreadId).toBeNull();
++    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(2);
++    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
++      accountId: 'a1',
++      op: {
++        type: 'delete',
++        messageIds: ['m1'],
++        folderPath: 'INBOX',
++        uids: [4242],
++      },
++    });
+   });
+ });

@@ -4,17 +4,33 @@
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
-use super::{Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteMessage, SourceError};
+use super::{
+    Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteMessage, SourceError,
+};
 
 /// Recorded call for assertion in tests. Captures enough of the arguments to verify
 /// that `exec_via_source` dispatches each `MutationOp` variant to the right method
 /// with the right folder/uids/flag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecordedCall {
-    SetFlags { folder: String, uids: Vec<u32>, flag: String, add: bool },
-    Move { src: String, uids: Vec<u32>, dest: String },
-    Delete { folder: String, uids: Vec<u32> },
-    Send { raw_base64url: String },
+    SetFlags {
+        folder: String,
+        uids: Vec<u32>,
+        flag: String,
+        add: bool,
+    },
+    Move {
+        src: String,
+        uids: Vec<u32>,
+        dest: String,
+    },
+    Delete {
+        folder: String,
+        uids: Vec<u32>,
+    },
+    Send {
+        raw_base64url: String,
+    },
 }
 
 /// Preload folders + a pool of messages. `sync_folder` drains messages matching the
@@ -98,10 +114,20 @@ impl MailSource for MockSource {
         })
     }
 
-    async fn fetch_body(&self, _folder: &RemoteFolder, _uid: u32) -> Result<Option<String>, SourceError> {
+    async fn fetch_body(
+        &self,
+        _folder: &RemoteFolder,
+        _uid: u32,
+    ) -> Result<Option<String>, SourceError> {
         Ok(None)
     }
-    async fn set_flags(&self, folder: &RemoteFolder, uids: &[u32], flag: &str, add: bool) -> Result<(), SourceError> {
+    async fn set_flags(
+        &self,
+        folder: &RemoteFolder,
+        uids: &[u32],
+        flag: &str,
+        add: bool,
+    ) -> Result<(), SourceError> {
         self.calls.lock().unwrap().push(RecordedCall::SetFlags {
             folder: folder.remote_id.clone(),
             uids: uids.to_vec(),
@@ -110,7 +136,12 @@ impl MailSource for MockSource {
         });
         Ok(())
     }
-    async fn move_messages(&self, src: &RemoteFolder, uids: &[u32], dest: &RemoteFolder) -> Result<(), SourceError> {
+    async fn move_messages(
+        &self,
+        src: &RemoteFolder,
+        uids: &[u32],
+        dest: &RemoteFolder,
+    ) -> Result<(), SourceError> {
         self.calls.lock().unwrap().push(RecordedCall::Move {
             src: src.remote_id.clone(),
             uids: uids.to_vec(),
@@ -118,18 +149,29 @@ impl MailSource for MockSource {
         });
         Ok(())
     }
-    async fn delete_messages(&self, folder: &RemoteFolder, uids: &[u32]) -> Result<(), SourceError> {
+    async fn delete_messages(
+        &self,
+        folder: &RemoteFolder,
+        uids: &[u32],
+    ) -> Result<(), SourceError> {
         self.calls.lock().unwrap().push(RecordedCall::Delete {
             folder: folder.remote_id.clone(),
             uids: uids.to_vec(),
         });
         Ok(())
     }
-    async fn append(&self, _folder: &RemoteFolder, _raw: &[u8], _flags: &[&str]) -> Result<(), SourceError> {
+    async fn append(
+        &self,
+        _folder: &RemoteFolder,
+        _raw: &[u8],
+        _flags: &[&str],
+    ) -> Result<(), SourceError> {
         Ok(())
     }
     async fn send(&self, raw_base64url: &str) -> Result<(), SourceError> {
-        self.calls.lock().unwrap().push(RecordedCall::Send { raw_base64url: raw_base64url.to_string() });
+        self.calls.lock().unwrap().push(RecordedCall::Send {
+            raw_base64url: raw_base64url.to_string(),
+        });
         Ok(())
     }
 }

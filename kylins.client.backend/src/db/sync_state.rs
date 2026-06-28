@@ -134,21 +134,45 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
         seed(&pool, "a").await;
-        assert_eq!(get_imap_cursor(&pool, "a", "INBOX").await, Cursor::initial_imap());
-        advance_imap_cursor(&pool, "a", "INBOX", 100, 5, 1).await.unwrap();
-        let c = get_imap_cursor(&pool, "a", "INBOX").await;
-        assert_eq!(c, Cursor::Imap { uidvalidity: 100, highest_uid: 5, highest_modseq: 1 });
-        // Lower high (lagging sync) does NOT regress (monotonic).
-        advance_imap_cursor(&pool, "a", "INBOX", 100, 3, 1).await.unwrap();
         assert_eq!(
             get_imap_cursor(&pool, "a", "INBOX").await,
-            Cursor::Imap { uidvalidity: 100, highest_uid: 5, highest_modseq: 1 }
+            Cursor::initial_imap()
+        );
+        advance_imap_cursor(&pool, "a", "INBOX", 100, 5, 1)
+            .await
+            .unwrap();
+        let c = get_imap_cursor(&pool, "a", "INBOX").await;
+        assert_eq!(
+            c,
+            Cursor::Imap {
+                uidvalidity: 100,
+                highest_uid: 5,
+                highest_modseq: 1
+            }
+        );
+        // Lower high (lagging sync) does NOT regress (monotonic).
+        advance_imap_cursor(&pool, "a", "INBOX", 100, 3, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_imap_cursor(&pool, "a", "INBOX").await,
+            Cursor::Imap {
+                uidvalidity: 100,
+                highest_uid: 5,
+                highest_modseq: 1
+            }
         );
         // Higher high advances.
-        advance_imap_cursor(&pool, "a", "INBOX", 100, 9, 2).await.unwrap();
+        advance_imap_cursor(&pool, "a", "INBOX", 100, 9, 2)
+            .await
+            .unwrap();
         assert_eq!(
             get_imap_cursor(&pool, "a", "INBOX").await,
-            Cursor::Imap { uidvalidity: 100, highest_uid: 9, highest_modseq: 2 }
+            Cursor::Imap {
+                uidvalidity: 100,
+                highest_uid: 9,
+                highest_modseq: 2
+            }
         );
     }
 
@@ -157,12 +181,20 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
         seed(&pool, "a").await;
-        advance_imap_cursor(&pool, "a", "INBOX", 100, 50, 1).await.unwrap();
+        advance_imap_cursor(&pool, "a", "INBOX", 100, 50, 1)
+            .await
+            .unwrap();
         // UIDVALIDITY change -> CASE takes ELSE branch, writes excluded last_uid verbatim.
-        advance_imap_cursor(&pool, "a", "INBOX", 200, 2, 0).await.unwrap();
+        advance_imap_cursor(&pool, "a", "INBOX", 200, 2, 0)
+            .await
+            .unwrap();
         assert_eq!(
             get_imap_cursor(&pool, "a", "INBOX").await,
-            Cursor::Imap { uidvalidity: 200, highest_uid: 2, highest_modseq: 0 }
+            Cursor::Imap {
+                uidvalidity: 200,
+                highest_uid: 2,
+                highest_modseq: 0
+            }
         );
     }
 
@@ -173,18 +205,31 @@ mod tests {
         seed(&pool, "a").await;
         assert_eq!(
             get_eas_cursor(&pool, "a", "f1").await,
-            Cursor::Eas { collection_id: "f1".into(), sync_key: "0".into() }
+            Cursor::Eas {
+                collection_id: "f1".into(),
+                sync_key: "0".into()
+            }
         );
-        advance_eas_cursor(&pool, "a", "f1", "col1", "{abc}").await.unwrap();
+        advance_eas_cursor(&pool, "a", "f1", "col1", "{abc}")
+            .await
+            .unwrap();
         assert_eq!(
             get_eas_cursor(&pool, "a", "f1").await,
-            Cursor::Eas { collection_id: "col1".into(), sync_key: "{abc}".into() }
+            Cursor::Eas {
+                collection_id: "col1".into(),
+                sync_key: "{abc}".into()
+            }
         );
         // Overwrites (no merge).
-        advance_eas_cursor(&pool, "a", "f1", "col1", "{def}").await.unwrap();
+        advance_eas_cursor(&pool, "a", "f1", "col1", "{def}")
+            .await
+            .unwrap();
         assert_eq!(
             get_eas_cursor(&pool, "a", "f1").await,
-            Cursor::Eas { collection_id: "col1".into(), sync_key: "{def}".into() }
+            Cursor::Eas {
+                collection_id: "col1".into(),
+                sync_key: "{def}".into()
+            }
         );
     }
 }

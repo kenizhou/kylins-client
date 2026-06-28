@@ -12,10 +12,7 @@
 //! frontend cutover is a mechanical swap.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Lazily-fetched HTML body for a message. Mirrors `MessageBody`
 /// (`messageBodies.ts:8-13`).
@@ -35,11 +32,7 @@ pub struct MessageBody {
 /// Map a raw `message_bodies` row to a [`MessageBody`]. Caller supplies the
 /// `(account_id, message_id)` key because the SELECT only fetches the two
 /// payload columns (matches the TS query at `messageBodies.ts:20-23`).
-fn row_to_message_body(
-    row: &SqliteRow,
-    account_id: String,
-    message_id: String,
-) -> MessageBody {
+fn row_to_message_body(row: &SqliteRow, account_id: String, message_id: String) -> MessageBody {
     MessageBody {
         account_id,
         message_id,
@@ -64,13 +57,9 @@ pub async fn get_message_body(
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(row.as_ref().map(|r| {
-        row_to_message_body(
-            r,
-            account_id.to_string(),
-            message_id.to_string(),
-        )
-    }))
+    Ok(row
+        .as_ref()
+        .map(|r| row_to_message_body(r, account_id.to_string(), message_id.to_string())))
 }
 
 /// Store/refresh a body and mark the message as `body_cached = 1`, atomically
@@ -146,12 +135,7 @@ mod tests {
 
     /// Plant a thread + message so `message_bodies` (FK to messages) can be
     /// populated. `body_cached` starts at 0.
-    async fn seed_message(
-        pool: &SqlitePool,
-        account_id: &str,
-        thread_id: &str,
-        message_id: &str,
-    ) {
+    async fn seed_message(pool: &SqlitePool, account_id: &str, thread_id: &str, message_id: &str) {
         sqlx::query(
             "INSERT INTO threads (id, account_id, is_read, last_message_at)
              VALUES (?, ?, 0, 0)",
@@ -236,13 +220,14 @@ mod tests {
         assert_eq!(body.body_html.as_deref(), Some("v2-much-longer"));
 
         // Only one row in message_bodies (INSERT OR REPLACE).
-        let (cnt,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM message_bodies WHERE account_id = ? AND message_id = ?")
-                .bind("acct-1")
-                .bind("m1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (cnt,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM message_bodies WHERE account_id = ? AND message_id = ?",
+        )
+        .bind("acct-1")
+        .bind("m1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(cnt, 1);
     }
 
@@ -252,7 +237,9 @@ mod tests {
         let pool = crate::db::init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct-1").await;
         seed_message(&pool, "acct-1", "t1", "m1").await;
-        set_message_body(&pool, "acct-1", "m1", "stash me").await.unwrap();
+        set_message_body(&pool, "acct-1", "m1", "stash me")
+            .await
+            .unwrap();
 
         evict_body(&pool, "acct-1", "m1").await.unwrap();
 
@@ -342,12 +329,7 @@ mod tests {
         for key in ["accountId", "messageId", "bodyHtml", "fetchedAt"] {
             assert!(obj.contains_key(key), "expected camelCase key {key}");
         }
-        for key in [
-            "account_id",
-            "message_id",
-            "body_html",
-            "fetched_at",
-        ] {
+        for key in ["account_id", "message_id", "body_html", "fetched_at"] {
             assert!(!obj.contains_key(key), "snake_case key {key} leaked");
         }
 

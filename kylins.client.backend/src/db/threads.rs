@@ -28,10 +28,7 @@
 //! keeps `#[serde(rename_all = "snake_case")]` — do NOT switch it to camelCase.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Canonical thread DTO surfaced to the list view.
 ///
@@ -260,9 +257,7 @@ pub async fn get_threads(
     if let Some(cursor) = &opts.cursor {
         // Portable cursor form (no SQLite row-value syntax): strictly less than
         // the (date, id) tuple of the last row on the previous page.
-        where_sql.push_str(
-            " AND (t.last_message_at < ? OR (t.last_message_at = ? AND t.id < ?))",
-        );
+        where_sql.push_str(" AND (t.last_message_at < ? OR (t.last_message_at = ? AND t.id < ?))");
         where_binds.push(BindVal::Int(cursor.date));
         where_binds.push(BindVal::Int(cursor.date));
         where_binds.push(BindVal::Text(cursor.id.clone()));
@@ -460,7 +455,16 @@ mod tests {
         seed_account(&pool, "acct-1").await;
         seed_thread(&pool, "acct-1", "t1", 100, false).await;
         // Older message + newer message — the LEFT JOIN must pick the newer.
-        seed_message(&pool, "acct-1", "t1", "m1-old", 90, Some("Old"), Some("old@x")).await;
+        seed_message(
+            &pool,
+            "acct-1",
+            "t1",
+            "m1-old",
+            90,
+            Some("Old"),
+            Some("old@x"),
+        )
+        .await;
         seed_message(
             &pool,
             "acct-1",
