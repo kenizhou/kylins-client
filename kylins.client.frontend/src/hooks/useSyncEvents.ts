@@ -26,20 +26,28 @@ export function useSyncEvents(): void {
     (async () => {
       try {
         unlisteners.push(
-          await listen<{ accountId: string; labelId?: string }>('sync:delta', () => {
-            // Folder unread counts / membership may have changed.
-            useFolderStore
-              .getState()
-              .loadLabels()
-              .catch(() => {});
-            // Re-read the currently-open folder's threads, if any.
-            const q = useThreadStore.getState().currentQuery;
-            if (q)
-              useThreadStore
+          await listen<{ accountId: string; labelId?: string; table?: string }>(
+            'sync:delta',
+            (e) => {
+              // Always reload the folder list on any delta (labels, messages, etc.).
+              useFolderStore
                 .getState()
-                .refresh()
+                .loadLabels()
                 .catch(() => {});
-          }),
+
+              // Only refresh the thread list for actual message changes, not
+              // folder-list changes. Replacing the entire threads array causes
+              // the virtualized message list to flicker.
+              if (e.payload.table === 'labels') return;
+
+              const q = useThreadStore.getState().currentQuery;
+              if (q)
+                useThreadStore
+                  .getState()
+                  .refresh()
+                  .catch(() => {});
+            },
+          ),
         );
 
         unlisteners.push(
