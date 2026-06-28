@@ -19,8 +19,8 @@
 use async_imap::Session;
 use base64::Engine;
 use kylins_client_lib::mail::imap::{
-    client::ImapStream,
     client as imap_client,
+    client::ImapStream,
     types::{DeltaCheckRequest, ImapConfig},
 };
 use kylins_client_lib::mail::smtp::{client as smtp_client, types::SmtpConfig};
@@ -38,7 +38,9 @@ fn accept_invalid_certs() -> bool {
 fn get_imap_config() -> ImapConfig {
     ImapConfig {
         host: env_or("KYLINS_IMAP_HOST", "imap.kylins.com"),
-        port: env_or("KYLINS_IMAP_PORT", "143").parse().expect("valid IMAP port"),
+        port: env_or("KYLINS_IMAP_PORT", "143")
+            .parse()
+            .expect("valid IMAP port"),
         security: env_or("KYLINS_IMAP_SECURITY", "starttls"),
         username: env_or("KYLINS_EMAIL", "felixzhou@kylins.local"),
         password: env_or("KYLINS_PASSWORD", ""),
@@ -50,7 +52,9 @@ fn get_imap_config() -> ImapConfig {
 fn get_smtp_config() -> SmtpConfig {
     SmtpConfig {
         host: env_or("KYLINS_SMTP_HOST", "smtp.kylins.com"),
-        port: env_or("KYLINS_SMTP_PORT", "587").parse().expect("valid SMTP port"),
+        port: env_or("KYLINS_SMTP_PORT", "587")
+            .parse()
+            .expect("valid SMTP port"),
         security: env_or("KYLINS_SMTP_SECURITY", "starttls"),
         username: env_or("KYLINS_EMAIL", "felixzhou@kylins.local"),
         password: env_or("KYLINS_PASSWORD", ""),
@@ -136,7 +140,10 @@ fn build_multipart_message_with_attachment(
 async fn ensure_test_folder(session: &mut Session<ImapStream>) -> Result<(), String> {
     let folder = test_folder();
     let folders = imap_client::list_folders(session).await?;
-    if folders.iter().any(|f| f.path == folder || f.raw_path == folder) {
+    if folders
+        .iter()
+        .any(|f| f.path == folder || f.raw_path == folder)
+    {
         return Ok(());
     }
     // Some servers (Exchange IMAP in particular) cache the folder list and report
@@ -153,17 +160,20 @@ async fn ensure_test_folder(session: &mut Session<ImapStream>) -> Result<(), Str
     Ok(())
 }
 
-async fn cleanup_uids(
-    session: &mut Session<ImapStream>,
-    folder: &str,
-    uids: &[u32],
-) {
+async fn cleanup_uids(session: &mut Session<ImapStream>, folder: &str, uids: &[u32]) {
     if uids.is_empty() {
         return;
     }
-    let uid_set: String = uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",");
+    let uid_set: String = uids
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     if let Err(e) = imap_client::delete_messages(session, folder, &uid_set).await {
-        eprintln!("Cleanup warning: could not delete UIDs {} in {}: {}", uid_set, folder, e);
+        eprintln!(
+            "Cleanup warning: could not delete UIDs {} in {}: {}",
+            uid_set, folder, e
+        );
     }
 }
 
@@ -180,7 +190,11 @@ async fn find_uid_by_subject(
     // Use the raw TCP fetch path to avoid async-imap's empty-fetch bug on Exchange.
     for uid in uids {
         let result = imap_client::raw_fetch_messages(config, folder, &uid.to_string()).await?;
-        if result.messages.iter().any(|m| m.subject.as_deref() == Some(subject)) {
+        if result
+            .messages
+            .iter()
+            .any(|m| m.subject.as_deref() == Some(subject))
+        {
             return Ok(Some(uid));
         }
     }
@@ -215,7 +229,11 @@ async fn append_message(
 async fn imap_starttls_test_connection() {
     let config = get_imap_config();
     let result = imap_client::test_connection(&config).await;
-    assert!(result.is_ok(), "IMAP test_connection failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "IMAP test_connection failed: {:?}",
+        result.err()
+    );
     println!("IMAP: {}", result.unwrap());
 }
 
@@ -224,9 +242,17 @@ async fn imap_starttls_test_connection() {
 async fn smtp_starttls_test_connection() {
     let config = get_smtp_config();
     let result = smtp_client::test_connection(&config).await;
-    assert!(result.is_ok(), "SMTP test_connection failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "SMTP test_connection failed: {:?}",
+        result.err()
+    );
     let outcome = result.unwrap();
-    assert!(outcome.success, "SMTP server rejected connection: {}", outcome.message);
+    assert!(
+        outcome.success,
+        "SMTP server rejected connection: {}",
+        outcome.message
+    );
     println!("SMTP: {}", outcome.message);
 }
 
@@ -267,7 +293,9 @@ async fn imap_folder_status() {
 async fn imap_append_and_fetch_plain_text() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("append-and-fetch-plain-text");
     let body = "This is a plain-text test message created by the Kylins IMAP integration test.";
@@ -298,7 +326,9 @@ async fn imap_append_and_fetch_plain_text() {
 async fn imap_flag_update() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("flag-update-seen-flagged");
     let raw = build_plain_message(
@@ -360,36 +390,31 @@ async fn imap_flag_update() {
 async fn imap_copy_message() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("copy-message");
-    let raw = build_plain_message(
-        &subject,
-        "This message tests copying between folders.",
-    );
+    let raw = build_plain_message(&subject, "This message tests copying between folders.");
     let uid = append_message(&mut session, &config, &test_folder(), &subject, &raw)
         .await
         .expect("append");
 
-    imap_client::copy_messages(
-        &mut session,
-        &test_folder(),
-        &uid.to_string(),
-        "INBOX",
-    )
-    .await
-    .expect("copy");
+    imap_client::copy_messages(&mut session, &test_folder(), &uid.to_string(), "INBOX")
+        .await
+        .expect("copy");
 
     // Verify the original is still in the test folder.
-    let original = find_uid_by_subject(
-        &mut session, &config, &test_folder(), &subject)
+    let original = find_uid_by_subject(&mut session, &config, &test_folder(), &subject)
         .await
         .expect("search test folder");
-    assert!(original.is_some(), "Original message not found in source folder after COPY");
+    assert!(
+        original.is_some(),
+        "Original message not found in source folder after COPY"
+    );
 
     // Verify the copy is in INBOX.
-    let copied_uid = find_uid_by_subject(
-        &mut session, &config, "INBOX", &subject)
+    let copied_uid = find_uid_by_subject(&mut session, &config, "INBOX", &subject)
         .await
         .expect("search inbox");
     assert!(copied_uid.is_some(), "Copied message not found in INBOX");
@@ -409,31 +434,28 @@ async fn imap_copy_message() {
 async fn imap_move_message() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("move-message");
-    let raw = build_plain_message(
-        &subject,
-        "This message tests moving between folders.",
-    );
+    let raw = build_plain_message(&subject, "This message tests moving between folders.");
     let uid = append_message(&mut session, &config, &test_folder(), &subject, &raw)
         .await
         .expect("append");
 
-    imap_client::move_messages(
-        &mut session,
-        &test_folder(),
-        &uid.to_string(),
-        "INBOX",
-    )
-    .await
-    .expect("move");
+    imap_client::move_messages(&mut session, &test_folder(), &uid.to_string(), "INBOX")
+        .await
+        .expect("move");
 
     // Verify the message is no longer in the test folder.
     let remaining = find_uid_by_subject(&mut session, &config, &test_folder(), &subject)
         .await
         .expect("search test folder");
-    assert!(remaining.is_none(), "Message still in source folder after MOVE");
+    assert!(
+        remaining.is_none(),
+        "Message still in source folder after MOVE"
+    );
 
     // Verify it arrived in INBOX.
     let moved_uid = find_uid_by_subject(&mut session, &config, "INBOX", &subject)
@@ -455,13 +477,12 @@ async fn imap_move_message() {
 async fn imap_delete_and_expunge() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("delete-and-expunge");
-    let raw = build_plain_message(
-        &subject,
-        "This message tests deletion and expunge.",
-    );
+    let raw = build_plain_message(&subject, "This message tests deletion and expunge.");
     let uid = append_message(&mut session, &config, &test_folder(), &subject, &raw)
         .await
         .expect("append");
@@ -473,7 +494,10 @@ async fn imap_delete_and_expunge() {
     let remaining = find_uid_by_subject(&mut session, &config, &test_folder(), &subject)
         .await
         .expect("search after delete");
-    assert!(remaining.is_none(), "Message still exists after delete+expunge");
+    assert!(
+        remaining.is_none(),
+        "Message still exists after delete+expunge"
+    );
     println!("DELETE+EXPUNGE OK: uid={} subject='{}'", uid, subject);
 }
 
@@ -482,13 +506,12 @@ async fn imap_delete_and_expunge() {
 async fn imap_search_since() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("search-since");
-    let raw = build_plain_message(
-        &subject,
-        "This message tests UID SEARCH SINCE.",
-    );
+    let raw = build_plain_message(&subject, "This message tests UID SEARCH SINCE.");
     let uid = append_message(&mut session, &config, &test_folder(), &subject, &raw)
         .await
         .expect("append");
@@ -512,13 +535,12 @@ async fn imap_search_since() {
 async fn imap_delta_check() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("delta-check");
-    let raw = build_plain_message(
-        &subject,
-        "This message tests delta checking.",
-    );
+    let raw = build_plain_message(&subject, "This message tests delta checking.");
     let uid = append_message(&mut session, &config, &test_folder(), &subject, &raw)
         .await
         .expect("append");
@@ -551,7 +573,9 @@ async fn imap_delta_check() {
 async fn imap_append_and_fetch_attachment() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("append-and-fetch-attachment");
     let attachment_name = "kylins-test-attachment.txt";
@@ -606,13 +630,12 @@ async fn imap_append_and_fetch_attachment() {
 async fn imap_sync_folder_batch() {
     let config = get_imap_config();
     let mut session = imap_client::connect(&config).await.expect("connect");
-    ensure_test_folder(&mut session).await.expect("test folder exists");
+    ensure_test_folder(&mut session)
+        .await
+        .expect("test folder exists");
 
     let subject = unique_subject("sync-folder-batch");
-    let raw = build_plain_message(
-        &subject,
-        "This message tests folder synchronization.",
-    );
+    let raw = build_plain_message(&subject, "This message tests folder synchronization.");
     let uid = append_message(&mut session, &config, &test_folder(), &subject, &raw)
         .await
         .expect("append");

@@ -479,7 +479,12 @@ pub async fn copy_messages(
 
     tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_copy(uid_set, dest_folder))
         .await
-        .map_err(|_| format!("UID COPY timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|_| {
+            format!(
+                "UID COPY timed out after {}s — check your server settings or network connection",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
         .map_err(|e| format!("UID COPY failed: {e}"))
 }
 
@@ -1860,7 +1865,9 @@ fn format_address_list(addr: Option<&mail_parser::Address>) -> Option<String> {
 /// Map a set of IMAP capability strings to the feature flags the sync engine cares
 /// about. Pure so it's unit-testable; `session_capabilities` runs the live command
 /// then delegates here.
-pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(caps: I) -> (bool, bool, bool, bool) {
+pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(
+    caps: I,
+) -> (bool, bool, bool, bool) {
     let mut idle = false;
     let mut condstore = false;
     let mut qresync = false;
@@ -1882,7 +1889,9 @@ pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(caps: I) -> (
 /// `(idle, condstore, qresync, vanished)`. Uses `has_str` for case-insensitive
 /// matching (async-imap's `Capability` enum has no public `as_str`, so we cannot
 /// route the live `HashSet` through `capabilities_from_strs` directly).
-pub async fn session_capabilities(session: &mut ImapSession) -> Result<(bool, bool, bool, bool), String> {
+pub async fn session_capabilities(
+    session: &mut ImapSession,
+) -> Result<(bool, bool, bool, bool), String> {
     let caps = session.capabilities().await.map_err(|e| e.to_string())?;
     Ok((
         caps.has_str("IDLE"),

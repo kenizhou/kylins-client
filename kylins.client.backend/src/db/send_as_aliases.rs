@@ -11,10 +11,7 @@
 //! `accountAsAlias` pure helper stays in the frontend (it has no SQL).
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -117,8 +114,16 @@ pub async fn insert(pool: &SqlitePool, input: CreateAliasInput) -> Result<String
     .bind(&input.display_name)
     .bind(&input.reply_to)
     .bind(0i64)
-    .bind(if input.is_default.unwrap_or(false) { 1i64 } else { 0 })
-    .bind(if input.treat_as_alias.unwrap_or(true) { 1i64 } else { 0 })
+    .bind(if input.is_default.unwrap_or(false) {
+        1i64
+    } else {
+        0
+    })
+    .bind(if input.treat_as_alias.unwrap_or(true) {
+        1i64
+    } else {
+        0
+    })
     .bind(now)
     .execute(pool)
     .await
@@ -128,11 +133,7 @@ pub async fn insert(pool: &SqlitePool, input: CreateAliasInput) -> Result<String
 
 /// Update an alias. When promoting to default, clears prior defaults for the
 /// account first. Mirrors `updateAlias`.
-pub async fn update(
-    pool: &SqlitePool,
-    id: &str,
-    updates: UpdateAliasInput,
-) -> Result<(), String> {
+pub async fn update(pool: &SqlitePool, id: &str, updates: UpdateAliasInput) -> Result<(), String> {
     if matches!(updates.is_default, Some(true)) {
         let row: Option<(String,)> =
             sqlx::query_as("SELECT account_id FROM send_as_aliases WHERE id = $1")

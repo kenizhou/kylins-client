@@ -98,8 +98,7 @@ impl MutationOp {
     /// `message_ids` so `exec_via_source` has what it needs (it only reads
     /// `folder_path`/`uids`/`read` for the remote call).
     pub fn from_pending(row: &crate::db::queue::PendingOperation) -> Result<Self, String> {
-        let v: serde_json::Value =
-            serde_json::from_str(&row.params).map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&row.params).map_err(|e| e.to_string())?;
         let uid = v
             .get("uids")
             .and_then(|a| a.as_array())
@@ -225,9 +224,7 @@ impl MutationOp {
             })
             .to_string(),
             MutationOp::Delete {
-                folder_path,
-                uids,
-                ..
+                folder_path, uids, ..
             } => serde_json::json!({
                 "folderPath": folder_path,
                 "uids": uids,
@@ -282,13 +279,15 @@ impl MutationOp {
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
-                sqlx::query("UPDATE messages SET is_read = ? WHERE account_id = ? AND thread_id = ?")
-                    .bind(r)
-                    .bind(account_id)
-                    .bind(thread_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                sqlx::query(
+                    "UPDATE messages SET is_read = ? WHERE account_id = ? AND thread_id = ?",
+                )
+                .bind(r)
+                .bind(account_id)
+                .bind(thread_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
                 message_ids.clone()
             }
             MutationOp::SetFlag {
@@ -401,15 +400,31 @@ impl MutationOp {
     /// minimal struct (remote_id + delimiter) is sufficient.
     pub async fn exec_via_source(&self, src: &dyn MailSource) -> Result<(), SourceError> {
         match self {
-            MutationOp::MarkRead { folder_path, uids, read, .. } => {
+            MutationOp::MarkRead {
+                folder_path,
+                uids,
+                read,
+                ..
+            } => {
                 let f = folder_remote(folder_path);
                 src.set_flags(&f, uids, "\\Seen", *read).await
             }
-            MutationOp::SetFlag { folder_path, uids, flag, add, .. } => {
+            MutationOp::SetFlag {
+                folder_path,
+                uids,
+                flag,
+                add,
+                ..
+            } => {
                 let f = folder_remote(folder_path);
                 src.set_flags(&f, uids, flag, *add).await
             }
-            MutationOp::Move { src_folder_path, dst_folder_path, uids, .. } => {
+            MutationOp::Move {
+                src_folder_path,
+                dst_folder_path,
+                uids,
+                ..
+            } => {
                 src.move_messages(
                     &folder_remote(src_folder_path),
                     uids,
@@ -417,9 +432,9 @@ impl MutationOp {
                 )
                 .await
             }
-            MutationOp::Delete { folder_path, uids, .. } => {
-                src.delete_messages(&folder_remote(folder_path), uids).await
-            }
+            MutationOp::Delete {
+                folder_path, uids, ..
+            } => src.delete_messages(&folder_remote(folder_path), uids).await,
             MutationOp::Send { raw_base64url } => src.send(raw_base64url).await,
         }
     }
@@ -599,8 +614,7 @@ mod tests {
             add: false,
         };
         let add_json: serde_json::Value = serde_json::from_str(&add.encode_params("m1")).unwrap();
-        let rm_json: serde_json::Value =
-            serde_json::from_str(&remove.encode_params("m1")).unwrap();
+        let rm_json: serde_json::Value = serde_json::from_str(&remove.encode_params("m1")).unwrap();
         assert_eq!(add_json["read"], 1, "add=true must encode read=1");
         assert_eq!(rm_json["read"], 0, "add=false must encode read=0");
         assert_eq!(add_json["flag"], "\\Flagged");
@@ -715,10 +729,11 @@ mod tests {
         let affected = op.local_writes(&pool, "acct").await.unwrap();
         assert_eq!(affected.len(), 2);
 
-        let (tr,): (i64,) = sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (tr,): (i64,) =
+            sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(tr, 1, "thread is_read=1 after markRead true");
 
         let (mr,): (i64,) = sqlx::query_as(
@@ -755,18 +770,18 @@ mod tests {
         };
         op.local_writes(&pool, "acct").await.unwrap();
 
-        let (tr,): (i64,) = sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (tr,): (i64,) =
+            sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(tr, 0);
-        let (mr,): (i64,) = sqlx::query_as(
-            "SELECT is_read FROM messages WHERE account_id='acct' AND id=?",
-        )
-        .bind(msg_id("acct", "INBOX", 10))
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (mr,): (i64,) =
+            sqlx::query_as("SELECT is_read FROM messages WHERE account_id='acct' AND id=?")
+                .bind(msg_id("acct", "INBOX", 10))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(mr, 0);
     }
 
@@ -819,11 +834,12 @@ mod tests {
         };
         op.local_writes(&pool, "acct").await.unwrap();
 
-        let (s,): (i64,) = sqlx::query_as("SELECT is_starred FROM messages WHERE account_id='acct' AND id=?")
-            .bind(msg_id("acct", "INBOX", 10))
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (s,): (i64,) =
+            sqlx::query_as("SELECT is_starred FROM messages WHERE account_id='acct' AND id=?")
+                .bind(msg_id("acct", "INBOX", 10))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(s, 0);
     }
 
@@ -882,16 +898,19 @@ mod tests {
         };
         op.local_writes(&pool, "acct").await.unwrap();
 
-        let (mn,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct' AND thread_id='thr'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (mn,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM messages WHERE account_id='acct' AND thread_id='thr'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(mn, 0, "messages deleted");
 
-        let (tn,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM threads WHERE account_id='acct' AND id='thr'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (tn,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM threads WHERE account_id='acct' AND id='thr'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(tn, 0, "orphan thread swept");
     }
 
@@ -910,15 +929,18 @@ mod tests {
         };
         op.local_writes(&pool, "acct").await.unwrap();
 
-        let (tn,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM threads WHERE account_id='acct' AND id='thr'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (tn,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM threads WHERE account_id='acct' AND id='thr'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(tn, 1, "thread kept when one message remains");
-        let (mn,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct' AND thread_id='thr'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (mn,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM messages WHERE account_id='acct' AND thread_id='thr'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(mn, 1);
     }
 
@@ -954,10 +976,11 @@ mod tests {
         };
         op.local_writes(&pool, "acct").await.unwrap();
 
-        let (other,): (i64,) = sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr-2'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (other,): (i64,) =
+            sqlx::query_as("SELECT is_read FROM threads WHERE account_id='acct' AND id='thr-2'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(other, 0, "thr-2 must remain unread");
     }
 
@@ -1104,25 +1127,57 @@ mod tests {
             fn capabilities(&self) -> crate::sync_engine::Capabilities {
                 crate::sync_engine::Capabilities::default()
             }
-            async fn list_folders(&self) -> Result<Vec<crate::sync_engine::RemoteFolder>, crate::sync_engine::SourceError> {
+            async fn list_folders(
+                &self,
+            ) -> Result<Vec<crate::sync_engine::RemoteFolder>, crate::sync_engine::SourceError>
+            {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn sync_folder(&self, _f: &crate::sync_engine::RemoteFolder, _c: crate::sync_engine::Cursor) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError> {
+            async fn sync_folder(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _c: crate::sync_engine::Cursor,
+            ) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError>
+            {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn fetch_body(&self, _f: &crate::sync_engine::RemoteFolder, _u: u32) -> Result<Option<String>, crate::sync_engine::SourceError> {
+            async fn fetch_body(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _u: u32,
+            ) -> Result<Option<String>, crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn set_flags(&self, _f: &crate::sync_engine::RemoteFolder, _u: &[u32], _flag: &str, _add: bool) -> Result<(), crate::sync_engine::SourceError> {
+            async fn set_flags(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _u: &[u32],
+                _flag: &str,
+                _add: bool,
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn move_messages(&self, _s: &crate::sync_engine::RemoteFolder, _u: &[u32], _d: &crate::sync_engine::RemoteFolder) -> Result<(), crate::sync_engine::SourceError> {
+            async fn move_messages(
+                &self,
+                _s: &crate::sync_engine::RemoteFolder,
+                _u: &[u32],
+                _d: &crate::sync_engine::RemoteFolder,
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn delete_messages(&self, _f: &crate::sync_engine::RemoteFolder, _u: &[u32]) -> Result<(), crate::sync_engine::SourceError> {
+            async fn delete_messages(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _u: &[u32],
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn append(&self, _f: &crate::sync_engine::RemoteFolder, _r: &[u8], _fl: &[&str]) -> Result<(), crate::sync_engine::SourceError> {
+            async fn append(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _r: &[u8],
+                _fl: &[&str],
+            ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
             async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {

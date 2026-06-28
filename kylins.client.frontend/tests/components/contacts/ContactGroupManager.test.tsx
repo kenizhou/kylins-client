@@ -16,7 +16,8 @@ vi.mock('../../../src/services/db/contacts', async () => {
         isReadonly: false,
         createdAt: 1,
         updatedAt: 2,
-      } as unknown as import('../../../src/services/db/contacts').ContactGroup)),
+      } as unknown as import('../../../src/services/db/contacts').ContactGroup),
+    ),
     renameContactGroup: vi.fn(() => Promise.resolve()),
     deleteContactGroup: vi.fn(() => Promise.resolve()),
   };
@@ -36,7 +37,10 @@ describe('ContactGroupManager', () => {
       searchQuery: '',
       isLoading: false,
     });
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
   });
 
   it('renders existing groups', () => {
@@ -60,7 +64,7 @@ describe('ContactGroupManager', () => {
 
   it('renames a group', async () => {
     const onUpdate = vi.fn();
-    const { getByLabelText, getByDisplayValue, getByText } = render(
+    const { getByLabelText, getByDisplayValue } = render(
       <ContactGroupManager onUpdate={onUpdate} />,
     );
     fireEvent.click(getByLabelText('Rename'));

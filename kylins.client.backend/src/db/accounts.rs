@@ -21,10 +21,7 @@
 //! existing account.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::crypto::{decrypt, encrypt};
@@ -252,9 +249,14 @@ pub struct AccountUpdates {
 /// survives even when the master key changes (e.g. keyring reset).
 fn row_to_account(row: &SqliteRow) -> Result<Account, String> {
     let access_token = dec_opt_graceful(row.try_get("access_token").ok().flatten(), "access_token");
-    let refresh_token = dec_opt_graceful(row.try_get("refresh_token").ok().flatten(), "refresh_token");
-    let imap_password = dec_opt_graceful(row.try_get("imap_password").ok().flatten(), "imap_password");
-    let oauth_client_secret = dec_opt_graceful(row.try_get("oauth_client_secret").ok().flatten(), "oauth_client_secret");
+    let refresh_token =
+        dec_opt_graceful(row.try_get("refresh_token").ok().flatten(), "refresh_token");
+    let imap_password =
+        dec_opt_graceful(row.try_get("imap_password").ok().flatten(), "imap_password");
+    let oauth_client_secret = dec_opt_graceful(
+        row.try_get("oauth_client_secret").ok().flatten(),
+        "oauth_client_secret",
+    );
 
     Ok(Account {
         id: row.try_get("id").unwrap_or_default(),
@@ -344,9 +346,7 @@ pub async fn get_all(pool: &SqlitePool) -> Result<Vec<Account>, String> {
         let email: String = row.try_get("email").unwrap_or_default();
         match row_to_account(&row) {
             Ok(a) => accounts.push(a),
-            Err(e) => log::warn!(
-                "[accounts] skipping corrupt row id={id} email={email}: {e}"
-            ),
+            Err(e) => log::warn!("[accounts] skipping corrupt row id={id} email={email}: {e}"),
         }
     }
     Ok(accounts)
@@ -632,10 +632,7 @@ pub async fn get_count(pool: &SqlitePool) -> Result<i64, String> {
 /// Set `is_default = 1` for the given account and clear the flag on all
 /// others, in a single transaction so there is never zero or two defaults.
 pub async fn set_default(pool: &SqlitePool, id: &str) -> Result<(), String> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("begin tx: {e}"))?;
+    let mut tx = pool.begin().await.map_err(|e| format!("begin tx: {e}"))?;
     sqlx::query("UPDATE accounts SET is_default = 0")
         .execute(&mut *tx)
         .await
@@ -661,11 +658,13 @@ pub async fn get_default(pool: &SqlitePool) -> Result<Option<Account>, String> {
 
 /// Stamp `last_sync_at` (and `updated_at`) after a successful sync round.
 pub async fn touch_last_sync(pool: &SqlitePool, id: &str) -> Result<(), String> {
-    sqlx::query("UPDATE accounts SET last_sync_at = unixepoch(), updated_at = unixepoch() WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE accounts SET last_sync_at = unixepoch(), updated_at = unixepoch() WHERE id = ?",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

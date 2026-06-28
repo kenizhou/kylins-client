@@ -45,16 +45,27 @@ pub enum Cursor {
 
 impl Default for Cursor {
     fn default() -> Self {
-        Cursor::Imap { uidvalidity: 0, highest_uid: 0, highest_modseq: 0 }
+        Cursor::Imap {
+            uidvalidity: 0,
+            highest_uid: 0,
+            highest_modseq: 0,
+        }
     }
 }
 
 impl Cursor {
     pub fn initial_imap() -> Self {
-        Cursor::Imap { uidvalidity: 0, highest_uid: 0, highest_modseq: 0 }
+        Cursor::Imap {
+            uidvalidity: 0,
+            highest_uid: 0,
+            highest_modseq: 0,
+        }
     }
     pub fn initial_eas(collection_id: &str) -> Self {
-        Cursor::Eas { collection_id: collection_id.to_string(), sync_key: "0".to_string() }
+        Cursor::Eas {
+            collection_id: collection_id.to_string(),
+            sync_key: "0".to_string(),
+        }
     }
 }
 
@@ -134,14 +145,39 @@ pub trait MailSource: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError>;
-    async fn sync_folder(&self, folder: &RemoteFolder, since: Cursor) -> Result<FolderDelta, SourceError>;
-    async fn fetch_body(&self, folder: &RemoteFolder, uid: u32) -> Result<Option<String>, SourceError>;
+    async fn sync_folder(
+        &self,
+        folder: &RemoteFolder,
+        since: Cursor,
+    ) -> Result<FolderDelta, SourceError>;
+    async fn fetch_body(
+        &self,
+        folder: &RemoteFolder,
+        uid: u32,
+    ) -> Result<Option<String>, SourceError>;
 
     // Mutations — also routable through the offline queue (Phase 1).
-    async fn set_flags(&self, folder: &RemoteFolder, uids: &[u32], flag: &str, add: bool) -> Result<(), SourceError>;
-    async fn move_messages(&self, src: &RemoteFolder, uids: &[u32], dest: &RemoteFolder) -> Result<(), SourceError>;
-    async fn delete_messages(&self, folder: &RemoteFolder, uids: &[u32]) -> Result<(), SourceError>;
-    async fn append(&self, folder: &RemoteFolder, raw: &[u8], flags: &[&str]) -> Result<(), SourceError>;
+    async fn set_flags(
+        &self,
+        folder: &RemoteFolder,
+        uids: &[u32],
+        flag: &str,
+        add: bool,
+    ) -> Result<(), SourceError>;
+    async fn move_messages(
+        &self,
+        src: &RemoteFolder,
+        uids: &[u32],
+        dest: &RemoteFolder,
+    ) -> Result<(), SourceError>;
+    async fn delete_messages(&self, folder: &RemoteFolder, uids: &[u32])
+        -> Result<(), SourceError>;
+    async fn append(
+        &self,
+        folder: &RemoteFolder,
+        raw: &[u8],
+        flags: &[&str],
+    ) -> Result<(), SourceError>;
     async fn send(&self, raw_base64url: &str) -> Result<(), SourceError>;
 
     // Optional real-time (Phase 2). Default = Unsupported.
@@ -188,15 +224,38 @@ mod tests {
             unseen: 2,
         };
         let msgs = vec![
-            RemoteMessage { uid: 1, folder: "INBOX".into(), date: 100, ..Default::default() },
-            RemoteMessage { uid: 2, folder: "INBOX".into(), date: 200, ..Default::default() },
+            RemoteMessage {
+                uid: 1,
+                folder: "INBOX".into(),
+                date: 100,
+                ..Default::default()
+            },
+            RemoteMessage {
+                uid: 2,
+                folder: "INBOX".into(),
+                date: 200,
+                ..Default::default()
+            },
         ];
         let src = mock_source::MockSource::new(vec![folder.clone()], msgs);
-        let d1 = src.sync_folder(&folder, Cursor::initial_imap()).await.unwrap();
+        let d1 = src
+            .sync_folder(&folder, Cursor::initial_imap())
+            .await
+            .unwrap();
         assert_eq!(d1.added.len(), 2);
-        assert_eq!(d1.next_cursor, Cursor::Imap { uidvalidity: 0, highest_uid: 2, highest_modseq: 0 });
+        assert_eq!(
+            d1.next_cursor,
+            Cursor::Imap {
+                uidvalidity: 0,
+                highest_uid: 2,
+                highest_modseq: 0
+            }
+        );
         // Second sync from the advanced cursor yields nothing new.
-        let d2 = src.sync_folder(&folder, d1.next_cursor.clone()).await.unwrap();
+        let d2 = src
+            .sync_folder(&folder, d1.next_cursor.clone())
+            .await
+            .unwrap();
         assert!(d2.added.is_empty());
     }
 

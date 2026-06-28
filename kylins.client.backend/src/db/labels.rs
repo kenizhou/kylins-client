@@ -18,10 +18,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Canonical, source-agnostic folder DTO.
 ///
@@ -157,11 +154,10 @@ pub async fn get_folders_by_account(
 /// Return all visible mail folders across all accounts (caller groups by
 /// account). Mirrors `getAllFolders` (`labels.ts:73-79`).
 pub async fn get_all_folders(pool: &SqlitePool) -> Result<Vec<MailFolder>, String> {
-    let rows =
-        sqlx::query("SELECT * FROM labels WHERE mail_class = 'mail' AND visible = 1")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+    let rows = sqlx::query("SELECT * FROM labels WHERE mail_class = 'mail' AND visible = 1")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(rows.iter().map(row_to_folder).collect())
 }
 
@@ -221,10 +217,7 @@ pub async fn get_unread_counts_by_account(
 /// the `ON CONFLICT(account_id, id) DO UPDATE SET ...` clause.
 ///
 /// Runs every upsert in one transaction. Empty input is a no-op.
-pub async fn upsert_folders(
-    pool: &SqlitePool,
-    folders: &[MailFolder],
-) -> Result<(), String> {
+pub async fn upsert_folders(pool: &SqlitePool, folders: &[MailFolder]) -> Result<(), String> {
     if folders.is_empty() {
         return Ok(());
     }
@@ -234,11 +227,7 @@ pub async fn upsert_folders(
     for f in folders {
         // `type` is derived: system when a role is set, else user. Matches
         // `f.role ? 'system' : 'user'` in the TS source.
-        let type_ = if f.role.is_some() {
-            "system"
-        } else {
-            "user"
-        };
+        let type_ = if f.role.is_some() { "system" } else { "user" };
         let visible: i64 = if f.visible { 1 } else { 0 };
 
         sqlx::query(
@@ -548,12 +537,14 @@ mod tests {
         upsert_folders(&pool, &[inbox("acct-1")]).await.unwrap();
 
         // Simulate a sync engine bumping the unread_count directly.
-        sqlx::query("UPDATE labels SET unread_count = 5, total_count = 10 WHERE account_id = ? AND id = ?")
-            .bind("acct-1")
-            .bind("inbox")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE labels SET unread_count = 5, total_count = 10 WHERE account_id = ? AND id = ?",
+        )
+        .bind("acct-1")
+        .bind("inbox")
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Re-upsert the same folder (e.g. on a re-sync). Counts must survive.
         upsert_folders(&pool, &[inbox("acct-1")]).await.unwrap();
@@ -652,9 +643,7 @@ mod tests {
         seed_thread_label(&pool, "acct-1", "t3", "inbox", true).await;
         seed_thread_label(&pool, "acct-1", "t4", "sent", false).await;
 
-        let counts = get_unread_counts_by_account(&pool, "acct-1")
-            .await
-            .unwrap();
+        let counts = get_unread_counts_by_account(&pool, "acct-1").await.unwrap();
         assert_eq!(counts.get("inbox").copied(), Some(2), "inbox unread");
         assert_eq!(counts.get("sent").copied(), Some(1), "sent unread");
         // Read thread must not be counted.
@@ -666,9 +655,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = crate::db::init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct-1").await;
-        let counts = get_unread_counts_by_account(&pool, "acct-1")
-            .await
-            .unwrap();
+        let counts = get_unread_counts_by_account(&pool, "acct-1").await.unwrap();
         assert!(counts.is_empty());
     }
 
@@ -728,9 +715,7 @@ mod tests {
         let pool = crate::db::init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct-1").await;
 
-        let created = create_folder(&pool, "acct-1", "First", None)
-            .await
-            .unwrap();
+        let created = create_folder(&pool, "acct-1", "First", None).await.unwrap();
         // MAX(sort_order) is NULL → (NULL ?? -1) + 1 = 0.
         assert_eq!(created.sort_order, 0);
     }
@@ -762,13 +747,14 @@ mod tests {
         seed_thread_label(&pool, "acct-1", "t1", "inbox", false).await;
 
         // Sanity: the thread_labels row exists.
-        let (cnt,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM thread_labels WHERE account_id = ? AND label_id = ?")
-                .bind("acct-1")
-                .bind("inbox")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (cnt,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM thread_labels WHERE account_id = ? AND label_id = ?",
+        )
+        .bind("acct-1")
+        .bind("inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(cnt, 1);
 
         delete_folder(&pool, "acct-1", "inbox").await.unwrap();
@@ -779,13 +765,14 @@ mod tests {
             .unwrap()
             .is_none());
         // thread_labels orphans gone too.
-        let (cnt,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM thread_labels WHERE account_id = ? AND label_id = ?")
-                .bind("acct-1")
-                .bind("inbox")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (cnt,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM thread_labels WHERE account_id = ? AND label_id = ?",
+        )
+        .bind("acct-1")
+        .bind("inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(cnt, 0);
     }
 
@@ -881,17 +868,40 @@ mod tests {
         // Spot-check the load-bearing camelCase keys from the TS interface
         // (all present because the fixture sets them).
         for key in [
-            "id", "accountId", "source", "role", "name", "parentId", "remoteId",
-            "delimiter", "unreadCount", "totalCount", "sortOrder", "visible",
-            "hierarchicalName", "mailClass", "type", "colorBg",
+            "id",
+            "accountId",
+            "source",
+            "role",
+            "name",
+            "parentId",
+            "remoteId",
+            "delimiter",
+            "unreadCount",
+            "totalCount",
+            "sortOrder",
+            "visible",
+            "hierarchicalName",
+            "mailClass",
+            "type",
+            "colorBg",
         ] {
             assert!(obj.contains_key(key), "expected camelCase key {key}");
         }
         // snake_case must NOT leak.
         for key in [
-            "account_id", "parent_id", "remote_id", "unread_count", "total_count",
-            "sort_order", "hierarchical_name", "mail_class", "color_bg",
-            "color_fg", "imap_folder_path", "imap_special_use", "type_",
+            "account_id",
+            "parent_id",
+            "remote_id",
+            "unread_count",
+            "total_count",
+            "sort_order",
+            "hierarchical_name",
+            "mail_class",
+            "color_bg",
+            "color_fg",
+            "imap_folder_path",
+            "imap_special_use",
+            "type_",
         ] {
             assert!(!obj.contains_key(key), "snake_case key {key} leaked");
         }

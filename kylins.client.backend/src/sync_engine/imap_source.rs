@@ -28,7 +28,9 @@ use crate::mail::imap::types::{ImapConfig, ImapFolder, ImapMessage};
 use crate::mail::smtp::client as smtp_client;
 use crate::mail::smtp::types::SmtpConfig;
 
-use super::{Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteMessage, SourceError};
+use super::{
+    Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteMessage, SourceError,
+};
 
 /// IDLE keepalive watchdog. async-imap's `wait_with_timeout` resets this clock on any
 /// server traffic (including `* OK Still here`), so we stay below the server's typical
@@ -43,17 +45,32 @@ pub struct ImapSource {
 
 impl ImapSource {
     pub fn new(account: Account) -> Self {
-        Self { account, caps: Mutex::new(None) }
+        Self {
+            account,
+            caps: Mutex::new(None),
+        }
     }
 
     fn imap_config(&self) -> ImapConfig {
         ImapConfig {
             host: self.account.imap_host.clone().unwrap_or_default(),
             port: self.account.imap_port.unwrap_or(993) as u16,
-            security: self.account.imap_security.clone().unwrap_or_else(|| "tls".to_string()),
-            username: self.account.imap_username.clone().unwrap_or_else(|| self.account.email.clone()),
+            security: self
+                .account
+                .imap_security
+                .clone()
+                .unwrap_or_else(|| "tls".to_string()),
+            username: self
+                .account
+                .imap_username
+                .clone()
+                .unwrap_or_else(|| self.account.email.clone()),
             password: self.account.imap_password.clone().unwrap_or_default(),
-            auth_method: self.account.auth_method.clone().unwrap_or_else(|| "password".to_string()),
+            auth_method: self
+                .account
+                .auth_method
+                .clone()
+                .unwrap_or_else(|| "password".to_string()),
             accept_invalid_certs: self.account.accept_invalid_certs,
         }
     }
@@ -62,10 +79,22 @@ impl ImapSource {
         SmtpConfig {
             host: self.account.smtp_host.clone().unwrap_or_default(),
             port: self.account.smtp_port.unwrap_or(587) as u16,
-            security: self.account.smtp_security.clone().unwrap_or_else(|| "starttls".to_string()),
-            username: self.account.imap_username.clone().unwrap_or_else(|| self.account.email.clone()),
+            security: self
+                .account
+                .smtp_security
+                .clone()
+                .unwrap_or_else(|| "starttls".to_string()),
+            username: self
+                .account
+                .imap_username
+                .clone()
+                .unwrap_or_else(|| self.account.email.clone()),
             password: self.account.imap_password.clone().unwrap_or_default(),
-            auth_method: self.account.auth_method.clone().unwrap_or_else(|| "password".to_string()),
+            auth_method: self
+                .account
+                .auth_method
+                .clone()
+                .unwrap_or_else(|| "password".to_string()),
             accept_invalid_certs: self.account.accept_invalid_certs,
         }
     }
@@ -76,7 +105,10 @@ fn other(e: String) -> SourceError {
 }
 
 fn uid_set(uids: &[u32]) -> String {
-    uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",")
+    uids.iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn format_flags(flags: &[&str]) -> String {
@@ -84,7 +116,11 @@ fn format_flags(flags: &[&str]) -> String {
         "({})",
         flags
             .iter()
-            .map(|f| if f.starts_with('\\') { (*f).to_string() } else { format!("\\{f}") })
+            .map(|f| if f.starts_with('\\') {
+                (*f).to_string()
+            } else {
+                format!("\\{f}")
+            })
             .collect::<Vec<_>>()
             .join(" ")
     )
@@ -130,7 +166,11 @@ fn parent_of(path: &str, delimiter: &str) -> Option<String> {
 }
 
 fn imap_folder_to_remote(f: ImapFolder) -> RemoteFolder {
-    let remote_id = if f.raw_path.is_empty() { f.path.clone() } else { f.raw_path.clone() };
+    let remote_id = if f.raw_path.is_empty() {
+        f.path.clone()
+    } else {
+        f.raw_path.clone()
+    };
     // parent_id must be computed from the SAME source as remote_id so it
     // matches the parent's remote_id column. Using decoded path would produce
     // mismatched values for non-ASCII (IMAP modified UTF-7) names.
@@ -201,7 +241,9 @@ impl MailSource for ImapSource {
                 vanishearch: vanished,
             });
         }
-        let folders = imap_client::list_folders(&mut session).await.map_err(other)?;
+        let folders = imap_client::list_folders(&mut session)
+            .await
+            .map_err(other)?;
         let _ = session.logout().await;
         Ok(folders.into_iter().map(imap_folder_to_remote).collect())
     }
@@ -227,7 +269,11 @@ impl MailSource for ImapSource {
         }
 
         let (since_uv, since_high) = match since {
-            Cursor::Imap { uidvalidity, highest_uid, .. } => (uidvalidity, highest_uid),
+            Cursor::Imap {
+                uidvalidity,
+                highest_uid,
+                ..
+            } => (uidvalidity, highest_uid),
             _ => (0, 0),
         };
 
@@ -259,7 +305,9 @@ impl MailSource for ImapSource {
         let mut added = Vec::new();
         for chunk in to_fetch.chunks(100) {
             let range = uid_set(chunk);
-            let res = match imap_client::fetch_messages(&mut session, &folder.remote_id, &range).await {
+            let res = match imap_client::fetch_messages(&mut session, &folder.remote_id, &range)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) if e.starts_with("ASYNC_IMAP_EMPTY:") => {
                     log::info!("[sync] async-imap returned empty; falling back to raw TCP fetch for {} UIDs {range}", folder.remote_id);
@@ -290,7 +338,11 @@ impl MailSource for ImapSource {
         })
     }
 
-    async fn fetch_body(&self, folder: &RemoteFolder, uid: u32) -> Result<Option<String>, SourceError> {
+    async fn fetch_body(
+        &self,
+        folder: &RemoteFolder,
+        uid: u32,
+    ) -> Result<Option<String>, SourceError> {
         let config = self.imap_config();
         let mut session = imap_client::connect(&config).await.map_err(other)?;
         let msg = imap_client::fetch_message_body(&mut session, &folder.remote_id, uid)
@@ -300,7 +352,13 @@ impl MailSource for ImapSource {
         Ok(msg.body_html.or(msg.body_text))
     }
 
-    async fn set_flags(&self, folder: &RemoteFolder, uids: &[u32], flag: &str, add: bool) -> Result<(), SourceError> {
+    async fn set_flags(
+        &self,
+        folder: &RemoteFolder,
+        uids: &[u32],
+        flag: &str,
+        add: bool,
+    ) -> Result<(), SourceError> {
         if uids.is_empty() {
             return Ok(());
         }
@@ -308,27 +366,47 @@ impl MailSource for ImapSource {
         let mut session = imap_client::connect(&config).await.map_err(other)?;
         let flag_op = if add { "+FLAGS" } else { "-FLAGS" };
         let flags_str = format_flags(&[flag]);
-        imap_client::set_flags(&mut session, &folder.remote_id, &uid_set(uids), flag_op, &flags_str)
-            .await
-            .map_err(other)?;
+        imap_client::set_flags(
+            &mut session,
+            &folder.remote_id,
+            &uid_set(uids),
+            flag_op,
+            &flags_str,
+        )
+        .await
+        .map_err(other)?;
         let _ = session.logout().await;
         Ok(())
     }
 
-    async fn move_messages(&self, src: &RemoteFolder, uids: &[u32], dest: &RemoteFolder) -> Result<(), SourceError> {
+    async fn move_messages(
+        &self,
+        src: &RemoteFolder,
+        uids: &[u32],
+        dest: &RemoteFolder,
+    ) -> Result<(), SourceError> {
         if uids.is_empty() {
             return Ok(());
         }
         let config = self.imap_config();
         let mut session = imap_client::connect(&config).await.map_err(other)?;
-        imap_client::move_messages(&mut session, &src.remote_id, &uid_set(uids), &dest.remote_id)
-            .await
-            .map_err(other)?;
+        imap_client::move_messages(
+            &mut session,
+            &src.remote_id,
+            &uid_set(uids),
+            &dest.remote_id,
+        )
+        .await
+        .map_err(other)?;
         let _ = session.logout().await;
         Ok(())
     }
 
-    async fn delete_messages(&self, folder: &RemoteFolder, uids: &[u32]) -> Result<(), SourceError> {
+    async fn delete_messages(
+        &self,
+        folder: &RemoteFolder,
+        uids: &[u32],
+    ) -> Result<(), SourceError> {
         if uids.is_empty() {
             return Ok(());
         }
@@ -341,11 +419,20 @@ impl MailSource for ImapSource {
         Ok(())
     }
 
-    async fn append(&self, folder: &RemoteFolder, raw: &[u8], flags: &[&str]) -> Result<(), SourceError> {
+    async fn append(
+        &self,
+        folder: &RemoteFolder,
+        raw: &[u8],
+        flags: &[&str],
+    ) -> Result<(), SourceError> {
         let config = self.imap_config();
         let mut session = imap_client::connect(&config).await.map_err(other)?;
         let flags_str = format_flags(flags);
-        let flags_opt = if flags.is_empty() { None } else { Some(flags_str.as_str()) };
+        let flags_opt = if flags.is_empty() {
+            None
+        } else {
+            Some(flags_str.as_str())
+        };
         imap_client::append_message(&mut session, &folder.remote_id, flags_opt, raw)
             .await
             .map_err(other)?;
@@ -433,7 +520,9 @@ impl MailSource for ImapSource {
                         Ok(mut s) => {
                             let _ = s.logout().await;
                         }
-                        Err(e) => log::warn!("[sync] IDLE done() after ManualInterrupt failed: {e}"),
+                        Err(e) => {
+                            log::warn!("[sync] IDLE done() after ManualInterrupt failed: {e}")
+                        }
                     }
                     return Ok(());
                 }
@@ -471,10 +560,16 @@ mod tests {
     fn role_from_special_use_maps_known_flags() {
         assert_eq!(role_from_special_use(Some("\\Inbox")), Some("inbox".into()));
         assert_eq!(role_from_special_use(Some("\\Sent")), Some("sent".into()));
-        assert_eq!(role_from_special_use(Some("\\Drafts")), Some("drafts".into()));
+        assert_eq!(
+            role_from_special_use(Some("\\Drafts")),
+            Some("drafts".into())
+        );
         assert_eq!(role_from_special_use(Some("\\Trash")), Some("trash".into()));
         assert_eq!(role_from_special_use(Some("\\Junk")), Some("junk".into()));
-        assert_eq!(role_from_special_use(Some("\\Archive")), Some("archive".into()));
+        assert_eq!(
+            role_from_special_use(Some("\\Archive")),
+            Some("archive".into())
+        );
         assert_eq!(role_from_special_use(None), None);
         assert_eq!(role_from_special_use(Some("\\Other")), None);
     }
@@ -610,7 +705,10 @@ mod tests {
 
         // Path 1: watch() returns Err (not hang) on connect failure.
         let res = source.watch(&folder).await;
-        assert!(res.is_err(), "watch() against a dead host should error, not hang");
+        assert!(
+            res.is_err(),
+            "watch() against a dead host should error, not hang"
+        );
         match res {
             Err(SourceError::Other(_)) => {}
             Err(SourceError::Unsupported) => {
@@ -632,11 +730,7 @@ mod tests {
             imap_password: Some("wrong".into()),
             ..Account::default()
         });
-        let cancel = tokio::time::timeout(
-            Duration::from_millis(100),
-            source2.watch(&folder),
-        )
-        .await;
+        let cancel = tokio::time::timeout(Duration::from_millis(100), source2.watch(&folder)).await;
         // Either the connect failed fast (Err resolves before the timeout) OR the
         // timeout fired and dropped the pending future. Both prove no hang/panic.
         assert!(

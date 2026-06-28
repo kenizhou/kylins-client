@@ -26,19 +26,19 @@ pub mod messages;
 pub mod mutations;
 pub mod queue;
 pub mod scheduled_emails;
+pub mod search;
 pub mod send_as_aliases;
 pub mod settings;
 pub mod signatures;
 pub mod sync_state;
 pub mod templates;
 pub mod threads;
-pub mod search;
 
-use std::path::Path;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
+use std::path::Path;
 
 /// Alias for the connection pool type used across the crate.
 pub type DbPool = SqlitePool;
@@ -178,11 +178,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
 
-        let row: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert!(row.0 >= 1, "accounts table should exist");
 
         let row: (i64,) = sqlx::query_as(
@@ -239,11 +240,10 @@ mod tests {
         // be preserved (CREATE TABLE IF NOT EXISTS is a no-op; we do NOT ALTER
         // it, which is why the baseline is one consolidated snapshot).
         let pool = init_db(tmp.path()).await.unwrap();
-        let row: (String, String) =
-            sqlx::query_as("SELECT id, email FROM accounts WHERE id = 'a'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let row: (String, String) = sqlx::query_as("SELECT id, email FROM accounts WHERE id = 'a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(row.0, "a");
         assert_eq!(row.1, "a@b");
 

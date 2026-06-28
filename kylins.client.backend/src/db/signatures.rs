@@ -8,10 +8,7 @@
 //! `#[serde(rename_all = "snake_case")]` to match byte-for-byte.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// Signature context (when the signature applies). Mirrors `SignatureContext`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,14 +138,12 @@ pub async fn insert(pool: &SqlitePool, input: InsertSignatureInput) -> Result<St
     };
 
     if input.is_default {
-        sqlx::query(
-            "UPDATE signatures SET is_default = 0 WHERE account_id = $1 AND context = $2",
-        )
-        .bind(&input.account_id)
-        .bind(ctx_str)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE signatures SET is_default = 0 WHERE account_id = $1 AND context = $2")
+            .bind(&input.account_id)
+            .bind(ctx_str)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     sqlx::query(

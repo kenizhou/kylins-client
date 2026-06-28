@@ -243,8 +243,7 @@ pub fn run() {
                 app.manage(pool.clone());
                 // SyncEngine owns one polling worker per account. The frontend starts
                 // it (sync_start) once accounts are loaded; events flow via AppHandle.
-                let engine =
-                    sync_engine::engine::SyncEngine::new_tauri(pool, app.handle().clone());
+                let engine = sync_engine::engine::SyncEngine::new_tauri(pool, app.handle().clone());
                 app.manage(engine);
             }
 

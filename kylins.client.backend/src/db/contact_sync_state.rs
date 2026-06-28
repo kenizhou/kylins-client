@@ -37,12 +37,14 @@ pub async fn get(
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(row.map(|(account_id, source, sync_token, last_sync_at)| ContactSyncState {
-        account_id,
-        source,
-        sync_token,
-        last_sync_at,
-    }))
+    Ok(row.map(
+        |(account_id, source, sync_token, last_sync_at)| ContactSyncState {
+            account_id,
+            source,
+            sync_token,
+            last_sync_at,
+        },
+    ))
 }
 
 /// Upsert sync state for an (account, source) pair. `last_sync_at` defaults to

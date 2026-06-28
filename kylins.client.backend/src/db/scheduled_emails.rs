@@ -7,10 +7,7 @@
 //! byte-for-byte with `#[serde(rename_all = "snake_case")]`.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -104,10 +101,7 @@ pub struct InsertScheduledEmailInput {
 }
 
 /// Insert a scheduled email. Returns its id.
-pub async fn insert(
-    pool: &SqlitePool,
-    email: InsertScheduledEmailInput,
-) -> Result<String, String> {
+pub async fn insert(pool: &SqlitePool, email: InsertScheduledEmailInput) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO scheduled_emails (id, account_id, to_addresses, cc_addresses, bcc_addresses, subject, body_html, reply_to_message_id, thread_id, scheduled_at, signature_id)
@@ -131,11 +125,7 @@ pub async fn insert(
 }
 
 /// Update the status of a scheduled email.
-pub async fn update_status(
-    pool: &SqlitePool,
-    id: &str,
-    status: &str,
-) -> Result<(), String> {
+pub async fn update_status(pool: &SqlitePool, id: &str, status: &str) -> Result<(), String> {
     sqlx::query("UPDATE scheduled_emails SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(id)

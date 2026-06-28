@@ -12,10 +12,7 @@
 //! vice-versa — the table schema is unchanged.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::SqliteRow,
-    Row, SqlitePool,
-};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 /// One row of the `pending_operations` table, surfaced to the frontend in
 /// camelCase to match the TS `PendingOperation` interface
@@ -419,12 +416,16 @@ mod tests {
             .await
             .unwrap();
         mark_failed(&pool, &id, "boom-2").await.unwrap();
-        let (status,): (String,) = sqlx::query_as("SELECT status FROM pending_operations WHERE id = ?")
-            .bind(&id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(status, "failed", "should flip to failed at retry_count+1 >= max");
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM pending_operations WHERE id = ?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            status, "failed",
+            "should flip to failed at retry_count+1 >= max"
+        );
     }
 
     #[tokio::test]
@@ -565,10 +566,11 @@ mod tests {
 
         compact_queue(&pool, "a1").await.unwrap();
 
-        let (cnt,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (cnt,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(cnt, 0, "cancel-out pair should be fully dropped");
     }
 
@@ -603,10 +605,11 @@ mod tests {
 
         compact_queue(&pool, "a1").await.unwrap();
 
-        let (cnt,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (cnt,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(cnt, 3, "nothing should be removed");
     }
 }
