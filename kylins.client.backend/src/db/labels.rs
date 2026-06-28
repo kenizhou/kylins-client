@@ -15,7 +15,7 @@
 //! (source-agnostic). That mismatch is intentional and inherited from the
 //! frontend — do not rename.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -385,6 +385,37 @@ pub async fn delete_folder(
         .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Delete labels for an account + source whose `remote_id` is NOT in
+/// `keep_remote_ids`. Used after `list_folders` to remove labels that were
+/// renamed or deleted on the server. Returns the number of labels deleted.
+pub async fn prune_stale_labels(
+    pool: &SqlitePool,
+    account_id: &str,
+    source: &str,
+    keep_remote_ids: &HashSet<String>,
+) -> Result<u64, String> {
+    let rows = sqlx::query(
+        "SELECT id, remote_id FROM labels WHERE account_id = ? AND source = ? AND remote_id IS NOT NULL",
+    )
+    .bind(account_id)
+    .bind(source)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut deleted: u64 = 0;
+    for row in &rows {
+        let remote_id: String = row.try_get("remote_id").unwrap_or_default();
+        if !keep_remote_ids.contains(&remote_id) {
+            let id: String = row.try_get("id").unwrap_or_default();
+            delete_folder(pool, account_id, &id).await?;
+            log::info!("[labels] pruned stale label {id} (remote {remote_id})");
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
 }
 
 #[cfg(test)]
