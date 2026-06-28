@@ -68,7 +68,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test -- --skip accounts::tests
+        run: cargo test -- --skip accounts
 
   notify:
     name: Notify
