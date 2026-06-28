@@ -67,7 +67,5 @@ jobs:
         # FIXME: re-enable -D warnings after fixing 6 pre-existing clippy issues
         run: cargo clippy --all-targets
 
-      - name: Test
-        # FIXME: keyring tests need DBus (gnome-keyring). Skip accounts tests on Linux CI
-        # until we add a mock keyring backend for testing.
-        run: cargo test -- --skip accounts::tests::
+      - name: Test (skip accounts — needs DBus keyring)
+        run: cargo test -- --skip db::accounts::tests::
