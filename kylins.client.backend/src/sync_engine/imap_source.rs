@@ -5,11 +5,14 @@
 // RemoteMessage. sync_folder uses delta semantics: get_folder_status for UIDVALIDITY,
 // fetch_new_uids(highest_uid+1), chunked fetch_messages for the new envelopes.
 //
-// CAPABILITY negotiation is deferred to Phase 2 (it only matters for selecting the IDLE
-// real-time strategy; Phase 0 polls regardless, so capabilities() returns the default
-// poll-only set for now).
+// CAPABILITY negotiation: best-effort. `list_folders`/`sync_folder` query the server's
+// CAPABILITY on every connect and cache the result in `caps`; `capabilities()` returns
+// the cached value or `Capabilities::default()` if no connect has succeeded yet. This
+// is what lets a later task pick a RealtimeStrategy (idle vs. poll) based on the
+// server's actual `IDLE`/`CONDSTORE`/`QRESYNC`/`VANISHED` support.
 
 use async_trait::async_trait;
+use std::sync::Mutex;
 
 use crate::db::accounts::Account;
 use crate::mail::imap::client as imap_client;
@@ -21,11 +24,12 @@ use super::{Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteM
 
 pub struct ImapSource {
     account: Account,
+    caps: Mutex<Option<Capabilities>>,
 }
 
 impl ImapSource {
     pub fn new(account: Account) -> Self {
-        Self { account }
+        Self { account, caps: Mutex::new(None) }
     }
 
     fn imap_config(&self) -> ImapConfig {
@@ -163,13 +167,26 @@ fn imap_message_to_remote(m: ImapMessage) -> RemoteMessage {
 #[async_trait]
 impl MailSource for ImapSource {
     fn capabilities(&self) -> Capabilities {
-        // Phase 0: poll-only. CAPABILITY negotiation (idle/condstore/qresync) is Phase 2.
-        Capabilities::default()
+        // Return cached server-advertised caps, or the default poll-only set if no
+        // connect has succeeded yet (caps stay None on best-effort query failure).
+        self.caps.lock().unwrap().unwrap_or_default()
     }
 
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
         let config = self.imap_config();
         let mut session = imap_client::connect(&config).await.map_err(other)?;
+        // Best-effort CAPABILITY cache; ignore errors so caps stay default.
+        if let Ok((idle, condstore, qresync, vanished)) =
+            imap_client::session_capabilities(&mut session).await
+        {
+            *self.caps.lock().unwrap() = Some(Capabilities {
+                idle,
+                condstore,
+                qresync,
+                ping: false,
+                vanishearch: vanished,
+            });
+        }
         let folders = imap_client::list_folders(&mut session).await.map_err(other)?;
         let _ = session.logout().await;
         Ok(folders.into_iter().map(imap_folder_to_remote).collect())
@@ -182,6 +199,18 @@ impl MailSource for ImapSource {
     ) -> Result<FolderDelta, SourceError> {
         let config = self.imap_config();
         let mut session = imap_client::connect(&config).await.map_err(other)?;
+        // Best-effort CAPABILITY cache; ignore errors so caps stay default.
+        if let Ok((idle, condstore, qresync, vanished)) =
+            imap_client::session_capabilities(&mut session).await
+        {
+            *self.caps.lock().unwrap() = Some(Capabilities {
+                idle,
+                condstore,
+                qresync,
+                ping: false,
+                vanishearch: vanished,
+            });
+        }
 
         let (since_uv, since_high) = match since {
             Cursor::Imap { uidvalidity, highest_uid, .. } => (uidvalidity, highest_uid),

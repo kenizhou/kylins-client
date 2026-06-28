@@ -1856,3 +1856,74 @@ fn format_address_list(addr: Option<&mail_parser::Address>) -> Option<String> {
         Some(parts.join(", "))
     }
 }
+
+/// Map a set of IMAP capability strings to the feature flags the sync engine cares
+/// about. Pure so it's unit-testable; `session_capabilities` runs the live command
+/// then delegates here.
+pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(caps: I) -> (bool, bool, bool, bool) {
+    let mut idle = false;
+    let mut condstore = false;
+    let mut qresync = false;
+    let mut vanished = false;
+    for c in caps {
+        let up = c.to_ascii_uppercase();
+        match up.as_str() {
+            "IDLE" => idle = true,
+            "CONDSTORE" => condstore = true,
+            "QRESYNC" => qresync = true,
+            "VANISHED" => vanished = true,
+            _ => {}
+        }
+    }
+    (idle, condstore, qresync, vanished)
+}
+
+/// Run CAPABILITY on an open session and map to the feature tuple
+/// `(idle, condstore, qresync, vanished)`. Uses `has_str` for case-insensitive
+/// matching (async-imap's `Capability` enum has no public `as_str`, so we cannot
+/// route the live `HashSet` through `capabilities_from_strs` directly).
+pub async fn session_capabilities(session: &mut ImapSession) -> Result<(bool, bool, bool, bool), String> {
+    let caps = session.capabilities().await.map_err(|e| e.to_string())?;
+    Ok((
+        caps.has_str("IDLE"),
+        caps.has_str("CONDSTORE"),
+        caps.has_str("QRESYNC"),
+        caps.has_str("VANISHED"),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capabilities_from_strs;
+
+    #[test]
+    fn capabilities_from_strs_maps_known_flags() {
+        let (idle, condstore, qresync, vanished) =
+            capabilities_from_strs(["IMAP4rev1", "IDLE", "CONDSTORE", "QRESYNC", "VANISHED"]);
+        assert!(idle, "IDLE should map to idle");
+        assert!(condstore, "CONDSTORE should map to condstore");
+        assert!(qresync, "QRESYNC should map to qresync");
+        assert!(vanished, "VANISHED should map to vanished");
+    }
+
+    #[test]
+    fn capabilities_from_strs_case_insensitive() {
+        let (idle, _, _, _) = capabilities_from_strs(["idle"]);
+        assert!(idle, "mapping should be case-insensitive");
+        let (_, condstore, _, _) = capabilities_from_strs(["condstore"]);
+        assert!(condstore);
+    }
+
+    #[test]
+    fn capabilities_from_strs_empty_when_no_known_flags() {
+        let (idle, condstore, qresync, vanished) =
+            capabilities_from_strs(["IMAP4rev1", "STARTTLS", "LOGINDISABLED"]);
+        assert!(!idle && !condstore && !qresync && !vanished);
+    }
+
+    #[test]
+    fn capabilities_from_strs_empty_iter() {
+        let (idle, condstore, qresync, vanished) = capabilities_from_strs::<[&str; 0]>([]);
+        assert!(!idle && !condstore && !qresync && !vanished);
+    }
+}
