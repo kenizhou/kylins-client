@@ -113,6 +113,10 @@ pub struct FolderDelta {
     pub added: Vec<RemoteMessage>,
     pub updated: Vec<RemoteMessage>,
     pub vanished_uids: Vec<u32>,
+    /// Full UID set currently on the server (from UID SEARCH ALL).
+    /// The engine uses this to compute vanished UIDs server-side
+    /// vs local DB. Empty means the source doesn't support this (EAS, mock).
+    pub server_uids: Vec<u32>,
     pub next_cursor: Cursor,
     pub uidvalidity_changed: bool,
 }

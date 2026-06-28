@@ -89,6 +89,7 @@ impl MailSource for MockSource {
             added,
             updated: vec![],
             vanished_uids: vec![],
+            server_uids: vec![],
             next_cursor: Cursor::Imap {
                 uidvalidity: uv,
                 highest_uid: new_high,

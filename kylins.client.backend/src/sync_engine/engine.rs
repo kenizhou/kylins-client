@@ -452,13 +452,26 @@ async fn run_sync_round_with_source(
     for f in &folders {
         let label_id = format!("{account_id}:{}", f.remote_id);
         let cursor = sync_state::get_imap_cursor(&engine.pool, account_id, &f.remote_id).await;
-        let delta = match src.sync_folder(f, cursor).await {
+        let mut delta = match src.sync_folder(f, cursor).await {
             Ok(d) => d,
             Err(e) => {
                 log::warn!("[sync] {account_id} sync_folder {} failed: {e}", f.remote_id);
                 continue;
             }
         };
+
+        // Compute vanished UIDs: local UIDs NOT in the server's full UID set.
+        if !delta.server_uids.is_empty() {
+            let server_set: HashSet<u32> = delta.server_uids.iter().copied().collect();
+            if let Ok(local_uids) = messages::get_local_uids(&engine.pool, account_id, &f.remote_id).await {
+                for uid in &local_uids {
+                    if !server_set.contains(uid) {
+                        delta.vanished_uids.push(*uid);
+                    }
+                }
+            }
+        }
+
         let counts = match messages::apply_folder_delta(&engine.pool, account_id, &label_id, &f.remote_id, &delta).await {
             Ok(c) => c,
             Err(e) => {
@@ -470,13 +483,13 @@ async fn run_sync_round_with_source(
         if let Cursor::Imap { uidvalidity, highest_uid, highest_modseq } = &delta.next_cursor {
             let _ = sync_state::advance_imap_cursor(&engine.pool, account_id, &f.remote_id, *uidvalidity, *highest_uid, *highest_modseq).await;
         }
-        if counts.added > 0 {
+        if counts.added > 0 || counts.updated > 0 || counts.deleted > 0 {
             engine.sink.emit_delta(DeltaEvent {
                 op: "persist".into(),
                 table: "messages".into(),
                 account_id: account_id.into(),
                 label_id: label_id.clone(),
-                count: counts.added as i64,
+                count: (counts.added + counts.updated + counts.deleted) as i64,
             });
             if f.role.as_deref() == Some("inbox") {
                 engine.sink.emit_new_mail(NewMailEvent {

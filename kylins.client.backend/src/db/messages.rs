@@ -8,7 +8,7 @@
 // References/In-Reply-To is a follow-up (the TS had the same TODO).
 
 use serde::Serialize;
-use sqlx::{SqlitePool, Transaction};
+use sqlx::{Row, SqlitePool, Transaction};
 
 use crate::sync_engine::{FolderDelta, RemoteMessage};
 
@@ -18,6 +18,28 @@ pub struct AppliedCounts {
     pub added: u64,
     pub updated: u64,
     pub deleted: u64,
+}
+
+/// Get all IMAP UIDs stored locally for a folder. Used to compute vanished UIDs.
+pub async fn get_local_uids(
+    pool: &SqlitePool,
+    account_id: &str,
+    folder_path: &str,
+) -> Result<Vec<u32>, String> {
+    let rows = sqlx::query(
+        "SELECT imap_uid FROM messages WHERE account_id = ? AND imap_folder = ?",
+    )
+    .bind(account_id)
+    .bind(folder_path)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .iter()
+        .map(|r| r.try_get::<i64, _>("imap_uid").unwrap_or(0) as u32)
+        .filter(|&u| u > 0)
+        .collect())
 }
 
 /// Apply a folder delta for `label_id` (the labels.id) / `folder_path` (the IMAP path,
@@ -58,8 +80,22 @@ pub async fn apply_folder_delta(
     for m in &delta.updated {
         upsert_message(&mut tx, account_id, label_id, m).await?;
     }
-    // vanished_uids: Phase 0 does not yet expunge locally (no CONDSTORE VANISHED). The
-    // deleted count is reported for events; actual local deletion arrives with QRESYNC.
+    // Delete vanished messages (moved or deleted from another client).
+    for uid in &delta.vanished_uids {
+        let msg_id = format!("imap-{}-{}-{}", account_id, folder_path, uid);
+        sqlx::query("DELETE FROM message_bodies WHERE account_id = ? AND message_id = ?")
+            .bind(account_id)
+            .bind(&msg_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM messages WHERE account_id = ? AND id = ?")
+            .bind(account_id)
+            .bind(&msg_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(AppliedCounts {
@@ -259,6 +295,7 @@ mod tests {
             added: vec![msg(1, "<m1>", true), msg(2, "<m2>", false)],
             updated: vec![],
             vanished_uids: vec![],
+            server_uids: vec![],
             next_cursor: Cursor::initial_imap(),
             uidvalidity_changed: false,
         };
