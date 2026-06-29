@@ -375,15 +375,138 @@ fn parse_item(item_el: &WbxmlElement) -> Result<EasItem, WbxmlError> {
 
 /// Walk `ApplicationData` children and populate `EasItem` typed fields.
 ///
-/// Task 1 stub: the previous implementation wrote into a `HashMap` that no
-/// longer exists on `EasItem`. The real typed dispatch (Subject / From / To /
-/// Cc / Body / Attachments / etc.) lands in Task 2, which is why this is a
-/// no-op for now. It is only reachable via `parse_item` ← `parse_sync_collection`
-/// ← `parse_sync_response`, and `EasClient::sync` still returns
-/// `SyncResult::default()` without invoking the parser, so no behavior change.
-fn parse_application_data(_app_data: &WbxmlElement, _item: &mut EasItem) {
-    // TODO(phase3a task-2): dispatch on (page, token) using tags::email / tags::email2 /
-    // tags::base and populate the typed EasItem fields.
+/// Dispatch is by `child.tag_name()` so the parser is robust to which code
+/// page a tag was serialized on (EAS servers are inconsistent about whether
+/// `From` lives on the Email page or is repeated on a child page). Unknown
+/// tags are ignored — the MVP only surfaces the fields `EasItem` models.
+///
+/// Body type dispatch (MS-ASEMAIL `AirSyncBase:Body`):
+///   - Type 2 → HTML  (`body_html`)
+///   - Type 1 → plain (`body_text`)
+///   - other/missing → fallback writes the same payload to both slots so the
+///     UI degrades gracefully rather than showing an empty message.
+///
+/// Flag: MS-ASEMAIL `Flag` has a `Status` child; `Status = "2"` means the
+/// message is flagged for follow-up, so we set `flag = Some(true)` only in
+/// that case (and `Some(false)` if a Flag element is present with any other
+/// Status). Absent Flag → `None` (unknown).
+fn parse_application_data(app_data: &WbxmlElement, item: &mut EasItem) {
+    for child in &app_data.children {
+        match child.tag_name() {
+            "Subject" => item.subject = text_value_opt(child),
+            "From" => item.from = text_value_opt(child),
+            "To" => item.to = text_value_opt(child),
+            "Cc" => item.cc = text_value_opt(child),
+            "Bcc" => item.bcc = text_value_opt(child),
+            "ReplyTo" => item.reply_to = text_value_opt(child),
+            "DateReceived" => item.date_received = text_value_opt(child),
+            "Read" => item.read = text_value_opt(child).map(|s| s == "1"),
+            "Flag" => {
+                // Flag.Status == "2" → active flag. Any other present Status
+                // value is treated as not-flagged; absent Status is also
+                // not-flagged. We only set Some(..) when a Flag element exists.
+                let active = child
+                    .children
+                    .iter()
+                    .any(|c| c.tag_name() == "Status" && text_value_opt(c).as_deref() == Some("2"));
+                item.flag = Some(active);
+            }
+            "Importance" => item.importance = text_value_opt(child).and_then(|s| s.parse().ok()),
+            "Body" => parse_body(child, item),
+            "Attachments" => parse_attachments(child, item),
+            "ConversationId" => item.conversation_id = Some(opaque_value_opt(child).unwrap_or_default()),
+            "IsDraft" => item.is_draft = text_value_opt(child).map(|s| s == "1"),
+            // Tags we deliberately ignore for MVP — they are either metadata
+            // we don't model yet, or already consumed at a higher level
+            // (e.g. Status on ApplicationData belongs to the Sync command,
+            // not the item).
+            "InternetCPID" | "ContentClass" | "ThreadTopic" | "MessageClass" | "Status" => {}
+            _ => {} // unknown tags: ignore
+        }
+    }
+}
+
+/// Parse an `AirSyncBase:Body` element into `body_html` / `body_text` /
+/// `body_truncated` / `preview` on the item.
+fn parse_body(elem: &WbxmlElement, item: &mut EasItem) {
+    let mut body_type: Option<u8> = None;
+    let mut data: Option<String> = None;
+    let mut truncated = false;
+    let mut preview: Option<String> = None;
+    for child in &elem.children {
+        match child.tag_name() {
+            "Type" => body_type = text_value_opt(child).and_then(|s| s.parse().ok()),
+            "Data" => data = text_value_opt(child),
+            "Truncated" => truncated = text_value_opt(child).as_deref() == Some("1"),
+            "Preview" => preview = text_value_opt(child),
+            "EstimatedDataSize" => {} // not surfaced on EasItem
+            _ => {}
+        }
+    }
+    match body_type {
+        Some(2) => item.body_html = data,      // Type 2 = HTML
+        Some(1) => item.body_text = data,      // Type 1 = PlainText
+        _ => {
+            // Unknown / missing type: write to both slots so the UI can still
+            // render something. Prefer HTML for display, plain for search.
+            item.body_html = data.clone();
+            item.body_text = data;
+        }
+    }
+    item.body_truncated = if truncated { Some(true) } else { None };
+    item.preview = preview;
+}
+
+/// Parse an `AirSyncBase:Attachments` container into `item.attachments` and
+/// set `has_attachments` based on whether any `Attachment` children were found.
+fn parse_attachments(elem: &WbxmlElement, item: &mut EasItem) {
+    for child in &elem.children {
+        if child.tag_name() != "Attachment" {
+            continue;
+        }
+        let mut att = EasAttachment::default();
+        for field in &child.children {
+            match field.tag_name() {
+                "DisplayName" => att.display_name = text_value_opt(field).unwrap_or_default(),
+                "FileReference" => att.file_reference = text_value_opt(field).unwrap_or_default(),
+                "Method" => att.method = text_value_opt(field).and_then(|s| s.parse().ok()),
+                "ContentId" => att.content_id = text_value_opt(field),
+                "IsInline" => att.is_inline = text_value_opt(field).as_deref() == Some("1"),
+                "ContentType" => att.content_type = text_value_opt(field),
+                "EstimatedDataSize" => {
+                    att.estimated_data_size = text_value_opt(field).and_then(|s| s.parse().ok());
+                }
+                "ContentLocation" => att.content_location = text_value_opt(field),
+                _ => {}
+            }
+        }
+        item.attachments.push(att);
+    }
+    item.has_attachments = !item.attachments.is_empty();
+}
+
+/// Return the text value of a leaf element, or `None` for empty/opaque leaves.
+///
+/// Distinct from the module-level `text_value(&WbxmlElement) -> Result<String,
+/// WbxmlError>` helper (which is the fallible form used by the strict FolderSync
+/// / Sync-key parsers). This `_opt` variant is the permissive form for
+/// `ApplicationData` field extraction, where a missing or non-text value should
+/// silently map to `None` rather than abort the whole item parse.
+fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
+    match &elem.value {
+        WbxmlValue::Text(s) => Some(s.clone()),
+        WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
+        WbxmlValue::Empty => None,
+    }
+}
+
+/// Return the opaque bytes of a leaf element, or `None` for empty/text leaves.
+/// Used for binary-valued tags like `ConversationId`.
+fn opaque_value_opt(elem: &WbxmlElement) -> Option<Vec<u8>> {
+    match &elem.value {
+        WbxmlValue::Opaque(b) => Some(b.clone()),
+        _ => None,
+    }
 }
 
 // ============================================================================
@@ -1275,5 +1398,275 @@ mod tests {
         assert_eq!(email2::CONVERSATION_ID, 0x09);
         assert_eq!(email2::IS_DRAFT, 0x15);
         assert_eq!(email2::BCC, 0x16);
+    }
+
+    // ---- Phase 3a Task 2: parse_application_data ----
+
+    /// Fixture: a synthetic EAS email ApplicationData element carrying the
+    /// fields the MVP parser must surface. Built with the real `WbxmlElement`
+    /// constructors on the documented code pages so `tag_name()` dispatch in
+    /// `parse_application_data` resolves identically to a server-generated tree.
+    ///
+    /// Tree shape (codes in `(page, token)` form):
+    /// ```text
+    /// ApplicationData (0, 0x1D)
+    ///   ├── Subject     (2, 0x14) = "Hello World"
+    ///   ├── From        (2, 0x18) = "alice@example.com"
+    ///   ├── To          (2, 0x16) = "bob@example.com"
+    ///   ├── Read        (2, 0x15) = "1"
+    ///   └── Body        (17, 0x0A)
+    ///       ├── Type    (17, 0x06) = "2"   (HTML)
+    ///       └── Data    (17, 0x0B) = "<p>Hi</p>"
+    /// ```
+    /// The fixture intentionally omits the optional fields (Cc/Bcc/Flag/Attachments/
+    /// ConversationId/IsDraft) — those are exercised by the focused tests below.
+    #[test]
+    fn parse_application_data_populates_core_email_fields() {
+        use crate::eas::wbxml::tags::{base, email, pages};
+
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(email::PAGE, email::SUBJECT, "Hello World"),
+                WbxmlElement::text(email::PAGE, email::FROM, "alice@example.com"),
+                WbxmlElement::text(email::PAGE, email::TO, "bob@example.com"),
+                WbxmlElement::text(email::PAGE, email::READ, "1"),
+                WbxmlElement::container(
+                    pages::BASE,
+                    base::BODY,
+                    vec![
+                        WbxmlElement::text(pages::BASE, base::TYPE, "2"),
+                        WbxmlElement::text(pages::BASE, base::DATA, "<p>Hi</p>"),
+                    ],
+                ),
+            ],
+        );
+
+        // Drive it through the public Sync-response parser entry point so the
+        // server_id → application_data wiring (parse_item) is also covered.
+        let item = parse_application_data_for_test("1:abc", &app_data);
+
+        assert_eq!(item.server_id, "1:abc");
+        assert_eq!(item.subject.as_deref(), Some("Hello World"));
+        assert_eq!(item.from.as_deref(), Some("alice@example.com"));
+        assert_eq!(item.to.as_deref(), Some("bob@example.com"));
+        assert_eq!(item.read, Some(true));
+        // Body Type 2 → HTML body slot populated, plain-text slot stays None.
+        assert_eq!(item.body_html.as_deref(), Some("<p>Hi</p>"));
+        assert_eq!(item.body_text, None);
+        // No attachments in this fixture.
+        assert_eq!(item.has_attachments, false);
+        assert!(item.attachments.is_empty());
+    }
+
+    /// Convenience wrapper around the (currently stubbed) parser so the test
+    /// references the real function name. This mirrors the brief's
+    /// `parse_application_data(server_id, &elem) -> EasItem` signature.
+    fn parse_application_data_for_test(server_id: &str, elem: &WbxmlElement) -> EasItem {
+        let mut item = EasItem {
+            server_id: server_id.to_string(),
+            ..Default::default()
+        };
+        parse_application_data(elem, &mut item);
+        item
+    }
+
+    /// Body Type 1 (PlainText) must populate `body_text`, leaving `body_html` None.
+    #[test]
+    fn parse_application_data_body_type_1_is_plain_text() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::BODY,
+                vec![
+                    WbxmlElement::text(pages::BASE, base::TYPE, "1"),
+                    WbxmlElement::text(pages::BASE, base::DATA, "plain body"),
+                    WbxmlElement::text(pages::BASE, base::TRUNCATED, "1"),
+                    WbxmlElement::text(pages::BASE, base::PREVIEW, "preview…"),
+                ],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.body_text.as_deref(), Some("plain body"));
+        assert_eq!(item.body_html, None);
+        assert_eq!(item.body_truncated, Some(true));
+        assert_eq!(item.preview.as_deref(), Some("preview…"));
+    }
+
+    /// A missing/unknown Body Type falls back to populating both body slots.
+    #[test]
+    fn parse_application_data_body_unknown_type_fills_both_slots() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::BODY,
+                vec![WbxmlElement::text(pages::BASE, base::DATA, "mystery")],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.body_html.as_deref(), Some("mystery"));
+        assert_eq!(item.body_text.as_deref(), Some("mystery"));
+    }
+
+    /// Flag with Status="2" → `flag = Some(true)` (active follow-up).
+    #[test]
+    fn parse_application_data_flag_active_when_status_is_2() {
+        use crate::eas::wbxml::tags::email;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                email::PAGE,
+                email::FLAG,
+                vec![WbxmlElement::text(email::PAGE, 0x3B, "2")], // Flag:Status
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.flag, Some(true));
+    }
+
+    /// Flag present but Status != "2" → `flag = Some(false)` (cleared).
+    #[test]
+    fn parse_application_data_flag_inactive_when_status_not_2() {
+        use crate::eas::wbxml::tags::email;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                email::PAGE,
+                email::FLAG,
+                vec![WbxmlElement::text(email::PAGE, 0x3B, "0")], // cleared
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.flag, Some(false));
+    }
+
+    /// No Flag element → `flag = None`.
+    #[test]
+    fn parse_application_data_flag_absent_is_none() {
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(2, 0x14, "Subject only")],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.flag, None);
+    }
+
+    /// Attachments container with one Attachment populates `attachments`,
+    /// sets `has_attachments = true`, and maps each AirSyncBase field.
+    #[test]
+    fn parse_application_data_attachments_populated() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::ATTACHMENTS,
+                vec![WbxmlElement::container(
+                    pages::BASE,
+                    base::ATTACHMENT,
+                    vec![
+                        WbxmlElement::text(pages::BASE, base::DISPLAY_NAME, "report.pdf"),
+                        WbxmlElement::text(pages::BASE, base::FILE_REFERENCE, "ref-42"),
+                        WbxmlElement::text(pages::BASE, base::METHOD, "1"),
+                        WbxmlElement::text(pages::BASE, base::CONTENT_ID, "<cid-1>"),
+                        WbxmlElement::text(pages::BASE, base::IS_INLINE, "0"),
+                        WbxmlElement::text(pages::BASE, base::CONTENT_TYPE, "application/pdf"),
+                        WbxmlElement::text(pages::BASE, base::ESTIMATED_DATA_SIZE, "4096"),
+                        WbxmlElement::text(pages::BASE, base::CONTENT_LOCATION, "https://x/a.pdf"),
+                    ],
+                )],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.has_attachments, true);
+        assert_eq!(item.attachments.len(), 1);
+        let a = &item.attachments[0];
+        assert_eq!(a.display_name, "report.pdf");
+        assert_eq!(a.file_reference, "ref-42");
+        assert_eq!(a.method, Some(1));
+        assert_eq!(a.content_id.as_deref(), Some("<cid-1>"));
+        assert_eq!(a.is_inline, false);
+        assert_eq!(a.content_type.as_deref(), Some("application/pdf"));
+        assert_eq!(a.estimated_data_size, Some(4096));
+        assert_eq!(a.content_location.as_deref(), Some("https://x/a.pdf"));
+    }
+
+    /// Empty Attachments container → `has_attachments = false`, empty vec.
+    #[test]
+    fn parse_application_data_empty_attachments_has_none() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::ATTACHMENTS,
+                vec![],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.has_attachments, false);
+        assert!(item.attachments.is_empty());
+    }
+
+    /// ConversationId (opaque) round-trips into `conversation_id: Vec<u8>`.
+    #[test]
+    fn parse_application_data_conversation_id_opaque() {
+        use crate::eas::wbxml::tags::email2;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::opaque(
+                email2::PAGE,
+                email2::CONVERSATION_ID,
+                vec![0xDE, 0xAD, 0xBE, 0xEF],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.conversation_id, Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+    }
+
+    /// IsDraft="1" → `Some(true)`; IsDraft="0" → `Some(false)`.
+    #[test]
+    fn parse_application_data_is_draft_flag() {
+        use crate::eas::wbxml::tags::email2;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(email2::PAGE, email2::IS_DRAFT, "1"),
+                WbxmlElement::text(email2::PAGE, email2::BCC, "secret@example.com"),
+            ],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.is_draft, Some(true));
+        assert_eq!(item.bcc.as_deref(), Some("secret@example.com"));
+    }
+
+    /// Unknown tags are ignored — the parser must not panic or mis-dispatch.
+    #[test]
+    fn parse_application_data_ignores_unknown_tags() {
+        // Use an unregistered (page, token) so tag_name() returns "unknown".
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(0xFE, 0x7F, "garbage"),
+                WbxmlElement::text(2, 0x14, "Real Subject"),
+            ],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.subject.as_deref(), Some("Real Subject"));
     }
 }
