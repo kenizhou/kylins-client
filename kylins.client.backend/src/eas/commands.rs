@@ -353,8 +353,17 @@ fn parse_sync_collection(col: &WbxmlElement, result: &mut SyncResult) -> Result<
             (PAGE_AIRSYNC, AS_SYNC_KEY) => result.sync_key = text_value(child)?,
             (PAGE_AIRSYNC, AS_MORE_AVAILABLE) => result.more_available = true,
             (PAGE_AIRSYNC, AS_STATUS) => {
-                // Status 1 = OK, 3 = invalid sync key (need to re-init with "0")
-                let _status = text_value(child).unwrap_or_default();
+                // MS-ASSYNC 2.2.3.23 collection status. Surface the parsed
+                // value on `SyncResult.status` so callers (notably
+                // `EasSource::sync_folder`'s status-3 resync branch) can act
+                // on it. The wire value is a decimal string; a non-numeric or
+                // missing value leaves the default success status in place
+                // rather than aborting the whole parse.
+                if let Ok(s) = text_value(child) {
+                    if let Ok(n) = s.parse::<u32>() {
+                        result.status = n;
+                    }
+                }
             }
             (PAGE_AIRSYNC, AS_COMMANDS) => {
                 for cmd in &child.children {
@@ -1798,5 +1807,249 @@ mod tests {
             !has_body_pref,
             "BodyPreference should NOT be emitted when fetch_body=false"
         );
+    }
+
+    // ---- Phase 3a Task 5: top-level parse_sync_response orchestration ----
+    //
+    // Tasks 1-2 covered `parse_application_data` (ApplicationData -> EasItem).
+    // Task 3 covered request building. Task 4 covered `eas_item_to_remote` and
+    // `sync_folder`'s status-3 recovery branch. This block locks the
+    // top-level orchestration that those tasks did NOT exercise:
+    //   * Sync -> Collections -> Collection traversal
+    //   * SyncKey / Status / MoreAvailable extraction at the Collection level
+    //   * Commands -> Add/Change/Delete dispatch into `added` / `updated` /
+    //     `deleted_server_ids`
+    //
+    // The fixture trees are built with the real `WbxmlElement` constructors on
+    // the documented code pages (AirSync=0, Email=2, AirSyncBase=17), so
+    // `tag_name()` dispatch resolves identically to a server-generated tree.
+
+    /// Build a single EAS email `ApplicationData` element carrying Subject +
+    /// From + To + Body[Type=2 HTML]. Shared by the Add and Change fixtures
+    /// below so the test body stays focused on the top-level orchestration.
+    fn fixture_email_app_data(
+        subject: &str,
+        from: &str,
+        to: &str,
+        body_html: &str,
+    ) -> WbxmlElement {
+        use crate::eas::wbxml::tags::{base, email, pages};
+        WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(email::PAGE, email::SUBJECT, subject),
+                WbxmlElement::text(email::PAGE, email::FROM, from),
+                WbxmlElement::text(email::PAGE, email::TO, to),
+                WbxmlElement::container(
+                    pages::BASE,
+                    base::BODY,
+                    vec![
+                        WbxmlElement::text(pages::BASE, base::TYPE, "2"),
+                        WbxmlElement::text(pages::BASE, base::DATA, body_html),
+                    ],
+                ),
+            ],
+        )
+    }
+
+    /// Full Sync-response fixture: Sync -> Collections -> Collection with
+    /// SyncKey="{sk1}", Status="1", MoreAvailable, and a Commands block
+    /// containing one Add (ServerId "1:1" + the email ApplicationData above).
+    ///
+    /// Asserts the entire top-level orchestration path: sync_key, status,
+    /// more_available, and the added/updated/deleted vectors are populated by
+    /// walking the real tree through `parse_sync_response`.
+    #[test]
+    fn parse_sync_response_extracts_full_sync_collection() {
+        let add_cmd = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_ADD,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SERVER_ID, "1:1"),
+                fixture_email_app_data("Hello", "a@b", "c@d", "<p>hi</p>"),
+            ],
+        );
+        let commands = WbxmlElement::container(PAGE_AIRSYNC, AS_COMMANDS, vec![add_cmd]);
+        let collection = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTION,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, "{sk1}"),
+                WbxmlElement::text(PAGE_AIRSYNC, AS_STATUS, "1"),
+                WbxmlElement::empty(PAGE_AIRSYNC, AS_MORE_AVAILABLE),
+                commands,
+            ],
+        );
+        let collections = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTIONS,
+            vec![collection],
+        );
+        let tree = WbxmlElement::container(PAGE_AIRSYNC, AS_SYNC, vec![collections]);
+
+        let result = parse_sync_response(&tree).expect("parse_sync_response must succeed");
+
+        // Top-level orchestration fields.
+        assert_eq!(result.sync_key, "{sk1}");
+        assert_eq!(result.status, 1, "success status must surface from Collection/Status");
+        assert!(
+            result.more_available,
+            "MoreAvailable element must set more_available=true"
+        );
+
+        // Added item: full envelope must round-trip through parse_item ->
+        // parse_application_data (covered in depth by Task 2; here we lock the
+        // Add-dispatch wiring at the Commands level).
+        assert_eq!(result.added.len(), 1, "exactly one Add command");
+        let added = &result.added[0];
+        assert_eq!(added.server_id, "1:1");
+        assert_eq!(added.subject.as_deref(), Some("Hello"));
+        assert_eq!(added.from.as_deref(), Some("a@b"));
+        assert_eq!(added.to.as_deref(), Some("c@d"));
+        assert_eq!(
+            added.body_html.as_deref(),
+            Some("<p>hi</p>"),
+            "Body Type=2 must populate body_html"
+        );
+
+        // No Change/Delete in this fixture.
+        assert!(result.updated.is_empty(), "no Change commands in fixture");
+        assert!(
+            result.deleted_server_ids.is_empty(),
+            "no Delete commands in fixture"
+        );
+    }
+
+    /// A Commands block with Change + Delete must populate `updated` and
+    /// `deleted_server_ids` respectively, and leave `added` empty.
+    #[test]
+    fn parse_sync_response_dispatches_change_and_delete() {
+        let change_cmd = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_CHANGE,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SERVER_ID, "2:2"),
+                fixture_email_app_data("Updated", "x@y", "z@w", "<p>u</p>"),
+            ],
+        );
+        // EAS Delete carries the ServerId as a text leaf (per MS-ASSYNC
+        // 2.2.3.4), not as a child element.
+        let delete_cmd = WbxmlElement::text(PAGE_AIRSYNC, AS_DELETE, "3:3");
+        let commands = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COMMANDS,
+            vec![change_cmd, delete_cmd],
+        );
+        let collection = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTION,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, "{sk2}"),
+                WbxmlElement::text(PAGE_AIRSYNC, AS_STATUS, "1"),
+                commands,
+            ],
+        );
+        let tree = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_SYNC,
+            vec![WbxmlElement::container(
+                PAGE_AIRSYNC,
+                AS_COLLECTIONS,
+                vec![collection],
+            )],
+        );
+
+        let result = parse_sync_response(&tree).expect("parse");
+
+        assert!(result.added.is_empty(), "no Add in this fixture");
+        assert_eq!(result.updated.len(), 1, "one Change");
+        assert_eq!(result.updated[0].server_id, "2:2");
+        assert_eq!(
+            result.deleted_server_ids,
+            vec!["3:3".to_string()],
+            "Delete ServerId must land in deleted_server_ids"
+        );
+        // No MoreAvailable in this fixture.
+        assert!(
+            !result.more_available,
+            "MoreAvailable absent must remain false"
+        );
+    }
+
+    /// Status-recovery parse lock: a Collection carrying `Status = "3"`
+    /// (invalid sync key, per MS-ASSYNC 2.2.3.23) must surface on
+    /// `SyncResult.status` so `EasSource::sync_folder`'s resync branch can act
+    /// on it. Task 4 covered the *behavioral* recovery; this test locks the
+    /// *parse-level* status plumbing that feeds it.
+    ///
+    /// Without the parser surfacing Status, `result.status` would stay at the
+    /// `SyncResult::default()` value of `1` regardless of the wire value, and
+    /// the resync branch would never fire on a real status-3 response.
+    #[test]
+    fn parse_sync_response_surfaces_collection_status_3() {
+        let collection = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTION,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, "{stale}"),
+                WbxmlElement::text(PAGE_AIRSYNC, AS_STATUS, "3"),
+            ],
+        );
+        let tree = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_SYNC,
+            vec![WbxmlElement::container(
+                PAGE_AIRSYNC,
+                AS_COLLECTIONS,
+                vec![collection],
+            )],
+        );
+
+        let result = parse_sync_response(&tree).expect("parse");
+
+        assert_eq!(
+            result.status, 3,
+            "Collection/Status=3 must surface on SyncResult.status so sync_folder can resync"
+        );
+        assert_eq!(result.sync_key, "{stale}");
+        // A status-3 response typically carries no Commands; assert the
+        // vectors stay empty so the engine's resync path (which wipes the
+        // cache and re-enters with sync_key "0") is not fed stale items.
+        assert!(result.added.is_empty());
+        assert!(result.updated.is_empty());
+        assert!(result.deleted_server_ids.is_empty());
+    }
+
+    /// `parse_sync_response` must reject a tree whose root is not
+    /// Sync (page 0, token 0x05) with `WbxmlError::UnexpectedTag`. This locks
+    /// the `expect_tag` guard so a misrouted response (e.g. a FolderSync tree
+    /// handed to the Sync parser) fails loudly rather than returning a default
+    /// `SyncResult` that looks like success.
+    #[test]
+    fn parse_sync_response_rejects_non_sync_root() {
+        let wrong_root =
+            WbxmlElement::container(PAGE_FOLDER, FH_FOLDER_SYNC, vec![]);
+        let err = parse_sync_response(&wrong_root).expect_err("must reject non-Sync root");
+        assert!(
+            matches!(err, WbxmlError::UnexpectedTag { .. }),
+            "expected UnexpectedTag, got {err:?}"
+        );
+    }
+
+    /// An empty Sync tree (root with no Collections child) must parse
+    /// successfully and yield a default `SyncResult` (status=1, empty vectors,
+    /// sync_key=""). This is the shape a server returns when it has nothing to
+    /// say; the engine must treat it as a no-op success, not an error.
+    #[test]
+    fn parse_sync_response_empty_tree_is_default_success() {
+        let tree = WbxmlElement::container(PAGE_AIRSYNC, AS_SYNC, vec![]);
+        let result = parse_sync_response(&tree).expect("parse");
+        assert_eq!(result.status, 1, "default status is success");
+        assert_eq!(result.sync_key, "");
+        assert!(!result.more_available);
+        assert!(result.added.is_empty());
+        assert!(result.updated.is_empty());
+        assert!(result.deleted_server_ids.is_empty());
     }
 }
