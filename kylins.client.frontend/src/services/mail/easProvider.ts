@@ -44,18 +44,46 @@ export interface EasAttachment {
   display_name: string;
   content_id: string | null;
   is_inline: boolean;
-  estimated_data_size: number;
-  method: number;
+  /** Optional: server may omit. Typed as number|null to match the Rust struct. */
+  estimated_data_size: number | null;
+  /** Optional EAS Method: 1=Normal, 5=EmbeddedMessage, 6=AttachOLE. */
+  method: number | null;
+  /** MIME content type, surfaced on ItemOperations fetch. */
+  content_type: string | null;
+  /** URL for externally-stored attachments. Rarely populated for mail. */
+  content_location: string | null;
 }
 
+/**
+ * EAS Sync item envelope. Mirrors the Rust `EasItem` struct
+ * (`kylins.client.backend/src/eas/types.rs`) which is serialized to camelCase
+ * via `#[serde(rename_all = "camelCase")]` and returned across the `eas_sync`
+ * IPC boundary. The `class` field was dropped in Phase 3a Task 1 (the EAS
+ * protocol carries class at the collection level, not per item) — callers that
+ * need the class must track it from the originating `SyncRequest`.
+ */
 export interface EasItem {
   server_id: string;
-  class: string;
-  fields: Record<string, string>;
-  body: string | null;
-  body_type: string | null;
+  subject: string | null;
+  from: string | null;
+  to: string | null;
+  cc: string | null;
+  bcc: string | null;
+  reply_to: string | null;
+  date_received: string | null;
+  read: boolean | null;
+  flag: boolean | null;
+  importance: number | null;
+  body_html: string | null;
+  body_text: string | null;
+  body_truncated: boolean | null;
   preview: string | null;
+  has_attachments: boolean;
   attachments: EasAttachment[];
+  /** Raw opaque ConversationId bytes from the server. */
+  conversation_id: number[] | null;
+  is_draft: boolean | null;
+  message_id: string | null;
 }
 
 export interface EasSyncResult {

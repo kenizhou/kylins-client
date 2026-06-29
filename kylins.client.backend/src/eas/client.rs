@@ -14,6 +14,12 @@ const PAGE_FOLDER: u8 = 7;
 const PAGE_COMPOSE: u8 = 21;
 const PAGE_ITEM_OPS: u8 = 20;
 const PAGE_PING: u8 = 13;
+const PAGE_AIRSYNC: u8 = 0;
+
+/// AirSync (page 0) `Sync` root token. Used by the Sync response `expect_root`
+/// check so a non-Sync response (server error page, OWA redirect, etc.) is
+/// surfaced as `UnexpectedRoot` rather than a confusing parse failure.
+const AS_SYNC: u8 = 0x05;
 
 const FH_FOLDER_SYNC: u8 = 0x16;
 const FH_FOLDER_CREATE: u8 = 0x13;
@@ -190,12 +196,13 @@ impl EasClient {
     /// Sync — single-collection item sync.
     pub async fn sync(&self, req: &SyncRequest) -> Result<SyncResult, EasError> {
         let tree = commands::build_sync_request(req);
-        let _ = self.send_command("Sync", &tree).await?;
-        // Note: parsing the Sync response requires the full Sync tree walker
-        // which is in commands::parse_sync_response. The response from server
-        // is the actual Sync element, not the request shape.
-        // For MVP, return a SyncResult with the next sync key if present.
-        Ok(SyncResult::default())
+        let resp = self.send_command("Sync", &tree).await?;
+        // Verify the server returned a Sync element. A non-Sync root typically
+        // means the server returned an error page or OWA redirect that the
+        // transport layer couldn't detect — surface it rather than attempt a
+        // misleading parse.
+        expect_root(&resp, PAGE_AIRSYNC, AS_SYNC)?;
+        Ok(commands::parse_sync_response(&resp)?)
     }
 
     /// SendMail — send a single MIME message.

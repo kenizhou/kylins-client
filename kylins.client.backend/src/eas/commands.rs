@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 use crate::eas::types::*;
+use crate::eas::wbxml::tags::{self, pages};
 use crate::eas::wbxml::types::{WbxmlElement, WbxmlValue};
 use crate::eas::wbxml::WbxmlError;
 
@@ -44,6 +45,7 @@ const AS_GET_CHANGES: u8 = 0x13;
 const AS_MORE_AVAILABLE: u8 = 0x14;
 const AS_WINDOW_SIZE: u8 = 0x15;
 const AS_COMMANDS: u8 = 0x16;
+const AS_OPTIONS: u8 = 0x17; // Options (per [MS-ASSYNC] 2.2.3.25); matches tags::airsync::OPTIONS
 const AS_APPLICATION_DATA: u8 = 0x1D;
 
 // ---------- FolderHierarchy (page 7) tag ids ----------
@@ -269,6 +271,26 @@ pub fn build_sync_request(req: &SyncRequest) -> WbxmlElement {
             AS_WINDOW_SIZE,
             req.window_size.to_string(),
         ));
+    }
+
+    // Per [MS-ASSYNC] 2.2.3.25 — `Options` inside a `Collection` lets the
+    // client request a specific body format. We emit an AirSyncBase
+    // `BodyPreference` with `Type=2` (HTML) so the server returns message
+    // bodies. Gated on `fetch_body` so header-only sync rounds stay cheap.
+    // Code-page ids: AirSyncBase = 17 (pages::BASE); tokens are
+    // `BodyPreference` (0x05) and `Type` (0x06) per tags::base.
+    if req.fetch_body {
+        let body_preference = WbxmlElement::container(
+            pages::BASE,
+            tags::base::BODY_PREFERENCE,
+            vec![WbxmlElement::text(pages::BASE, tags::base::TYPE, "2")],
+        );
+        let options = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_OPTIONS,
+            vec![body_preference],
+        );
+        collection_children.push(options);
     }
 
     let mut collection = WbxmlElement::container(PAGE_AIRSYNC, AS_COLLECTION, collection_children);
@@ -1668,5 +1690,113 @@ mod tests {
         );
         let item = parse_application_data_for_test("s1", &app_data);
         assert_eq!(item.subject.as_deref(), Some("Real Subject"));
+    }
+
+    // ---- Phase 3a Task 3: build_sync_request emits BodyPreference ----
+
+    /// `build_sync_request` must emit an `Options/BodyPreference/Type=2` element
+    /// inside each `Collection` so the server returns HTML bodies (per
+    /// [MS-ASAIRSMB] AirSyncBase:BodyPreference). This test serializes the
+    /// built tree to WBXML bytes and back, then walks the deserialized tree to
+    /// prove the element survives a real round-trip — a pure structural
+    /// equality check would miss serializer/deserializer bugs.
+    #[test]
+    fn build_sync_request_emits_body_preference_type_2() {
+        use crate::eas::wbxml::tags::{airsync, base, pages};
+
+        let req = SyncRequest {
+            collection_id: "col-1".to_string(),
+            sync_key: "key-0".to_string(),
+            class: "Email".to_string(),
+            window_size: 25,
+            filter_age_days: 7,
+            fetch_body: true,
+        };
+        let tree = build_sync_request(&req);
+        let back = round_trip(&tree);
+
+        // Root: Sync (page 0, 0x05)
+        assert_eq!(back.page, PAGE_AIRSYNC);
+        assert_eq!(back.token, AS_SYNC);
+
+        // Walk Collections → Collection.
+        let collections = back
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTIONS)
+            .expect("missing Collections container");
+        let collection = collections
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTION)
+            .expect("missing Collection element");
+
+        // Options must be present inside the collection.
+        let options = collection
+            .children
+            .iter()
+            .find(|c| c.page == pages::AIRSYNC && c.token == airsync::OPTIONS)
+            .expect("missing Options element inside Collection");
+        assert_eq!(options.tag_name(), "Options");
+
+        // BodyPreference inside Options.
+        let body_pref = options
+            .children
+            .iter()
+            .find(|c| c.page == pages::BASE && c.token == base::BODY_PREFERENCE)
+            .expect("missing BodyPreference element inside Options");
+        assert_eq!(body_pref.tag_name(), "BodyPreference");
+
+        // Type child must be present with value "2" (HTML).
+        let type_el = body_pref
+            .children
+            .iter()
+            .find(|c| c.page == pages::BASE && c.token == base::TYPE)
+            .expect("missing Type element inside BodyPreference");
+        assert_eq!(type_el.tag_name(), "Type");
+        match &type_el.value {
+            WbxmlValue::Text(t) => assert_eq!(t, "2"),
+            other => panic!("expected Text value for BodyPreference/Type, got {:?}", other),
+        }
+    }
+
+    /// When `fetch_body` is false, the `Options/BodyPreference` block must be
+    /// omitted so the server doesn't waste bandwidth returning bodies.
+    #[test]
+    fn build_sync_request_omits_body_preference_when_fetch_body_false() {
+        use crate::eas::wbxml::tags::{airsync, base, pages};
+
+        let req = SyncRequest {
+            collection_id: "col-1".to_string(),
+            sync_key: "key-0".to_string(),
+            class: "Email".to_string(),
+            window_size: 25,
+            filter_age_days: 7,
+            fetch_body: false,
+        };
+        let tree = build_sync_request(&req);
+        let back = round_trip(&tree);
+
+        let collections = back
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTIONS)
+            .expect("missing Collections container");
+        let collection = collections
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTION)
+            .expect("missing Collection element");
+
+        let has_body_pref = collection.children.iter().any(|c| {
+            c.page == pages::BASE && c.token == base::BODY_PREFERENCE
+                || (c.page == pages::AIRSYNC
+                    && c.token == airsync::OPTIONS
+                    && c.children.iter().any(|o| o.page == pages::BASE && o.token == base::BODY_PREFERENCE))
+        });
+        assert!(
+            !has_body_pref,
+            "BodyPreference should NOT be emitted when fetch_body=false"
+        );
     }
 }

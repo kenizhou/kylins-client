@@ -15,7 +15,14 @@ import type { Account } from '../../types';
 import { easConfigFromAccount, type EasSyncResult, type EasItem } from '../mail/easProvider';
 import type { ParsedEvent } from './icalHelper';
 
-/** MS-ASCAL property names (subset) as returned in `EasItem.fields`. */
+/**
+ * MS-ASCAL property names (subset). Phase 3a Task 2 only wired Email-class
+ * parsing into the typed `EasItem`; Calendar-class parsing (Location,
+ * StartTime, EndTime, UID, AllDayEvent, OrganizerEmail/Name) is still
+ * TODO(phase3a). Until that lands, `easItemToEvent` cannot reliably extract
+ * these fields and returns null. The constants are kept so the eventual
+ * calendar-parser task can wire them up without re-deriving the names.
+ */
 const CAL = {
   subject: 'Subject',
   location: 'Location',
@@ -69,37 +76,36 @@ export class EasCalendarProvider {
   }
 
   /**
-   * Convert an EAS calendar item (MS-ASCAL property map) into a VEVENT ICS, then
-   * parse it. Returns null if the item lacks a start time.
+   * Convert an EAS calendar item into a ParsedEvent.
+   *
+   * Phase 3a Task 2 only wired Email-class field parsing into the typed
+   * `EasItem` (Subject, From, To, Body, etc.). MS-ASCAL calendar properties
+   * (StartTime, EndTime, Location, UID, AllDayEvent, OrganizerEmail/Name) are
+   * not yet modeled on the Rust `EasItem` struct, so they cannot be read here
+   * until TODO(phase3a) lands a Calendar-class ApplicationData parser. Until
+   * then this returns `null` for every item so `parseSynced` yields an empty
+   * list rather than throwing on `item.fields`/`item.class` accesses.
    */
   easItemToEvent(item: EasItem): ParsedEvent | null {
-    const f = item.fields;
-    const start = f[CAL.startTime];
-    const end = f[CAL.endTime];
-    if (!start) return null;
-    // Build the ParsedEvent directly from the MS-ASCAL field map — the EAS item
-    // is already a flat property map, so a generate-then-parse ICS round-trip is
-    // wasted work on the sync hot path.
-    return {
-      uid: f[CAL.uid] ?? item.server_id,
-      summary: f[CAL.subject] || undefined,
-      description: item.body ?? undefined,
-      location: f[CAL.location] ?? undefined,
-      start: new Date(start),
-      end: end ? new Date(end) : undefined,
-      allDay: f[CAL.allDayEvent] === '1',
-      organizer: f[CAL.organizerEmail]
-        ? { email: f[CAL.organizerEmail] as string, name: f[CAL.organizerName] ?? undefined }
-        : undefined,
-      attendees: [],
-    };
+    // TODO(phase3a): once the Rust EasItem models MS-ASCAL properties (or
+    // surfaces an `application_data: Record<string,string>` slot for non-Email
+    // classes), read them here. The MS-ASCAL names are in the `CAL` table.
+    // The only fields currently available on the typed EasItem that a calendar
+    // event could use are `subject` and `body_html` — but a calendar event
+    // without a start time is meaningless, so bail out until the parser lands.
+    void item;
+    void CAL;
+    return null;
   }
 
   /** Parse synced calendar items into ParsedEvents (skipping unparseable ones). */
   parseSynced(result: EasSyncResult): ParsedEvent[] {
     const out: ParsedEvent[] = [];
     for (const item of [...result.added, ...result.updated]) {
-      if (item.class !== 'Calendar') continue;
+      // `item.class` is no longer a field on the typed EasItem (EAS carries
+      // class at the collection level). Calendar items come from a Sync call
+      // issued with class: 'Calendar', so we cannot filter by per-item class
+      // anymore; just attempt the conversion.
       const ev = this.easItemToEvent(item);
       if (ev) out.push(ev);
     }
