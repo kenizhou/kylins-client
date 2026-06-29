@@ -12,6 +12,22 @@ use tokio_native_tls::TlsStream;
 
 use super::types::*;
 
+/// Headers-only sync fetch query (RFC 3501 BODY.PEEK[HEADER.FIELDS]). Sync pulls
+/// envelopes + flags + size — NOT full bodies — so async-imap can parse the small
+/// responses and a 10K-message folder syncs in seconds instead of hanging on
+/// full-body downloads. Bodies are fetched on demand via `fetch_message_body` /
+/// `sync_request_bodies`.
+///
+/// The field list mirrors the spec for `parse_message`: addressing (`From`/`To`/
+/// `Cc`/`Bcc`/`Reply-To`), threading (`Message-Id`/`In-Reply-To`/`References`),
+/// list management (`List-Unsubscribe`/`List-Unsubscribe-Post`), and
+/// `Authentication-Results` for phishing checks. `RFC822.SIZE` gives the UI the
+/// on-wire size without a second round-trip.
+pub const SYNC_FETCH_QUERY: &str =
+    "UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC BCC REPLY-TO \
+     DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST \
+     AUTHENTICATION-RESULTS)]";
+
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -230,7 +246,7 @@ pub async fn fetch_messages(
 
     let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
         let stream = session
-            .uid_fetch(uid_range, "UID FLAGS INTERNALDATE BODY.PEEK[]")
+            .uid_fetch(uid_range, SYNC_FETCH_QUERY)
             .await
             .map_err(|e| format!("UID FETCH {folder} uids={uid_range} failed: {e}"))?;
         Ok::<_, String>(stream.collect::<Vec<_>>().await)
@@ -278,7 +294,10 @@ pub async fn fetch_messages(
                 continue;
             }
         };
-        let raw_size = raw.len() as u32;
+        // SYNC_FETCH_QUERY asks for RFC822.SIZE — prefer the server-reported
+        // on-wire size (accurate; the body bytes here are header-only). Fall
+        // back to the buffered length if the server omitted RFC822.SIZE.
+        let raw_size = fetch.size.unwrap_or(raw.len() as u32);
         let flags: Vec<_> = fetch.flags().collect();
         let is_read = flags.iter().any(|f| matches!(f, Flag::Seen));
         let is_starred = flags.iter().any(|f| matches!(f, Flag::Flagged));
@@ -1037,7 +1056,11 @@ pub async fn raw_fetch_messages(
         highest_modseq: None,
     };
 
-    let fetch_cmd = format!("a3 UID FETCH {uid_range} (UID FLAGS INTERNALDATE BODY.PEEK[])\r\n");
+    // Headers-only, mirroring SYNC_FETCH_QUERY. The raw-TCP fallback exists
+    // because async-imap 0.10 silently returns 0 items on very large bodies;
+    // keeping the same field set as the primary path means a fallback behaves
+    // consistently (no surprise full-body downloads, no re-introduced hang).
+    let fetch_cmd = format!("a3 UID FETCH {uid_range} ({SYNC_FETCH_QUERY})\r\n");
     reader
         .get_mut()
         .write_all(fetch_cmd.as_bytes())
@@ -1903,7 +1926,34 @@ pub async fn session_capabilities(
 
 #[cfg(test)]
 mod tests {
-    use super::capabilities_from_strs;
+    use super::{capabilities_from_strs, SYNC_FETCH_QUERY};
+
+    /// Regression lock for the headers-first sync fix. The folder sweep MUST NOT
+    /// request `BODY.PEEK[]` (full body) — that hangs async-imap on large folders
+    /// and downloads gigabytes of bodies the user may never open. Sync pulls
+    /// headers + metadata only; bodies arrive on demand via `sync_request_bodies`
+    /// → `fetch_message_body`. If this assertion fails, someone reverted the
+    /// sync query to the full-body form.
+    #[test]
+    fn sync_fetch_query_is_headers_only_not_full_body() {
+        assert!(
+            SYNC_FETCH_QUERY.contains("HEADER.FIELDS"),
+            "SYNC_FETCH_QUERY must select header fields (BODY.PEEK[HEADER.FIELDS ...]); \
+             got: {SYNC_FETCH_QUERY}",
+        );
+        assert!(
+            !SYNC_FETCH_QUERY.contains("BODY.PEEK[]"),
+            "SYNC_FETCH_QUERY must NOT contain the full-body literal `BODY.PEEK[]` \
+             (it hangs large-folder sync); got: {SYNC_FETCH_QUERY}",
+        );
+        // The query must also request the metadata the message list / threading
+        // needs — FLAGS, INTERNALDATE, UID, and RFC822.SIZE (the last so the UI
+        // can show message sizes without a second fetch).
+        assert!(SYNC_FETCH_QUERY.contains("UID"));
+        assert!(SYNC_FETCH_QUERY.contains("FLAGS"));
+        assert!(SYNC_FETCH_QUERY.contains("INTERNALDATE"));
+        assert!(SYNC_FETCH_QUERY.contains("RFC822.SIZE"));
+    }
 
     #[test]
     fn capabilities_from_strs_maps_known_flags() {

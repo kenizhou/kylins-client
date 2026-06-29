@@ -173,6 +173,92 @@ describe('threadStore.selectThread', () => {
 
     expect(invoke).not.toHaveBeenCalled();
   });
+
+  // ---- Headers-first sync: on-demand body fetch on open ----
+  //
+  // When the body is uncached (headers-only sync left message_bodies empty),
+  // opening a thread MUST trigger `sync_request_bodies` for that message and
+  // re-read the cache before rendering. This is the second half of the fix for
+  // the large-folder sync hang: the sweep downloads headers only, bodies arrive
+  // lazily here.
+
+  it('fetches the body on demand when uncached, then re-renders with it', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([
+      {
+        id: 'm1',
+        account_id: 'a1',
+        thread_id: 't1',
+        from_address: 'b@x.com',
+        from_name: 'Bob',
+        to_addresses: 'c@y.com',
+        cc_addresses: null,
+        subject: 'S',
+        snippet: 'sn',
+        date: 100,
+        is_read: 1,
+        is_starred: 0,
+        body_text: 'txt',
+        imap_uid: 4242,
+        imap_folder: 'INBOX',
+      },
+    ]);
+    // First read: cache miss (null row). Second read: after the backend fetch,
+    // the body is present.
+    vi.mocked(getMessageBody).mockResolvedValueOnce(null).mockResolvedValueOnce({
+      accountId: 'a1',
+      messageId: 'm1',
+      bodyHtml: '<p>lazy</p>',
+      fetchedAt: 99,
+    });
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    // Two cache reads (before + after the fetch).
+    expect(getMessageBody).toHaveBeenCalledTimes(2);
+    // On-demand fetch command fired for exactly this message.
+    expect(invoke).toHaveBeenCalledWith('sync_request_bodies', {
+      accountId: 'a1',
+      messageIds: ['m1'],
+    });
+    // The reading pane received the lazily-fetched HTML.
+    expect(useViewStore.getState().selectedMessage?.html).toBe('<p>lazy</p>');
+  });
+
+  it('does NOT invoke sync_request_bodies when the body is already cached', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([
+      {
+        id: 'm1',
+        account_id: 'a1',
+        thread_id: 't1',
+        from_address: 'b@x.com',
+        from_name: 'Bob',
+        to_addresses: 'c@y.com',
+        cc_addresses: null,
+        subject: 'S',
+        snippet: 'sn',
+        date: 100,
+        is_read: 1,
+        is_starred: 0,
+        body_text: 'txt',
+        imap_uid: 4242,
+        imap_folder: 'INBOX',
+      },
+    ]);
+    vi.mocked(getMessageBody).mockResolvedValue({
+      accountId: 'a1',
+      messageId: 'm1',
+      bodyHtml: '<p>cached</p>',
+      fetchedAt: 1,
+    });
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    // No on-demand fetch when the cache already had the body.
+    expect(invoke).not.toHaveBeenCalledWith('sync_request_bodies', expect.anything());
+    expect(useViewStore.getState().selectedMessage?.html).toBe('<p>cached</p>');
+  });
 });
 
 const messageRow = (over: Partial<DbMessageRow> = {}): DbMessageRow => ({

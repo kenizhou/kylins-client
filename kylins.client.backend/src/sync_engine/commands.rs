@@ -7,7 +7,8 @@ use sqlx::SqlitePool;
 use tauri::State;
 
 use super::engine::SyncEngine;
-use crate::db::{mutations::MutationOp, queue};
+use super::{source_for_account, RemoteFolder};
+use crate::db::{message_bodies, messages, mutations::MutationOp, queue};
 
 #[tauri::command]
 pub async fn sync_start(engine: State<'_, Arc<SyncEngine>>) -> Result<(), String> {
@@ -29,13 +30,92 @@ pub async fn sync_account_now(
     Ok(())
 }
 
+/// Fetch full message bodies on demand (the second half of the headers-first
+/// sync design). The folder sweep persists envelopes + flags only
+/// (`SYNC_FETCH_QUERY`); bodies arrive here when the user opens a message whose
+/// `message_bodies` row is missing. For each `message_id`: read its
+/// `(imap_folder, imap_uid)` location, build the account's `MailSource`, call
+/// `fetch_body`, and upsert the HTML into `message_bodies` via
+/// [`message_bodies::set_message_body`].
+///
+/// Best-effort: per-message failures are logged and skipped so one bad row
+/// never aborts the whole batch (the caller — `threadStore.selectThread` —
+/// re-reads the cache and renders whatever is present).
+///
+/// The thin `State` wrapper delegates to [`request_bodies_inner`] so the logic
+/// is unit-testable without a `State` harness (mirrors `apply_mutation_inner`).
 #[tauri::command]
 pub async fn sync_request_bodies(
     _engine: State<'_, Arc<SyncEngine>>,
-    _account_id: String,
-    _message_ids: Vec<String>,
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_ids: Vec<String>,
 ) -> Result<(), String> {
-    // Phase 0: bodies are fetched inline during sync_folder. On-demand prefetch is Phase 2.
+    request_bodies_inner(pool.inner(), &account_id, &message_ids).await
+}
+
+/// Testable core of [`sync_request_bodies`]. Takes a borrowed pool so unit tests
+/// can drive it without a `State<'_, SqlitePool>` harness.
+pub async fn request_bodies_inner(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_ids: &[String],
+) -> Result<(), String> {
+    if message_ids.is_empty() {
+        return Ok(());
+    }
+    // One source for the whole batch — `source_for_account` opens a fresh
+    // connection per `fetch_body` call inside (ImapSource owns its lifecycle),
+    // so we don't need to keep a session alive across messages.
+    let src = match source_for_account(pool, account_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[sync] request_bodies: source for {account_id} failed: {e}");
+            return Err(e);
+        }
+    };
+    for mid in message_ids {
+        // Resolve the IMAP coordinates for this message. Missing row / NULL UID
+        // → skip (non-IMAP sources or partially-migrated data).
+        let (folder_path, uid) = match messages::get_folder_uid_for_message(pool, account_id, mid)
+            .await
+        {
+            Ok(Some(loc)) => loc,
+            Ok(None) => {
+                log::warn!(
+                    "[sync] request_bodies: no imap_folder/uid for message {mid}; skipping"
+                );
+                continue;
+            }
+            Err(e) => {
+                log::warn!(
+                    "[sync] request_bodies: lookup failed for message {mid}: {e}; skipping"
+                );
+                continue;
+            }
+        };
+        let folder = RemoteFolder {
+            remote_id: folder_path.clone(),
+            ..Default::default()
+        };
+        match src.fetch_body(&folder, uid).await {
+            Ok(Some(html)) => {
+                if let Err(e) =
+                    message_bodies::set_message_body(pool, account_id, mid, &html).await
+                {
+                    log::warn!(
+                        "[sync] request_bodies: persist body for {mid} (uid {uid} in {folder_path}) failed: {e}"
+                    );
+                }
+            }
+            Ok(None) => log::info!(
+                "[sync] request_bodies: uid {uid} in {folder_path} had no body (empty message?)"
+            ),
+            Err(e) => log::warn!(
+                "[sync] request_bodies: fetch_body uid {uid} in {folder_path} failed: {e}"
+            ),
+        }
+    }
     Ok(())
 }
 
@@ -285,5 +365,46 @@ mod tests {
         .unwrap();
         assert_eq!(rid, mid);
         assert_eq!(op_type, "delete");
+    }
+
+    // ---- sync_request_bodies (on-demand body fetch) ----
+
+    /// Empty input is a no-op — never reaches the source factory (which would
+    /// fail for an account whose provider has no row, e.g. a fresh test DB).
+    #[tokio::test]
+    async fn request_bodies_inner_empty_input_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        // Note: no account seeded — the empty-input early return must fire
+        // before `source_for_account` is ever called.
+        request_bodies_inner(&pool, "acct", &[])
+            .await
+            .expect("empty input must short-circuit to Ok");
+    }
+
+    /// Missing-message rows are skipped silently (the contract the frontend
+    /// relies on: opening a not-yet-synced thread does not throw). Seeds the
+    /// account so the source factory can resolve it, but passes message ids
+    /// that have no `messages` row — every iteration hits the None branch.
+    #[tokio::test]
+    async fn request_bodies_inner_skips_missing_message_rows_without_aborting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+
+        request_bodies_inner(
+            &pool,
+            "acct",
+            &["missing-1".into(), "missing-2".into()],
+        )
+        .await
+        .expect("best-effort: missing rows must not abort the batch");
+
+        // Nothing persisted.
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM message_bodies")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

@@ -69,6 +69,28 @@ pub async fn apply_folder_delta(
     })
 }
 
+/// Look up the `(imap_folder, imap_uid)` location of a message so the sync
+/// engine can fetch its body on demand. Returns `None` if the row is missing or
+/// its UID/folder are NULL (non-IMAP sources, partially-migrated rows). Used by
+/// `sync_engine::commands::sync_request_bodies` to translate a frontend
+/// `message_id` into the IMAP coordinates `MailSource::fetch_body` needs.
+pub async fn get_folder_uid_for_message(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<(String, u32)>, String> {
+    let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT imap_folder, imap_uid FROM messages WHERE account_id = ? AND id = ?",
+    )
+    .bind(account_id)
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row
+        .and_then(|(folder, uid)| folder.zip(uid.and_then(|u| u32::try_from(u).ok()))))
+}
+
 /// Upsert one message + its (placeholder) thread + thread_label + optional body.
 async fn upsert_message(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
@@ -377,5 +399,81 @@ mod tests {
             .unwrap();
         assert_eq!(count(&pool, "messages").await, 1);
         assert_eq!(count(&pool, "threads").await, 1);
+    }
+
+    // ---- get_folder_uid_for_message (on-demand body fetch helper) ----
+
+    /// Seed one thread + one message row with explicit `(imap_folder, imap_uid)`
+    /// columns so the lookup helper has realistic data to read.
+    async fn seed_message_with_location(
+        pool: &sqlx::SqlitePool,
+        account_id: &str,
+        message_id: &str,
+        folder: &str,
+        uid: u32,
+    ) {
+        sqlx::query(
+            "INSERT INTO threads (id, account_id, subject, is_read, last_message_at)
+             VALUES (?, ?, 's', 0, 0)",
+        )
+        .bind(message_id)
+        .bind(account_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, account_id, thread_id, date, is_read, is_starred,
+                imap_uid, imap_folder)
+             VALUES (?, ?, ?, 0, 0, 0, ?, ?)",
+        )
+        .bind(message_id)
+        .bind(account_id)
+        .bind(message_id)
+        .bind(uid as i64)
+        .bind(folder)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_folder_uid_returns_location_for_seeded_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        seed_message_with_location(&pool, "acc", "imap-acc-INBOX-42", "INBOX", 42).await;
+
+        let loc = get_folder_uid_for_message(&pool, "acc", "imap-acc-INBOX-42")
+            .await
+            .unwrap();
+        assert_eq!(loc, Some(("INBOX".to_string(), 42)));
+    }
+
+    #[tokio::test]
+    async fn get_folder_uid_returns_none_for_missing_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        assert!(get_folder_uid_for_message(&pool, "acc", "no-such-id")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn get_folder_uid_isolates_by_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "a1").await;
+        seed(&pool, "a2").await;
+        seed_message_with_location(&pool, "a1", "shared-id", "INBOX", 7).await;
+        // Same message id under a different account must not be visible.
+        assert_eq!(
+            get_folder_uid_for_message(&pool, "a2", "shared-id")
+                .await
+                .unwrap(),
+            None,
+            "lookup must be scoped by account_id"
+        );
     }
 }

@@ -90,7 +90,23 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       const messages = await getMessagesForThread(thread.accountId, thread.id);
       const latest = messages[messages.length - 1] ?? null;
       if (latest) {
-        const body = await getMessageBody(thread.accountId, latest.id);
+        // Headers-first sync: the folder sweep no longer downloads bodies, so
+        // open them on demand. If the body is uncached, ask the backend to
+        // fetch it (sync_request_bodies → source.fetch_body → message_bodies
+        // upsert) then re-read. Best-effort: on failure we render whatever the
+        // cache has (null body → reading pane shows the text fallback).
+        let body = await getMessageBody(thread.accountId, latest.id);
+        if (!body || body.bodyHtml == null) {
+          try {
+            await invoke('sync_request_bodies', {
+              accountId: thread.accountId,
+              messageIds: [latest.id],
+            });
+            body = await getMessageBody(thread.accountId, latest.id);
+          } catch (e) {
+            console.error('on-demand body fetch failed:', e);
+          }
+        }
         useViewStore
           .getState()
           .setSelectedMessage(mapMessageToMailMessage(latest, body?.bodyHtml ?? null));
