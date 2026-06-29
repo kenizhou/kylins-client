@@ -42,13 +42,18 @@ const IDLE_KEEPALIVE: Duration = Duration::from_secs(28 * 60);
 pub struct ImapSource {
     account: Account,
     caps: Mutex<Option<Capabilities>>,
+    /// DB pool so `sync_folder` can read locally-cached UIDs for the expunge
+    /// set-difference (server `UID SEARCH ALL` minus local UIDs = vanished).
+    /// Cheap `Arc`-backed clone from the engine's single shared pool.
+    pool: sqlx::SqlitePool,
 }
 
 impl ImapSource {
-    pub fn new(account: Account) -> Self {
+    pub fn new(account: Account, pool: sqlx::SqlitePool) -> Self {
         Self {
             account,
             caps: Mutex::new(None),
+            pool,
         }
     }
 
@@ -391,13 +396,59 @@ impl MailSource for ImapSource {
             }
         }
 
+        // Expunge detection via set-difference (universal; needs no QRESYNC/VANISHED
+        // support). Server `UID SEARCH ALL` is the source of truth for "currently
+        // exists"; local UIDs not in that set were expunged on the server. Reuses
+        // the session we already hold (MUST run before logout). Best-effort: a
+        // search/list failure is logged and skipped so it never breaks the round.
+        let mut vanished_uids: Vec<u32> = Vec::new();
+        let local_uids = match crate::db::messages::list_local_uids(
+            &self.pool,
+            &self.account.id,
+            &folder.remote_id,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!(
+                    "[sync] list_local_uids {} failed, skipping expunge diff: {e}",
+                    folder.remote_id
+                );
+                vec![]
+            }
+        };
+        if !local_uids.is_empty() {
+            match imap_client::search_all_uids(&mut session, &folder.remote_id).await {
+                Ok(server_uids) => {
+                    let server_set: std::collections::HashSet<u32> =
+                        server_uids.into_iter().collect();
+                    vanished_uids = local_uids
+                        .into_iter()
+                        .filter(|u| !server_set.contains(u))
+                        .collect();
+                    if !vanished_uids.is_empty() {
+                        log::info!(
+                            "[sync] {}: {} locally-cached uid(s) expunged on server",
+                            folder.remote_id,
+                            vanished_uids.len()
+                        );
+                    }
+                }
+                Err(e) => log::warn!(
+                    "[sync] UID SEARCH ALL {} for expunge diff failed: {e}",
+                    folder.remote_id
+                ),
+            }
+        }
+
         let _ = session.logout().await;
 
         Ok(FolderDelta {
             added,
             updated: vec![],
             flag_updates,
-            vanished_uids: vec![],
+            vanished_uids,
             next_cursor: Cursor::Imap {
                 uidvalidity: status.uidvalidity,
                 highest_uid: new_high,
@@ -754,6 +805,10 @@ mod tests {
     async fn watch_returns_err_fast_on_connect_failure_and_is_cancelable_by_drop() {
         // Point at a host that refuses TCP connections on this port. connect() should
         // fail fast (connection refused / timeout), surfacing Err(Other(..)).
+        // The DB pool is required by the constructor but never used here (connect
+        // fails before any DB read), so a throwaway tempdir pool is fine.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
         let account = Account {
             email: "nobody@invalid.test".into(),
             provider: "imap".into(),
@@ -766,7 +821,7 @@ mod tests {
             imap_password: Some("wrong".into()),
             ..Account::default()
         };
-        let source = ImapSource::new(account);
+        let source = ImapSource::new(account, pool);
         let folder = RemoteFolder {
             remote_id: "INBOX".into(),
             name: "INBOX".into(),
@@ -791,16 +846,21 @@ mod tests {
         // Path 2: cancelability by drop. Wrap a fresh watch() call in a very short
         // timeout; if watch() is not cancelable by drop this hangs the test. We use
         // a second source (fresh caps cache) to avoid any state leakage.
-        let source2 = ImapSource::new(Account {
-            email: "nobody2@invalid.test".into(),
-            provider: "imap".into(),
-            imap_host: Some("127.0.0.1".into()),
-            imap_port: Some(1),
-            imap_security: Some("none".into()),
-            imap_username: Some("nobody".into()),
-            imap_password: Some("wrong".into()),
-            ..Account::default()
-        });
+        let tmp2 = tempfile::tempdir().unwrap();
+        let pool2 = init_db(tmp2.path()).await.unwrap();
+        let source2 = ImapSource::new(
+            Account {
+                email: "nobody2@invalid.test".into(),
+                provider: "imap".into(),
+                imap_host: Some("127.0.0.1".into()),
+                imap_port: Some(1),
+                imap_security: Some("none".into()),
+                imap_username: Some("nobody".into()),
+                imap_password: Some("wrong".into()),
+                ..Account::default()
+            },
+            pool2,
+        );
         let cancel = tokio::time::timeout(Duration::from_millis(100), source2.watch(&folder)).await;
         // Either the connect failed fast (Err resolves before the timeout) OR the
         // timeout fired and dropped the pending future. Both prove no hang/panic.
@@ -832,7 +892,7 @@ mod tests {
             .await
             .unwrap();
 
-        let src = ImapSource::new(Account::default());
+        let src = ImapSource::new(Account::default(), pool.clone());
         let cursor = src.load_cursor(&pool, "imap-acct", "INBOX").await;
         match cursor {
             Cursor::Imap {

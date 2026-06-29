@@ -173,6 +173,29 @@ pub async fn get_folder_uid_for_message(
         .and_then(|(folder, uid)| folder.zip(uid.and_then(|u| u32::try_from(u).ok()))))
 }
 
+/// UIDs we currently have cached for (account, folder). Used by the expunge
+/// set-difference (server `UID SEARCH ALL` minus this set = vanished). Rows with
+/// NULL `imap_uid` (non-IMAP sources, partially-migrated rows) are filtered out;
+/// the remaining i64 values are cast to u32 (IMAP UIDs are 32-bit).
+pub async fn list_local_uids(
+    pool: &SqlitePool,
+    account_id: &str,
+    folder_path: &str,
+) -> Result<Vec<u32>, String> {
+    let rows: Vec<(Option<i64>,)> = sqlx::query_as(
+        "SELECT imap_uid FROM messages WHERE account_id = ? AND imap_folder = ?",
+    )
+    .bind(account_id)
+    .bind(folder_path)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(u,)| u.map(|x| x as u32))
+        .collect())
+}
+
 /// Upsert one message + its (placeholder) thread + thread_label + optional body.
 async fn upsert_message(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
@@ -624,6 +647,38 @@ mod tests {
             Some("<p>x</p>"),
             "body must not be clobbered"
         );
+    }
+
+    // ---- list_local_uids (expunge set-difference input) ----
+
+    /// `list_local_uids` returns the `imap_uid` values we currently have cached
+    /// for (account, folder). It is the local half of the expunge set-diff
+    /// (server `UID SEARCH ALL` minus this set = vanished). Rows with NULL
+    /// `imap_uid` (non-IMAP sources, partial migrations) are filtered out.
+    #[tokio::test]
+    async fn list_local_uids_returns_cached_uids_for_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        apply_folder_delta(
+            &pool,
+            "acc",
+            "acc:INBOX",
+            "INBOX",
+            &FolderDelta {
+                added: vec![
+                    msg(1, "<m1>", false),
+                    msg(2, "<m2>", false),
+                    msg(9, "<m9>", false),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut uids = list_local_uids(&pool, "acc", "INBOX").await.unwrap();
+        uids.sort();
+        assert_eq!(uids, vec![1, 2, 9]);
     }
 
     /// VANISHED (QRESYNC) — server expunged the UIDs listed in `vanished_uids`.

@@ -227,7 +227,7 @@ pub async fn source_for_account(
         .await?
         .ok_or_else(|| format!("account {account_id} not found"))?;
     Ok(match acc.provider.as_str() {
-        "imap" => Arc::new(imap_source::ImapSource::new(acc)),
+        "imap" => Arc::new(imap_source::ImapSource::new(acc, pool.clone())),
         "eas" => Arc::new(eas_source::EasSource::new(acc)),
         other => return Err(format!("unsupported provider {other}")),
     })
