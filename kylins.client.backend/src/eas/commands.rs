@@ -1309,7 +1309,7 @@ mod tests {
     fn sync_result_default_status_is_success() {
         let r = SyncResult::default();
         assert_eq!(r.status, 1, "default SyncResult.status must be 1 (success)");
-        assert_eq!(r.more_available, false);
+        assert!(!r.more_available);
         assert!(r.added.is_empty());
         assert!(r.updated.is_empty());
         assert!(r.deleted_server_ids.is_empty());
@@ -1335,7 +1335,7 @@ mod tests {
         assert_eq!(item.body_text, None);
         assert_eq!(item.body_truncated, None);
         assert_eq!(item.preview, None);
-        assert_eq!(item.has_attachments, false);
+        assert!(!item.has_attachments);
         assert!(item.attachments.is_empty());
         assert_eq!(item.conversation_id, None);
         assert_eq!(item.is_draft, None);
@@ -1487,7 +1487,7 @@ mod tests {
         assert_eq!(item.body_html.as_deref(), Some("<p>Hi</p>"));
         assert_eq!(item.body_text, None);
         // No attachments in this fixture.
-        assert_eq!(item.has_attachments, false);
+        assert!(!item.has_attachments);
         assert!(item.attachments.is_empty());
     }
 
@@ -1620,14 +1620,14 @@ mod tests {
             )],
         );
         let item = parse_application_data_for_test("s1", &app_data);
-        assert_eq!(item.has_attachments, true);
+        assert!(item.has_attachments);
         assert_eq!(item.attachments.len(), 1);
         let a = &item.attachments[0];
         assert_eq!(a.display_name, "report.pdf");
         assert_eq!(a.file_reference, "ref-42");
         assert_eq!(a.method, Some(1));
         assert_eq!(a.content_id.as_deref(), Some("<cid-1>"));
-        assert_eq!(a.is_inline, false);
+        assert!(!a.is_inline);
         assert_eq!(a.content_type.as_deref(), Some("application/pdf"));
         assert_eq!(a.estimated_data_size, Some(4096));
         assert_eq!(a.content_location.as_deref(), Some("https://x/a.pdf"));
@@ -1647,7 +1647,7 @@ mod tests {
             )],
         );
         let item = parse_application_data_for_test("s1", &app_data);
-        assert_eq!(item.has_attachments, false);
+        assert!(!item.has_attachments);
         assert!(item.attachments.is_empty());
     }
 
