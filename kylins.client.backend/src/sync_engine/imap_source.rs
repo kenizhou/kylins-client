@@ -226,6 +226,17 @@ impl MailSource for ImapSource {
         self.caps.lock().unwrap().unwrap_or_default()
     }
 
+    /// ImapSource owns its cursor in `folder_sync_state`. Delegates to the shared
+    /// `sync_state::get_imap_cursor` helper (typed row -> `Cursor::Imap`).
+    async fn load_cursor(
+        &self,
+        pool: &sqlx::SqlitePool,
+        account_id: &str,
+        folder_path: &str,
+    ) -> Cursor {
+        crate::db::sync_state::get_imap_cursor(pool, account_id, folder_path).await
+    }
+
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
         let config = self.imap_config();
         let mut session = imap_client::connect(&config).await.map_err(other)?;
@@ -554,6 +565,8 @@ impl MailSource for ImapSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::init_db;
+    use crate::db::sync_state::advance_imap_cursor;
     use crate::mail::imap::types::ImapAttachment;
 
     #[test]
@@ -738,5 +751,44 @@ mod tests {
             "tokio::timeout always resolves; this assert is a no-op sanity check"
         );
         // The load-bearing assertion is that this line is reached at all.
+    }
+
+    /// REGRESSION companion to the EAS `load_cursor` test: confirms
+    /// `ImapSource::load_cursor` reads `folder_sync_state` and returns a
+    /// `Cursor::Imap` with the persisted uidvalidity/uid/modseq. This locks in
+    /// the source-owned `load_cursor` contract for the IMAP side (the engine
+    /// previously called `sync_state::get_imap_cursor` directly; it now goes
+    /// through the trait, so this test proves the delegation is wired).
+    #[tokio::test]
+    async fn load_cursor_returns_persisted_imap_cursor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        // folder_sync_state.account_id REFERENCES accounts(id); seed the parent.
+        sqlx::query("INSERT INTO accounts (id, email, provider) VALUES (?, ?, 'imap')")
+            .bind("imap-acct")
+            .bind("imap@x.com")
+            .execute(&pool)
+            .await
+            .unwrap();
+        advance_imap_cursor(&pool, "imap-acct", "INBOX", 100, 42, 7)
+            .await
+            .unwrap();
+
+        let src = ImapSource::new(Account::default());
+        let cursor = src.load_cursor(&pool, "imap-acct", "INBOX").await;
+        match cursor {
+            Cursor::Imap {
+                uidvalidity,
+                highest_uid,
+                highest_modseq,
+            } => {
+                assert_eq!(uidvalidity, 100);
+                assert_eq!(highest_uid, 42);
+                assert_eq!(highest_modseq, 7);
+            }
+            other => panic!(
+                "ImapSource::load_cursor must return Cursor::Imap, got {other:?}"
+            ),
+        }
     }
 }

@@ -480,7 +480,12 @@ async fn run_sync_round_with_source(
     // Per-folder delta sync.
     for f in &folders {
         let label_id = format!("{account_id}:{}", f.remote_id);
-        let cursor = sync_state::get_imap_cursor(&engine.pool, account_id, &f.remote_id).await;
+        // Source-owned cursor load: each source reads its own persisted cursor
+        // (ImapSource -> folder_sync_state, EasSource -> eas_sync_state). The
+        // previous unconditional `sync_state::get_imap_cursor` here handed an
+        // `Cursor::Imap` to EAS sources, so `EasSource::sync_folder` fell through
+        // to its non-Eas branch and re-bootstrapped (sync_key "0") every round.
+        let cursor = src.load_cursor(&engine.pool, account_id, &f.remote_id).await;
         let delta = match src.sync_folder(f, cursor).await {
             Ok(d) => d,
             Err(e) => {

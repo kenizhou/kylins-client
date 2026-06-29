@@ -180,6 +180,21 @@ pub trait MailSource: Send + Sync {
     ) -> Result<(), SourceError>;
     async fn send(&self, raw_base64url: &str) -> Result<(), SourceError>;
 
+    /// Load this source's persisted per-folder cursor. Each source owns its cursor
+    /// payload and its own persistence table (IMAP: `folder_sync_state`; EAS:
+    /// `eas_sync_state`). The engine calls this before `sync_folder` so the source
+    /// resumes from its real cursor instead of a wrong-type default (the bug this
+    /// fixes: EAS was being handed an `Cursor::Imap` and re-bootstrapping every
+    /// round). Default = `Cursor::default()` so mock/test sources need no change.
+    async fn load_cursor(
+        &self,
+        _pool: &sqlx::SqlitePool,
+        _account_id: &str,
+        _folder_path: &str,
+    ) -> Cursor {
+        Cursor::default()
+    }
+
     // Optional real-time (Phase 2). Default = Unsupported.
     async fn watch(&self, _folder: &RemoteFolder) -> Result<(), SourceError> {
         Err(SourceError::Unsupported)

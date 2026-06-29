@@ -182,6 +182,20 @@ impl MailSource for EasSource {
         }
     }
 
+    /// EasSource owns its cursor in `eas_sync_state`. Delegates to the shared
+    /// `sync_state::get_eas_cursor` helper (typed row -> `Cursor::Eas`). This is
+    /// the fix for the bug where the engine was unconditionally loading the IMAP
+    /// cursor and handing an `Cursor::Imap` to `EasSource::sync_folder`, which
+    /// made EAS re-bootstrap (sync_key "0") every round.
+    async fn load_cursor(
+        &self,
+        pool: &sqlx::SqlitePool,
+        account_id: &str,
+        folder_path: &str,
+    ) -> Cursor {
+        crate::db::sync_state::get_eas_cursor(pool, account_id, folder_path).await
+    }
+
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
         let client = EasClient::new(self.eas_config());
         // Initial FolderSync uses sync_key "0" for the full hierarchy.
@@ -359,6 +373,8 @@ impl MailSource for EasSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::init_db;
+    use crate::db::sync_state::advance_eas_cursor;
     use crate::eas::types::{EasFolder, EasItem};
 
     #[test]
@@ -552,6 +568,82 @@ mod tests {
         match res {
             Err(SourceError::Other(_)) => {}
             other => panic!("expected SourceError::Other, got {other:?}"),
+        }
+    }
+
+    /// REGRESSION for the EAS-cursor bug: `run_sync_round_with_source` used to
+    /// unconditionally call `sync_state::get_imap_cursor(...)` for every account,
+    /// handing `EasSource::sync_folder` a `Cursor::Imap`. The EAS path then fell
+    /// through to its non-Eas branch and re-bootstrapped (sync_key "0") every
+    /// round, never advancing the persisted `Cursor::Eas`.
+    ///
+    /// Fix: the engine now calls `src.load_cursor(...)` (source-owned), and
+    /// `EasSource::load_cursor` reads `eas_sync_state`. This test seeds a
+    /// non-zero sync_key and asserts `EasSource::load_cursor` returns
+    /// `Cursor::Eas { .. }` with the seeded values — NOT `Cursor::Imap`/default.
+    #[tokio::test]
+    async fn load_cursor_returns_persisted_eas_cursor_not_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        // eas_sync_state.account_id REFERENCES accounts(id), so seed the parent
+        // row first (matches the sync_state.rs test helper convention).
+        sqlx::query("INSERT INTO accounts (id, email, provider) VALUES (?, ?, 'eas')")
+            .bind("eas-acct")
+            .bind("eas@x.com")
+            .execute(&pool)
+            .await
+            .unwrap();
+        advance_eas_cursor(&pool, "eas-acct", "INBOX", "col-7", "{sync-key-123}")
+            .await
+            .unwrap();
+
+        let src = EasSource::new(Account::default());
+        let cursor = src.load_cursor(&pool, "eas-acct", "INBOX").await;
+
+        // The load-bearing assertion: the cursor is EAS-shaped and carries the
+        // persisted sync_key. Before the fix this returned Cursor::Imap (default)
+        // because the engine called get_imap_cursor, which has no row and falls
+        // back to Cursor::initial_imap().
+        match cursor {
+            Cursor::Eas {
+                collection_id,
+                sync_key,
+            } => {
+                assert_eq!(collection_id, "col-7");
+                assert_eq!(sync_key, "{sync-key-123}");
+            }
+            other => panic!(
+                "EasSource::load_cursor must return Cursor::Eas, got {other:?}"
+            ),
+        }
+    }
+
+    /// Companion to the seeded-cursor test: with no persisted row,
+    /// `EasSource::load_cursor` returns the initial EAS cursor (sync_key "0"),
+    /// NOT the IMAP default. This is what a fresh EAS folder sees on its first
+    /// sync round. (No accounts row needed — get_eas_cursor only reads.)
+    #[tokio::test]
+    async fn load_cursor_returns_initial_eas_cursor_when_no_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+
+        let src = EasSource::new(Account::default());
+        let cursor = src.load_cursor(&pool, "eas-acct", "INBOX").await;
+
+        // get_eas_cursor falls back to Cursor::initial_eas(folder_id) when no
+        // row exists — EAS-shaped, sync_key "0". Asserting it is NOT the IMAP
+        // default is the regression guard.
+        match cursor {
+            Cursor::Eas {
+                collection_id,
+                sync_key,
+            } => {
+                assert_eq!(collection_id, "INBOX");
+                assert_eq!(sync_key, "0");
+            }
+            other => panic!(
+                "EasSource::load_cursor with no row must return initial Cursor::Eas, got {other:?}"
+            ),
         }
     }
 }
