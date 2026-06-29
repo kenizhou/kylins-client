@@ -445,7 +445,21 @@ fn parse_application_data(app_data: &WbxmlElement, item: &mut EasItem) {
             "Importance" => item.importance = text_value_opt(child).and_then(|s| s.parse().ok()),
             "Body" => parse_body(child, item),
             "Attachments" => parse_attachments(child, item),
-            "ConversationId" => item.conversation_id = Some(opaque_value_opt(child).unwrap_or_default()),
+            "ConversationId" => {
+                // ConversationId (Email2 page 22, token 0x09) is opaque binary
+                // on the wire, but many Exchange deployments serialize it as
+                // base64 *text*. Handle both variants and keep the bytes
+                // verbatim — downstream treats `conversation_id` as opaque
+                // bytes (no base64 decode). A missing or empty value must map
+                // to `None` (not `Some(vec![])`), since empty != absent and
+                // `Some([])` would serialize as `"conversationId":[]`,
+                // misleading the frontend's threading logic.
+                item.conversation_id = match &child.value {
+                    WbxmlValue::Opaque(b) if !b.is_empty() => Some(b.clone()),
+                    WbxmlValue::Text(s) if !s.is_empty() => Some(s.as_bytes().to_vec()),
+                    _ => None,
+                };
+            }
             "IsDraft" => item.is_draft = text_value_opt(child).map(|s| s == "1"),
             // Tags we deliberately ignore for MVP — they are either metadata
             // we don't model yet, or already consumed at a higher level
@@ -528,15 +542,6 @@ fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
         WbxmlValue::Text(s) => Some(s.clone()),
         WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
         WbxmlValue::Empty => None,
-    }
-}
-
-/// Return the opaque bytes of a leaf element, or `None` for empty/text leaves.
-/// Used for binary-valued tags like `ConversationId`.
-fn opaque_value_opt(elem: &WbxmlElement) -> Option<Vec<u8>> {
-    match &elem.value {
-        WbxmlValue::Opaque(b) => Some(b.clone()),
-        _ => None,
     }
 }
 
@@ -1666,6 +1671,98 @@ mod tests {
         );
         let item = parse_application_data_for_test("s1", &app_data);
         assert_eq!(item.conversation_id, Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+    }
+
+    /// ConversationId carried as base64 **text** (page 22, token 0x09) — the form
+    /// many Exchange deployments serialize it in — must parse to a non-empty
+    /// `Some(Vec<u8>)`. The bytes are kept verbatim (no base64 decode); downstream
+    /// treats `conversation_id` as opaque bytes regardless of wire form.
+    ///
+    /// Regression for the asymmetry where the old `opaque_value_opt` only matched
+    /// `WbxmlValue::Opaque` and silently dropped the text form.
+    #[test]
+    fn parse_application_data_conversation_id_text_form_is_kept() {
+        use crate::eas::wbxml::tags::email2;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(
+                email2::PAGE,
+                email2::CONVERSATION_ID,
+                "Y29udm8=", // arbitrary base64-looking string; kept verbatim
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        let cid = item
+            .conversation_id
+            .clone()
+            .expect("text-form ConversationId must not be dropped");
+        assert!(!cid.is_empty(), "non-empty text must yield non-empty bytes");
+        assert_eq!(cid, b"Y29udm8=".to_vec());
+    }
+
+    /// A missing or empty ConversationId must parse to `None`, NOT `Some(vec![])`.
+    /// `Some([])` serializes as `"conversationId":[]` (empty array) which is
+    /// semantically wrong — empty != absent — and would mislead the frontend's
+    /// threading logic. This locks the `None`-on-empty contract.
+    ///
+    /// Regression for the old `unwrap_or_default()` which turned a missing/opaque
+    /// value into `Some(vec![])`.
+    #[test]
+    fn parse_application_data_conversation_id_missing_or_empty_is_none() {
+        use crate::eas::wbxml::tags::email2;
+
+        // Case 1: no ConversationId element at all.
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(2, 0x14, "Subject only")],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "absent ConversationId must be None, not Some(vec![])"
+        );
+
+        // Case 2: ConversationId present but empty (Empty value).
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::empty(email2::PAGE, email2::CONVERSATION_ID)],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "empty ConversationId must be None, not Some(vec![])"
+        );
+
+        // Case 3: ConversationId present as empty opaque blob.
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::opaque(email2::PAGE, email2::CONVERSATION_ID, vec![])],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "empty-opaque ConversationId must be None, not Some(vec![])"
+        );
+
+        // Case 4: ConversationId present as empty text string.
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(email2::PAGE, email2::CONVERSATION_ID, "")],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "empty-text ConversationId must be None, not Some(vec![])"
+        );
     }
 
     /// IsDraft="1" → `Some(true)`; IsDraft="0" → `Some(false)`.
