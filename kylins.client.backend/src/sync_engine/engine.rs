@@ -509,7 +509,10 @@ async fn run_sync_round_with_source(
                 continue;
             }
         };
-        // Advance the cursor (IMAP path; EAS cursors are advanced by EasSource in Task 10).
+        // Advance the cursor. Each source owns its own cursor payload and its
+        // own persistence call (IMAP merges monotonically; EAS overwrites the
+        // opaque sync_key). The branches are mutually exclusive — a delta from
+        // a given source only ever carries that source's cursor kind.
         if let Cursor::Imap {
             uidvalidity,
             highest_uid,
@@ -523,6 +526,20 @@ async fn run_sync_round_with_source(
                 *uidvalidity,
                 *highest_uid,
                 *highest_modseq,
+            )
+            .await;
+        }
+        if let Cursor::Eas {
+            collection_id,
+            sync_key,
+        } = &delta.next_cursor
+        {
+            let _ = sync_state::advance_eas_cursor(
+                &engine.pool,
+                account_id,
+                &f.remote_id,
+                collection_id,
+                sync_key,
             )
             .await;
         }

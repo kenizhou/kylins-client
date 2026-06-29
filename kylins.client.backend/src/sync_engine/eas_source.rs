@@ -2,11 +2,22 @@
 //
 // Phase 2 Task 4: real `list_folders` (FolderSync) + real `ping` (Ping) +
 // `capabilities() -> { ping: true }` so the RealtimeStrategy *could* select EAS
-// Ping in a future task. `sync_folder` STAYS an empty-delta stub: EAS message
-// sync needs the WBXML Sync-response parser, which is still a TODO at
-// `eas/client.rs:194-198` (`sync()` currently returns `SyncResult::default()`).
-// Until that lands, EAS accounts get folder list + ping notifications but no
-// message bodies via sync — same deferral as Phase 0.
+// Ping in a future task.
+//
+// Phase 3a Task 4: `sync_folder` now drives the real EAS Sync command through
+// `EasClient::sync` (which parses the WBXML Sync response as of Task 3) and
+// maps `EasItem`s into source-agnostic `RemoteMessage`s. The engine advances
+// the `Cursor::Eas` cursor via `sync_state::advance_eas_cursor`.
+//
+// MVP limitations (documented, intentionally not gold-plated):
+//   * `parse_eas_date` returns `None` — `date_received` is dropped to 0. A
+//     follow-up adds ISO-8601 parsing (no `time`/`chrono` dep in this crate).
+//   * MoreAvailable is single-round — the 60s poll loop re-enters sync with
+//     the new sync_key, so the eventual full drain is bounded by polling.
+//   * ServerId → uid is an FNV-style hash; a proper server-id↔uid map table is
+//     a follow-up.
+//   * `deleted_server_ids` are NOT mapped to `vanished_uids` yet (EAS
+//     deletes-as-moves semantics need the uid map above first).
 //
 // Other trait methods (`fetch_body`, `set_flags`, `move_messages`,
 // `delete_messages`, `append`, `send`) remain unsupported stubs; they'll be
@@ -16,9 +27,10 @@ use async_trait::async_trait;
 
 use crate::db::accounts::Account;
 use crate::eas::client::EasClient;
-use crate::eas::types::{EasConfig, EasFolder, PingCollection, PingRequest};
+use crate::eas::types::{EasConfig, EasFolder, EasItem, PingCollection, PingRequest, SyncRequest};
+use crate::eas::types::SyncResult;
 
-use super::{Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, SourceError};
+use super::{Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteMessage, SourceError};
 
 fn nyi() -> SourceError {
     SourceError::Other("EasSource method not yet implemented".into())
@@ -103,6 +115,62 @@ fn eas_folder_to_remote(f: EasFolder) -> RemoteFolder {
     }
 }
 
+/// Map a typed `EasItem` (from a Sync response) onto the source-agnostic
+/// `RemoteMessage` consumed by `messages::apply_folder_delta`.
+///
+/// `uid` is derived from the EAS `ServerId` via an FNV-style hash. EAS has no
+/// numeric UID of its own — ServerId is opaque per-server — so a stable hash
+/// gives the engine a fixed-width key it can store, dedupe, and keyset-paginate
+/// on. A proper server-id↔uid map table is a follow-up (the hash is stable for
+/// a given ServerId, so swapping it in later is transparent to the DB schema).
+fn eas_item_to_remote(item: &EasItem, folder: &str) -> RemoteMessage {
+    let uid = item
+        .server_id
+        .bytes()
+        .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    RemoteMessage {
+        uid,
+        folder: folder.to_string(),
+        // EAS doesn't expose an RFC `Message-Id` in ApplicationData by default;
+        // the field exists on `EasItem` for future ItemOperations enrichment.
+        message_id: item.message_id.clone(),
+        from_address: item.from.clone(),
+        // MVP: the From string is passed verbatim (often "Display Name" <addr>).
+        // Structured parsing into from_name/from_address is a follow-up that
+        // needs an RFC 5322 mailbox parser shared with the IMAP path.
+        from_name: None,
+        to_addresses: item.to.clone(),
+        cc_addresses: item.cc.clone(),
+        bcc_addresses: item.bcc.clone(),
+        reply_to: item.reply_to.clone(),
+        subject: item.subject.clone(),
+        snippet: item.preview.clone(),
+        date: parse_eas_date(item.date_received.as_deref()).unwrap_or(0),
+        is_read: item.read.unwrap_or(false),
+        // EAS `Flag` (flagged/follow-up) maps to starred; the wire field is a
+        // complex type in 16.1 but the parser surfaces a bool for MVP.
+        is_starred: item.flag.unwrap_or(false),
+        is_draft: item.is_draft.unwrap_or(false),
+        body_html: item.body_html.clone(),
+        body_text: item.body_text.clone(),
+        // raw_size: EAS doesn't give a raw byte size for the whole MIME; the
+        // bodies above carry their own lengths. Zero is the conventional
+        // "unknown" for the engine's size column.
+        raw_size: 0,
+        has_attachments: item.has_attachments,
+        ..Default::default()
+    }
+}
+
+/// Parse an EAS `DateReceived` (ISO-8601, e.g. "2025-01-01T00:00:00.000Z") to
+/// unix-epoch seconds. MVP: returns `None` so the engine stores `date = 0`
+/// (sorts as oldest). The proper parser needs an ISO-8601 library that isn't a
+/// runtime dep of this crate yet — tracked as a follow-up alongside the
+/// IMAP-date parser (chrono is currently dev-dep only).
+fn parse_eas_date(_s: Option<&str>) -> Option<i64> {
+    None
+}
+
 #[async_trait]
 impl MailSource for EasSource {
     fn capabilities(&self) -> Capabilities {
@@ -131,19 +199,91 @@ impl MailSource for EasSource {
     async fn sync_folder(
         &self,
         folder: &RemoteFolder,
-        _since: Cursor,
+        since: Cursor,
     ) -> Result<FolderDelta, SourceError> {
-        // DEFERRED: EAS message sync needs the WBXML Sync-response parser
-        // (eas::client::sync currently returns SyncResult::default() at
-        // eas/client.rs:194-198). Until that lands, EAS accounts get folder
-        // list + ping notifications but no message bodies via sync. We return
-        // an empty delta at a fresh EAS cursor so the engine can persist state
-        // without falsely advancing the sync_key.
+        // Resolve the cursor: an EAS cursor carries the persisted sync_key; any
+        // other cursor (e.g. a fresh folder with the default Imap cursor) is
+        // treated as an initial sync (sync_key "0"). The collection_id is the
+        // folder's remote_id (the EAS folder ServerId from FolderSync).
+        let (collection_id, sync_key) = match &since {
+            Cursor::Eas {
+                collection_id,
+                sync_key,
+            } => (collection_id.clone(), sync_key.clone()),
+            // Non-EAS cursor: start a fresh EAS sync on this collection.
+            _ => (folder.remote_id.clone(), "0".to_string()),
+        };
+
+        let client = EasClient::new(self.eas_config());
+        let req = SyncRequest {
+            collection_id: collection_id.clone(),
+            sync_key: sync_key.clone(),
+            class: "Email".into(),
+            window_size: 50,
+            filter_age_days: 0,
+            fetch_body: true,
+        };
+        let result: SyncResult = client
+            .sync(&req)
+            .await
+            .map_err(|e| SourceError::Other(e.to_string()))?;
+
+        // Status recovery. MS-ASSYNC collection status: 1 = success,
+        // 6 = (server-side) optional partial success treated as ok, 3 = invalid
+        // sync key (server lost state). Status 3 means we must reset to "0" and
+        // signal a resync: the engine sees uidvalidity_changed and wipes the
+        // folder cache before applying the (empty) delta from this round; the
+        // next round re-enters sync_folder with sync_key "0" for a full pull.
+        if result.status == 3 {
+            return Ok(FolderDelta {
+                added: vec![],
+                updated: vec![],
+                vanished_uids: vec![],
+                next_cursor: Cursor::Eas {
+                    collection_id,
+                    sync_key: "0".into(),
+                },
+                uidvalidity_changed: true,
+            });
+        }
+        if result.status != 1 && result.status != 6 {
+            return Err(SourceError::Other(format!(
+                "EAS sync status {}",
+                result.status
+            )));
+        }
+
+        // Map typed EasItems to source-agnostic RemoteMessages. Both added and
+        // updated items are full envelopes (the parser fills the same fields
+        // for both Change types), so the same mapping applies.
+        let added: Vec<RemoteMessage> = result
+            .added
+            .iter()
+            .map(|i| eas_item_to_remote(i, &folder.remote_id))
+            .collect();
+        let updated: Vec<RemoteMessage> = result
+            .updated
+            .iter()
+            .map(|i| eas_item_to_remote(i, &folder.remote_id))
+            .collect();
+
+        // MoreAvailable: MVP is single-round. The next sync_key is always the
+        // one from the response — re-entering on the next poll tick drains the
+        // remaining pages (each round yields up to window_size=50 items). A
+        // tight drain loop is a follow-up once the engine has a backpressure
+        // story for large mailboxes.
+        //
+        // vanished_uids: EAS signals deletes via `deleted_server_ids`, but
+        // mapping those to our hashed uids needs the server-id↔uid table (see
+        // eas_item_to_remote). Deferred — leave empty for now.
         Ok(FolderDelta {
-            added: vec![],
-            updated: vec![],
+            added,
+            updated,
             vanished_uids: vec![],
-            next_cursor: Cursor::initial_eas(&folder.remote_id),
+            next_cursor: Cursor::Eas {
+                collection_id,
+                sync_key: result.sync_key,
+            },
             uidvalidity_changed: false,
         })
     }
@@ -219,7 +359,37 @@ impl MailSource for EasSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eas::types::EasFolder;
+    use crate::eas::types::{EasFolder, EasItem};
+
+    #[test]
+    fn eas_item_to_remote_maps_fields() {
+        let item = EasItem {
+            server_id: "1:123".into(),
+            subject: Some("Hello".into()),
+            from: Some("a@b.com".into()),
+            to: Some("c@d.com".into()),
+            read: Some(true),
+            body_html: Some("<p>Hi</p>".into()),
+            date_received: Some("2025-01-01T00:00:00.000Z".into()),
+            ..Default::default()
+        };
+        let m = eas_item_to_remote(&item, "INBOX");
+        // uid is the FNV-style hash of the server_id bytes.
+        let expected_uid = "1:123"
+            .bytes()
+            .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+        assert_eq!(m.uid, expected_uid);
+        assert_eq!(m.subject.as_deref(), Some("Hello"));
+        assert_eq!(m.from_address.as_deref(), Some("a@b.com"));
+        assert_eq!(m.to_addresses.as_deref(), Some("c@d.com"));
+        assert!(m.is_read);
+        assert_eq!(m.body_html.as_deref(), Some("<p>Hi</p>"));
+        assert_eq!(m.folder, "INBOX");
+        // MVP deferrals.
+        assert_eq!(m.date, 0, "parse_eas_date returns None for MVP");
+        assert_eq!(m.from_name, None);
+        assert_eq!(m.message_id, None);
+    }
 
     #[test]
     fn capabilities_advertises_ping_only() {
