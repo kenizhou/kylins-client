@@ -175,8 +175,8 @@ describe('EasProvider', () => {
   it('syncFolder returns counts from sync result', async () => {
     vi.mocked(invoke).mockResolvedValue({
       sync_key: 'k',
-      added: [{ server_id: 'a' }, { server_id: 'b' }],
-      updated: [{ server_id: 'c' }],
+      added: [{ serverId: 'a' }, { serverId: 'b' }],
+      updated: [{ serverId: 'c' }],
       deleted_server_ids: ['d'],
       more_available: false,
     });

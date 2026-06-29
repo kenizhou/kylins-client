@@ -91,7 +91,7 @@ export class EasCalendarProvider {
     // surfaces an `application_data: Record<string,string>` slot for non-Email
     // classes), read them here. The MS-ASCAL names are in the `CAL` table.
     // The only fields currently available on the typed EasItem that a calendar
-    // event could use are `subject` and `body_html` — but a calendar event
+    // event could use are `subject` and `bodyHtml` — but a calendar event
     // without a start time is meaningless, so bail out until the parser lands.
     void item;
     void CAL;

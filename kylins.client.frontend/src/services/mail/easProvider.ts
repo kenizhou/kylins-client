@@ -40,50 +40,52 @@ export interface EasFolderSyncResult {
 }
 
 export interface EasAttachment {
-  file_reference: string;
-  display_name: string;
-  content_id: string | null;
-  is_inline: boolean;
+  fileReference: string;
+  displayName: string;
+  contentId: string | null;
+  isInline: boolean;
   /** Optional: server may omit. Typed as number|null to match the Rust struct. */
-  estimated_data_size: number | null;
+  estimatedDataSize: number | null;
   /** Optional EAS Method: 1=Normal, 5=EmbeddedMessage, 6=AttachOLE. */
   method: number | null;
   /** MIME content type, surfaced on ItemOperations fetch. */
-  content_type: string | null;
+  contentType: string | null;
   /** URL for externally-stored attachments. Rarely populated for mail. */
-  content_location: string | null;
+  contentLocation: string | null;
 }
 
 /**
  * EAS Sync item envelope. Mirrors the Rust `EasItem` struct
  * (`kylins.client.backend/src/eas/types.rs`) which is serialized to camelCase
  * via `#[serde(rename_all = "camelCase")]` and returned across the `eas_sync`
- * IPC boundary. The `class` field was dropped in Phase 3a Task 1 (the EAS
- * protocol carries class at the collection level, not per item) — callers that
- * need the class must track it from the originating `SyncRequest`.
+ * IPC boundary. Field names here MUST stay camelCase to match the serde output
+ * — snake_case accesses would read `undefined` at runtime. The `class` field
+ * was dropped in Phase 3a Task 1 (the EAS protocol carries class at the
+ * collection level, not per item) — callers that need the class must track it
+ * from the originating `SyncRequest`.
  */
 export interface EasItem {
-  server_id: string;
+  serverId: string;
   subject: string | null;
   from: string | null;
   to: string | null;
   cc: string | null;
   bcc: string | null;
-  reply_to: string | null;
-  date_received: string | null;
+  replyTo: string | null;
+  dateReceived: string | null;
   read: boolean | null;
   flag: boolean | null;
   importance: number | null;
-  body_html: string | null;
-  body_text: string | null;
-  body_truncated: boolean | null;
+  bodyHtml: string | null;
+  bodyText: string | null;
+  bodyTruncated: boolean | null;
   preview: string | null;
-  has_attachments: boolean;
+  hasAttachments: boolean;
   attachments: EasAttachment[];
   /** Raw opaque ConversationId bytes from the server. */
-  conversation_id: number[] | null;
-  is_draft: boolean | null;
-  message_id: string | null;
+  conversationId: number[] | null;
+  isDraft: boolean | null;
+  messageId: string | null;
 }
 
 export interface EasSyncResult {
