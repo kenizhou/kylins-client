@@ -10,7 +10,7 @@
 use serde::Serialize;
 use sqlx::{SqlitePool, Transaction};
 
-use crate::sync_engine::{FolderDelta, RemoteMessage};
+use crate::sync_engine::{FlagUpdate, FolderDelta, RemoteMessage};
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,15 +58,97 @@ pub async fn apply_folder_delta(
     for m in &delta.updated {
         upsert_message(&mut tx, account_id, label_id, m).await?;
     }
-    // vanished_uids: Phase 0 does not yet expunge locally (no CONDSTORE VANISHED). The
-    // deleted count is reported for events; actual local deletion arrives with QRESYNC.
+    let mut deleted = 0u64;
+    for u in &delta.vanished_uids {
+        let id = format!("imap-{account_id}-{folder_path}-{u}");
+        let res = sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        deleted += res.rows_affected();
+        sqlx::query("DELETE FROM message_bodies WHERE message_id = ?")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if !delta.vanished_uids.is_empty() {
+        // Sweep threads left orphaned by the deletions (mirrors the wipe block).
+        sqlx::query(
+            "DELETE FROM threads WHERE account_id = ? AND id NOT IN \
+             (SELECT thread_id FROM messages WHERE account_id = ?)",
+        )
+        .bind(account_id)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     tx.commit().await.map_err(|e| e.to_string())?;
+
+    // Flag updates run AFTER commit so they see the just-added rows (a message can be
+    // added and flag-changed in the same round).
+    let flagged = apply_flag_updates(pool, account_id, folder_path, &delta.flag_updates).await?;
 
     Ok(AppliedCounts {
         added: delta.added.len() as u64,
-        updated: delta.updated.len() as u64,
-        deleted: delta.vanished_uids.len() as u64,
+        updated: delta.updated.len() as u64 + flagged,
+        deleted,
     })
+}
+
+/// Apply CONDSTORE flag-only deltas: update is_read/is_starred on `messages` and mirror
+/// to the owning `threads`. Touches NOTHING else (no subject/from/body clobber). Honors
+/// the 24-hr write-lock: a message with a pending local op is skipped.
+pub async fn apply_flag_updates(
+    pool: &SqlitePool,
+    account_id: &str,
+    folder_path: &str,
+    updates: &[FlagUpdate],
+) -> Result<u64, String> {
+    let mut applied = 0u64;
+    for u in updates {
+        let message_id = format!("imap-{account_id}-{folder_path}-{}", u.uid);
+        let locked: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM pending_operations \
+             WHERE account_id = ? AND resource_id = ? AND status = 'pending'",
+        )
+        .bind(account_id)
+        .bind(&message_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if locked.0 > 0 {
+            continue; // local edit pending — don't let the server delta revert it
+        }
+        let is_read: i64 = if u.is_read { 1 } else { 0 };
+        let is_starred: i64 = if u.is_starred { 1 } else { 0 };
+        let res = sqlx::query(
+            "UPDATE messages SET is_read = ?, is_starred = ? \
+             WHERE account_id = ? AND imap_folder = ? AND imap_uid = ?",
+        )
+        .bind(is_read)
+        .bind(is_starred)
+        .bind(account_id)
+        .bind(folder_path)
+        .bind(u.uid as i64)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if res.rows_affected() > 0 {
+            applied += 1;
+            // Mirror to the thread (Phase 0 threading: thread id == message id).
+            sqlx::query("UPDATE threads SET is_read = ?, is_starred = ? WHERE id = ?")
+                .bind(is_read)
+                .bind(is_starred)
+                .bind(&message_id)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(applied)
 }
 
 /// Look up the `(imap_folder, imap_uid)` location of a message so the sync
@@ -242,7 +324,7 @@ async fn upsert_message(
 mod tests {
     use super::*;
     use crate::db::init_db;
-    use crate::sync_engine::{Cursor, RemoteMessage};
+    use crate::sync_engine::{Cursor, FlagUpdate, RemoteMessage};
 
     async fn seed(pool: &sqlx::SqlitePool, id: &str) {
         sqlx::query("INSERT INTO accounts (id, email, provider) VALUES (?, ?, 'imap')")
@@ -282,6 +364,7 @@ mod tests {
         let delta = FolderDelta {
             added: vec![msg(1, "<m1>", true), msg(2, "<m2>", false)],
             updated: vec![],
+            flag_updates: vec![],
             vanished_uids: vec![],
             next_cursor: Cursor::initial_imap(),
             uidvalidity_changed: false,
@@ -475,5 +558,107 @@ mod tests {
             None,
             "lookup must be scoped by account_id"
         );
+    }
+
+    // ---- apply_flag_updates (CONDSTORE flag-only delta) ----
+
+    /// CONDSTORE CHANGEDSINCE returns flag-only deltas. `apply_flag_updates` must
+    /// flip `is_read`/`is_starred` on both `messages` and the owning `thread`
+    /// (Phase 0: thread id == message id) WITHOUT touching subject/from/body —
+    /// otherwise the cached envelope is clobbered by a FLAGS-only FETCH.
+    #[tokio::test]
+    async fn apply_flag_updates_changes_only_flags_not_envelope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        // Seed a message with a known subject + is_read=false.
+        let delta = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 7,
+                folder: "INBOX".into(),
+                subject: Some("Original Subject".into()),
+                from_address: Some("a@b".into()),
+                body_html: Some("<p>x</p>".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+
+        // CONDSTORE says: uid 7 now read + starred. apply_flag_updates must flip flags
+        // but leave subject/from/body untouched.
+        let n = apply_flag_updates(
+            &pool,
+            "acc",
+            "INBOX",
+            &[FlagUpdate {
+                uid: 7,
+                is_read: true,
+                is_starred: true,
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+
+        let (is_read, is_starred, subject, body): (i64, i64, Option<String>, Option<String>) =
+            sqlx::query_as(
+                "SELECT is_read, is_starred, subject, \
+                 (SELECT body_html FROM message_bodies WHERE message_id = messages.id) \
+                 FROM messages WHERE account_id='acc' AND imap_folder='INBOX' AND imap_uid=7",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(is_read, 1);
+        assert_eq!(is_starred, 1);
+        assert_eq!(
+            subject.as_deref(),
+            Some("Original Subject"),
+            "subject must not be clobbered"
+        );
+        assert_eq!(
+            body.as_deref(),
+            Some("<p>x</p>"),
+            "body must not be clobbered"
+        );
+    }
+
+    /// VANISHED (QRESYNC) — server expunged the UIDs listed in `vanished_uids`.
+    /// `apply_folder_delta` must delete the matching `messages` rows (+ their
+    /// `message_bodies`) and sweep orphan threads, NOT just count them.
+    #[tokio::test]
+    async fn apply_folder_delta_deletes_vanished_uids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        let seed = FolderDelta {
+            added: vec![msg(1, "<m1>", false), msg(2, "<m2>", false), msg(3, "<m3>", false)],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &seed)
+            .await
+            .unwrap();
+        assert_eq!(count(&pool, "messages").await, 3);
+
+        // Server expunged uid 2.
+        let delta = FolderDelta {
+            vanished_uids: vec![2],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+        assert_eq!(count(&pool, "messages").await, 2, "uid 2 must be deleted");
+        let remaining: Vec<(i64,)> = sqlx::query_as(
+            "SELECT imap_uid FROM messages WHERE account_id='acc' AND imap_folder='INBOX' ORDER BY imap_uid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let uids: Vec<i64> = remaining.into_iter().map(|(u,)| u).collect();
+        assert_eq!(uids, vec![1, 3]);
     }
 }

@@ -301,6 +301,7 @@ impl MailSource for EasSource {
                 return Ok(FolderDelta {
                     added: vec![],
                     updated: vec![],
+                    flag_updates: vec![],
                     vanished_uids: vec![],
                     next_cursor: Cursor::Eas {
                         collection_id,
@@ -344,6 +345,7 @@ impl MailSource for EasSource {
         Ok(FolderDelta {
             added,
             updated,
+            flag_updates: vec![],
             vanished_uids: vec![],
             next_cursor: Cursor::Eas {
                 collection_id,

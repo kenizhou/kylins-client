@@ -104,6 +104,7 @@ impl MailSource for MockSource {
         Ok(FolderDelta {
             added,
             updated: vec![],
+            flag_updates: vec![],
             vanished_uids: vec![],
             next_cursor: Cursor::Imap {
                 uidvalidity: uv,

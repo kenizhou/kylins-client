@@ -115,6 +115,18 @@ pub struct RemoteMessage {
     pub has_attachments: bool,
 }
 
+/// A CONDSTORE flag-only delta: the server reported a FLAGS change for `uid` since the
+/// last modseq. Carries just is_read/is_starred (the flags the UI tracks). The engine
+/// applies this via `apply_flag_updates`, which MUST NOT touch the cached envelope
+/// (subject/from/body) — unlike a full `RemoteMessage` upsert.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagUpdate {
+    pub uid: u32,
+    pub is_read: bool,
+    pub is_starred: bool,
+}
+
 /// Result of one folder delta sync. The engine applies `added`/`updated`, processes
 /// `vanished_uids`, and persists `next_cursor`. `uidvalidity_changed` signals a cache
 /// wipe is required before applying (IMAP UIDVALIDITY changed).
@@ -123,6 +135,7 @@ pub struct RemoteMessage {
 pub struct FolderDelta {
     pub added: Vec<RemoteMessage>,
     pub updated: Vec<RemoteMessage>,
+    pub flag_updates: Vec<FlagUpdate>,
     pub vanished_uids: Vec<u32>,
     pub next_cursor: Cursor,
     pub uidvalidity_changed: bool,

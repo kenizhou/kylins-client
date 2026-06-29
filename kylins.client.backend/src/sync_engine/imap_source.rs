@@ -298,6 +298,7 @@ impl MailSource for ImapSource {
             return Ok(FolderDelta {
                 added: vec![],
                 updated: vec![],
+                flag_updates: vec![],
                 vanished_uids: vec![],
                 next_cursor: Cursor::Imap {
                     uidvalidity: status.uidvalidity,
@@ -339,6 +340,7 @@ impl MailSource for ImapSource {
         Ok(FolderDelta {
             added,
             updated: vec![],
+            flag_updates: vec![],
             vanished_uids: vec![],
             next_cursor: Cursor::Imap {
                 uidvalidity: status.uidvalidity,
