@@ -29,7 +29,8 @@ use crate::mail::smtp::client as smtp_client;
 use crate::mail::smtp::types::SmtpConfig;
 
 use super::{
-    Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteMessage, SourceError,
+    Capabilities, Cursor, FlagUpdate, FolderDelta, MailSource, RemoteFolder, RemoteMessage,
+    SourceError,
 };
 
 /// IDLE keepalive watchdog. async-imap's `wait_with_timeout` resets this clock on any
@@ -279,13 +280,13 @@ impl MailSource for ImapSource {
             });
         }
 
-        let (since_uv, since_high) = match since {
+        let (since_uv, since_high, since_modseq) = match since {
             Cursor::Imap {
                 uidvalidity,
                 highest_uid,
-                ..
-            } => (uidvalidity, highest_uid),
-            _ => (0, 0),
+                highest_modseq,
+            } => (uidvalidity, highest_uid, highest_modseq),
+            _ => (0, 0, 0),
         };
 
         let status = imap_client::get_folder_status(&mut session, &folder.remote_id)
@@ -335,17 +336,72 @@ impl MailSource for ImapSource {
         }
 
         let new_high = added.iter().map(|m| m.uid).max().unwrap_or(since_high);
+
+        // CONDSTORE flag-delta (RFC 7162 §3.1). On a non-first sync (since_modseq
+        // > 0) against a CONDSTORE server, ask for messages whose metadata
+        // changed since the persisted modseq cursor and reduce them to
+        // `FlagUpdate`s (Seen→is_read, Flagged→is_starred). The new cursor's
+        // highest_modseq advances to the max of the server's HIGHESTMODSEQ and
+        // the highest modseq in the returned set (handled inside
+        // `fetch_changed_flags`), so a no-change round still advances.
+        //
+        // Best-effort: a CHANGEDSINCE failure (server glitch, transient network)
+        // is logged and the round completes append-only — it must NOT break the
+        // sync. First sync (modseq 0) is explicitly skipped: CHANGEDSINCE 0 would
+        // report every message as changed, and we have no prior state to diff
+        // against anyway.
+        let caps = self.caps.lock().unwrap().unwrap_or_default();
+        let mut flag_updates: Vec<FlagUpdate> = Vec::new();
+        // Seed with the server-reported HIGHESTMODSEQ so a non-CONDSTORE server
+        // (or a best-effort skip) still persists a forward-looking cursor.
+        let mut next_modseq = status.highest_modseq.unwrap_or(0);
+
+        if caps.condstore && since_modseq > 0 {
+            match imap_client::fetch_changed_flags(&mut session, &folder.remote_id, since_modseq)
+                .await
+            {
+                Ok((changes, advanced)) => {
+                    next_modseq = advanced;
+                    flag_updates = changes
+                        .into_iter()
+                        .map(|c| FlagUpdate {
+                            uid: c.uid,
+                            is_read: c.is_read,
+                            is_starred: c.is_starred,
+                        })
+                        .collect();
+                    log::info!(
+                        "[sync] CONDSTORE {}: {} flag change(s) since modseq {} (-> {})",
+                        folder.remote_id,
+                        flag_updates.len(),
+                        since_modseq,
+                        next_modseq
+                    );
+                }
+                Err(e) => {
+                    // CONDSTORE best-effort: a CHANGEDSINCE failure must not
+                    // break the round. Log and fall back to append-only for this
+                    // round; `next_modseq` stays at the server-reported status
+                    // value so the next round can retry from there.
+                    log::warn!(
+                        "[sync] CONDSTORE {} CHANGEDSINCE failed, skipping flag delta: {e}",
+                        folder.remote_id
+                    );
+                }
+            }
+        }
+
         let _ = session.logout().await;
 
         Ok(FolderDelta {
             added,
             updated: vec![],
-            flag_updates: vec![],
+            flag_updates,
             vanished_uids: vec![],
             next_cursor: Cursor::Imap {
                 uidvalidity: status.uidvalidity,
                 highest_uid: new_high,
-                highest_modseq: status.highest_modseq.unwrap_or(0),
+                highest_modseq: next_modseq,
             },
             uidvalidity_changed: false,
         })

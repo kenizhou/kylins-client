@@ -394,6 +394,150 @@ pub async fn fetch_new_uids(
     Ok(result)
 }
 
+/// A CONDSTORE flag-change entry: the server reported a FLAGS change for `uid`
+/// at MODSEQ `modseq` since the last cursor. `is_read`/`is_starred` are the only
+/// flags the UI tracks (Seen/Flagged). `modseq` is carried so the caller can pick
+/// the next cursor.
+#[derive(Debug, Clone)]
+pub struct ImapFlagChange {
+    pub uid: u32,
+    pub is_read: bool,
+    pub is_starred: bool,
+    pub modseq: u64,
+}
+
+/// Pure reduction of parsed Fetch responses (from a CHANGEDSINCE round) into flag
+/// changes plus the next modseq cursor. Factored out of `fetch_changed_flags` so
+/// the mapping/cursor math is unit-testable without a live socket.
+///
+/// - `since_modseq`: the cursor we queried with; seeds the running max so an empty
+///   response still yields a cursor >= the current one.
+/// - `fetches`: `(uid, flags-as-strs, modseq)` tuples standing in for parsed
+///   Fetches. Flags are owned `String`s so this function is lifetime-free and
+///   callable from both the live path (which maps `Flag` → string) and tests.
+/// - `mailbox_highest_modseq`: the mailbox's HIGHESTMODSEQ (from SELECT), so a
+///   no-change round still advances to the server's current watermark.
+///
+/// Returns `(changes, next_modseq)` where `next_modseq = max(since, max(fetch
+/// modseqs), mailbox_highest_modseq)`.
+fn fetch_changed_flags_response_from_fetches(
+    since_modseq: u64,
+    fetches: Vec<(u32, Vec<String>, u64)>,
+    mailbox_highest_modseq: u64,
+) -> (Vec<ImapFlagChange>, u64) {
+    let mut changes = Vec::new();
+    let mut max_modseq = since_modseq;
+    for (uid, flags, modseq) in fetches {
+        if modseq > max_modseq {
+            max_modseq = modseq;
+        }
+        let is_read = flags.iter().any(|f| f.eq_ignore_ascii_case("\\Seen"));
+        let is_starred = flags.iter().any(|f| f.eq_ignore_ascii_case("\\Flagged"));
+        changes.push(ImapFlagChange {
+            uid,
+            is_read,
+            is_starred,
+            modseq,
+        });
+    }
+    (changes, max_modseq.max(mailbox_highest_modseq))
+}
+
+/// CONDSTORE flag-delta fetch (RFC 7162 §3.1). Returns messages whose metadata
+/// changed since `since_modseq`, plus the next modseq cursor (max of returned
+/// modseqs and the mailbox HIGHESTMODSEQ, so a no-change round still advances).
+/// Requires the server to advertise CONDSTORE; the caller gates on
+/// `caps.condstore && since_modseq > 0` (a first-sync modseq of 0 must NOT issue
+/// CHANGEDSINCE — it would return every message as "changed").
+///
+/// Note: async-imap 0.10.4 exposes `Fetch.modseq` as a PUBLIC FIELD (`Option<u64>`),
+/// not a method — `Fetch.flags()` IS a method (iterator). SELECT refreshes
+/// `mailbox.highest_modseq`.
+pub async fn fetch_changed_flags(
+    session: &mut ImapSession,
+    folder: &str,
+    since_modseq: u64,
+) -> Result<(Vec<ImapFlagChange>, u64), String> {
+    // SELECT refreshes mailbox.highest_modseq (the server's current watermark).
+    let mailbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(folder))
+        .await
+        .map_err(|_| {
+            format!(
+                "SELECT {folder} timed out after {}s — check your server settings or network connection",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("SELECT {folder} failed: {e}"))?;
+    let mailbox_highest = mailbox.highest_modseq.unwrap_or(0);
+
+    // CHANGEDSINCE is a modifier on the FETCH, not a separate command. The query
+    // mirrors what the brief specifies: UID + FLAGS + the MODSEQ of each returned
+    // message, scoped to messages changed since `since_modseq`.
+    let query = format!("UID FLAGS MODSEQ (CHANGEDSINCE {since_modseq})");
+    // The timeout wraps an async block whose body is `Result<Vec<Result<Fetch,
+    // Error>>, String>` (the outer String = transport/timeout error; each inner
+    // Result = one Fetch stream item). The two `?`s unwrap: (1) the timeout's
+    // Elapsed, (2) the transport String. The remaining `Vec<Result<Fetch,_>>` is
+    // iterated below — individual stream-item errors are logged, not fatal.
+    let raw_fetches: Vec<_> = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
+        let stream = session
+            .uid_fetch("1:*", &query)
+            .await
+            .map_err(|e| format!("UID FETCH CHANGEDSINCE {folder} failed: {e}"))?;
+        Ok::<_, String>(stream.collect::<Vec<_>>().await)
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "UID FETCH CHANGEDSINCE {folder} timed out after {}s — check your server settings or network connection",
+            IMAP_FETCH_TIMEOUT.as_secs()
+        )
+    })??
+    .into_iter()
+    .filter_map(|r| match r {
+        Ok(f) => Some(f),
+        Err(e) => {
+            log::warn!("IMAP CHANGEDSINCE {folder}: fetch stream error: {e}");
+            None
+        }
+    })
+    .collect();
+
+    // Reduce the parsed Fetches via the shared pure helper so the tested mapping
+    // logic is exactly what runs in production (no divergent duplicate). Map each
+    // `Flag` to its canonical backslash-string form; the helper matches
+    // case-insensitively on "\\Seen"/"\\Flagged". Fetches without a UID are
+    // skipped (CHANGEDSINCE responses always carry UID, but be defensive). Flag
+    // strings are owned so the helper stays lifetime-free.
+    let tuples: Vec<(u32, Vec<String>, u64)> = raw_fetches
+        .into_iter()
+        .filter_map(|f| {
+            let uid = f.uid?;
+            let flags: Vec<String> = f
+                .flags()
+                .map(|fl| match fl {
+                    Flag::Seen => "\\Seen".to_string(),
+                    Flag::Flagged => "\\Flagged".to_string(),
+                    Flag::Answered => "\\Answered".to_string(),
+                    Flag::Deleted => "\\Deleted".to_string(),
+                    Flag::Draft => "\\Draft".to_string(),
+                    Flag::Recent => "\\Recent".to_string(),
+                    Flag::MayCreate => "\\*".to_string(),
+                    Flag::Custom(s) => s.to_string(),
+                })
+                .collect();
+            let ms = f.modseq.unwrap_or(0);
+            Some((uid, flags, ms))
+        })
+        .collect();
+
+    Ok(fetch_changed_flags_response_from_fetches(
+        since_modseq,
+        tuples,
+        mailbox_highest,
+    ))
+}
+
 pub async fn search_all_uids(session: &mut ImapSession, folder: &str) -> Result<Vec<u32>, String> {
     tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(folder))
         .await
@@ -1926,7 +2070,43 @@ pub async fn session_capabilities(
 
 #[cfg(test)]
 mod tests {
-    use super::{capabilities_from_strs, SYNC_FETCH_QUERY};
+    use super::{capabilities_from_strs, fetch_changed_flags_response_from_fetches, SYNC_FETCH_QUERY};
+
+    /// RED test 1 for the CONDSTORE CHANGEDSINCE flag-change parser. Maps three
+    /// parsed Fetch responses (uid, flags, modseq) into `ImapFlagChange`s and
+    /// computes the next modseq cursor = max(max_fetch_modseq, mailbox_highest).
+    /// The live `uid_fetch` is exercised in the Task 5 manual e2e; here we test
+    /// the pure reduction so the parsing/mapping logic is covered without a socket.
+    #[test]
+    fn changed_flags_parser_maps_modseq_and_flags() {
+        // Simulate three parsed Fetches from a CHANGEDSINCE response.
+        let out = fetch_changed_flags_response_from_fetches(
+            100, // since_modseq
+            vec![
+                (10, vec!["\\Seen".to_string()], 150u64),            // uid 10 now read, modseq 150
+                (11, vec!["\\Flagged".to_string()], 160),            // uid 11 now starred
+                (12, vec!["\\Seen".to_string(), "\\Flagged".to_string()], 170),  // both
+            ],
+            175, // mailbox HIGHESTMODSEQ
+        );
+        assert_eq!(out.0.len(), 3);
+        assert!(out.0.iter().any(|c| c.uid == 10 && c.is_read && !c.is_starred));
+        assert!(out.0.iter().any(|c| c.uid == 11 && !c.is_read && c.is_starred));
+        assert!(out.0.iter().any(|c| c.uid == 12 && c.is_read && c.is_starred));
+        // next_modseq = max(fetch modseq, mailbox highestmodseq) = 175
+        assert_eq!(out.1, 175);
+    }
+
+    /// RED test 2 for the parser: an empty change set still advances the cursor to
+    /// `max(since, mailbox_highest)`. A no-change round must not stall the modseq
+    /// cursor at the stale `since` value forever (otherwise every subsequent round
+    /// re-queries the same window and we lose liveness).
+    #[test]
+    fn changed_flags_parser_floors_next_modseq_at_since() {
+        let out = fetch_changed_flags_response_from_fetches(200, vec![], 200);
+        assert!(out.0.is_empty());
+        assert_eq!(out.1, 200);
+    }
 
     /// Regression lock for the headers-first sync fix. The folder sweep MUST NOT
     /// request `BODY.PEEK[]` (full body) — that hangs async-imap on large folders
