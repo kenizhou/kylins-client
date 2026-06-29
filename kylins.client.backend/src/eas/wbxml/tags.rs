@@ -179,3 +179,29 @@ pub mod base {
     pub const CONTENT_TYPE: u8 = 0x17;
     pub const PREVIEW: u8 = 0x18;
 }
+
+/// Email (page 2) tag ids. Source: [MS-ASEMAIL] 2.2.2.
+/// Used by the Sync-response parser to extract well-known email fields
+/// out of `ApplicationData`.
+pub mod email {
+    pub const PAGE: u8 = 2;
+    pub const DATE_RECEIVED: u8 = 0x0F;
+    pub const SUBJECT: u8 = 0x14;
+    pub const READ: u8 = 0x15;
+    pub const TO: u8 = 0x16;
+    pub const CC: u8 = 0x17;
+    pub const FROM: u8 = 0x18;
+    pub const REPLY_TO: u8 = 0x19;
+    pub const IMPORTANCE: u8 = 0x12;
+    pub const FLAG: u8 = 0x3A;
+}
+
+/// Email2 (page 22) tag ids. Source: [MS-ASEMAIL] 2.2.3.
+/// Conversations / drafts / BCC live here because they postdate the
+/// original Email code page.
+pub mod email2 {
+    pub const PAGE: u8 = 22;
+    pub const CONVERSATION_ID: u8 = 0x09;
+    pub const IS_DRAFT: u8 = 0x15;
+    pub const BCC: u8 = 0x16;
+}

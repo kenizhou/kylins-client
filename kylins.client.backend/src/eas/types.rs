@@ -108,7 +108,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResult {
     pub sync_key: String,
     pub added: Vec<EasItem>,
@@ -116,35 +116,83 @@ pub struct SyncResult {
     pub deleted_server_ids: Vec<String>,
     /// True if more items are available — caller should re-issue Sync with the new sync_key.
     pub more_available: bool,
+    /// EAS Sync collection status (MS-ASSYNC 2.2.3.23). `1` = success;
+    /// anything else is a protocol error the engine must surface. Defaults
+    /// to `1` so the unparsed-stub path (which returns `SyncResult::default()`)
+    /// reads as success until Task 3 wires real status parsing.
+    #[serde(default = "default_sync_status")]
+    pub status: u32,
 }
 
-/// Generic item envelope — fields vary by collection class. For MVP we keep the
-/// payload as a flexible map so we don't have to enumerate every EAS field.
-/// Phase 6+ work can specialize per class.
+fn default_sync_status() -> u32 {
+    1
+}
+
+/// Manual `Default` so `status` defaults to `1` (success) rather than the
+/// `u32` default of `0`. The `#[serde(default = ...)]` attribute only covers
+/// deserialization, not `Default::default()`, so without this impl callers
+/// writing `SyncResult::default()` would get `status = 0` (which the engine
+/// treats as an error).
+impl Default for SyncResult {
+    fn default() -> Self {
+        Self {
+            sync_key: String::default(),
+            added: Vec::default(),
+            updated: Vec::default(),
+            deleted_server_ids: Vec::default(),
+            more_available: bool::default(),
+            status: default_sync_status(),
+        }
+    }
+}
+
+/// Typed email item envelope. Replaces the previous `HashMap<String, String>`
+/// payload so the WBXML Sync-response parser (Task 2) can dispatch on typed
+/// fields rather than stringly-typed tag names. Only the Email class is
+/// modeled here; Calendar/Contacts sync stays deferred.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EasItem {
     pub server_id: String,
-    pub class: String,
-    /// Decoded item fields. Keys correspond to WBXML tag names (e.g. `"Subject"`, `"DateReceived"`).
-    pub fields: std::collections::HashMap<String, String>,
-    /// Raw body text (HTML or plain) if requested.
-    pub body: Option<String>,
-    /// Body type: `"text"`, `"html"`, `"rtf"`, `"mime"`.
-    pub body_type: Option<String>,
-    /// Preview snippet (first ~256 chars).
+    pub subject: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub cc: Option<String>,
+    pub bcc: Option<String>,
+    pub reply_to: Option<String>,
+    pub date_received: Option<String>,
+    pub read: Option<bool>,
+    pub flag: Option<bool>,
+    pub importance: Option<u8>,
+    pub body_html: Option<String>,
+    pub body_text: Option<String>,
+    pub body_truncated: Option<bool>,
     pub preview: Option<String>,
-    /// Attachments if fetched.
+    pub has_attachments: bool,
     pub attachments: Vec<EasAttachment>,
+    pub conversation_id: Option<Vec<u8>>,
+    pub is_draft: Option<bool>,
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EasAttachment {
     pub file_reference: String,
     pub display_name: String,
     pub content_id: Option<String>,
     pub is_inline: bool,
-    pub estimated_data_size: u64,
-    pub method: u8, // 1=Normal, 5=EmbeddedMessage, 6=AttachOLE
+    /// EAS `AirSyncBase:EstimatedDataSize`. Typed as `Option<u32>` so the
+    /// parser can distinguish "server omitted it" from "zero". Replaces the
+    /// previous untyped `u64` field.
+    pub estimated_data_size: Option<u32>,
+    /// EAS `AirSyncBase:Method`: 1=Normal, 5=EmbeddedMessage, 6=AttachOLE.
+    /// Typed as `Option<u8>` for the same reason as `estimated_data_size`.
+    pub method: Option<u8>,
+    /// MIME content type, e.g. `"image/png"`. Surfaced on ItemOperations fetch.
+    pub content_type: Option<String>,
+    /// URL for externally-stored attachments. Rarely populated for mail.
+    pub content_location: Option<String>,
 }
 
 // ---------- ItemOperations ----------
