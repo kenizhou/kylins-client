@@ -11,6 +11,7 @@
 use async_imap::Session;
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -171,7 +172,7 @@ impl ImapSessionManager {
     /// across an `.await` (the only await on them is `Mutex::lock` itself) —
     /// lock ordering is `session` → `selected_mailbox` → `last_used`, and
     /// every acquirer in this file follows that order.
-    pub async fn execute<O, R, F>(
+    pub async fn execute<O, R>(
         &self,
         account_id: &str,
         config: &ImapConfig,
@@ -179,8 +180,10 @@ impl ImapSessionManager {
         mut op: O,
     ) -> Result<R, String>
     where
-        O: FnMut(&mut Session<ImapStream>) -> F + Send,
-        F: Future<Output = Result<R, String>> + Send,
+        O: FnMut(
+                &mut Session<ImapStream>,
+            ) -> Pin<Box<dyn Future<Output = Result<R, String>> + Send + '_>>
+            + Send,
         R: Send,
     {
         let handle = self.handle_for(account_id, config).await;

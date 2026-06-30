@@ -1,21 +1,33 @@
 // ImapSource — MailSource adapter over the existing async-imap client.
 //
-// Owns its connection lifecycle (connect once per public call, run sub-ops on the same
-// session, logout at the end). Maps ImapFolder -> RemoteFolder and ImapMessage ->
-// RemoteMessage. sync_folder uses delta semantics: get_folder_status for UIDVALIDITY,
-// fetch_new_uids(highest_uid+1), chunked fetch_messages for the new envelopes.
+// Connection lifecycle: ONE persistent `Session<ImapStream>` per account, owned by
+// `ImapSessionManager`. Every per-call method (`list_folders`, `sync_folder`,
+// `fetch_body`, `set_flags`, `move_messages`, `delete_messages`, `append`) wraps its
+// session-using logic in `self.manager.execute(...)` — the manager lazily connects,
+// re-SELECTs only when the folder differs, and reconnects once on a transient drop.
+// This eliminates the connect-per-call/logout churn that was tripping the test
+// server's connection/flood limit (`* BYE Connection closed. 14`) on large folders.
+// `watch()` keeps its OWN dedicated connection (IDLE holds the socket for minutes;
+// merging it onto the manager is deferred — Task 5+). `send()` is SMTP, unrelated.
+//
+// Maps ImapFolder -> RemoteFolder and ImapMessage -> RemoteMessage. sync_folder uses
+// delta semantics: get_folder_status for UIDVALIDITY, fetch_new_uids(highest_uid+1),
+// chunked fetch_messages for the new envelopes.
 //
 // CAPABILITY negotiation: best-effort. `list_folders`/`sync_folder` query the server's
-// CAPABILITY on every connect and cache the result in `caps`; `capabilities()` returns
-// the cached value or `Capabilities::default()` if no connect has succeeded yet. This
-// is what lets a later task pick a RealtimeStrategy (idle vs. poll) based on the
-// server's actual `IDLE`/`CONDSTORE`/`QRESYNC`/`VANISHED` support.
+// CAPABILITY on the same execute() trip (via session_capabilities inside the closure)
+// and cache the result in `caps`; `capabilities()` returns the cached value or
+// `Capabilities::default()` if no connect has succeeded yet. This is what lets a later
+// task pick a RealtimeStrategy (idle vs. poll) based on the server's actual
+// `IDLE`/`CONDSTORE`/`QRESYNC`/`VANISHED` support.
 //
-// `watch()` (Phase 2 Task 2): long-lived IDLE on the folder. Unlike the per-call
-// methods above, watch() holds its connection for the duration of the IDLE and uses
-// async-imap's `wait_with_timeout(28 min)` keepalive watchdog (reset by `* OK Still
-// here` server pings, < the ~29 min server idle timeout). Returns `Ok(())` on the
-// first real notification so the caller can re-sync then re-enter watch().
+// async-imap-0-quirk (CRITICAL): on the test server (`imap.kylins.com`),
+// `Session::uid_fetch` returns 0 items even when EXISTS > 0. So `sync_folder` keeps
+// the `raw_fetch_folder` fallback, which opens its OWN separate connection per call
+// (NOT routed through the persistent session — async-imap 0.10.4 has no public
+// raw-write API; routing raw bytes through the persistent socket is deferred to
+// Task 5). The persistent session still handles connect/SELECT/caps + the typed
+// `uid_fetch` attempt; the raw fallback only triggers when async-imap yields 0.
 
 use async_imap::extensions::idle::IdleResponse;
 use async_trait::async_trait;
@@ -48,10 +60,10 @@ pub struct ImapSource {
     /// Cheap `Arc`-backed clone from the engine's single shared pool.
     pool: sqlx::SqlitePool,
     /// Persistent per-account session. The manager owns one long-lived
-    /// `Session<ImapStream>` per account; this source's methods will switch
-    /// from per-call `imap_client::connect()` to `manager.execute(...)` in
-    /// Task 4. Held but unused in Task 3 (plumbing only — no behavior change).
-    #[allow(dead_code)]
+    /// `Session<ImapStream>` per account; every per-call method routes its
+    /// session-using logic through `manager.execute(...)` instead of dialing a
+    /// fresh connection per call. (Task 4 swap — eliminates the per-call
+    /// connect/logout churn that was tripping server connection/flood limits.)
     manager: std::sync::Arc<ImapSessionManager>,
 }
 
@@ -257,11 +269,34 @@ impl MailSource for ImapSource {
 
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
         let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
-        // Best-effort CAPABILITY cache; ignore errors so caps stay default.
-        if let Ok((idle, condstore, qresync, vanished)) =
-            imap_client::session_capabilities(&mut session).await
-        {
+        let account_id = self.account.id.clone();
+
+        // Single execute() trip: fetch folders AND refresh caps on the SAME call
+        // through the persistent session (folder=None: LIST has no per-folder
+        // context, no SELECT is forced). The closure returns both, and we write
+        // caps AFTER the closure returns (so no `&self.caps` borrow is held
+        // inside the closure — that would conflict with `&self.manager` captured
+        // by execute()'s self receiver).
+        //
+        // FnMut discipline: the closure captures NOTHING by move from the outer
+        // scope (config/account_id are passed by reference to execute itself;
+        // inside the closure we only call imap_client fns on the borrowed
+        // `session`). It is therefore safely twice-callable across the
+        // reconnect-once retry path inside execute().
+        let (folders, caps_tuple) = self
+            .manager
+            .execute(&account_id, &config, None, |session| {
+                Box::pin(async move {
+                    let folders = imap_client::list_folders(session).await?;
+                    // Best-effort caps; ignore errors so caps stay at last-known.
+                    let caps_tuple = imap_client::session_capabilities(session).await.ok();
+                    Ok::<_, String>((folders, caps_tuple))
+                })
+            })
+            .await
+            .map_err(other)?;
+
+        if let Some((idle, condstore, qresync, vanished)) = caps_tuple {
             *self.caps.lock().unwrap() = Some(Capabilities {
                 idle,
                 condstore,
@@ -270,10 +305,6 @@ impl MailSource for ImapSource {
                 vanishearch: vanished,
             });
         }
-        let folders = imap_client::list_folders(&mut session)
-            .await
-            .map_err(other)?;
-        let _ = session.logout().await;
         Ok(folders.into_iter().map(imap_folder_to_remote).collect())
     }
 
@@ -283,11 +314,286 @@ impl MailSource for ImapSource {
         since: Cursor,
     ) -> Result<FolderDelta, SourceError> {
         let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
-        // Best-effort CAPABILITY cache; ignore errors so caps stay default.
-        if let Ok((idle, condstore, qresync, vanished)) =
-            imap_client::session_capabilities(&mut session).await
+        let account_id = self.account.id.clone();
+        let folder_remote = folder.remote_id.clone();
+
+        // Hoist DB reads and the caps read OUT of the closure: list_local_uids
+        // borrows &self.pool, the caps read borrows &self.caps, and the closure
+        // will also borrow &self.manager (via execute). Doing these first ends
+        // those borrows before execute() starts, so nothing inside the closure
+        // holds a &self borrow that could conflict. Best-effort: empty on failure
+        // (the expunge diff is best-effort anyway).
+        let local_uids = match crate::db::messages::list_local_uids(
+            &self.pool,
+            &account_id,
+            &folder_remote,
+        )
+        .await
         {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!(
+                    "[sync] list_local_uids {} failed, skipping expunge diff: {e}",
+                    folder_remote
+                );
+                vec![]
+            }
+        };
+        // Read caps BEFORE execute() so we don't hold &self.caps inside the
+        // closure. (Caps may be None on first sync — unwrap_or_default gives the
+        // poll-only set, and condstore stays false until a prior connect cached it.)
+        let caps_captured = self.caps.lock().unwrap().unwrap_or_default();
+
+        // Owned clone of config for the closure's raw_fetch fallback path (the
+        // fallback opens its OWN connection — see async-imap-0-quirk note above).
+        // We pass &config to execute() (borrowed for the call) and move a clone
+        // into the closure so the inner async is 'static + Send.
+        let config_for_closure = config.clone();
+
+        // The whole body runs against the persistent session inside ONE execute()
+        // trip (folder=Some: the mailbox lock re-SELECTs only if the folder
+        // differs from the currently-selected one). The closure returns
+        // (FolderDelta, Option<CapsTuple>) so caps can be refreshed on the SAME
+        // trip without borrowing &self.caps inside the closure.
+        //
+        // FnMut discipline (CRITICAL — load-bearing): execute()'s reconnect-once
+        // path may invoke this closure TWICE. The outer `move` closure OWNS
+        // folder_remote / config_for_closure / since_captured / local_uids /
+        // caps_captured (caps is Copy). Each invocation of the outer FnMut RE-
+        // CLONES the consumed values (folder_remote, config, since, local_uids)
+        // into fresh locals BEFORE constructing the inner `async move` block, so
+        // the outer closure's owned captures are never moved out of — they're
+        // only read (cloned) per call. This compiles under FnMut (and even Fn).
+        let since_captured = since;
+        // folder_remote is borrowed by `Some(&folder_remote)` below AND captured
+        // by the closure. Clone it into a separate binding for the closure so the
+        // borrow and the move don't conflict (E0505).
+        let folder_remote_for_closure = folder_remote.clone();
+
+        let (delta, caps_tuple) = self
+            .manager
+            .execute(
+                &account_id,
+                &config,
+                Some(&folder_remote),
+                move |session| {
+                    // Re-clone per call so the outer closure's owned captures
+                    // survive a second invocation (reconnect-once retry path).
+                    let folder_remote = folder_remote_for_closure.clone();
+                    let config = config_for_closure.clone();
+                    let since = since_captured.clone();
+                    let local_uids = local_uids.clone();
+                    let caps = caps_captured; // Copy
+
+                    Box::pin(async move {
+                        let (since_uv, since_high, since_modseq) = match since {
+                            Cursor::Imap {
+                                uidvalidity,
+                                highest_uid,
+                                highest_modseq,
+                            } => (uidvalidity, highest_uid, highest_modseq),
+                            _ => (0, 0, 0),
+                        };
+
+                        let status =
+                            imap_client::get_folder_status(session, &folder_remote).await?;
+
+                        // UIDVALIDITY change -> the server rebuilt the folder;
+                        // signal a cache wipe and a full resync from uid 0. The
+                        // engine (Task 8) deletes the folder's rows first.
+                        if since_uv != 0 && status.uidvalidity != since_uv {
+                            // Best-effort caps refresh on the same trip even on
+                            // the early-return path (cheap, ignores errors).
+                            let caps_tuple =
+                                imap_client::session_capabilities(session).await.ok();
+                            return Ok::<_, String>((
+                                FolderDelta {
+                                    added: vec![],
+                                    updated: vec![],
+                                    flag_updates: vec![],
+                                    vanished_uids: vec![],
+                                    next_cursor: Cursor::Imap {
+                                        uidvalidity: status.uidvalidity,
+                                        highest_uid: 0,
+                                        highest_modseq: status.highest_modseq.unwrap_or(0),
+                                    },
+                                    uidvalidity_changed: true,
+                                },
+                                caps_tuple,
+                            ));
+                        }
+
+                        let new_uids =
+                            imap_client::fetch_new_uids(session, &folder_remote, since_high)
+                                .await?;
+                        let to_fetch: Vec<u32> =
+                            new_uids.into_iter().filter(|&u| u > since_high).collect();
+
+                        let mut added = Vec::new();
+                        // Probe the first chunk via async-imap. If it returns
+                        // ASYNC_IMAP_EMPTY (server/parser incompatibility —
+                        // async-imap's uid_fetch yields 0 items even when
+                        // EXISTS > 0), switch to a SINGLE-CONNECTION raw fetch
+                        // for the ENTIRE pending UID list. The previous per-chunk
+                        // raw fallback opened a NEW connection per 100-UID chunk,
+                        // so a large folder (~31 reconnects for 3133 msgs)
+                        // tripped the server's connection/flood limit
+                        // (`* BYE Connection closed. 14`). raw_fetch_folder keeps
+                        // ONE connection for all chunks and is best-effort.
+                        //
+                        // NOTE: raw_fetch_folder opens its OWN separate connection
+                        // (NOT routed through the persistent session — async-imap
+                        // 0.10.4 has no public raw-write API). Routing raw bytes
+                        // through the persistent socket is deferred to Task 5.
+                        let chunks: Vec<&[u32]> = to_fetch.chunks(100).collect();
+                        'chunk: for (i, chunk) in chunks.iter().enumerate() {
+                            let range = uid_set(chunk);
+                            match imap_client::fetch_messages(session, &folder_remote, &range).await
+                            {
+                                Ok(r) => {
+                                    for m in r.messages {
+                                        added.push(imap_message_to_remote(m));
+                                    }
+                                }
+                                Err(e) if e.starts_with("ASYNC_IMAP_EMPTY:") => {
+                                    if i == 0 {
+                                        log::info!(
+                                            "[sync] async-imap empty for {}; using single-connection raw fetch for {} UID(s)",
+                                            folder_remote,
+                                            to_fetch.len()
+                                        );
+                                        let bulk = imap_client::raw_fetch_folder(
+                                            &config,
+                                            &folder_remote,
+                                            &to_fetch,
+                                            100,
+                                        )
+                                        .await?;
+                                        for m in bulk.messages {
+                                            added.push(imap_message_to_remote(m));
+                                        }
+                                        break 'chunk;
+                                    } else {
+                                        log::info!(
+                                            "[sync] async-imap empty for {} chunk {} UIDs {range}; per-chunk raw fallback",
+                                            folder_remote,
+                                            i + 1
+                                        );
+                                        let single = imap_client::raw_fetch_messages(
+                                            &config,
+                                            &folder_remote,
+                                            &range,
+                                        )
+                                        .await?;
+                                        for m in single.messages {
+                                            added.push(imap_message_to_remote(m));
+                                        }
+                                    }
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+
+                        let new_high = added.iter().map(|m| m.uid).max().unwrap_or(since_high);
+
+                        // CONDSTORE flag-delta (RFC 7162 §3.1). Best-effort: a
+                        // CHANGEDSINCE failure is logged and the round completes
+                        // append-only — it must NOT break the sync. First sync
+                        // (modseq 0) is explicitly skipped.
+                        let mut flag_updates: Vec<FlagUpdate> = Vec::new();
+                        let mut next_modseq = status.highest_modseq.unwrap_or(0);
+
+                        if caps.condstore && since_modseq > 0 {
+                            match imap_client::fetch_changed_flags(
+                                session,
+                                &folder_remote,
+                                since_modseq,
+                            )
+                            .await
+                            {
+                                Ok((changes, advanced)) => {
+                                    next_modseq = advanced;
+                                    flag_updates = changes
+                                        .into_iter()
+                                        .map(|c| FlagUpdate {
+                                            uid: c.uid,
+                                            is_read: c.is_read,
+                                            is_starred: c.is_starred,
+                                        })
+                                        .collect();
+                                    log::info!(
+                                        "[sync] CONDSTORE {}: {} flag change(s) since modseq {} (-> {})",
+                                        folder_remote,
+                                        flag_updates.len(),
+                                        since_modseq,
+                                        next_modseq
+                                    );
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "[sync] CONDSTORE {} CHANGEDSINCE failed, skipping flag delta: {e}",
+                                        folder_remote
+                                    );
+                                }
+                            }
+                        }
+
+                        // Expunge detection via set-difference. Server
+                        // `UID SEARCH ALL` is the source of truth; local UIDs not
+                        // in that set were expunged. Best-effort: a search failure
+                        // is logged and skipped so it never breaks the round.
+                        let mut vanished_uids: Vec<u32> = Vec::new();
+                        if !local_uids.is_empty() {
+                            match imap_client::search_all_uids(session, &folder_remote).await {
+                                Ok(server_uids) => {
+                                    let server_set: std::collections::HashSet<u32> =
+                                        server_uids.into_iter().collect();
+                                    vanished_uids = local_uids
+                                        .into_iter()
+                                        .filter(|u| !server_set.contains(u))
+                                        .collect();
+                                    if !vanished_uids.is_empty() {
+                                        log::info!(
+                                            "[sync] {}: {} locally-cached uid(s) expunged on server",
+                                            folder_remote,
+                                            vanished_uids.len()
+                                        );
+                                    }
+                                }
+                                Err(e) => log::warn!(
+                                    "[sync] UID SEARCH ALL {} for expunge diff failed: {e}",
+                                    folder_remote
+                                ),
+                            }
+                        }
+
+                        // Best-effort caps refresh on the same trip.
+                        let caps_tuple = imap_client::session_capabilities(session).await.ok();
+
+                        Ok::<_, String>((
+                            FolderDelta {
+                                added,
+                                updated: vec![],
+                                flag_updates,
+                                vanished_uids,
+                                next_cursor: Cursor::Imap {
+                                    uidvalidity: status.uidvalidity,
+                                    highest_uid: new_high,
+                                    highest_modseq: next_modseq,
+                                },
+                                uidvalidity_changed: false,
+                            },
+                            caps_tuple,
+                        ))
+                    })
+                },
+            )
+            .await
+            .map_err(other)?;
+
+        // Write caps AFTER the closure returns (no &self.caps borrow held inside
+        // the closure — that would conflict with &self.manager via execute()).
+        if let Some((idle, condstore, qresync, vanished)) = caps_tuple {
             *self.caps.lock().unwrap() = Some(Capabilities {
                 idle,
                 condstore,
@@ -296,227 +602,7 @@ impl MailSource for ImapSource {
                 vanishearch: vanished,
             });
         }
-
-        let (since_uv, since_high, since_modseq) = match since {
-            Cursor::Imap {
-                uidvalidity,
-                highest_uid,
-                highest_modseq,
-            } => (uidvalidity, highest_uid, highest_modseq),
-            _ => (0, 0, 0),
-        };
-
-        let status = imap_client::get_folder_status(&mut session, &folder.remote_id)
-            .await
-            .map_err(other)?;
-
-        // UIDVALIDITY change -> the server rebuilt the folder; signal a cache wipe and a
-        // full resync from uid 0. The engine (Task 8) deletes the folder's rows first.
-        if since_uv != 0 && status.uidvalidity != since_uv {
-            return Ok(FolderDelta {
-                added: vec![],
-                updated: vec![],
-                flag_updates: vec![],
-                vanished_uids: vec![],
-                next_cursor: Cursor::Imap {
-                    uidvalidity: status.uidvalidity,
-                    highest_uid: 0,
-                    highest_modseq: status.highest_modseq.unwrap_or(0),
-                },
-                uidvalidity_changed: true,
-            });
-        }
-
-        let new_uids = imap_client::fetch_new_uids(&mut session, &folder.remote_id, since_high)
-            .await
-            .map_err(other)?;
-        let to_fetch: Vec<u32> = new_uids.into_iter().filter(|&u| u > since_high).collect();
-
-        let mut added = Vec::new();
-        // Probe the first chunk via async-imap. If it returns ASYNC_IMAP_EMPTY
-        // (server/parser incompatibility — async-imap's uid_fetch yields 0 items
-        // even when EXISTS > 0), switch to a SINGLE-CONNECTION raw fetch for the
-        // ENTIRE pending UID list. The previous per-chunk raw fallback opened a
-        // NEW connection per 100-UID chunk, so a large folder (~31 reconnects
-        // for 3133 msgs) tripped the server's connection/flood limit
-        // (`* BYE Connection closed. 14`), errored mid-folder, dropped the delta
-        // and left the cursor unchanged -> infinite retry from the same UID.
-        // raw_fetch_folder keeps ONE connection for all chunks and is best-effort
-        // (returns what it got if the server drops mid-stream) so the cursor
-        // still advances past fetched UIDs, breaking the loop.
-        //
-        // Each arm handles its own `added.push` so the match need not produce a
-        // common `res` value (the raw-bulk path fetches everything and breaks).
-        let chunks: Vec<&[u32]> = to_fetch.chunks(100).collect();
-        'chunk: for (i, chunk) in chunks.iter().enumerate() {
-            let range = uid_set(chunk);
-            match imap_client::fetch_messages(&mut session, &folder.remote_id, &range).await {
-                Ok(r) => {
-                    for m in r.messages {
-                        added.push(imap_message_to_remote(m));
-                    }
-                }
-                Err(e) if e.starts_with("ASYNC_IMAP_EMPTY:") => {
-                    if i == 0 {
-                        // Probe failed on the first chunk -> the server is
-                        // incompatible with async-imap for this folder. Pull the
-                        // WHOLE pending list over one raw connection and skip the
-                        // remaining per-chunk iterations.
-                        log::info!(
-                            "[sync] async-imap empty for {}; using single-connection raw fetch for {} UID(s)",
-                            folder.remote_id,
-                            to_fetch.len()
-                        );
-                        let bulk = imap_client::raw_fetch_folder(
-                            &config,
-                            &folder.remote_id,
-                            &to_fetch,
-                            100,
-                        )
-                        .await
-                        .map_err(other)?;
-                        for m in bulk.messages {
-                            added.push(imap_message_to_remote(m));
-                        }
-                        break 'chunk;
-                    } else {
-                        // Rare: chunk 0 worked via async-imap but a later chunk
-                        // returned empty. Fall back to a one-shot raw fetch for
-                        // just this chunk and keep going (existing behavior).
-                        log::info!(
-                            "[sync] async-imap empty for {} chunk {} UIDs {range}; per-chunk raw fallback",
-                            folder.remote_id,
-                            i + 1
-                        );
-                        let single =
-                            imap_client::raw_fetch_messages(&config, &folder.remote_id, &range)
-                                .await
-                                .map_err(other)?;
-                        for m in single.messages {
-                            added.push(imap_message_to_remote(m));
-                        }
-                    }
-                }
-                Err(e) => return Err(other(e)),
-            }
-        }
-
-        let new_high = added.iter().map(|m| m.uid).max().unwrap_or(since_high);
-
-        // CONDSTORE flag-delta (RFC 7162 §3.1). On a non-first sync (since_modseq
-        // > 0) against a CONDSTORE server, ask for messages whose metadata
-        // changed since the persisted modseq cursor and reduce them to
-        // `FlagUpdate`s (Seen→is_read, Flagged→is_starred). The new cursor's
-        // highest_modseq advances to the max of the server's HIGHESTMODSEQ and
-        // the highest modseq in the returned set (handled inside
-        // `fetch_changed_flags`), so a no-change round still advances.
-        //
-        // Best-effort: a CHANGEDSINCE failure (server glitch, transient network)
-        // is logged and the round completes append-only — it must NOT break the
-        // sync. First sync (modseq 0) is explicitly skipped: CHANGEDSINCE 0 would
-        // report every message as changed, and we have no prior state to diff
-        // against anyway.
-        let caps = self.caps.lock().unwrap().unwrap_or_default();
-        let mut flag_updates: Vec<FlagUpdate> = Vec::new();
-        // Seed with the server-reported HIGHESTMODSEQ so a non-CONDSTORE server
-        // (or a best-effort skip) still persists a forward-looking cursor.
-        let mut next_modseq = status.highest_modseq.unwrap_or(0);
-
-        if caps.condstore && since_modseq > 0 {
-            match imap_client::fetch_changed_flags(&mut session, &folder.remote_id, since_modseq)
-                .await
-            {
-                Ok((changes, advanced)) => {
-                    next_modseq = advanced;
-                    flag_updates = changes
-                        .into_iter()
-                        .map(|c| FlagUpdate {
-                            uid: c.uid,
-                            is_read: c.is_read,
-                            is_starred: c.is_starred,
-                        })
-                        .collect();
-                    log::info!(
-                        "[sync] CONDSTORE {}: {} flag change(s) since modseq {} (-> {})",
-                        folder.remote_id,
-                        flag_updates.len(),
-                        since_modseq,
-                        next_modseq
-                    );
-                }
-                Err(e) => {
-                    // CONDSTORE best-effort: a CHANGEDSINCE failure must not
-                    // break the round. Log and fall back to append-only for this
-                    // round; `next_modseq` stays at the server-reported status
-                    // value so the next round can retry from there.
-                    log::warn!(
-                        "[sync] CONDSTORE {} CHANGEDSINCE failed, skipping flag delta: {e}",
-                        folder.remote_id
-                    );
-                }
-            }
-        }
-
-        // Expunge detection via set-difference (universal; needs no QRESYNC/VANISHED
-        // support). Server `UID SEARCH ALL` is the source of truth for "currently
-        // exists"; local UIDs not in that set were expunged on the server. Reuses
-        // the session we already hold (MUST run before logout). Best-effort: a
-        // search/list failure is logged and skipped so it never breaks the round.
-        let mut vanished_uids: Vec<u32> = Vec::new();
-        let local_uids = match crate::db::messages::list_local_uids(
-            &self.pool,
-            &self.account.id,
-            &folder.remote_id,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!(
-                    "[sync] list_local_uids {} failed, skipping expunge diff: {e}",
-                    folder.remote_id
-                );
-                vec![]
-            }
-        };
-        if !local_uids.is_empty() {
-            match imap_client::search_all_uids(&mut session, &folder.remote_id).await {
-                Ok(server_uids) => {
-                    let server_set: std::collections::HashSet<u32> =
-                        server_uids.into_iter().collect();
-                    vanished_uids = local_uids
-                        .into_iter()
-                        .filter(|u| !server_set.contains(u))
-                        .collect();
-                    if !vanished_uids.is_empty() {
-                        log::info!(
-                            "[sync] {}: {} locally-cached uid(s) expunged on server",
-                            folder.remote_id,
-                            vanished_uids.len()
-                        );
-                    }
-                }
-                Err(e) => log::warn!(
-                    "[sync] UID SEARCH ALL {} for expunge diff failed: {e}",
-                    folder.remote_id
-                ),
-            }
-        }
-
-        let _ = session.logout().await;
-
-        Ok(FolderDelta {
-            added,
-            updated: vec![],
-            flag_updates,
-            vanished_uids,
-            next_cursor: Cursor::Imap {
-                uidvalidity: status.uidvalidity,
-                highest_uid: new_high,
-                highest_modseq: next_modseq,
-            },
-            uidvalidity_changed: false,
-        })
+        Ok(delta)
     }
 
     async fn fetch_body(
@@ -525,12 +611,36 @@ impl MailSource for ImapSource {
         uid: u32,
     ) -> Result<Option<String>, SourceError> {
         let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
-        let msg = imap_client::fetch_message_body(&mut session, &folder.remote_id, uid)
+        let account_id = self.account.id.clone();
+        let folder_remote = folder.remote_id.clone();
+
+        // Single execute() trip: SELECT (forced by folder=Some) + typed
+        // BODY.PEEK[] fetch on the persistent session. No logout — the manager
+        // owns the session lifecycle.
+        //
+        // FnMut discipline: outer closure owns folder_remote_for_closure; each
+        // invocation re-clones it into the async block (uid is Copy). Safely
+        // twice-callable. folder_remote is borrowed by Some(&folder_remote), so
+        // the closure captures a separate clone (E0505).
+        let folder_remote_for_closure = folder_remote.clone();
+        let msg = self
+            .manager
+            .execute(
+                &account_id,
+                &config,
+                Some(&folder_remote),
+                move |session| {
+                    let folder_remote = folder_remote_for_closure.clone();
+                    Box::pin(async move {
+                        let msg =
+                            imap_client::fetch_message_body(session, &folder_remote, uid).await?;
+                        Ok::<_, String>(msg.body_html.or(msg.body_text))
+                    })
+                },
+            )
             .await
             .map_err(other)?;
-        let _ = session.logout().await;
-        Ok(msg.body_html.or(msg.body_text))
+        Ok(msg)
     }
 
     async fn set_flags(
@@ -544,19 +654,41 @@ impl MailSource for ImapSource {
             return Ok(());
         }
         let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
+        let account_id = self.account.id.clone();
+        let folder_remote = folder.remote_id.clone();
+        // Pre-compute the derived strings outside the closure so the inner async
+        // only needs to re-clone them per call (no &str lifetime pressure on the
+        // 'static + Send future).
+        let uid_set_str = uid_set(uids);
         let flag_op = if add { "+FLAGS" } else { "-FLAGS" };
         let flags_str = format_flags(&[flag]);
-        imap_client::set_flags(
-            &mut session,
-            &folder.remote_id,
-            &uid_set(uids),
-            flag_op,
-            &flags_str,
-        )
-        .await
-        .map_err(other)?;
-        let _ = session.logout().await;
+        let folder_remote_for_closure = folder_remote.clone();
+
+        self.manager
+            .execute(
+                &account_id,
+                &config,
+                Some(&folder_remote),
+                move |session| {
+                    // Re-clone per call for FnMut twice-callability.
+                    let folder_remote = folder_remote_for_closure.clone();
+                    let uid_set_str = uid_set_str.clone();
+                    let flags_str = flags_str.clone();
+                    Box::pin(async move {
+                        imap_client::set_flags(
+                            session,
+                            &folder_remote,
+                            &uid_set_str,
+                            flag_op,
+                            &flags_str,
+                        )
+                        .await?;
+                        Ok::<_, String>(())
+                    })
+                },
+            )
+            .await
+            .map_err(other)?;
         Ok(())
     }
 
@@ -570,16 +702,33 @@ impl MailSource for ImapSource {
             return Ok(());
         }
         let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
-        imap_client::move_messages(
-            &mut session,
-            &src.remote_id,
-            &uid_set(uids),
-            &dest.remote_id,
-        )
-        .await
-        .map_err(other)?;
-        let _ = session.logout().await;
+        let account_id = self.account.id.clone();
+        let src_remote = src.remote_id.clone();
+        let dest_remote = dest.remote_id.clone();
+        let uid_set_str = uid_set(uids);
+
+        // folder=Some(&src_remote): the manager SELECTs the SOURCE mailbox (MOVE
+        // operates on the currently-selected mailbox). The dest is just a command
+        // argument, not a SELECT target.
+        let src_remote_for_closure = src_remote.clone();
+        self.manager
+            .execute(
+                &account_id,
+                &config,
+                Some(&src_remote),
+                move |session| {
+                    let src_remote = src_remote_for_closure.clone();
+                    let dest_remote = dest_remote.clone();
+                    let uid_set_str = uid_set_str.clone();
+                    Box::pin(async move {
+                        imap_client::move_messages(session, &src_remote, &uid_set_str, &dest_remote)
+                            .await?;
+                        Ok::<_, String>(())
+                    })
+                },
+            )
+            .await
+            .map_err(other)?;
         Ok(())
     }
 
@@ -592,11 +741,27 @@ impl MailSource for ImapSource {
             return Ok(());
         }
         let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
-        imap_client::delete_messages(&mut session, &folder.remote_id, &uid_set(uids))
+        let account_id = self.account.id.clone();
+        let folder_remote = folder.remote_id.clone();
+        let uid_set_str = uid_set(uids);
+        let folder_remote_for_closure = folder_remote.clone();
+
+        self.manager
+            .execute(
+                &account_id,
+                &config,
+                Some(&folder_remote),
+                move |session| {
+                    let folder_remote = folder_remote_for_closure.clone();
+                    let uid_set_str = uid_set_str.clone();
+                    Box::pin(async move {
+                        imap_client::delete_messages(session, &folder_remote, &uid_set_str).await?;
+                        Ok::<_, String>(())
+                    })
+                },
+            )
             .await
             .map_err(other)?;
-        let _ = session.logout().await;
         Ok(())
     }
 
@@ -607,17 +772,39 @@ impl MailSource for ImapSource {
         flags: &[&str],
     ) -> Result<(), SourceError> {
         let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
+        let account_id = self.account.id.clone();
+        let folder_remote = folder.remote_id.clone();
+        // Own the raw bytes (the future must be 'static + Send; re-cloned per
+        // closure invocation so the outer FnMut's capture survives a retry).
+        let raw_owned = raw.to_vec();
         let flags_str = format_flags(flags);
-        let flags_opt = if flags.is_empty() {
-            None
-        } else {
-            Some(flags_str.as_str())
-        };
-        imap_client::append_message(&mut session, &folder.remote_id, flags_opt, raw)
+        let folder_remote_for_closure = folder_remote.clone();
+
+        self.manager
+            .execute(
+                &account_id,
+                &config,
+                Some(&folder_remote),
+                move |session| {
+                    let folder_remote = folder_remote_for_closure.clone();
+                    let flags_str = flags_str.clone();
+                    let raw = raw_owned.clone();
+                    Box::pin(async move {
+                        let flags_opt = if flags_str.is_empty() {
+                            None
+                        } else {
+                            // The cloned flags_str lives for the whole async block;
+                            // hand imap_client a borrow of it.
+                            Some(flags_str.as_str())
+                        };
+                        imap_client::append_message(session, &folder_remote, flags_opt, &raw)
+                            .await?;
+                        Ok::<_, String>(())
+                    })
+                },
+            )
             .await
             .map_err(other)?;
-        let _ = session.logout().await;
         Ok(())
     }
 
