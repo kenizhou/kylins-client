@@ -12,6 +12,15 @@ use sqlx::{SqlitePool, Transaction};
 
 use crate::sync_engine::{FlagUpdate, FolderDelta, RemoteMessage};
 
+/// Number of messages persisted per transaction inside `apply_folder_delta`.
+/// Each chunk is a separate BEGIN→upsert*N→COMMIT so the SQLite write-lock is
+/// released frequently: a single transaction holding the writer for several
+/// seconds (a 13k-message folder = ~40k statements) trips `busy_timeout` on
+/// any contending writer and returns spurious SQLITE_BUSY. With chunks of 200
+/// each transaction runs <1-2s, shrinking the contention window to the point
+/// where the 30s busy_timeout is effectively never hit.
+const APPLY_BATCH_SIZE: usize = 200;
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedCounts {
@@ -22,6 +31,14 @@ pub struct AppliedCounts {
 
 /// Apply a folder delta for `label_id` (the labels.id) / `folder_path` (the IMAP path,
 /// used for the UIDVALIDITY wipe and the `imap_folder` column).
+///
+/// Transactions are committed in short batches (see `APPLY_BATCH_SIZE`) so no
+/// single write transaction spans the whole folder — that previously held the
+/// SQLite writer lock for 4-6+ seconds on large folders and caused spurious
+/// `SQLITE_BUSY` (code 5) under any concurrent writer. Idempotent via
+/// `ON CONFLICT` on every upsert, so a partial failure (one batch errors) is
+/// safe to retry next round: already-applied rows are no-ops, the engine's
+/// retry re-runs the same delta.
 pub async fn apply_folder_delta(
     pool: &SqlitePool,
     account_id: &str,
@@ -29,9 +46,11 @@ pub async fn apply_folder_delta(
     folder_path: &str,
     delta: &FolderDelta,
 ) -> Result<AppliedCounts, String> {
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-
+    // 1. UIDVALIDITY wipe — its OWN transaction, run first and alone. It must
+    //    commit before any adds so the fresh rows aren't swept by the orphan
+    //    query below.
     if delta.uidvalidity_changed {
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
         // The server rebuilt the folder (UIDVALIDITY changed): drop every message we
         // stored for it, plus any threads left orphaned. Cascade handles thread_labels
         // (FK to threads) once the threads are gone.
@@ -50,31 +69,62 @@ pub async fn apply_folder_delta(
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
     }
 
-    for m in &delta.added {
-        upsert_message(&mut tx, account_id, label_id, m).await?;
+    // 2. added + updated — process in chunks; each chunk its own transaction.
+    //    `added` and `updated` go through the same `upsert_message` path, so
+    //    we concat references and batch them together (the per-message
+    //    write-lock check inside upsert_message makes ordering irrelevant
+    //    across the two slices).
+    let total_upserts = delta.added.len() + delta.updated.len();
+    let mut upsert_idx = 0usize;
+    while upsert_idx < total_upserts {
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        let chunk_end = (upsert_idx + APPLY_BATCH_SIZE).min(total_upserts);
+        for i in upsert_idx..chunk_end {
+            // Index into `added` first, then `updated`. Both branches borrow
+            // the same `&RemoteMessage` so the loop body is identical.
+            let m: &RemoteMessage = if i < delta.added.len() {
+                &delta.added[i]
+            } else {
+                &delta.updated[i - delta.added.len()]
+            };
+            upsert_message(&mut tx, account_id, label_id, m).await?;
+        }
+        tx.commit().await.map_err(|e| e.to_string())?;
+        upsert_idx = chunk_end;
     }
-    for m in &delta.updated {
-        upsert_message(&mut tx, account_id, label_id, m).await?;
-    }
+
+    // 3. vanished_uids deletes — own transaction (batched internally if huge,
+    //    but usually small). Each uid deletes its message + body row.
     let mut deleted = 0u64;
-    for u in &delta.vanished_uids {
-        let id = format!("imap-{account_id}-{folder_path}-{u}");
-        let res = sqlx::query("DELETE FROM messages WHERE id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        deleted += res.rows_affected();
-        sqlx::query("DELETE FROM message_bodies WHERE message_id = ?")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
     if !delta.vanished_uids.is_empty() {
+        let mut van_idx = 0usize;
+        while van_idx < delta.vanished_uids.len() {
+            let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+            let chunk_end = (van_idx + APPLY_BATCH_SIZE).min(delta.vanished_uids.len());
+            for u in &delta.vanished_uids[van_idx..chunk_end] {
+                let id = format!("imap-{account_id}-{folder_path}-{u}");
+                let res = sqlx::query("DELETE FROM messages WHERE id = ?")
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                deleted += res.rows_affected();
+                sqlx::query("DELETE FROM message_bodies WHERE message_id = ?")
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            tx.commit().await.map_err(|e| e.to_string())?;
+            van_idx = chunk_end;
+        }
+
         // Sweep threads left orphaned by the deletions (mirrors the wipe block).
+        // Run ONCE after all delete batches — its own short transaction.
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
         sqlx::query(
             "DELETE FROM threads WHERE account_id = ? AND id NOT IN \
              (SELECT thread_id FROM messages WHERE account_id = ?)",
@@ -84,11 +134,12 @@ pub async fn apply_folder_delta(
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
     }
-    tx.commit().await.map_err(|e| e.to_string())?;
 
-    // Flag updates run AFTER commit so they see the just-added rows (a message can be
-    // added and flag-changed in the same round).
+    // 4. Flag updates run AFTER commit so they see the just-added rows (a
+    //    message can be added and flag-changed in the same round). Unchanged —
+    //    it runs its own per-message statements outside any explicit tx.
     let flagged = apply_flag_updates(pool, account_id, folder_path, &delta.flag_updates).await?;
 
     Ok(AppliedCounts {
@@ -715,5 +766,102 @@ mod tests {
         .unwrap();
         let uids: Vec<i64> = remaining.into_iter().map(|(u,)| u).collect();
         assert_eq!(uids, vec![1, 3]);
+    }
+
+    // ---- apply_folder_delta batching (regression for SQLITE_BUSY) ----
+
+    /// Regression: large-folder apply must NOT run one giant transaction. The
+    /// pre-fix code opened ONE tx, looped all `added`, and committed at the
+    /// end; for Deleted Items (≈13k messages) that held the SQLite writer lock
+    /// for several seconds and any contending writer gave up after
+    /// `busy_timeout` (then 5s) → `database is locked` (code 5).
+    ///
+    /// This test seeds >APPLY_BATCH_SIZE (250 > 200) added messages via
+    /// `apply_folder_delta` and asserts that (a) all 250 land — i.e. the
+    /// chunked commits actually persisted each batch and did not roll back the
+    /// earlier ones when the later chunk committed — and (b) the
+    /// `AppliedCounts.added` reflects the total. A bonus check: thread_labels
+    /// + threads also reflect the full count, proving the per-message upsert
+    /// ran to completion inside each batch.
+    #[tokio::test]
+    async fn apply_folder_delta_batches_large_added_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+
+        // 250 messages: more than APPLY_BATCH_SIZE (200) so we exercise the
+        // 2-chunk path (200 + 50).
+        let added: Vec<RemoteMessage> = (1..=250)
+            .map(|uid| msg(uid, &format!("<m{uid}>"), true))
+            .collect();
+        let delta = FolderDelta {
+            added,
+            ..Default::default()
+        };
+
+        let counts = apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+
+        assert_eq!(counts.added, 250, "AppliedCounts must reflect the total");
+        assert_eq!(
+            count(&pool, "messages").await,
+            250,
+            "every batch must commit; partial rollback would leak rows"
+        );
+        assert_eq!(
+            count(&pool, "threads").await,
+            250,
+            "one placeholder thread per message"
+        );
+        assert_eq!(
+            count(&pool, "thread_labels").await,
+            250,
+            "thread_labels written inside the same chunked tx"
+        );
+        assert_eq!(
+            count(&pool, "message_bodies").await,
+            250,
+            "every seeded msg had body_html — bodies must persist too"
+        );
+
+        // Spot-check a row from the SECOND chunk (uid 225 > 200) to prove the
+        // later batch landed and didn't get dropped at the boundary.
+        let (subject,): (Option<String>,) =
+            sqlx::query_as("SELECT subject FROM messages WHERE account_id='acc' AND imap_uid=225")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(subject.as_deref(), Some("S225"));
+    }
+
+    /// Cross-check: batching must also compose `added` + `updated` across the
+    /// chunk boundary (the loop concatenates the two slices). Seed 200 `added`
+    /// + 5 `updated` (205 total > 200) and confirm both slices land.
+    #[tokio::test]
+    async fn apply_folder_delta_batches_combined_added_and_updated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+
+        let added: Vec<RemoteMessage> = (1..=200)
+            .map(|uid| msg(uid, &format!("<m{uid}>"), false))
+            .collect();
+        let updated: Vec<RemoteMessage> = (201..=205)
+            .map(|uid| msg(uid, &format!("<m{uid}>"), false))
+            .collect();
+        let delta = FolderDelta {
+            added,
+            updated,
+            ..Default::default()
+        };
+
+        let counts = apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+
+        assert_eq!(counts.added, 200);
+        assert_eq!(counts.updated, 5); // 5 updated upserts + 0 flag_updates
+        assert_eq!(count(&pool, "messages").await, 205);
     }
 }

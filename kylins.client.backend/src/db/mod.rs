@@ -158,7 +158,18 @@ pub async fn init_db(dir: &Path) -> Result<DbPool, sqlx::Error> {
         .filename(&db_path)
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(std::time::Duration::from_secs(5))
+        // 30s busy_timeout: SQLite/WAL allows only ONE writer at a time; a
+        // contending write blocks for up to `busy_timeout` before returning
+        // SQLITE_BUSY (code 5). For a large folder (Deleted Items ≈ 13k+
+        // messages) `apply_folder_delta` runs multi-second transactions, and a
+        // second writer (frontend `db_*`, another account's worker, an
+        // IDLE-nudged sync) waiting only 5s would spuriously fail with
+        // "database is locked", dropping + retrying the delta (wasted work +
+        // sync thrash). 30s is safe for a background desktop sync — the user
+        // is never blocked on it because writes happen off the UI thread.
+        // (apply_folder_delta also batches its writes into short chunks, so a
+        // 30s ceiling is effectively never hit.)
+        .busy_timeout(std::time::Duration::from_secs(30))
         .foreign_keys(true);
 
     let pool = SqlitePoolOptions::new()
