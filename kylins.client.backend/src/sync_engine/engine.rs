@@ -21,6 +21,27 @@ use crate::sync_engine::{source_for_account, Cursor, MailSource, RemoteFolder};
 
 const POLL_INTERVAL_SECS: u64 = 60;
 
+// ---- Phase 3f Task 3: circuit-breaker thresholds + cooldowns ----
+//
+// The breaker counts consecutive `list_folders` failures per account. At the
+// SHORT threshold it enters a 15s cooldown; at the LONG threshold the cooldown
+// escalates to 60s. A single successful round resets the counter to zero
+// (clearing the slate). The breaker is in-memory only — fresh-start on every
+// process launch, which is the correct semantics (a fresh process doesn't know
+// the prior failure count and should try once normally). See Phase 3f plan
+// Global Constraints for the rationale.
+const BREAKER_THRESHOLD_SHORT: u32 = 3;
+const BREAKER_THRESHOLD_LONG: u32 = 5;
+const BREAKER_COOLDOWN_SHORT_SECS: i64 = 15;
+const BREAKER_COOLDOWN_LONG_SECS: i64 = 60;
+
+#[derive(Clone, Copy, Default)]
+struct BreakerState {
+    failures: u32,
+    /// Epoch-seconds cooldown deadline. 0 = not cooling down.
+    cooldown_until: i64,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeltaEvent {
@@ -135,6 +156,12 @@ pub struct SyncEngine {
     workers: Mutex<HashMap<String, WorkerHandle>>,
     pool: SqlitePool,
     sink: Arc<dyn EventSink>,
+    /// Per-account consecutive-failure counter + cooldown. In-memory only —
+    /// resets on restart (fresh-start semantics: a fresh process doesn't know
+    /// the prior failure count and should try once normally). Counts
+    /// `list_folders` failures only; per-folder `sync_folder` failures stay
+    /// best-effort so one bad folder can't trip the whole account.
+    breakers: Mutex<HashMap<String, BreakerState>>,
 }
 
 impl SyncEngine {
@@ -143,6 +170,7 @@ impl SyncEngine {
             workers: Mutex::new(HashMap::new()),
             pool,
             sink,
+            breakers: Mutex::new(HashMap::new()),
         })
     }
 
@@ -424,6 +452,70 @@ async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn 
     engine.emit_queue(account_id, pending);
 }
 
+// ---- Phase 3f Task 3: circuit-breaker helpers ----
+//
+// Pure-ish state mutations on `SyncEngine::breakers`. Each helper is a small,
+// individually-testable unit; together they implement: cooldown-bypass read,
+// record-failure (bump + maybe-set cooldown), record-success (reset). `now` is
+// sourced from SQLite (`unixepoch()`) so the breaker's clock matches the same
+// clock `provider_rate_limit` uses — the two short-circuits can be reasoned
+// about against a single timebase.
+
+/// Returns `Some(cooldown_until)` if the account is currently in breaker
+/// cooldown, else `None`. Pure read — does not mutate the breaker state.
+async fn breaker_cooldown(engine: &SyncEngine, account_id: &str) -> Option<i64> {
+    let now = unix_now(&engine.pool).await;
+    let bs = engine.breakers.lock().await;
+    let state = bs.get(account_id).copied()?;
+    if now < state.cooldown_until {
+        Some(state.cooldown_until)
+    } else {
+        None
+    }
+}
+
+/// Record a failed round: bump the failure counter and, when the new count
+/// reaches the SHORT/LONG thresholds, schedule the matching cooldown. Between
+/// thresholds the cooldown is whatever was last set at a threshold crossing
+/// (i.e. once we enter cooldown we stay in cooldown until it expires, even
+/// though subsequent bypass rounds don't bump the counter — they never reach
+/// this function). Below the SHORT threshold no cooldown is set, just count.
+async fn breaker_record_failure(engine: &SyncEngine, account_id: &str) {
+    let now = unix_now(&engine.pool).await;
+    let mut bs = engine.breakers.lock().await;
+    let state = bs.entry(account_id.to_string()).or_default();
+    state.failures = state.failures.saturating_add(1);
+    let cd = if state.failures >= BREAKER_THRESHOLD_LONG {
+        BREAKER_COOLDOWN_LONG_SECS
+    } else if state.failures >= BREAKER_THRESHOLD_SHORT {
+        BREAKER_COOLDOWN_SHORT_SECS
+    } else {
+        // Below threshold — accumulate the failure but do not cool down yet.
+        return;
+    };
+    state.cooldown_until = now + cd;
+}
+
+/// Record a successful round: reset the counter to zero (remove the entry
+/// entirely, which `or_default()` re-materializes as fresh on the next
+/// failure). A single success after N failures clears the slate.
+async fn breaker_record_success(engine: &SyncEngine, account_id: &str) {
+    let mut bs = engine.breakers.lock().await;
+    bs.remove(account_id);
+}
+
+/// Current wall-clock in epoch seconds, sourced from SQLite so the breaker and
+/// the rate-limit short-circuit share one timebase. Falls back to 0 on a
+/// transient SQLite blip — that would briefly disable cooldown bypass, which
+/// is the safe fail-open direction (we re-try rather than wedge the account).
+async fn unix_now(pool: &SqlitePool) -> i64 {
+    let (now,): (i64,) = sqlx::query_as("SELECT unixepoch()")
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
+    now
+}
+
 /// One sync round against an explicit source (test seam + reused by production).
 async fn run_sync_round_with_source(
     engine: &Arc<SyncEngine>,
@@ -454,6 +546,24 @@ async fn run_sync_round_with_source(
         ),
     }
 
+    // ---- Phase 3f Task 3: circuit-breaker cooldown short-circuit ----
+    // Distinct from rate-limit above: this counts OUR consecutive
+    // `list_folders` failures, not a server-told-us-to-stop signal. The check
+    // runs AFTER rate-limit so a live rate-limit window wins (rate-limit emits
+    // `rate_limited`; breaker emits `error`). A cooldown-bypass round emits
+    // `error` + `detail: Some(cooldown_until)` and returns Ok WITHOUT calling
+    // the source and WITHOUT bumping the counter again (the counter was bumped
+    // by the failure that triggered the cooldown; bypass rounds must not
+    // escalate it further or the cooldown would never expire on a dead account).
+    if let Some(cooldown_until) = breaker_cooldown(engine, account_id).await {
+        engine.sink.emit_status(StatusEvent {
+            account_id: account_id.into(),
+            state: "error".into(),
+            detail: Some(cooldown_until),
+        });
+        return Ok(());
+    }
+
     engine.sink.emit_status(StatusEvent {
         account_id: account_id.into(),
         state: "syncing".into(),
@@ -464,6 +574,11 @@ async fn run_sync_round_with_source(
         Ok(f) => f,
         Err(e) => {
             log::warn!("[sync] {account_id} list_folders failed: {e}");
+            // Bump the breaker: at SHORT/LONG thresholds this schedules a
+            // cooldown the next round will observe. Per-folder sync_folder
+            // failures do NOT reach here (they are logged + continue further
+            // below), so a single bad folder cannot trip the account.
+            breaker_record_failure(engine, account_id).await;
             engine.sink.emit_status(StatusEvent {
                 account_id: account_id.into(),
                 state: "error".into(),
@@ -600,6 +715,13 @@ async fn run_sync_round_with_source(
     }
 
     let _ = accounts::touch_last_sync(&engine.pool, account_id).await;
+    // Successful round end-to-end (list_folders + at least the folder iteration
+    // completed without early-return): reset the breaker so a later outage must
+    // accumulate fresh failures before tripping again. Per-folder sync_folder
+    // failures are best-effort (logged + continue) and do not block this reset
+    // — the account is reachable, individual folder hiccups should not preserve
+    // a stale failure count.
+    breaker_record_success(engine, account_id).await;
     engine.sink.emit_status(StatusEvent {
         account_id: account_id.into(),
         state: "idle".into(),
@@ -1028,6 +1150,299 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cnt, 0);
+    }
+
+    // ---- Phase 3f Task 3: per-account circuit breaker ----
+    //
+    // The breaker is an in-memory consecutive-`list_folders`-failure counter per
+    // account with escalating cooldowns (3 -> 15s, 5 -> 60s). It is DISTINCT from
+    // rate-limit mode (server authority): rate-limit short-circuits first and
+    // wins; the breaker is our own failure counter. Breaker-tripped rounds emit
+    // `error` state with `detail: Some(cooldown_until)` and skip the source
+    // entirely (Ok, not Err). Per-folder `sync_folder` failures do NOT bump the
+    // breaker (one bad folder must not trip the whole account).
+
+    /// A MailSource whose `list_folders` always errors — simulates a dead socket
+    /// / expired token, the exact connectivity storm the breaker exists to calm.
+    /// All other methods return `Unsupported` (shape copied from the existing
+    /// `FailingSource` in `run_replay_round_failure_retains_op...`).
+    struct ListFoldersFailingSource;
+    #[async_trait::async_trait]
+    impl MailSource for ListFoldersFailingSource {
+        fn capabilities(&self) -> crate::sync_engine::Capabilities {
+            crate::sync_engine::Capabilities::default()
+        }
+        async fn list_folders(
+            &self,
+        ) -> Result<Vec<RemoteFolder>, crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Other("simulated outage".into()))
+        }
+        async fn sync_folder(
+            &self,
+            _f: &RemoteFolder,
+            _c: crate::sync_engine::Cursor,
+        ) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn fetch_body(
+            &self,
+            _f: &RemoteFolder,
+            _u: u32,
+        ) -> Result<Option<String>, crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn set_flags(
+            &self,
+            _f: &RemoteFolder,
+            _u: &[u32],
+            _flag: &str,
+            _add: bool,
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn move_messages(
+            &self,
+            _s: &RemoteFolder,
+            _u: &[u32],
+            _d: &RemoteFolder,
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn delete_messages(
+            &self,
+            _f: &RemoteFolder,
+            _u: &[u32],
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn append(
+            &self,
+            _f: &RemoteFolder,
+            _r: &[u8],
+            _fl: &[&str],
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+    }
+
+    /// After N consecutive `list_folders` failures the breaker enters cooldown:
+    /// the next round emits `error` + `detail=cooldown_until` and returns Ok
+    /// WITHOUT calling the source. Covers: (a) N-1 failures don't trip; (b) 3rd
+    /// failure -> 15s cooldown and the 4th round is short-circuited.
+    #[tokio::test]
+    async fn breaker_enters_cooldown_after_threshold_consecutive_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        let src = ListFoldersFailingSource;
+
+        // Drive BREAKER_THRESHOLD_SHORT (3) failing rounds. Each emits
+        // syncing + error.
+        for _ in 0..BREAKER_THRESHOLD_SHORT {
+            let _ = run_sync_round_with_source(&engine, "a", "imap", &src).await;
+        }
+
+        // The round AFTER the threshold crossing must short-circuit: ONE status
+        // event = { error, detail=Some(..) } and the source's list_folders is
+        // NOT called again (we cannot directly assert call count on
+        // ListFoldersFailingSource, but the single-event signature distinguishes
+        // the cooldown-bypass path from the normal failure path which would
+        // emit syncing THEN error).
+        sink.statuses.lock().unwrap().clear();
+        run_sync_round_with_source(&engine, "a", "imap", &src)
+            .await
+            .unwrap();
+        let statuses = sink.statuses.lock().unwrap().clone();
+        assert_eq!(
+            statuses.len(),
+            1,
+            "cooldown round emits exactly one status (no `syncing`)"
+        );
+        assert_eq!(statuses[0].state, "error");
+        assert_eq!(statuses[0].account_id, "a");
+        assert!(
+            statuses[0].detail.is_some(),
+            "breaker cooldown detail is an epoch seconds value"
+        );
+        // Sanity: the recorded cooldown is roughly now + 15s (allow slack for
+        // test latency). This pins the SHORT cooldown value, not just "some
+        // future epoch".
+        let now: (i64,) = sqlx::query_as("SELECT unixepoch()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let cd = statuses[0].detail.unwrap();
+        assert!(
+            cd >= now.0 + BREAKER_COOLDOWN_SHORT_SECS - 5
+                && cd <= now.0 + BREAKER_COOLDOWN_SHORT_SECS + 5,
+            "short-threshold cooldown should be ~now+{}s, got now={} cd={}",
+            BREAKER_COOLDOWN_SHORT_SECS,
+            now.0,
+            cd
+        );
+    }
+
+    /// At the LONG threshold (5 consecutive failures) the cooldown escalates to
+    /// 60s. Drives 5 failing rounds then asserts the 6th is short-circuited with
+    /// a ~now+60s detail.
+    #[tokio::test]
+    async fn breaker_escalates_to_long_cooldown_at_five_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        let src = ListFoldersFailingSource;
+
+        // 4 failures: at SHORT threshold after the 3rd, the 4th round is
+        // short-circuited (cooldown active). The 5th call below still must NOT
+        // call the source (still in cooldown from failure #3 -> the counter
+        // does not advance on a bypass round). To actually reach failure #5 we
+        // must drive past the short cooldown. Instead of sleeping 15s in the
+        // test, we directly mutate the breaker to simulate the post-cooldown
+        // state where failures=3 + cooldown_until expired, then drive 2 more
+        // failing rounds to reach failures=5.
+        //
+        // Failure path #1..#3 (3rd triggers 15s cooldown).
+        for _ in 0..3 {
+            let _ = run_sync_round_with_source(&engine, "a", "imap", &src).await;
+        }
+        // 4th call: bypassed (in cooldown) — counter unchanged at 3.
+        let _ = run_sync_round_with_source(&engine, "a", "imap", &src).await;
+
+        // Expire the short cooldown so the next failure actually reaches the
+        // engine + bumps the counter. We rewrite cooldown_until to the past.
+        {
+            let mut bs = engine.breakers.lock().await;
+            let state = bs.get_mut("a").expect("breaker seeded by failures above");
+            state.cooldown_until = 0; // expire immediately
+        }
+        // Failure #4 -> still SHORT (3 < failures=4 < 5): bumps to 4, cooldown
+        // 15s.
+        let _ = run_sync_round_with_source(&engine, "a", "imap", &src).await;
+        // Bypass the new 15s cooldown again.
+        {
+            let mut bs = engine.breakers.lock().await;
+            let state = bs.get_mut("a").unwrap();
+            state.cooldown_until = 0;
+        }
+        // Failure #5 -> LONG threshold: bumps to 5, cooldown 60s.
+        let _ = run_sync_round_with_source(&engine, "a", "imap", &src).await;
+
+        // The next round must be bypassed with detail ~= now + 60s.
+        sink.statuses.lock().unwrap().clear();
+        run_sync_round_with_source(&engine, "a", "imap", &src)
+            .await
+            .unwrap();
+        let statuses = sink.statuses.lock().unwrap().clone();
+        assert_eq!(statuses.len(), 1, "post-long-threshold bypass: one status");
+        assert_eq!(statuses[0].state, "error");
+        let cd = statuses[0].detail.expect("long-cooldown detail present");
+        let now: (i64,) = sqlx::query_as("SELECT unixepoch()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(
+            cd >= now.0 + BREAKER_COOLDOWN_LONG_SECS - 5
+                && cd <= now.0 + BREAKER_COOLDOWN_LONG_SECS + 5,
+            "long-threshold cooldown should be ~now+{}s, got now={} cd={}",
+            BREAKER_COOLDOWN_LONG_SECS,
+            now.0,
+            cd
+        );
+    }
+
+    /// A single successful round resets the breaker to zero failures, so a later
+    /// outage must accumulate fresh failures before tripping again.
+    #[tokio::test]
+    async fn breaker_resets_to_zero_on_successful_round() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+
+        // Two failures (below threshold).
+        for _ in 0..2 {
+            let _ =
+                run_sync_round_with_source(&engine, "a", "imap", &ListFoldersFailingSource).await;
+        }
+        // Then a successful round (MockSource with an empty folder list).
+        let ok_src = MockSource::new(vec![], vec![]);
+        run_sync_round_with_source(&engine, "a", "imap", &ok_src)
+            .await
+            .unwrap();
+
+        // Breaker should be reset. Two more failures must NOT trip the breaker
+        // yet (would need a 3rd). Verify the two post-reset failure rounds still
+        // go through the normal syncing -> error path (two events each), NOT the
+        // one-event cooldown bypass.
+        sink.statuses.lock().unwrap().clear();
+        for _ in 0..2 {
+            let _ =
+                run_sync_round_with_source(&engine, "a", "imap", &ListFoldersFailingSource).await;
+        }
+        let len_after_two_failures = sink.statuses.lock().unwrap().len();
+        assert!(
+            len_after_two_failures >= 4,
+            "two normal failure rounds each emit syncing+error (>=4 events); \
+             a cooldown bypass would emit 1 (got {len_after_two_failures})"
+        );
+    }
+
+    /// The breaker check runs AFTER the rate-limit short-circuit, so a live
+    /// rate-limit row wins even if the breaker is tripped. Verifies the
+    /// precedence: rate_limited state, not error, and the rate-limit detail
+    /// (not the breaker cooldown_until).
+    #[tokio::test]
+    async fn rate_limit_wins_over_breaker_when_both_tripped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+
+        // Trip the breaker: 3 list_folders failures (3rd sets a 15s cooldown).
+        let sink0 = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink0.clone());
+        for _ in 0..3 {
+            let _ =
+                run_sync_round_with_source(&engine, "a", "imap", &ListFoldersFailingSource).await;
+        }
+        // Sanity: breaker is now in cooldown.
+        let bs = engine.breakers.lock().await;
+        let state = bs.get("a").copied().expect("breaker seeded");
+        assert!(state.failures >= BREAKER_THRESHOLD_SHORT);
+        assert!(state.cooldown_until > 0);
+        drop(bs);
+
+        // Seed a rate-limit window ~300s out.
+        let retry_after = sqlx::query_as::<_, (i64,)>("SELECT unixepoch() + 300")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0;
+        crate::db::rate_limit::set_rate_limit(&pool, "a", retry_after)
+            .await
+            .unwrap();
+
+        // Drive a round against a source whose list_folders would fail (so if
+        // the breaker ran first we'd see an error). Rate-limit must win.
+        sink0.statuses.lock().unwrap().clear();
+        run_sync_round_with_source(&engine, "a", "imap", &ListFoldersFailingSource)
+            .await
+            .unwrap();
+        let statuses = sink0.statuses.lock().unwrap().clone();
+        assert_eq!(statuses.len(), 1, "rate-limit short-circuit emits one status");
+        assert_eq!(statuses[0].state, "rate_limited");
+        assert_eq!(
+            statuses[0].detail,
+            Some(retry_after),
+            "rate-limit detail wins over breaker cooldown"
+        );
     }
 
     // ---- Phase 1 Task 4: AccountWorker replay loop + sync:queue ----
