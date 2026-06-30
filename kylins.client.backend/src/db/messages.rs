@@ -224,6 +224,71 @@ pub async fn get_folder_uid_for_message(
         .and_then(|(folder, uid)| folder.zip(uid.and_then(|u| u32::try_from(u).ok()))))
 }
 
+/// Write the derived preview snippet onto ONE message AND its owning thread
+/// (Phase 0: thread id == message id, but the write is by `thread_id` so it
+/// stays correct when real conversation threading lands). One transaction so
+/// the two writes are atomic — mirrors how `apply_flag_updates` mirrors flag
+/// changes to the thread so `db_get_threads` sees them without a re-sync.
+///
+/// Returns `Ok(())` even if the message row is missing (no-op in that case):
+/// `request_bodies_inner` is best-effort per message, and a vanishing row
+/// (expunged between the UID lookup and the body write) must not abort the
+/// surrounding batch.
+pub async fn set_message_snippet(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+    snippet: &str,
+) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|e| format!("begin tx: {e}"))?;
+    // UPDATE ... RETURNING (SELECT thread_id ...) reads the owning thread in
+    // the SAME statement so we don't need a second query (and the read sees
+    // the row inside this transaction). Returns None when no row matched.
+    let thread_id: Option<String> = sqlx::query_scalar(
+        "UPDATE messages SET snippet = ? WHERE account_id = ? AND id = ? \
+         RETURNING (SELECT thread_id FROM messages WHERE account_id = ? AND id = ?)",
+    )
+    .bind(snippet)
+    .bind(account_id)
+    .bind(message_id)
+    .bind(account_id)
+    .bind(message_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if let Some(tid) = thread_id {
+        sqlx::query("UPDATE threads SET snippet = ? WHERE account_id = ? AND id = ?")
+            .bind(snippet)
+            .bind(account_id)
+            .bind(tid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Resolve the `thread_id` for a message — used by `request_bodies_inner` to
+/// build the `BodiesWrittenEvent` payload so the frontend can patch the right
+/// `thread.snippet` without a second query. Returns `None` when the row is
+/// missing or its `thread_id` is NULL (non-IMAP sources, partial migrations).
+pub async fn get_thread_id_for_message(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<String>, String> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT thread_id FROM messages WHERE account_id = ? AND id = ?",
+    )
+    .bind(account_id)
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.and_then(|(t,)| t))
+}
+
 /// UIDs we currently have cached for (account, folder). Used by the expunge
 /// set-difference (server `UID SEARCH ALL` minus this set = vanished). Rows with
 /// NULL `imap_uid` (non-IMAP sources, partially-migrated rows) are filtered out;
@@ -632,6 +697,62 @@ mod tests {
             None,
             "lookup must be scoped by account_id"
         );
+    }
+
+    // ---- set_message_snippet + get_thread_id_for_message (Task 2 body write-back) ----
+
+    /// `set_message_snippet` must write `messages.snippet` AND mirror the value
+    /// onto the owning `threads.snippet` in the same transaction, so
+    /// `db_get_threads` reflects the new preview without a re-sync. Phase 0
+    /// threading: thread id == message id, but the write is by `thread_id` so
+    /// it stays correct under future conversation threading.
+    #[tokio::test]
+    async fn set_message_snippet_updates_column_and_thread_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        seed_message_with_location(&pool, "acc", "imap-acc-INBOX-7", "INBOX", 7).await;
+        // thread_id == message_id in Phase 0; null the thread row's snippet so
+        // the mirror write is observable (otherwise the seed already wrote NULL
+        // and we couldn't distinguish "no-op" from "wrote the value").
+        sqlx::query("UPDATE threads SET snippet = NULL WHERE id = 'imap-acc-INBOX-7'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        set_message_snippet(&pool, "acc", "imap-acc-INBOX-7", "Hello world")
+            .await
+            .unwrap();
+
+        let (msg_snip, thr_snip): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT m.snippet, t.snippet
+             FROM messages m LEFT JOIN threads t ON t.id = m.thread_id
+             WHERE m.id = 'imap-acc-INBOX-7'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(msg_snip.as_deref(), Some("Hello world"));
+        assert_eq!(
+            thr_snip.as_deref(),
+            Some("Hello world"),
+            "thread row snippet must mirror so db_get_threads sees it without a re-sync"
+        );
+    }
+
+    /// `get_thread_id_for_message` resolves the owning thread for a message —
+    /// used by `request_bodies_inner` to build the `BodiesWrittenEvent`
+    /// payload without a second query.
+    #[tokio::test]
+    async fn get_thread_id_for_message_returns_thread_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        seed_message_with_location(&pool, "acc", "imap-acc-INBOX-9", "INBOX", 9).await;
+        let tid = get_thread_id_for_message(&pool, "acc", "imap-acc-INBOX-9")
+            .await
+            .unwrap();
+        assert_eq!(tid.as_deref(), Some("imap-acc-INBOX-9"));
     }
 
     // ---- apply_flag_updates (CONDSTORE flag-only delta) ----

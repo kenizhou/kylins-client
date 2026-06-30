@@ -267,6 +267,20 @@ impl MailSource for ImapSource {
         crate::db::sync_state::get_imap_cursor(pool, account_id, folder_path).await
     }
 
+    /// Hand back the account's IMAP connection config so the commands layer can
+    /// issue ONE batched `fetch_bodies_batch` per folder (Task 2). `folder` is
+    /// currently unused — the config is per-account, not per-folder — but it's
+    /// part of the trait signature so a future per-folder override (e.g. a
+    /// Graph source whose endpoint varies by folder) can drop in without
+    /// changing the call site. Returned by value: `ImapConfig` is small and
+    /// `fetch_bodies_batch` borrows it only for the call.
+    async fn imap_config_for_folder(
+        &self,
+        _folder: &str,
+    ) -> Result<Option<ImapConfig>, SourceError> {
+        Ok(Some(self.imap_config()))
+    }
+
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
         let config = self.imap_config();
         let account_id = self.account.id.clone();

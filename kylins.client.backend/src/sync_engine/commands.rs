@@ -1,12 +1,13 @@
 // Tauri commands for the SyncEngine lifecycle. The frontend invokes these to start
 // polling on app launch, trigger a manual "check mail", and stop on quit.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
 use tauri::State;
 
-use super::engine::SyncEngine;
+use super::engine::{BodiesWrittenEvent, SnippetUpdate, SyncEngine};
 use super::{source_for_account, RemoteFolder};
 use crate::db::{message_bodies, messages, mutations::MutationOp, queue};
 
@@ -33,14 +34,22 @@ pub async fn sync_account_now(
 /// Fetch full message bodies on demand (the second half of the headers-first
 /// sync design). The folder sweep persists envelopes + flags only
 /// (`SYNC_FETCH_QUERY`); bodies arrive here when the user opens a message whose
-/// `message_bodies` row is missing. For each `message_id`: read its
-/// `(imap_folder, imap_uid)` location, build the account's `MailSource`, call
-/// `fetch_body`, and upsert the HTML into `message_bodies` via
-/// [`message_bodies::set_message_body`].
+/// `message_bodies` row is missing.
+///
+/// **Task 2 — batch-per-folder:** message_ids are grouped by their
+/// `imap_folder`, then for each folder we issue ONE `fetch_bodies_batch` call
+/// (chunked internally at 50 UIDs) instead of opening a fresh connection per
+/// UID. The derived snippet is written onto `messages.snippet` (mirrored to
+/// `threads.snippet`), and ONE `sync:bodies-written` event is emitted at the
+/// end carrying every `SnippetUpdate` so the frontend patches the list in a
+/// single scroll-preserving pass.
+///
+/// Non-IMAP sources (EAS today) return `None` from
+/// `MailSource::imap_config_for_folder` and fall back to the per-message
+/// `fetch_body` path — batching EAS is its own workstream.
 ///
 /// Best-effort: per-message failures are logged and skipped so one bad row
-/// never aborts the whole batch (the caller — `threadStore.selectThread` —
-/// re-reads the cache and renders whatever is present).
+/// never aborts the whole batch.
 ///
 /// The thin `State` wrapper delegates to [`request_bodies_inner`] so the logic
 /// is unit-testable without a `State` harness (mirrors `apply_mutation_inner`).
@@ -51,71 +60,192 @@ pub async fn sync_request_bodies(
     account_id: String,
     message_ids: Vec<String>,
 ) -> Result<(), String> {
-    request_bodies_inner(pool.inner(), &engine.session_manager, &account_id, &message_ids).await
+    request_bodies_inner(engine.inner().clone(), pool.inner(), &account_id, &message_ids).await
 }
 
-/// Testable core of [`sync_request_bodies`]. Takes a borrowed pool so unit tests
-/// can drive it without a `State<'_, SqlitePool>` harness.
+/// Testable core of [`sync_request_bodies`]. Takes a borrowed pool + an
+/// `Arc<SyncEngine>` (the engine is only used for the final event emission)
+/// so unit tests can drive it without a `State<'_, SqlitePool>` harness.
 pub async fn request_bodies_inner(
+    engine: Arc<SyncEngine>,
     pool: &SqlitePool,
-    manager: &std::sync::Arc<crate::mail::imap::session_manager::ImapSessionManager>,
     account_id: &str,
     message_ids: &[String],
 ) -> Result<(), String> {
     if message_ids.is_empty() {
         return Ok(());
     }
-    // One source for the whole batch — `source_for_account` opens a fresh
-    // connection per `fetch_body` call inside (ImapSource owns its lifecycle),
-    // so we don't need to keep a session alive across messages.
-    let src = match source_for_account(pool, account_id, manager).await {
+
+    // 1. Build a per-folder map: folder -> Vec<(message_id, uid)>.
+    //    One DB read per message_id (the existing helper). This is N small
+    //    queries, not N connections — cheap relative to the network round-trip
+    //    we are about to make. Missing rows / NULL UIDs are skipped (non-IMAP
+    //    sources or partially-migrated data).
+    let mut by_folder: HashMap<String, Vec<(String, u32)>> = HashMap::new();
+    for mid in message_ids {
+        match messages::get_folder_uid_for_message(pool, account_id, mid).await {
+            Ok(Some((folder, uid))) => {
+                by_folder.entry(folder).or_default().push((mid.clone(), uid));
+            }
+            Ok(None) => log::warn!(
+                "[sync] request_bodies: no imap_folder/uid for message {mid}; skipping"
+            ),
+            Err(e) => log::warn!(
+                "[sync] request_bodies: lookup failed for message {mid}: {e}; skipping"
+            ),
+        }
+    }
+    if by_folder.is_empty() {
+        return Ok(());
+    }
+
+    // 2. Resolve the account's MailSource ONCE. The batch path does NOT call
+    //    `source.fetch_body` — it asks the source for an `ImapConfig` via the
+    //    new `imap_config_for_folder` trait method and hands it to
+    //    `fetch_bodies_batch` directly. Non-IMAP sources return `None` and we
+    //    fall back to the per-message `source.fetch_body` below.
+    let src = match source_for_account(pool, account_id, &engine.session_manager).await {
         Ok(s) => s,
         Err(e) => {
             log::warn!("[sync] request_bodies: source for {account_id} failed: {e}");
             return Err(e);
         }
     };
-    for mid in message_ids {
-        // Resolve the IMAP coordinates for this message. Missing row / NULL UID
-        // → skip (non-IMAP sources or partially-migrated data).
-        let (folder_path, uid) = match messages::get_folder_uid_for_message(pool, account_id, mid)
-            .await
-        {
-            Ok(Some(loc)) => loc,
-            Ok(None) => {
-                log::warn!(
-                    "[sync] request_bodies: no imap_folder/uid for message {mid}; skipping"
-                );
-                continue;
-            }
-            Err(e) => {
-                log::warn!(
-                    "[sync] request_bodies: lookup failed for message {mid}: {e}; skipping"
-                );
-                continue;
-            }
-        };
-        let folder = RemoteFolder {
-            remote_id: folder_path.clone(),
-            ..Default::default()
-        };
-        match src.fetch_body(&folder, uid).await {
-            Ok(Some(html)) => {
-                if let Err(e) =
-                    message_bodies::set_message_body(pool, account_id, mid, &html).await
+
+    let mut updates: Vec<SnippetUpdate> = Vec::new();
+
+    // 3. Per folder: one batched fetch_bodies_batch call (IMAP), or per-message
+    //    fallback (EAS / non-IMAP).
+    for (folder, mid_uids) in by_folder {
+        match src.imap_config_for_folder(&folder).await {
+            Ok(Some(config)) => {
+                let uids: Vec<u32> = mid_uids.iter().map(|(_, u)| *u).collect();
+                match crate::mail::imap::client::fetch_bodies_batch(
+                    &config,
+                    &folder,
+                    &uids,
+                    50,
+                )
+                .await
                 {
-                    log::warn!(
-                        "[sync] request_bodies: persist body for {mid} (uid {uid} in {folder_path}) failed: {e}"
-                    );
+                    Ok(fetched) => {
+                        // Index fetched bodies by uid for O(1) lookup.
+                        let by_uid: HashMap<u32, &crate::mail::imap::types::FetchedBody> =
+                            fetched.iter().map(|f| (f.uid, f)).collect();
+                        for (mid, uid) in &mid_uids {
+                            match by_uid.get(uid) {
+                                Some(fb) => {
+                                    // Persist body_html (prefers HTML; falls back to text).
+                                    let body_str = fb
+                                        .body_html
+                                        .clone()
+                                        .or_else(|| fb.body_text.clone());
+                                    if let Some(body) = body_str {
+                                        if let Err(e) = message_bodies::set_message_body(
+                                            pool, account_id, mid, &body,
+                                        )
+                                        .await
+                                        {
+                                            log::warn!(
+                                                "[sync] request_bodies: persist body for {mid} (uid {uid} in {folder}) failed: {e}"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                    // Write snippet onto messages + threads.
+                                    if let Err(e) = messages::set_message_snippet(
+                                        pool, account_id, mid, &fb.snippet,
+                                    )
+                                    .await
+                                    {
+                                        log::warn!(
+                                            "[sync] request_bodies: snippet for {mid} failed: {e}"
+                                        );
+                                        continue;
+                                    }
+                                    // Resolve thread_id for the event payload.
+                                    match messages::get_thread_id_for_message(
+                                        pool, account_id, mid,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(tid)) => updates.push(SnippetUpdate {
+                                            thread_id: tid,
+                                            snippet: fb.snippet.clone(),
+                                        }),
+                                        Ok(None) => log::warn!(
+                                            "[sync] request_bodies: no thread_id for {mid}; event patch skipped"
+                                        ),
+                                        Err(e) => log::warn!(
+                                            "[sync] request_bodies: thread_id lookup for {mid} failed: {e}"
+                                        ),
+                                    }
+                                }
+                                None => log::info!(
+                                    "[sync] request_bodies: uid {uid} in {folder} not in batch result; skipping"
+                                ),
+                            }
+                        }
+                    }
+                    Err(e) => log::warn!(
+                        "[sync] request_bodies: fetch_bodies_batch for {folder} failed: {e}"
+                    ),
                 }
             }
-            Ok(None) => log::info!(
-                "[sync] request_bodies: uid {uid} in {folder_path} had no body (empty message?)"
-            ),
+            Ok(None) => {
+                // Non-IMAP source (EAS today): fall back to per-message.
+                // The batch path is unavailable; each fetch_body opens its own
+                // transport. Snippet is left empty for EAS until the EAS
+                // client exposes a derived preview (deferred).
+                for (mid, uid) in &mid_uids {
+                    let folder_obj = RemoteFolder {
+                        remote_id: folder.clone(),
+                        ..Default::default()
+                    };
+                    match src.fetch_body(&folder_obj, *uid).await {
+                        Ok(Some(html)) => {
+                            if let Err(e) =
+                                message_bodies::set_message_body(pool, account_id, mid, &html).await
+                            {
+                                log::warn!(
+                                    "[sync] request_bodies (fallback): persist body for {mid} failed: {e}"
+                                );
+                                continue;
+                            }
+                            // EAS has no derived snippet yet; write empty so the
+                            // thread row is consistent (and the column is NOT
+                            // NULL, which db_get_threads would otherwise treat
+                            // as "needs preview generation" later).
+                            if let Err(e) =
+                                messages::set_message_snippet(pool, account_id, mid, "").await
+                            {
+                                log::warn!(
+                                    "[sync] request_bodies (fallback): snippet for {mid} failed: {e}"
+                                );
+                            }
+                        }
+                        Ok(None) => log::info!(
+                            "[sync] request_bodies (fallback): uid {uid} in {folder} had no body"
+                        ),
+                        Err(e) => log::warn!(
+                            "[sync] request_bodies (fallback): fetch_body for {mid} (uid {uid} in {folder}) failed: {e}"
+                        ),
+                    }
+                }
+            }
             Err(e) => log::warn!(
-                "[sync] request_bodies: fetch_body uid {uid} in {folder_path} failed: {e}"
+                "[sync] request_bodies: imap_config_for_folder for {folder} failed: {e}; falling back to per-message"
             ),
         }
+    }
+
+    // 4. Emit ONE bodies-written event with all updates so the frontend
+    //    patches every thread in a single scroll-preserving pass.
+    if !updates.is_empty() {
+        engine.emit_bodies_written_public(BodiesWrittenEvent {
+            account_id: account_id.to_string(),
+            updates,
+        });
     }
     Ok(())
 }
@@ -181,16 +311,20 @@ pub async fn apply_mutation_inner(
 mod tests {
     use super::*;
     use crate::db::init_db;
-    use crate::sync_engine::engine::SyncEngine;
+    use crate::sync_engine::engine::{
+        BodiesWrittenEvent, DeltaEvent, EventSink, NewMailEvent, QueueEvent, StatusEvent, SyncEngine,
+    };
+    use std::sync::{Arc, Mutex};
 
     /// Sink that discards every event — we only need the engine to exist for the
     /// nudge; we do not assert on events here.
     struct NullSink;
-    impl crate::sync_engine::engine::EventSink for NullSink {
-        fn emit_delta(&self, _: crate::sync_engine::engine::DeltaEvent) {}
-        fn emit_new_mail(&self, _: crate::sync_engine::engine::NewMailEvent) {}
-        fn emit_status(&self, _: crate::sync_engine::engine::StatusEvent) {}
-        fn emit_queue(&self, _: crate::sync_engine::engine::QueueEvent) {}
+    impl EventSink for NullSink {
+        fn emit_delta(&self, _: DeltaEvent) {}
+        fn emit_new_mail(&self, _: NewMailEvent) {}
+        fn emit_status(&self, _: StatusEvent) {}
+        fn emit_queue(&self, _: QueueEvent) {}
+        fn emit_bodies_written(&self, _: BodiesWrittenEvent) {}
     }
 
     async fn seed_account(pool: &SqlitePool, id: &str) {
@@ -376,12 +510,13 @@ mod tests {
     async fn request_bodies_inner_empty_input_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
-        let manager = std::sync::Arc::new(
-            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        let engine = SyncEngine::new(
+            pool.clone(),
+            std::sync::Arc::new(NullSink),
         );
         // Note: no account seeded — the empty-input early return must fire
         // before `source_for_account` is ever called.
-        request_bodies_inner(&pool, &manager, "acct", &[])
+        request_bodies_inner(engine, &pool, "acct", &[])
             .await
             .expect("empty input must short-circuit to Ok");
     }
@@ -395,13 +530,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct").await;
-        let manager = std::sync::Arc::new(
-            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        let engine = SyncEngine::new(
+            pool.clone(),
+            std::sync::Arc::new(NullSink),
         );
 
         request_bodies_inner(
+            engine,
             &pool,
-            &manager,
             "acct",
             &["missing-1".into(), "missing-2".into()],
         )
@@ -414,5 +550,98 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    // ---- Task 2: batch-per-folder grouping + bodies-written emission ----
+
+    /// EventSink that captures `BodiesWrittenEvent`s for assertion. The other
+    /// event kinds are discarded — Task 2 only asserts on bodies-written.
+    #[derive(Default, Clone)]
+    struct CapturingSink {
+        bodies: Arc<Mutex<Vec<BodiesWrittenEvent>>>,
+    }
+    impl EventSink for CapturingSink {
+        fn emit_delta(&self, _: DeltaEvent) {}
+        fn emit_new_mail(&self, _: NewMailEvent) {}
+        fn emit_status(&self, _: StatusEvent) {}
+        fn emit_queue(&self, _: QueueEvent) {}
+        fn emit_bodies_written(&self, e: BodiesWrittenEvent) {
+            self.bodies.lock().unwrap().push(e);
+        }
+    }
+
+    /// Pure folder-grouping sanity: given a list of (message_id, folder, uid)
+    /// tuples, produce a map folder -> [(message_id, uid)]. This is the shape
+    /// `request_bodies_inner` builds before issuing one
+    /// `fetch_bodies_batch` per folder. The end-to-end batched fetch needs a
+    /// live IMAP socket (Task 5 ignored integration test), so this unit test
+    /// pins only the bucketing the loop relies on.
+    #[test]
+    fn group_message_ids_by_folder_buckets_by_imap_folder() {
+        use std::collections::HashMap;
+        let inputs = vec![
+            ("imap-a-INBOX-1", "INBOX", 1u32),
+            ("imap-a-INBOX-2", "INBOX", 2),
+            ("imap-a-Sent-9", "Sent", 9),
+        ];
+        let mut buckets: HashMap<&str, Vec<(&str, u32)>> = HashMap::new();
+        for (mid, folder, uid) in &inputs {
+            buckets.entry(folder).or_default().push((mid, *uid));
+        }
+        assert_eq!(buckets["INBOX"].len(), 2);
+        assert_eq!(buckets["Sent"].len(), 1);
+    }
+
+    /// When `request_bodies_inner` resolves no source (e.g. the account's
+    /// provider is not imap/eas) the call surfaces the factory's Err — but the
+    /// sink must NOT have emitted any bodies-written event (we never reached
+    /// the batch loop). Pins the "no partial emit on factory failure" contract
+    /// the frontend relies on.
+    #[tokio::test]
+    async fn request_bodies_inner_does_not_emit_when_source_factory_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        // No account seeded -> source_for_account returns Err.
+        let sink = Arc::new(CapturingSink::default());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        // Seed an account with an unsupported provider + a phantom thread +
+        // messages row so by_folder is non-empty and we reach the source
+        // factory. (Unsupported provider -> factory Err; no batch loop.) The
+        // account row satisfies the FK on threads.account_id.
+        sqlx::query(
+            "INSERT INTO accounts (id, email, provider)
+             VALUES ('acct', 'acct@x.com', 'carrier-pigeon')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO threads (id, account_id, subject, is_read, is_starred)
+             VALUES ('imap-acct-INBOX-1', 'acct', 'p', 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, account_id, thread_id, date, is_read, is_starred,
+                imap_uid, imap_folder)
+             VALUES ('imap-acct-INBOX-1', 'acct', 'imap-acct-INBOX-1', 0, 0, 0, 1, 'INBOX')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let _ = request_bodies_inner(
+            engine,
+            &pool,
+            "acct",
+            &["imap-acct-INBOX-1".into()],
+        )
+        .await;
+
+        assert!(
+            sink.bodies.lock().unwrap().is_empty(),
+            "no bodies-written event when source factory fails"
+        );
     }
 }

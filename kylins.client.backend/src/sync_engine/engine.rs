@@ -85,12 +85,37 @@ pub struct QueueEvent {
     pending: i64,
 }
 
+/// One thread's freshly-derived preview snippet, carried in a
+/// [`BodiesWrittenEvent`] so the frontend can patch `thread.snippet` in place
+/// (scroll-preserving) without a re-read of `db_get_threads`.
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SnippetUpdate {
+    pub thread_id: String,
+    pub snippet: String,
+}
+
+/// Emitted ONCE at the end of `sync_request_bodies` with every message whose
+/// body + snippet were freshly written this round. The frontend listens on
+/// `sync:bodies-written` and patches the affected threads in one pass.
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BodiesWrittenEvent {
+    pub account_id: String,
+    pub updates: Vec<SnippetUpdate>,
+}
+
 /// Emit seam. Production impl wraps a Tauri `AppHandle`; tests collect into vectors.
 pub trait EventSink: Send + Sync {
     fn emit_delta(&self, evt: DeltaEvent);
     fn emit_new_mail(&self, evt: NewMailEvent);
     fn emit_status(&self, evt: StatusEvent);
     fn emit_queue(&self, evt: QueueEvent);
+    /// Emitted once at the end of `sync_request_bodies` for every message
+    /// whose body+snippet were freshly written. The frontend listens on
+    /// `sync:bodies-written` and patches `thread.snippet` in place
+    /// (scroll-preserving — react-virtualized #1837).
+    fn emit_bodies_written(&self, evt: BodiesWrittenEvent);
 }
 
 struct TauriSink(AppHandle);
@@ -106,6 +131,9 @@ impl EventSink for TauriSink {
     }
     fn emit_queue(&self, e: QueueEvent) {
         let _ = self.0.emit("sync:queue", e);
+    }
+    fn emit_bodies_written(&self, e: BodiesWrittenEvent) {
+        let _ = self.0.emit("sync:bodies-written", e);
     }
 }
 
@@ -397,6 +425,16 @@ impl SyncEngine {
             account_id: account_id.into(),
             pending,
         });
+    }
+
+    /// Fan a `sync:bodies-written` event through the sink. Called by
+    /// [`commands::request_bodies_inner`] once at the end of a batched body
+    /// fetch so the frontend patches every affected `thread.snippet` in one
+    /// pass. Public so the commands layer (which owns the batch loop) can reach
+    /// the private sink — mirrors how the other engine-internal emitters stay
+    /// encapsulated while exposing a narrow command-facing surface.
+    pub fn emit_bodies_written_public(&self, evt: BodiesWrittenEvent) {
+        self.sink.emit_bodies_written(evt);
     }
 }
 
@@ -814,6 +852,7 @@ mod tests {
         new_mails: std::sync::Mutex<Vec<NewMailEvent>>,
         statuses: std::sync::Mutex<Vec<StatusEvent>>,
         queues: std::sync::Mutex<Vec<QueueEvent>>,
+        bodies_written: std::sync::Mutex<Vec<BodiesWrittenEvent>>,
     }
     impl TestSink {
         fn new() -> Self {
@@ -822,6 +861,7 @@ mod tests {
                 new_mails: std::sync::Mutex::new(vec![]),
                 statuses: std::sync::Mutex::new(vec![]),
                 queues: std::sync::Mutex::new(vec![]),
+                bodies_written: std::sync::Mutex::new(vec![]),
             }
         }
     }
@@ -837,6 +877,9 @@ mod tests {
         }
         fn emit_queue(&self, e: QueueEvent) {
             self.queues.lock().unwrap().push(e);
+        }
+        fn emit_bodies_written(&self, e: BodiesWrittenEvent) {
+            self.bodies_written.lock().unwrap().push(e);
         }
     }
 
@@ -1900,5 +1943,31 @@ mod tests {
             pick_realtime_strategy(&Capabilities::default()),
             RealtimeStrategy::Poll
         );
+    }
+
+    // ---- Task 2: EventSink::emit_bodies_written capture ----
+
+    /// TestSink must capture the new `BodiesWrittenEvent` shape so the
+    /// commands.rs unit tests (and any future test driving
+    /// `request_bodies_inner`) can assert on the event payload. This pins the
+    /// trait-method-to-storage wiring without depending on a live socket.
+    #[tokio::test]
+    async fn test_sink_records_bodies_written_events() {
+        let sink = Arc::new(TestSink::new());
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        sink.emit_bodies_written(BodiesWrittenEvent {
+            account_id: "a".into(),
+            updates: vec![SnippetUpdate {
+                thread_id: "t1".into(),
+                snippet: "hi".into(),
+            }],
+        });
+        let evts = sink.bodies_written.lock().unwrap().clone();
+        assert_eq!(evts.len(), 1);
+        assert_eq!(evts[0].account_id, "a");
+        assert_eq!(evts[0].updates[0].thread_id, "t1");
+        let _ = engine; // keep engine alive (unused otherwise)
     }
 }

@@ -214,6 +214,24 @@ pub trait MailSource: Send + Sync {
         Cursor::default()
     }
 
+    /// Resolve the source's connection config for a given folder, used by
+    /// `request_bodies_inner` to issue ONE batched `fetch_bodies_batch` per
+    /// folder instead of N per-UID connects. Returns `Ok(None)` for non-IMAP
+    /// sources (EAS today); the caller then falls back to the per-message
+    /// `fetch_body` path. Default = `Ok(None)` so mock/test sources and EAS
+    /// need no change — only `ImapSource` overrides this.
+    ///
+    /// Returns `ImapConfig` by value (not `Arc<ImapConfig>`) to keep the
+    /// trait's async-future `Send` bounds simple: the config is small (~6
+    /// strings + a bool) and `fetch_bodies_batch` borrows it for the call
+    /// only.
+    async fn imap_config_for_folder(
+        &self,
+        _folder: &str,
+    ) -> Result<Option<crate::mail::imap::types::ImapConfig>, SourceError> {
+        Ok(None)
+    }
+
     // Optional real-time (Phase 2). Default = Unsupported.
     async fn watch(&self, _folder: &RemoteFolder) -> Result<(), SourceError> {
         Err(SourceError::Unsupported)
