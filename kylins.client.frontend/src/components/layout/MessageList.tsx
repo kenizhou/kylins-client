@@ -6,6 +6,7 @@ import type { ColumnDef } from '../../features/view/types';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
@@ -245,6 +246,16 @@ export function MessageList() {
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 44,
     overscan: 12,
+  });
+
+  // Viewport-aware batch body prefetch: when scroll settles (or on mount /
+  // folder-switch), request bodies for the visible + buffer rows that aren't
+  // yet cached. Best-effort, debounced, and skipped while the account is
+  // rate-limited. See `hooks/useViewportBodyPrefetch.ts`.
+  useViewportBodyPrefetch({
+    virtualizer,
+    threads,
+    accountId: selectedFolder?.accountId ?? null,
   });
 
   // Infinite scroll: when the user nears the end, fetch the next cursor page.

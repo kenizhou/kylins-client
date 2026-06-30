@@ -91,10 +91,14 @@ export function useSyncEvents(): void {
           await listen<StatusEvent>('sync:status', (e) => {
             // Per-account state transition (syncing / idle / error /
             // rate_limited). Phase 3g will render the status bar from
-            // e.payload.detail (retry_after / cooldown_until). For now we only
-            // subscribe so the event is not dropped and the StatusEvent type is
-            // exercised against the real Rust payload shape.
-            void e;
+            // e.payload.detail (retry_after / cooldown_until). Here we mirror
+            // the rate-limit flag into uiStore so the viewport body-prefetch
+            // hook can skip any account the server has throttled (prefetch is
+            // low-priority — the next poll refills the cache once the cooldown
+            // lifts).
+            useUIStore
+              .getState()
+              .setRateLimited(e.payload.accountId, e.payload.state === 'rate_limited');
           }),
         );
 

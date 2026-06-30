@@ -212,6 +212,7 @@ pub fn run() {
             db::commands::db_get_cached_ai_result,
             db::commands::db_cache_ai_result,
             db::commands::db_get_rate_limit_info,
+            db::commands::db_get_uncached_body_message_ids,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,

@@ -16,6 +16,7 @@ use sqlx::SqlitePool;
 use crate::db::accounts::{self, Account, AccountUpdates, CreateAccountInput};
 use crate::db::labels::{self, MailFolder};
 use crate::db::message_bodies;
+use crate::db::messages;
 use crate::db::queue::{self, PendingOperation};
 use crate::db::settings;
 use crate::db::threads::{self, GetThreadsOptions, MessageRow, ThreadsPage};
@@ -280,6 +281,19 @@ pub async fn db_evict_body(
     message_id: String,
 ) -> Result<(), String> {
     message_bodies::evict_body(&pool, &account_id, &message_id).await
+}
+
+/// Return the subset of `message_ids` whose body is NOT cached
+/// (`body_cached = 0`). The viewport prefetch hook calls this to filter the
+/// visible+buffer candidate list so it only requests bodies the cache is
+/// missing. Missing ids are silently dropped (the prefetch skips them).
+#[tauri::command]
+pub async fn db_get_uncached_body_message_ids(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    messages::get_uncached_body_message_ids(&pool, &account_id, &message_ids).await
 }
 
 // ---- offline queue (pending_operations) ----

@@ -312,6 +312,43 @@ pub async fn list_local_uids(
         .collect())
 }
 
+/// Return the subset of `message_ids` whose body is NOT cached
+/// (`body_cached = 0`). Used by the viewport prefetch hook to avoid
+/// re-requesting bodies the cache already has. Missing message_ids are
+/// silently dropped (the prefetch will simply skip them — they were likely
+/// expunged between the list render and the prefetch fire).
+///
+/// Chunks the input at 500 ids per query so the bound parameter count stays
+/// well under SQLite's default 999-parameter limit (visible + buffer is ~30,
+/// so this is rarely more than one chunk, but the guard is cheap insurance).
+pub async fn get_uncached_body_message_ids(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_ids: &[String],
+) -> Result<Vec<String>, String> {
+    if message_ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut out = Vec::new();
+    for chunk in message_ids.chunks(500) {
+        let placeholders = (0..chunk.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id FROM messages \
+             WHERE account_id = ? AND id IN ({placeholders}) AND body_cached = 0",
+        );
+        let mut q = sqlx::query_as::<_, (String,)>(&sql).bind(account_id);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let rows: Vec<(String,)> = q.fetch_all(pool).await.map_err(|e| e.to_string())?;
+        out.extend(rows.into_iter().map(|(id,)| id));
+    }
+    Ok(out)
+}
+
 /// Upsert one message + its (placeholder) thread + thread_label + optional body.
 async fn upsert_message(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
@@ -984,5 +1021,77 @@ mod tests {
         assert_eq!(counts.added, 200);
         assert_eq!(counts.updated, 5); // 5 updated upserts + 0 flag_updates
         assert_eq!(count(&pool, "messages").await, 205);
+    }
+
+    // ---- get_uncached_body_message_ids (viewport prefetch filter) ----
+
+    /// `get_uncached_body_message_ids` is the backend half of the viewport
+    /// body-prefetch: given a candidate list of message_ids (visible + buffer
+    /// rows), return only those whose body is NOT cached (`body_cached = 0`).
+    /// Cached ids are filtered out (no point re-fetching); missing ids are
+    /// silently dropped (the prefetch simply skips them — they were likely
+    /// expunged between the list render and the prefetch fire).
+    #[tokio::test]
+    async fn get_uncached_body_message_ids_returns_only_body_cached_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        // Two messages; one cached, one not.
+        seed_message_with_location(&pool, "acc", "imap-acc-INBOX-1", "INBOX", 1).await;
+        seed_message_with_location(&pool, "acc", "imap-acc-INBOX-2", "INBOX", 2).await;
+        sqlx::query("UPDATE messages SET body_cached = 1 WHERE id = 'imap-acc-INBOX-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut ids = get_uncached_body_message_ids(
+            &pool,
+            "acc",
+            &[
+                "imap-acc-INBOX-1".into(),
+                "imap-acc-INBOX-2".into(),
+                "missing".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["imap-acc-INBOX-2".to_string()],
+            "cached id filtered out; missing id silently dropped"
+        );
+    }
+
+    /// Empty input short-circuits (no SQL, no params bound) — the common case
+    /// when the viewport is empty or every visible row is already cached.
+    #[tokio::test]
+    async fn get_uncached_body_message_ids_empty_input_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        let ids = get_uncached_body_message_ids(&pool, "acc", &[]).await.unwrap();
+        assert!(ids.is_empty());
+    }
+
+    /// Account isolation: an id under a different account must not be returned
+    /// even if it matches the id list and has body_cached = 0. Prevents a
+    /// cross-account prefetch from accidentally fetching another account's
+    /// body via a shared id space.
+    #[tokio::test]
+    async fn get_uncached_body_message_ids_isolates_by_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "a1").await;
+        seed(&pool, "a2").await;
+        seed_message_with_location(&pool, "a2", "shared-id", "INBOX", 5).await;
+        // shared-id exists under a2 with body_cached = 0, but we ask for a1.
+        let ids = get_uncached_body_message_ids(&pool, "a1", &["shared-id".into()])
+            .await
+            .unwrap();
+        assert!(
+            ids.is_empty(),
+            "lookup must be scoped by account_id — no cross-account leak"
+        );
     }
 }
