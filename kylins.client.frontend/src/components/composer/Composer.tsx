@@ -51,18 +51,23 @@ import { readFileAsBase64 } from '@/utils/fileUtils';
 import {
   MaximizeIcon,
   RestoreIcon,
-  MinimizeIcon,
-  ClockIcon,
-  CloseIcon,
   PopOutIcon,
   PlusIcon,
+  WarningIcon,
+  ClockIcon,
+  CloseIcon,
 } from '../icons';
+import { IconButton } from '@/components/ui/IconButton';
+import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { MenuBar } from '@/components/ui/MenuBar';
+import { CommandRibbon } from '@/components/layout/CommandRibbon';
+import { ClassificationWatermark } from '@/features/classification/components/ClassificationWatermark';
+import { ClassificationBanner } from '@/features/classification/components/ClassificationBanner';
+import { isProminent } from '@/features/classification/classificationStyle';
+import { WindowErrorBoundary } from '@/components/ui/WindowErrorBoundary';
 
-const dragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
-  WebkitAppRegion: 'drag',
-};
 const noDragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
   WebkitAppRegion: 'no-drag',
 };
@@ -104,7 +109,6 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const { getLevelById, getDefaultLevel } = useClassification();
   const currentLevel = getLevelById(classificationId) ?? getDefaultLevel();
-  const isConfidential = currentLevel.id === 'confidential';
 
   const enableRichText = usePreferencesStore((s) => s.enableRichText);
   const checkSpelling = usePreferencesStore((s) => s.checkSpelling);
@@ -115,7 +119,6 @@ export function Composer({ windowed = false }: ComposerProps) {
   const [showSchedule, setShowSchedule] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
   const dragCounterRef = useRef(0);
@@ -201,26 +204,6 @@ export function Composer({ windowed = false }: ComposerProps) {
       emitUpdate: false,
     });
   }, [editor, signatureId, signatureHtml]);
-
-  // Track maximize state for windowed composer so the restore/maximize icon
-  // matches the actual window state.
-  useEffect(() => {
-    if (!windowed) return;
-    const appWindow = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
-
-    async function init() {
-      setIsMaximized(await appWindow.isMaximized());
-      unlisten = await appWindow.onResized(async () => {
-        setIsMaximized(await appWindow.isMaximized());
-      });
-    }
-    init();
-
-    return () => {
-      unlisten?.();
-    };
-  }, [windowed]);
 
   // Load signature, aliases, and templates when the composer opens.
   useEffect(() => {
@@ -315,6 +298,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     if (!activeAccountId || !activeAccount || sendingRef.current) return;
     const state = useComposerStore.getState();
     if (state.to.length === 0) return;
+    if (!state.classificationId) return;
 
     sendingRef.current = true;
     stopAutoSave();
@@ -345,6 +329,10 @@ export function Composer({ windowed = false }: ComposerProps) {
       classificationId: state.classificationId,
       isEncrypted: state.isEncrypted,
       isSigned: state.isSigned,
+      importance: state.importance,
+      requestReadReceipt: state.requestReadReceipt,
+      deliverAt: state.deliverAt,
+      preventCopy: state.preventCopy,
     };
 
     const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
@@ -435,7 +423,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       setShowSchedule(false);
       closeComposer();
     },
-    [activeAccountId, closeComposer, getFullHtml],
+    [activeAccountId, closeComposer, getFullHtml, setShowSchedule],
   );
 
   const closeWindowIfWindowed = useCallback(async () => {
@@ -467,28 +455,38 @@ export function Composer({ windowed = false }: ComposerProps) {
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
 
-  const handleMinimize = useCallback(async () => {
-    if (!windowed) return;
-    try {
-      await getCurrentWindow().minimize();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  }, [windowed]);
-
-  const handleToggleMaximize = useCallback(async () => {
-    if (!windowed) return;
-    try {
-      await getCurrentWindow().toggleMaximize();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  }, [windowed]);
-
   const handleSendAndCloseWindow = useCallback(async () => {
     await handleSend();
     await closeWindowIfWindowed();
   }, [handleSend, closeWindowIfWindowed]);
+
+  // Listen for menubar/ribbon action requests so the same handlers work whether
+  // the user clicks the panel footer, the compose ribbon, or the menu bar.
+  useEffect(() => {
+    function handleSendRequested() {
+      if (windowed) {
+        void handleSendAndCloseWindow();
+      } else {
+        void handleSend();
+      }
+    }
+    function handleScheduleRequested() {
+      setShowSchedule(true);
+    }
+    function handleInsertLink() {
+      setShowLinkDialog(true);
+    }
+
+    window.addEventListener('composer:send-requested', handleSendRequested);
+    window.addEventListener('composer:schedule-requested', handleScheduleRequested);
+    window.addEventListener('composer:insert-link', handleInsertLink);
+
+    return () => {
+      window.removeEventListener('composer:send-requested', handleSendRequested);
+      window.removeEventListener('composer:schedule-requested', handleScheduleRequested);
+      window.removeEventListener('composer:insert-link', handleInsertLink);
+    };
+  }, [handleSend, handleSendAndCloseWindow, windowed]);
 
   const handleMoveRecipient = useCallback(
     (recipient: Recipient, from: 'to' | 'cc' | 'bcc', toField: MoveTarget) => {
@@ -522,6 +520,10 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.classificationId) params.set('classificationId', state.classificationId);
       params.set('isEncrypted', state.isEncrypted ? '1' : '0');
       params.set('isSigned', state.isSigned ? '1' : '0');
+      params.set('importance', state.importance);
+      params.set('requestReadReceipt', state.requestReadReceipt ? '1' : '0');
+      if (state.deliverAt != null) params.set('deliverAt', state.deliverAt.toString());
+      params.set('preventCopy', state.preventCopy ? '1' : '0');
       const bodyHtml = editor?.getHTML() ?? '';
       if (bodyHtml) params.set('body', btoa(unescape(encodeURIComponent(bodyHtml))));
 
@@ -568,6 +570,9 @@ export function Composer({ windowed = false }: ComposerProps) {
           : 'New Message';
   const savedLabel = isSaving ? 'Saving...' : lastSavedAt ? 'Draft saved' : null;
 
+  const requiresClassification = !classificationId;
+  const prominent = isProminent(currentLevel);
+
   const composerPanel = (
     <div
       className={`composer-panel pointer-events-auto relative flex flex-col rounded-xl border bg-[var(--background)] shadow-2xl ${
@@ -580,7 +585,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       style={{
         borderTopWidth: '3px',
         borderTopColor: currentLevel.color,
-        backgroundColor: isConfidential ? `${currentLevel.color}10` : undefined,
+        backgroundColor: prominent ? `${currentLevel.color}10` : undefined,
       }}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -599,59 +604,51 @@ export function Composer({ windowed = false }: ComposerProps) {
       )}
 
       {/* Header */}
-      <div
-        className={`flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 ${windowed ? 'select-none' : ''}`}
-        style={windowed ? dragStyle : undefined}
-      >
-        <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
-        <div className="flex items-center gap-1" style={noDragStyle}>
-          {!windowed && (
-            <button
-              onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
-              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+      {windowed ? (
+        <WindowTitleBar title={modeLabel} />
+      ) : (
+        <div className="flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+          <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
+          <div className="flex items-center gap-0.5">
+            <IconButton
+              size="sm"
+              icon={isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
               title={isFullpage ? 'Collapse' : 'Expand'}
-            >
-              {isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-            </button>
-          )}
-          {!windowed && (
-            <button
-              onClick={handlePopOutComposer}
-              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+              onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
+            />
+            <IconButton
+              size="sm"
+              icon={<PopOutIcon size={14} />}
               title="Open in new window"
-            >
-              <PopOutIcon size={14} />
-            </button>
-          )}
-          {windowed && (
-            <>
-              <button
-                onClick={handleMinimize}
-                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                title="Minimize"
-                aria-label="Minimize"
-              >
-                <MinimizeIcon size={14} />
-              </button>
-              <button
-                onClick={handleToggleMaximize}
-                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                title={isMaximized ? 'Restore' : 'Maximize'}
-                aria-label={isMaximized ? 'Restore' : 'Maximize'}
-              >
-                {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-              </button>
-            </>
-          )}
-          <button
-            onClick={handleClose}
-            className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-            aria-label="Close composer"
-          >
-            <CloseIcon size={14} />
-          </button>
+              onClick={handlePopOutComposer}
+            />
+            <IconButton
+              size="sm"
+              icon={<CloseIcon size={14} />}
+              title="Close composer"
+              onClick={handleClose}
+            />
+          </div>
         </div>
+      )}
+
+      <div className="shrink-0" style={noDragStyle}>
+        <MenuBar variant="compose" />
       </div>
+      <div className="shrink-0" style={noDragStyle}>
+        <CommandRibbon mode="compose" />
+      </div>
+
+      {prominent && <ClassificationBanner level={currentLevel} position="top" />}
+
+      {requiresClassification && (
+        <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
+          <span className="inline-flex items-center gap-1.5">
+            <WarningIcon size={14} />
+            <span>Select a classification before sending.</span>
+          </span>
+        </div>
+      )}
 
       {/* Address fields */}
       <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
@@ -723,7 +720,13 @@ export function Composer({ windowed = false }: ComposerProps) {
       )}
 
       {/* Editor */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="relative flex-1 overflow-y-auto">
+        {prominent && (
+          <ClassificationWatermark
+            level={currentLevel}
+            identity={fromEmail ?? activeAccount?.email}
+          />
+        )}
         <EditorContent editor={editor} />
       </div>
 
@@ -760,14 +763,15 @@ export function Composer({ windowed = false }: ComposerProps) {
           <div className="flex items-center">
             <button
               onClick={windowed ? handleSendAndCloseWindow : handleSend}
-              disabled={to.length === 0}
+              disabled={to.length === 0 || requiresClassification}
+              title={requiresClassification ? 'Select a classification before sending' : undefined}
               className="rounded-l-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Send
             </button>
             <button
               onClick={() => setShowSchedule(true)}
-              disabled={to.length === 0}
+              disabled={to.length === 0 || requiresClassification}
               className="rounded-r-md border-l border-white/20 bg-[var(--primary)] py-1.5 px-2 text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               title="Schedule send"
             >
@@ -796,9 +800,11 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   if (windowed) {
     return (
-      <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
-        {composerPanel}
-      </div>
+      <WindowErrorBoundary>
+        <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
+          {composerPanel}
+        </div>
+      </WindowErrorBoundary>
     );
   }
 

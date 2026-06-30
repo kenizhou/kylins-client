@@ -55,13 +55,15 @@ function ToolbarButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+      aria-label={title}
+      aria-pressed={active}
+      className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
         active
           ? 'bg-[var(--selected)] text-[var(--selected-text)]'
           : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
       } disabled:cursor-not-allowed disabled:opacity-40`}
     >
-      <Icon size={15} />
+      <Icon size={16} />
     </button>
   );
 }
@@ -86,7 +88,8 @@ function FontFamilySelect({ editor, disabled }: { editor: Editor; disabled?: boo
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         title="Font family"
-        className={`flex h-7 items-center gap-1 rounded-md px-1.5 text-xs transition-colors ${
+        aria-label="Font family"
+        className={`flex h-8 items-center gap-1 rounded-md px-1.5 text-xs transition-colors ${
           current
             ? 'bg-[var(--selected)] text-[var(--selected-text)]'
             : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
@@ -131,7 +134,7 @@ function ColorButton({ editor, disabled }: { editor: Editor; disabled?: boolean 
   return (
     <label
       title="Text color"
-      className={`relative flex h-7 w-7 cursor-pointer items-center justify-center rounded-md transition-colors ${
+      className={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md transition-colors ${
         color
           ? 'bg-[var(--selected)] text-[var(--selected-text)]'
           : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
@@ -310,7 +313,9 @@ export function EditorToolbar({
           type="button"
           onClick={onToggleAiAssist}
           title="AI Assist"
-          className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors ${
+          aria-label="AI Assist"
+          aria-pressed={aiAssistOpen}
+          className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs transition-colors ${
             aiAssistOpen
               ? 'bg-[var(--accent)] font-medium text-[var(--accent-foreground)]'
               : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'

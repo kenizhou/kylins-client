@@ -59,7 +59,7 @@ export function ToolWindowBar() {
                 }
               }}
               className={`
-                relative grid place-items-center w-10 h-10 rounded-md transition-colors
+                relative grid place-items-center w-11 h-11 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]
                 ${
                   active
                     ? 'text-[var(--primary)] bg-[var(--selected)]'
@@ -68,7 +68,7 @@ export function ToolWindowBar() {
               `}
             >
               {active && (
-                <span className="absolute left-0 top-2 bottom-2 w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] bg-[var(--primary)]" />
+                <span className="absolute left-0 top-2 bottom-2 w-1 rounded-r bg-[var(--primary)]" />
               )}
               {tool.icon}
             </button>
@@ -81,9 +81,9 @@ export function ToolWindowBar() {
         aria-label={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
         title={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
         onClick={() => setFolderPaneVisible(!folderPaneVisible)}
-        className="grid place-items-center w-10 h-10 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+        className="grid place-items-center w-11 h-11 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
-        {folderPaneVisible ? <PanelLeftCloseIcon size={20} /> : <PanelLeftOpenIcon size={20} />}
+        {folderPaneVisible ? <PanelLeftCloseIcon size={22} /> : <PanelLeftOpenIcon size={22} />}
       </button>
     </nav>
   );

@@ -1,6 +1,6 @@
 import { type Recipient } from '@/features/composer/contacts';
 import { formatRecipients } from '@/features/composer/contacts';
-import type { ComposerMode } from '@/stores/composerStore';
+import type { ComposerMode, Importance } from '@/stores/composerStore';
 
 export interface ComposeWindowOptions {
   mode?: ComposerMode;
@@ -17,6 +17,10 @@ export interface ComposeWindowOptions {
   classificationId?: string | null;
   isEncrypted?: boolean;
   isSigned?: boolean;
+  importance?: Importance;
+  requestReadReceipt?: boolean;
+  deliverAt?: number | null;
+  preventCopy?: boolean;
 }
 
 /**
@@ -44,6 +48,10 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
       classificationId: opts.classificationId,
       isEncrypted: opts.isEncrypted,
       isSigned: opts.isSigned,
+      importance: opts.importance,
+      requestReadReceipt: opts.requestReadReceipt,
+      deliverAt: opts.deliverAt,
+      preventCopy: opts.preventCopy,
     });
     return;
   }
@@ -66,6 +74,10 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
     if (opts.classificationId) params.set('classificationId', opts.classificationId);
     params.set('isEncrypted', opts.isEncrypted ? '1' : '0');
     params.set('isSigned', opts.isSigned ? '1' : '0');
+    params.set('importance', opts.importance ?? 'normal');
+    params.set('requestReadReceipt', opts.requestReadReceipt ? '1' : '0');
+    if (opts.deliverAt != null) params.set('deliverAt', opts.deliverAt.toString());
+    params.set('preventCopy', opts.preventCopy ? '1' : '0');
 
     const label = `compose-${Date.now()}`;
     const webview = new WebviewWindow(label, {
@@ -108,6 +120,8 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
   const bodyParam = params.get('body');
   const bodyHtml = bodyParam ? decodeURIComponent(escape(atob(bodyParam))) : undefined;
 
+  const importance = (params.get('importance') ?? 'normal') as Importance;
+
   return {
     mode: (params.get('mode') as ComposerMode) ?? 'new',
     to: decodeRecipients('to'),
@@ -123,5 +137,9 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     classificationId: params.get('classificationId') ?? undefined,
     isEncrypted: params.get('isEncrypted') === '1',
     isSigned: params.get('isSigned') === '1',
+    importance,
+    requestReadReceipt: params.get('requestReadReceipt') === '1',
+    deliverAt: params.get('deliverAt') ? Number(params.get('deliverAt')) : null,
+    preventCopy: params.get('preventCopy') === '1',
   };
 }

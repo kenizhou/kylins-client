@@ -1,103 +1,38 @@
-import { useEffect, useState } from 'react';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ReadingPane } from '@/components/layout/ReadingPane';
-import { MinimizeIcon, MaximizeIcon, RestoreIcon, CloseIcon } from '@/components/icons';
+import { MenuBar } from '@/components/ui/MenuBar';
+import { CommandRibbon } from '@/components/layout/CommandRibbon';
+import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
 import type { MailMessage } from '@/features/view/viewStore';
-
-const dragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
-  WebkitAppRegion: 'drag',
-};
-const noDragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
-  WebkitAppRegion: 'no-drag',
-};
+import { useClassification } from '@/features/classification/useClassification';
+import { WindowErrorBoundary } from '@/components/ui/WindowErrorBoundary';
 
 interface MessageViewerWindowProps {
   message: MailMessage;
 }
 
 export function MessageViewerWindow({ message }: MessageViewerWindowProps) {
-  const [isMaximized, setIsMaximized] = useState(false);
+  return (
+    <WindowErrorBoundary>
+      <MessageViewerWindowContent message={message} />
+    </WindowErrorBoundary>
+  );
+}
 
-  useEffect(() => {
-    const appWindow = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
-
-    async function init() {
-      setIsMaximized(await appWindow.isMaximized());
-      unlisten = await appWindow.onResized(async () => {
-        setIsMaximized(await appWindow.isMaximized());
-      });
-    }
-    init();
-
-    return () => {
-      unlisten?.();
-    };
-  }, []);
-
-  const handleMinimize = async () => {
-    try {
-      await getCurrentWindow().minimize();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  };
-
-  const handleToggleMaximize = async () => {
-    try {
-      await getCurrentWindow().toggleMaximize();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  };
-
-  const handleClose = async () => {
-    try {
-      await getCurrentWindow().close();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  };
+function MessageViewerWindowContent({ message }: MessageViewerWindowProps) {
+  const { getLevelById } = useClassification();
+  const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
+  const title = level
+    ? `${message.subject || 'Message'} — ${level.name}`
+    : message.subject || 'Message';
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
-      {/* Custom titlebar */}
-      <div
-        className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2 select-none"
-        style={dragStyle}
-      >
-        <span className="truncate text-sm font-medium text-[var(--foreground)]">
-          {message.subject || 'Message'}
-        </span>
-        <div className="flex items-center gap-1" style={noDragStyle}>
-          <button
-            type="button"
-            onClick={handleMinimize}
-            className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-            title="Minimize"
-            aria-label="Minimize"
-          >
-            <MinimizeIcon size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={handleToggleMaximize}
-            className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-            title={isMaximized ? 'Restore' : 'Maximize'}
-            aria-label={isMaximized ? 'Restore' : 'Maximize'}
-          >
-            {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-          </button>
-          <button
-            type="button"
-            onClick={handleClose}
-            className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-            aria-label="Close viewer"
-          >
-            <CloseIcon size={14} />
-          </button>
-        </div>
+      <WindowTitleBar title={title} />
+
+      <div className="shrink-0">
+        <MenuBar variant="viewer" />
       </div>
+      <CommandRibbon mode="read" />
 
       <div className="min-h-0 flex-1">
         <ReadingPane />

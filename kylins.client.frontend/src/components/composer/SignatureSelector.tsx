@@ -7,7 +7,11 @@
 import { useState, useEffect } from 'react';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
-import { getSignaturesForAccount, type DbSignature, CONTEXT_LABELS } from '@/services/db/signatures';
+import {
+  getSignaturesForAccount,
+  type DbSignature,
+  CONTEXT_LABELS,
+} from '@/services/db/signatures';
 
 export function SignatureSelector() {
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
@@ -47,7 +51,7 @@ export function SignatureSelector() {
     <select
       value={signatureId ?? ''}
       onChange={(e) => handleChange(e.target.value)}
-      className="rounded border border-[var(--border)] bg-[var(--secondary)] px-1.5 py-0.5 text-[0.625rem] text-[var(--muted-text)]"
+      className="cursor-pointer rounded border border-[var(--border)] bg-[var(--secondary)] px-1.5 py-0.5 text-[0.625rem] text-[var(--muted-text)]"
       aria-label="Signature"
     >
       <option value="">No signature</option>
