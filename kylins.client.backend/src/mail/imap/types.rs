@@ -86,6 +86,18 @@ pub struct ImapFolderSyncResult {
     pub folder_status: ImapFolderStatus,
 }
 
+/// One message body returned by `fetch_bodies_batch`. The `snippet` is the
+/// ~200-char whitespace-collapsed preview derived from `body_text`; the engine
+/// writes it onto `messages.snippet` so the thread list shows a preview without
+/// a second read of the (large) `message_bodies` row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FetchedBody {
+    pub uid: u32,
+    pub body_html: Option<String>,
+    pub body_text: Option<String>,
+    pub snippet: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImapFolderSearchResult {
     pub uids: Vec<u32>,

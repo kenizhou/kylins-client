@@ -1447,6 +1447,174 @@ fn uid_set_raw(uids: &[u32]) -> String {
         .join(",")
 }
 
+/// Derive a single-line preview from a body's plain-text part: collapse all
+/// whitespace runs to one space, trim, cap at 200 chars. Pure so it can be
+/// unit-tested without a socket.
+///
+/// Note: the cap is 200 `char`s (Unicode scalar values), not bytes — a 200-char
+/// cap on a multibyte body would otherwise truncate mid-codepoint. Truncation is
+/// hard (no trailing `...`) so the caller can compose; the thread-list UI owns
+/// ellipsization, not the parser.
+fn derive_snippet(body_text: &str) -> String {
+    let collapsed: String = body_text
+        .split(|c: char| c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed.chars().take(200).collect()
+}
+
+/// Viewport-aware batch body prefetch. ONE connect + login + SELECT + chunked
+/// `UID FETCH <uid-set> BODY.PEEK[]` + LOGOUT (reuses `raw_fetch_folder`'s
+/// single-connection skeleton — never per-UID reconnects). `BODY.PEEK[]` (not
+/// `BODY[]`) so prefetch does not set `\Seen`. Chunks at `chunk_size` (50 is the
+/// recommended cap — see plan Global Constraints). Best-effort: on mid-batch
+/// error (server drop), logs and returns what was fetched so far.
+///
+/// The connect/login/SELECT/LOGOUT sequence mirrors `raw_fetch_folder` exactly
+/// rather than factoring it out, because the chunk loop here issues a different
+/// FETCH command (`BODY.PEEK[]`, no `(SYNC_FETCH_QUERY)` parens) and reuses
+/// `raw_parse_fetch_responses` — the shared surface is the four raw helpers
+/// (`raw_connect_starttls`/`connect_stream`/`raw_send_and_wait`/
+/// `raw_parse_fetch_responses`), which is exactly the reuse the brief requires.
+pub async fn fetch_bodies_batch(
+    config: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+    chunk_size: usize,
+) -> Result<Vec<FetchedBody>, String> {
+    if uids.is_empty() {
+        return Ok(vec![]);
+    }
+    let chunk_size = if chunk_size == 0 { 50 } else { chunk_size };
+
+    log::info!(
+        "FETCH BODIES BATCH: {}:{} {folder}, {} UID(s) in chunks of {chunk_size}",
+        config.host,
+        config.port,
+        uids.len()
+    );
+
+    // 1. connect (+ greeting), 2. login — identical to raw_fetch_folder.
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+    let login_cmd = if config.auth_method == "oauth2" {
+        let xoauth2 = format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            config.username, config.password
+        );
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            xoauth2.as_bytes(),
+        );
+        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
+    } else {
+        format!(
+            "a1 LOGIN \"{}\" \"{}\"\r\n",
+            config.username, config.password
+        )
+    };
+    raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
+
+    // 3. SELECT once for the whole batch. The SELECT response (EXISTS/UIDVALIDITY)
+    //    is ignored here — bodies don't need folder_status, only the cursor
+    //    matters and the caller already knows the folder.
+    let select_cmd = format!("a2 SELECT \"{folder}\"\r\n");
+    let _ = raw_send_and_wait(&mut reader, select_cmd.as_bytes(), "a2").await?;
+
+    // 4. UID FETCH each chunk on the SAME connection. Fresh IMAP tag per chunk
+    //    (a3, a4, ...). BODY.PEEK[] — NEVER BODY[] (prefetch must not set \Seen).
+    //    Parse via raw_parse_fetch_responses (handles literal-size framing),
+    //    then re-parse each body with MessageParser to extract text/html/snippet.
+    let parser = MessageParser::default();
+    let mut out: Vec<FetchedBody> = Vec::new();
+    let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
+    let mut tag_index = 3u32;
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let range = uid_set_raw(chunk);
+        let tag = format!("a{tag_index}");
+        // BODY.PEEK[] — never BODY[] (prefetch must not set \Seen).
+        let fetch_cmd = format!("{tag} UID FETCH {range} BODY.PEEK[]\r\n");
+
+        if let Err(e) = reader.get_mut().write_all(fetch_cmd.as_bytes()).await {
+            log::warn!(
+                "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}): write failed: {e}; returning {} fetched so far",
+                i + 1,
+                out.len()
+            );
+            break;
+        }
+        match raw_parse_fetch_responses(&mut reader, &tag).await {
+            Ok(raw_messages) => {
+                for raw_msg in &raw_messages {
+                    // body_text(0) / body_html(0): per mail-parser 0.9.4, these
+                    // return the first text/html part AND auto-convert when one
+                    // representation is missing (HTML→text and vice-versa), so an
+                    // HTML-only message still yields a body_text for the snippet.
+                    // This is the same call shape `parse_message` uses (see lines
+                    // ~2061-2062), keeping the two body-extraction paths
+                    // consistent — no divergent parsing here.
+                    let parsed = match parser.parse(&raw_msg.body) {
+                        Some(p) => p,
+                        None => {
+                            log::warn!(
+                                "fetch_bodies_batch {folder}: UID {} parse failed; skipping",
+                                raw_msg.uid
+                            );
+                            continue;
+                        }
+                    };
+                    let body_text = parsed.body_text(0).map(|s| s.to_string());
+                    let body_html = parsed.body_html(0).map(|s| s.to_string());
+                    let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
+                    out.push(FetchedBody {
+                        uid: raw_msg.uid,
+                        body_html,
+                        body_text,
+                        snippet,
+                    });
+                }
+                log::info!(
+                    "FETCH BODIES BATCH {folder} chunk {} (uids {range}): parsed {} bodies",
+                    i + 1,
+                    raw_messages.len()
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}) failed: {e}; returning {} fetched so far",
+                    i + 1,
+                    out.len()
+                );
+                break;
+            }
+        }
+        tag_index = tag_index.saturating_add(1);
+    }
+
+    // 5. best-effort LOGOUT (ignore errors — connection may already be closed).
+    let _ = reader.get_mut().write_all(b"LOGOUT\r\n").await;
+
+    log::info!(
+        "FETCH BODIES BATCH {folder}: {}/{} UID(s) fetched",
+        out.len(),
+        uids.len()
+    );
+    Ok(out)
+}
+
 pub async fn raw_fetch_diagnostic(
     config: &ImapConfig,
     folder: &str,
@@ -2313,9 +2481,41 @@ fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capabilities_from_strs, extract_starttls_injection,
+        capabilities_from_strs, derive_snippet, extract_starttls_injection,
         fetch_changed_flags_response_from_fetches, uid_set_raw, SYNC_FETCH_QUERY,
     };
+
+    // ---------- derive_snippet (pure preview-text helper for fetch_bodies_batch) ----------
+    //
+    // The snippet is the ~200-char single-line preview the thread list shows
+    // without re-reading the (large) `message_bodies` row. The live batch fetch
+    // is exercised by the Task 5 ignored integration test; here we cover the
+    // pure parser so whitespace-collapse + truncation are regression-locked
+    // without a socket.
+
+    #[test]
+    fn derive_snippet_strips_whitespace_and_truncates() {
+        // Leading/trailing whitespace + newlines collapse to single spaces;
+        // result is capped at 200 chars.
+        let body = "  Hello,\n\n   world.   \n\nThis is a long body.   ";
+        let s = derive_snippet(body);
+        assert!(s.starts_with("Hello,"));
+        assert!(!s.contains('\n'));
+        assert!(!s.contains("  ")); // no double spaces
+    }
+
+    #[test]
+    fn derive_snippet_truncates_at_200_chars() {
+        let body = "x".repeat(500);
+        let s = derive_snippet(&body);
+        assert_eq!(s.len(), 200);
+    }
+
+    #[test]
+    fn derive_snippet_empty_yields_empty() {
+        assert_eq!(derive_snippet("   \n\n  "), "");
+        assert_eq!(derive_snippet(""), "");
+    }
 
     /// RED test 1 for the CONDSTORE CHANGEDSINCE flag-change parser. Maps three
     /// parsed Fetch responses (uid, flags, modseq) into `ImapFlagChange`s and
