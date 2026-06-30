@@ -205,6 +205,7 @@ pub fn run() {
             db::commands::db_remove_from_image_allowlist,
             db::commands::db_get_cached_ai_result,
             db::commands::db_cache_ai_result,
+            db::commands::db_get_rate_limit_info,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,

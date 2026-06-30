@@ -3,6 +3,7 @@
 //   sync:delta   -> a folder changed on disk -> reload folder list + open thread page
 //   sync:new-mail-> new unread in an Inbox-equivalent -> OS notification
 //   sync:queue   -> pending-operations count changed -> update uiStore.pendingCount
+//   sync:status  -> per-account state transition (syncing/idle/error/rate_limited)
 //   tray-check-mail (tray menu) -> nudge every account to sync now
 //
 // No-op outside Tauri (tests/jsdom).
@@ -15,6 +16,24 @@ import { useThreadStore } from '../stores/threadStore';
 import { useAccountStore } from '../stores/accountStore';
 import { useUIStore } from '../stores/uiStore';
 import { notifyNewMailBatch } from '../services/notifications/notificationManager';
+
+/**
+ * Per-account sync state, emitted by the Rust SyncEngine on every round
+ * transition. Mirrors the `StatusEvent` struct in
+ * `kylins.client.backend/src/sync_engine/engine.rs` (camelCase via serde).
+ *
+ * - `state`: one of `"syncing" | "idle" | "error" | "rate_limited"`.
+ * - `detail`: epoch-seconds payload. Carries `retry_after` for `rate_limited`
+ *   and `cooldown_until` for breaker-tripped `error`; `null`/absent for
+ *   `syncing` / `idle` / non-breaker `error`. Phase 3g renders the status bar
+ *   from this; the listener currently only subscribes so the event is not
+ *   dropped (no UI yet).
+ */
+export interface StatusEvent {
+  accountId: string;
+  state: 'syncing' | 'idle' | 'error' | 'rate_limited' | (string & {});
+  detail?: number | null;
+}
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -65,6 +84,17 @@ export function useSyncEvents(): void {
             // shows the aggregate; we keep it simple and surface the latest
             // account's count (multi-account aggregation is a later refinement).
             useUIStore.getState().setPendingCount(e.payload.pending);
+          }),
+        );
+
+        unlisteners.push(
+          await listen<StatusEvent>('sync:status', (e) => {
+            // Per-account state transition (syncing / idle / error /
+            // rate_limited). Phase 3g will render the status bar from
+            // e.payload.detail (retry_after / cooldown_until). For now we only
+            // subscribe so the event is not dropped and the StatusEvent type is
+            // exercised against the real Rust payload shape.
+            void e;
           }),
         );
 

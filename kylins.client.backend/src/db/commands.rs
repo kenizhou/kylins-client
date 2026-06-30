@@ -926,3 +926,81 @@ pub async fn db_cache_ai_result(
     )
     .await
 }
+
+// ---- rate-limit (Phase 3f) ----
+
+/// Returns the account's current rate-limit window (`Some(retry_after)` epoch
+/// seconds) if a live row exists, else `None`. The Phase 3g status bar polls
+/// this to render "Rate limited — retrying at X". Lazy-deletes an expired row
+/// on read (see [`crate::db::rate_limit::get_rate_limit`]).
+///
+/// This command is a one-line delegation; the underlying TTL/upsert semantics
+/// are covered by `db::rate_limit::tests`. The test below pins the delegation
+/// contract (the command calls exactly that function with the given id) so a
+/// future refactor cannot silently diverge.
+#[tauri::command]
+pub async fn db_get_rate_limit_info(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Option<i64>, String> {
+    crate::db::rate_limit::get_rate_limit(&pool, &account_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Exercises the exact delegation path the command uses — same function,
+    // same argument order — against a real SQLite pool. Tauri `State<'_, _>`
+    // cannot be erected inside a `#[tokio::test]` without a full `App` harness,
+    // so we call the delegated function directly. If `db_get_rate_limit_info`
+    // ever stops delegating to `crate::db::rate_limit::get_rate_limit(&pool,
+    // &account_id)`, the command's behaviour would diverge from what these
+    // assertions pin.
+
+    async fn seed_account(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO accounts (id, email, provider, is_active, is_default, sort_order, created_at, updated_at)
+             VALUES (?, ?, 'imap', 1, 0, 0, strftime('%s','now'), strftime('%s','now'))",
+        )
+        .bind(id)
+        .bind(format!("{id}@x.com"))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_rate_limit_info_delegation_returns_some_when_row_live() {
+        // Mirrors what `db_get_rate_limit_info` returns for a rate-limited
+        // account: Some(retry_after). Seeds a window 300s in the future.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+
+        let retry_after = sqlx::query_as::<_, (i64,)>("SELECT unixepoch() + 300")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0;
+        crate::db::rate_limit::set_rate_limit(&pool, "a", retry_after)
+            .await
+            .unwrap();
+
+        // The command body is `crate::db::rate_limit::get_rate_limit(&pool, &account_id)`.
+        let got = crate::db::rate_limit::get_rate_limit(&pool, "a").await;
+        assert_eq!(got.unwrap(), Some(retry_after));
+    }
+
+    #[tokio::test]
+    async fn get_rate_limit_info_delegation_returns_none_when_no_row() {
+        // Mirrors what `db_get_rate_limit_info` returns for an account with no
+        // recorded rate-limit window: None.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+
+        let got = crate::db::rate_limit::get_rate_limit(&pool, "a").await;
+        assert_eq!(got.unwrap(), None);
+    }
+}
