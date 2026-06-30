@@ -25,6 +25,7 @@ pub mod message_bodies;
 pub mod messages;
 pub mod mutations;
 pub mod queue;
+pub mod rate_limit;
 pub mod scheduled_emails;
 pub mod search;
 pub mod send_as_aliases;
