@@ -1567,9 +1567,19 @@ async fn raw_connect_starttls(config: &ImapConfig) -> Result<ImapStream, String>
             IMAP_CMD_TIMEOUT.as_secs()
         ))?
         .map_err(|e| format!("STARTTLS resp: {e}"))?;
-    let resp = String::from_utf8_lossy(&tmp[..n]);
+    let resp_bytes = &tmp[..n];
+    let resp = String::from_utf8_lossy(resp_bytes);
     if !resp.contains("OK") {
         return Err(format!("STARTTLS rejected: {resp}"));
+    }
+    // RFC 3501 §6.2.1 injection guard — see `connect_starttls` for the full
+    // rationale. Same protection on the raw path used by `raw_fetch_folder` /
+    // `raw_fetch_messages` / `raw_fetch_diagnostic`: any bytes after the single
+    // STARTTLS OK line are an injection and must abort the handshake.
+    if let Some(injected) = extract_starttls_injection(resp_bytes) {
+        return Err(format!(
+            "STARTTLS plaintext injection detected (RFC 3501 §6.2.1): trailing {injected:?} after OK; aborting handshake"
+        ));
     }
     let nc = build_tls_connector(config.accept_invalid_certs)?;
     let tc = tokio_native_tls::TlsConnector::from(nc);
@@ -1906,9 +1916,20 @@ async fn connect_starttls(config: &ImapConfig) -> Result<ImapSession, String> {
             IMAP_CMD_TIMEOUT.as_secs()
         ))?
         .map_err(|e| format!("Failed to read STARTTLS response: {e}"))?;
-    let response = String::from_utf8_lossy(&buf[..n]);
+    let response_bytes = &buf[..n];
+    let response = String::from_utf8_lossy(response_bytes);
     if !response.contains("OK") {
         return Err(format!("STARTTLS rejected: {response}"));
+    }
+    // RFC 3501 §6.2.1 injection guard: reject ANY bytes after the STARTTLS OK
+    // line before the TLS handshake. A MITM could inject untagged responses
+    // (e.g. a fake "* OK ..." or "* BAD ...") that would be misinterpreted as
+    // part of the encrypted stream once the handshake takes over. A well-formed
+    // server sends exactly one OK line and nothing else.
+    if let Some(injected) = extract_starttls_injection(response_bytes) {
+        return Err(format!(
+            "STARTTLS plaintext injection detected (RFC 3501 §6.2.1): trailing {injected:?} after OK; aborting handshake"
+        ));
     }
 
     let native_connector = build_tls_connector(config.accept_invalid_certs)?;
@@ -2269,11 +2290,31 @@ pub async fn session_capabilities(
     ))
 }
 
+/// Pure helper: detect whether the STARTTLS OK response is followed by extra
+/// bytes (the injection attack). RFC 3501 §6.2.1: the client MUST reject any
+/// data between the STARTTLS OK and the TLS handshake.
+///
+/// `ok_response` is the bytes read after sending STARTTLS. If the response
+/// contains MORE than the single OK line (e.g. an extra untagged response the
+/// attacker injected), this returns the injected bytes; the caller aborts.
+fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
+    // A well-formed STARTTLS OK is exactly one line ending in \r\n:
+    //   "a001 OK Begin TLS negotiation now\r\n"
+    // Any bytes AFTER the first \r\n are injection.
+    let crlf = ok_response.windows(2).position(|w| w == b"\r\n")?;
+    let after = &ok_response[crlf + 2..];
+    if after.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(after).to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        capabilities_from_strs, fetch_changed_flags_response_from_fetches, uid_set_raw,
-        SYNC_FETCH_QUERY,
+        capabilities_from_strs, extract_starttls_injection,
+        fetch_changed_flags_response_from_fetches, uid_set_raw, SYNC_FETCH_QUERY,
     };
 
     /// RED test 1 for the CONDSTORE CHANGEDSINCE flag-change parser. Maps three
@@ -2385,5 +2426,50 @@ mod tests {
         // No trailing comma on any length.
         let s = uid_set_raw(&[7, 8, 9, 10, 11]);
         assert!(!s.ends_with(','), "uid_set_raw must not trail with a comma: {s}");
+    }
+
+    // ---------- STARTTLS injection guard (RFC 3501 §6.2.1) ----------
+    //
+    // The pure helper `extract_starttls_injection` is the testable surface of
+    // the guard. The live socket wiring (aborting the handshake when trailing
+    // bytes appear after the STARTTLS OK) is in `connect_starttls` and
+    // `raw_connect_starttls`; those paths can't be exercised without a MITM
+    // that injects plaintext, so the regression coverage lives here on the
+    // pure function that both call sites consult.
+
+    #[test]
+    fn starttls_guard_accepts_single_ok_line() {
+        assert_eq!(
+            extract_starttls_injection(b"a001 OK Begin TLS negotiation now\r\n"),
+            None,
+            "a single OK line is clean"
+        );
+    }
+
+    #[test]
+    fn starttls_guard_rejects_trailing_injected_bytes() {
+        // An attacker prepends a fake "* OK ..." before the TLS handshake.
+        let injected = b"a001 OK Begin TLS negotiation now\r\n* BAD evil injected\r\n";
+        let extra = extract_starttls_injection(injected);
+        assert_eq!(
+            extra.as_deref(),
+            Some("* BAD evil injected\r\n"),
+            "trailing bytes after the STARTTLS OK must be flagged as injection"
+        );
+    }
+
+    #[test]
+    fn starttls_guard_rejects_trailing_partial_line() {
+        // Even partial bytes (no terminating \r\n) are injection.
+        let extra = extract_starttls_injection(b"a001 OK\r\nevil");
+        assert_eq!(extra.as_deref(), Some("evil"));
+    }
+
+    #[test]
+    fn starttls_guard_returns_none_on_no_crlf() {
+        // Malformed response (no CRLF at all) — caller should already have rejected
+        // this for not containing "OK", but the helper returns None rather than
+        // panic. The caller's "OK" check catches it first.
+        assert_eq!(extract_starttls_injection(b"garbage"), None);
     }
 }
