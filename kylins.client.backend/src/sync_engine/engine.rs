@@ -1602,6 +1602,87 @@ mod tests {
         );
     }
 
+    /// Per-account isolation: a live `provider_rate_limit` row for account "a"
+    /// must NOT short-circuit account "b"'s sync round. The workstream is
+    /// literally "per-account rate-limit mode", so pinning that the SQL lookup
+    /// is scoped by `account_id` (and the in-memory breaker map likewise) is a
+    /// real regression guard against a future refactor that drops the WHERE
+    /// clause or shares state across accounts.
+    ///
+    /// Seeds two accounts, rate-limits only "a", then drives a normal round for
+    /// "b" and asserts "b" syncs normally (syncing -> ... -> idle, messages
+    /// land in the DB) and emits NO `rate_limited` status.
+    #[tokio::test]
+    async fn rate_limit_is_per_account_and_does_not_skip_other_accounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_account(&pool, "b").await;
+
+        // Rate-limit ONLY account "a", 300s in the future.
+        let retry_after_a = sqlx::query_as::<_, (i64,)>("SELECT unixepoch() + 300")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0;
+        rate_limit::set_rate_limit(&pool, "a", retry_after_a)
+            .await
+            .unwrap();
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+
+        // Account "b" has a real folder + message to deliver.
+        let src = MockSource::new(
+            vec![RemoteFolder {
+                remote_id: "INBOX".into(),
+                name: "INBOX".into(),
+                delimiter: "/".into(),
+                role: Some("inbox".into()),
+                ..Default::default()
+            }],
+            vec![RemoteMessage {
+                uid: 1,
+                folder: "INBOX".into(),
+                message_id: Some("<m-b-1>".into()),
+                ..Default::default()
+            }],
+        );
+
+        run_sync_round_with_source(&engine, "b", "imap", &src)
+            .await
+            .unwrap();
+
+        // "b"'s message landed — sync was NOT short-circuited.
+        let (n_b,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id = 'b'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(n_b, 1, "account b must sync normally despite a being rate-limited");
+
+        // "a"'s rate-limit row is untouched and still live.
+        let info_a = rate_limit::get_rate_limit(&pool, "a").await.unwrap();
+        assert!(
+            info_a.is_some(),
+            "account a remains rate-limited (isolation: b's round did not clear a's window)"
+        );
+
+        // No rate_limited status was emitted for b — its round ran to
+        // completion. (sink.statuses may contain a final idle/syncing for b;
+        // what matters is none of them are rate_limited.)
+        let any_rate_limited_for_b = sink
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.account_id == "b" && s.state == "rate_limited");
+        assert!(
+            !any_rate_limited_for_b,
+            "account b must not see a rate_limited status"
+        );
+    }
+
     // ---- Phase 1 Task 4: AccountWorker replay loop + sync:queue ----
 
     /// Seed one pending markRead op (one message = one row, matching how Task 3
