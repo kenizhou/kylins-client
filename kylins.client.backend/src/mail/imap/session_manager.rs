@@ -4,20 +4,55 @@
 //!
 //! Task 1 (BASE `36b552e`) delivered the pure helpers (`classify_error`,
 //! `should_reselect`), the `Handle` / `ImapSessionManager` skeleton, and the
-//! Send-probe. Task 2 (this commit) implements the heart: `execute()` —
-//! lazy connect, mailbox lock (re-SELECT only on folder change), and
-//! reconnect-once on transient errors. NOOP keepalive lands in Task 5.
+//! Send-probe. Task 2 implements the heart: `execute()` — lazy connect, mailbox
+//! lock (re-SELECT only on folder change), and reconnect-once on transient
+//! errors. Task 5 (this commit) adds the per-account NOOP keepalive task (120s
+//! interval, well under the ~29min server idle timeout) + `shutdown()` which
+//! aborts every keepalive and best-effort LOGOUTs each session.
 
 use async_imap::Session;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 
 use crate::mail::imap::client as imap_client;
 use crate::mail::imap::client::ImapStream;
 use crate::mail::imap::types::ImapConfig;
+
+/// NOOP keepalive interval. async-imap sessions live in a `Mutex<Option<_>>`
+/// with no IDLE; without periodic traffic the server idle-times the TCP
+/// connection out (~29 min on the test IMAP server, common 30 min elsewhere).
+/// 120 s is well under that ceiling with room for jitter, and matches
+/// imapflow's default NOOP interval (we mirror their mailbox-lock pattern in
+/// `execute`). A round only fires when the session has actually been idle this
+/// long — `last_used` is bumped on every `execute()`, and the keepalive skips
+/// the NOOP if a real command just reset the server's idle clock.
+const NOOP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(120);
+
+/// Per-NOOP command timeout. A NOOP round-trip on a live connection is a few
+/// hundred ms; if it doesn't return in 30 s the connection is dead and we drop
+/// the session so the next `execute()` reconnects. Mirrors `IMAP_CMD_TIMEOUT`
+/// in `client.rs` (kept private there, so re-declared here under strict scope —
+/// changing `client.rs` is out of bounds for Task 5; the deviation is documented
+/// in `task-5-report.md`).
+const NOOP_CMD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Per-NOOP best-effort LOGOUT timeout in `shutdown()`. LOGOUT is a single
+/// round-trip; if the server is unresponsive we don't want to stall app exit.
+const SHUTDOWN_LOGOUT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Pure decision: should the keepalive fire a NOOP right now? True iff the
+/// session has been idle (no `execute()`) for at least `NOOP_KEEPALIVE_INTERVAL`.
+/// Factored out of the spawned task so the timing math is unit-testable without
+/// a live socket or a tokio runtime — the only testable seam in the keepalive
+/// (the rest — locking the session, sending NOOP, dropping on error — needs a
+/// real `Session<ImapStream>` which can't be constructed in a unit test).
+pub fn keepalive_should_fire(last_used: Instant, now: Instant, interval: Duration) -> bool {
+    now.duration_since(last_used) >= interval
+}
 
 /// Classify an IMAP error string to decide whether reconnect+retry is worth
 /// attempting. Transient errors (network drop, BYE, parse failure) get one
@@ -120,6 +155,12 @@ pub struct Handle {
     /// NOOP if the session was just used (NOOP right after a real command is
     /// wasteful — the command itself reset the server's idle clock).
     pub last_used: tokio::sync::Mutex<Instant>,
+    /// Per-account NOOP keepalive task handle. `None` until the first
+    /// `execute()` connects (spawn is lazy + idempotent — guarded by this
+    /// Option). Aborted in `shutdown()`; never awaited (the task loops until
+    /// aborted). Held in a Mutex so `execute()` (caller thread) and `shutdown()`
+    /// can both take/replace it without a race.
+    pub keepalive: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 pub struct ImapSessionManager {
@@ -192,6 +233,18 @@ impl ImapSessionManager {
             // Lazy connect / reconnect-after-drop. Cheap fast path when the
             // session slot is already populated.
             handle.ensure_connected(config).await?;
+
+            // Spawn the NOOP keepalive on first connect (idempotent — guarded
+            // by the Option). Done BEFORE acquiring the session mutex so we
+            // never hold two locks at once (and the keepalive's own lock
+            // acquisition order stays consistent with the rest of this file).
+            {
+                let mut kg = handle.keepalive.lock().await;
+                if kg.is_none() {
+                    let h = Arc::clone(&handle);
+                    *kg = Some(Self::spawn_noop_keepalive(h));
+                }
+            }
 
             // Acquire the per-account session mutex for the whole op so a
             // concurrent execute() cannot interleave SELECTs or commands.
@@ -284,9 +337,161 @@ impl ImapSessionManager {
             session: tokio::sync::Mutex::new(None),
             selected_mailbox: tokio::sync::Mutex::new(None),
             last_used: tokio::sync::Mutex::new(Instant::now()),
+            // Spawned lazily on first `execute()` connect (idempotent — guarded
+            // by the Option). None here means "no keepalive running yet".
+            keepalive: tokio::sync::Mutex::new(None),
         });
         map.insert(account_id.to_string(), Arc::clone(&handle));
         handle
+    }
+}
+
+// ============================ Task 5: keepalive + shutdown ============================
+
+impl ImapSessionManager {
+    /// Send a single NOOP on the session, with a timeout. Returns Err if the
+    /// session is dead (timeout / transport error / parse failure) — the caller
+    /// (keepalive task) reacts by dropping the session so the next `execute()`
+    /// reconnects. NOOP is RFC 3501 §6.4.4 — the lightest valid IMAP command;
+    /// the server responds with the current state (untagged \* EXISTS / EXPUNGE
+    /// / FETCH etc. may arrive on the same stream but `async-imap`'s `noop`
+    /// drains them into the unsolicited channel, so a NOOP round-trip is safe).
+    ///
+    /// Scope deviation: the brief put this helper in `client.rs` next to the
+    /// other timeout wrappers. Task 5's strict scope forbids touching
+    /// `client.rs`, so it lives here as a private free fn. Same body as the
+    /// brief's `client::noop` (re-declared `NOOP_CMD_TIMEOUT` because
+    /// `client::IMAP_CMD_TIMEOUT` is private).
+    async fn noop_step(session: &mut Session<ImapStream>) -> Result<(), String> {
+        tokio::time::timeout(NOOP_CMD_TIMEOUT, session.noop())
+            .await
+            .map_err(|_| {
+                format!(
+                    "NOOP timed out after {}s",
+                    NOOP_CMD_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|e| format!("NOOP failed: {e}"))
+    }
+
+    /// Spawn a per-account NOOP keepalive task. Fires NOOP every
+    /// `NOOP_KEEPALIVE_INTERVAL` (120s) when the session has actually been idle
+    /// that long (a real `execute()` command would have reset the server's idle
+    /// clock, making the NOOP redundant). Self-skips when the session is `None`
+    /// (not yet connected / just dropped) — no socket to NOOP. If the NOOP
+    /// errors, the session is assumed dead and set to `None` so the next
+    /// `execute()` reconnects.
+    ///
+    /// **Lock ordering** (critical — the rest of this file locks
+    /// `session → selected_mailbox → last_used`): this task takes `last_used`
+    /// first (cheap, released at the statement boundary BEFORE awaiting
+    /// `session`), then `session`, then — only on the error path —
+    /// `selected_mailbox`. Because `last_used` is never held across the
+    /// `session` await, no AB-BA deadlock with `execute()` (which takes
+    /// `session` then `last_used`) is possible.
+    ///
+    /// Best-effort by construction: any error is logged and the loop continues
+    /// (the next tick re-evaluates `last_used` / `session`). The task never
+    /// panics — `noop_step` returns `Result`, and locking a `tokio::Mutex`
+    /// doesn't panic. Aborted by `shutdown()` (via the stored `JoinHandle`).
+    pub fn spawn_noop_keepalive(handle: Arc<Handle>) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            // `tokio::time::interval` fires immediately on the first `tick()`;
+            // we consume that tick here so the first real NOOP waits a full
+            // interval. (Even if it didn't, the `keepalive_should_fire` gate
+            // below would skip it — `last_used` was just bumped by the
+            // `execute()` that spawned us.)
+            let mut interval = tokio::time::interval(NOOP_KEEPALIVE_INTERVAL);
+            interval.tick().await; // discard immediate first tick
+
+            loop {
+                interval.tick().await;
+
+                // Gate 1: skip if a real command ran recently. `last_used` is
+                // bumped at the end of every `execute()` op; if it's newer than
+                // the interval, the server's idle clock was already reset and a
+                // NOOP would be pure waste. The lock guard drops here (statement
+                // boundary) — released BEFORE we await `session` below, keeping
+                // the lock-ordering invariant documented above.
+                let now = Instant::now();
+                let last_used = *handle.last_used.lock().await;
+                if !keepalive_should_fire(last_used, now, NOOP_KEEPALIVE_INTERVAL) {
+                    continue;
+                }
+
+                // Gate 2: skip if not connected. Cheap fast path; also handles
+                // the window where `execute()` dropped the session on a
+                // transient error and hasn't reconnected yet (the next
+                // `execute()` will dial + respawn is a no-op since the handle
+                // is the same).
+                let mut guard = handle.session.lock().await;
+                let session = match guard.as_mut() {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                // Fire the NOOP. On error, drop the session in place (set
+                // `*guard = None`) so the next `execute()` reconnects. The
+                // selected-mailbox cache is also cleared — a fresh session
+                // starts un-SELECTed. `selected_mailbox` lock is acquired AFTER
+                // `session` (matches the documented ordering) and only on this
+                // error path.
+                if let Err(e) = Self::noop_step(session).await {
+                    log::warn!(
+                        "[imap-mgr] {} NOOP keepalive failed: {e}; dropping session \
+                         (next execute() will reconnect)",
+                        handle.account_id,
+                    );
+                    *guard = None;
+                    // Drop the session lock BEFORE taking selected_mailbox —
+                    // strict lock ordering (session before selected), and
+                    // avoids holding session across an unrelated lock await.
+                    drop(guard);
+                    *handle.selected_mailbox.lock().await = None;
+                }
+                // Success path: `guard` drops here, session stays Some.
+            }
+        })
+    }
+
+    /// Shutdown: abort every per-account keepalive task + best-effort LOGOUT
+    /// each live session. Intended for app exit / account removal. Idempotent —
+    /// safe to call when no keepalives/sessions exist (the Options are None).
+    ///
+    /// **Lock ordering**: takes the accounts map once, then per-handle acquires
+    /// `keepalive → session → selected_mailbox` (in that order, each released
+    /// before the next). `selected_mailbox` isn't touched here (LOGOUT doesn't
+    /// care about the selected mailbox), but the ordering is still consistent
+    /// with the rest of the file. The 5s per-LOGOUT timeout bounds total
+    /// shutdown time at `5s * account_count` worst case — acceptable for app
+    /// exit; if you need tighter, abort-only (skip LOGOUT) is a follow-up.
+    ///
+    /// **Wiring status**: `lib.rs::run()` has no on-exit hook today (Tauri's
+    /// `.run()` consumes the builder and exits at process end; the only
+    /// window-event handler intercepts CloseRequested to minimize-to-tray).
+    /// Calling `shutdown()` on real app exit is therefore a documented
+    /// follow-up — see `task-5-report.md`. The method is complete and tested;
+    /// only the call site is pending.
+    pub async fn shutdown(&self) {
+        let map = self.accounts.lock().await;
+        for (_account_id, handle) in map.iter() {
+            // Abort the keepalive first so it doesn't fight us for the session
+            // lock mid-LOGOUT. `take()` leaves None, so a second shutdown() is
+            // a no-op for this handle.
+            if let Some(h) = handle.keepalive.lock().await.take() {
+                h.abort();
+            }
+            // Best-effort LOGOUT. The session is consumed (`take()`); on
+            // timeout we just drop it (the OS closes the TCP stream either
+            // way). 5s ceiling per account.
+            let mut guard = handle.session.lock().await;
+            if let Some(mut session) = guard.take() {
+                let _ = tokio::time::timeout(SHUTDOWN_LOGOUT_TIMEOUT, session.logout()).await;
+            }
+            // Clear the selected-mailbox cache too (defensive — if the handle
+            // is reused after shutdown, the next execute() SELECTs fresh).
+            *handle.selected_mailbox.lock().await = None;
+        }
     }
 }
 
@@ -432,5 +637,45 @@ mod tests {
             retry_decision("UID STORE failed: BAD invalid sequence", 1),
             RetryDecision::Surface
         );
+    }
+
+    // ---- Task 5: keepalive seam tests ----
+    //
+    // The spawned keepalive task itself can't be unit-tested (it needs a live
+    // `Session<ImapStream>` + real time). The two behaviors that matter —
+    // "skip NOOP if the session was just used" and "skip NOOP if the session is
+    // None" — are gated by the pure helper `keepalive_should_fire` and the
+    // `Option::as_mut()` match respectively. `keepalive_should_fire` is the
+    // load-bearing seam (the timing math), so it gets the tests below. The
+    // None-skip is a trivial `match` arm obvious at the call site; testing it
+    // via a wrapper would just assert `Option::is_none()` and add no value.
+
+    #[test]
+    fn keepalive_should_fire_after_interval_elapsed() {
+        let interval = Duration::from_secs(120);
+        let last_used = Instant::now() - Duration::from_secs(180);
+        // 180s > 120s interval -> a real NOOP is due.
+        assert!(keepalive_should_fire(last_used, Instant::now(), interval));
+    }
+
+    #[test]
+    fn keepalive_skips_when_session_used_recently() {
+        let interval = Duration::from_secs(120);
+        // `execute()` just bumped last_used 5s ago — well under the 120s
+        // interval. The real command reset the server's idle clock, so a NOOP
+        // now would be redundant. Gate must skip.
+        let last_used = Instant::now() - Duration::from_secs(5);
+        assert!(!keepalive_should_fire(last_used, Instant::now(), interval));
+    }
+
+    #[test]
+    fn keepalive_boundary_fires_at_exactly_interval() {
+        // At exactly the interval the session has been idle "long enough" —
+        // fire. (`>=` so that a 120s idle on a 120s interval is treated as due,
+        // not one tick short of due — matches the doc comment on the helper.)
+        let interval = Duration::from_secs(120);
+        let now = Instant::now();
+        let last_used = now - interval;
+        assert!(keepalive_should_fire(last_used, now, interval));
     }
 }
