@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::db::{accounts, labels, messages, sync_state};
+use crate::mail::imap::session_manager::ImapSessionManager;
 use crate::sync_engine::{source_for_account, Cursor, MailSource, RemoteFolder};
 
 const POLL_INTERVAL_SECS: u64 = 60;
@@ -162,6 +163,11 @@ pub struct SyncEngine {
     /// `list_folders` failures only; per-folder `sync_folder` failures stay
     /// best-effort so one bad folder can't trip the whole account.
     breakers: Mutex<HashMap<String, BreakerState>>,
+    /// Owns one persistent IMAP session per account. Constructed once, shared
+    /// with every ImapSource the engine spawns. Held but unused by ImapSource's
+    /// methods until Task 4 swaps `imap_client::connect()` per-call for
+    /// `manager.execute(...)`; Task 3 is plumbing only (no behavior change).
+    pub session_manager: Arc<ImapSessionManager>,
 }
 
 impl SyncEngine {
@@ -171,6 +177,7 @@ impl SyncEngine {
             pool,
             sink,
             breakers: Mutex::new(HashMap::new()),
+            session_manager: Arc::new(ImapSessionManager::new()),
         })
     }
 
@@ -259,9 +266,13 @@ impl SyncEngine {
             // loop below stays as the background sweep for non-INBOX folders
             // + the fallback when IDLE is unavailable.
             let idle_watcher = {
-                let src = crate::sync_engine::source_for_account(&engine.pool, &aid)
-                    .await
-                    .ok();
+                let src = crate::sync_engine::source_for_account(
+                    &engine.pool,
+                    &aid,
+                    &engine.session_manager,
+                )
+                .await
+                .ok();
                 let caps = src.as_ref().map(|s| s.capabilities());
                 match (src, caps) {
                     (Some(src), Some(caps))
@@ -395,7 +406,7 @@ async fn run_sync_round(
     account_id: &str,
     provider: &str,
 ) -> Result<(), String> {
-    let src = source_for_account(&engine.pool, account_id).await?;
+    let src = source_for_account(&engine.pool, account_id, &engine.session_manager).await?;
     run_sync_round_with_source(engine, account_id, provider, src.as_ref()).await
 }
 

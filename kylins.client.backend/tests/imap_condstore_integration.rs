@@ -252,7 +252,11 @@ async fn test_changed_flags_via_condstore() {
     .await
     .expect("insert label");
 
-    let source = ImapSource::new(account_from_env(account_id), pool.clone());
+    let source = ImapSource::new(
+        account_from_env(account_id),
+        pool.clone(),
+        std::sync::Arc::new(kylins_client_lib::mail::imap::session_manager::ImapSessionManager::new()),
+    );
     let folder = remote_folder(&folder_path);
 
     // --- Ensure the folder exists, then append a fresh unread message. ---
@@ -406,7 +410,11 @@ async fn test_expunge_detected_via_set_difference() {
         .await
         .expect("insert label");
 
-    let source = ImapSource::new(account_from_env(account_id), pool.clone());
+    let source = ImapSource::new(
+        account_from_env(account_id),
+        pool.clone(),
+        std::sync::Arc::new(kylins_client_lib::mail::imap::session_manager::ImapSessionManager::new()),
+    );
     let folder = remote_folder(&folder_path);
 
     // --- Append two fresh messages. ---

@@ -46,18 +46,19 @@ pub async fn sync_account_now(
 /// is unit-testable without a `State` harness (mirrors `apply_mutation_inner`).
 #[tauri::command]
 pub async fn sync_request_bodies(
-    _engine: State<'_, Arc<SyncEngine>>,
+    engine: State<'_, Arc<SyncEngine>>,
     pool: State<'_, SqlitePool>,
     account_id: String,
     message_ids: Vec<String>,
 ) -> Result<(), String> {
-    request_bodies_inner(pool.inner(), &account_id, &message_ids).await
+    request_bodies_inner(pool.inner(), &engine.session_manager, &account_id, &message_ids).await
 }
 
 /// Testable core of [`sync_request_bodies`]. Takes a borrowed pool so unit tests
 /// can drive it without a `State<'_, SqlitePool>` harness.
 pub async fn request_bodies_inner(
     pool: &SqlitePool,
+    manager: &std::sync::Arc<crate::mail::imap::session_manager::ImapSessionManager>,
     account_id: &str,
     message_ids: &[String],
 ) -> Result<(), String> {
@@ -67,7 +68,7 @@ pub async fn request_bodies_inner(
     // One source for the whole batch — `source_for_account` opens a fresh
     // connection per `fetch_body` call inside (ImapSource owns its lifecycle),
     // so we don't need to keep a session alive across messages.
-    let src = match source_for_account(pool, account_id).await {
+    let src = match source_for_account(pool, account_id, manager).await {
         Ok(s) => s,
         Err(e) => {
             log::warn!("[sync] request_bodies: source for {account_id} failed: {e}");
@@ -375,9 +376,12 @@ mod tests {
     async fn request_bodies_inner_empty_input_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
+        let manager = std::sync::Arc::new(
+            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        );
         // Note: no account seeded — the empty-input early return must fire
         // before `source_for_account` is ever called.
-        request_bodies_inner(&pool, "acct", &[])
+        request_bodies_inner(&pool, &manager, "acct", &[])
             .await
             .expect("empty input must short-circuit to Ok");
     }
@@ -391,9 +395,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct").await;
+        let manager = std::sync::Arc::new(
+            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        );
 
         request_bodies_inner(
             &pool,
+            &manager,
             "acct",
             &["missing-1".into(), "missing-2".into()],
         )

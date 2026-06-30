@@ -225,15 +225,25 @@ pub trait MailSource: Send + Sync {
 
 /// Factory: load the (decrypted) account and return the matching source adapter.
 /// The SyncEngine uses this to construct one worker per account.
+///
+/// `manager` is threaded through so ImapSource can use the persistent session
+/// instead of connect-per-call (the swap itself is Task 4 — Task 3 only wires
+/// the handle through). EasSource ignores it (EAS uses HTTP, no long-lived
+/// socket to manage this way today).
 pub async fn source_for_account(
     pool: &SqlitePool,
     account_id: &str,
+    manager: &std::sync::Arc<crate::mail::imap::session_manager::ImapSessionManager>,
 ) -> Result<Arc<dyn MailSource>, String> {
     let acc = crate::db::accounts::get_by_id(pool, account_id)
         .await?
         .ok_or_else(|| format!("account {account_id} not found"))?;
     Ok(match acc.provider.as_str() {
-        "imap" => Arc::new(imap_source::ImapSource::new(acc, pool.clone())),
+        "imap" => Arc::new(imap_source::ImapSource::new(
+            acc,
+            pool.clone(),
+            std::sync::Arc::clone(manager),
+        )),
         "eas" => Arc::new(eas_source::EasSource::new(acc)),
         other => return Err(format!("unsupported provider {other}")),
     })
@@ -307,7 +317,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let src = source_for_account(&pool, &acc.id).await.unwrap();
+        let manager = Arc::new(
+            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        );
+        let src = source_for_account(&pool, &acc.id, &manager).await.unwrap();
         // Stub ImapSource advertises default (empty) capabilities until Task 7.
         assert_eq!(src.capabilities(), Capabilities::default());
     }
@@ -326,7 +339,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let res = source_for_account(&pool, &acc.id).await;
+        let manager = Arc::new(
+            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        );
+        let res = source_for_account(&pool, &acc.id, &manager).await;
         assert!(res.is_err());
         assert!(res.err().unwrap().contains("unsupported provider"));
     }

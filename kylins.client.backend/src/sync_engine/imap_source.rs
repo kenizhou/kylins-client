@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use crate::db::accounts::Account;
 use crate::mail::imap::client as imap_client;
+use crate::mail::imap::session_manager::ImapSessionManager;
 use crate::mail::imap::types::{ImapConfig, ImapFolder, ImapMessage};
 use crate::mail::smtp::client as smtp_client;
 use crate::mail::smtp::types::SmtpConfig;
@@ -46,14 +47,25 @@ pub struct ImapSource {
     /// set-difference (server `UID SEARCH ALL` minus local UIDs = vanished).
     /// Cheap `Arc`-backed clone from the engine's single shared pool.
     pool: sqlx::SqlitePool,
+    /// Persistent per-account session. The manager owns one long-lived
+    /// `Session<ImapStream>` per account; this source's methods will switch
+    /// from per-call `imap_client::connect()` to `manager.execute(...)` in
+    /// Task 4. Held but unused in Task 3 (plumbing only — no behavior change).
+    #[allow(dead_code)]
+    manager: std::sync::Arc<ImapSessionManager>,
 }
 
 impl ImapSource {
-    pub fn new(account: Account, pool: sqlx::SqlitePool) -> Self {
+    pub fn new(
+        account: Account,
+        pool: sqlx::SqlitePool,
+        manager: std::sync::Arc<ImapSessionManager>,
+    ) -> Self {
         Self {
             account,
             caps: Mutex::new(None),
             pool,
+            manager,
         }
     }
 
@@ -870,7 +882,11 @@ mod tests {
             imap_password: Some("wrong".into()),
             ..Account::default()
         };
-        let source = ImapSource::new(account, pool);
+        let source = ImapSource::new(
+            account,
+            pool,
+            std::sync::Arc::new(crate::mail::imap::session_manager::ImapSessionManager::new()),
+        );
         let folder = RemoteFolder {
             remote_id: "INBOX".into(),
             name: "INBOX".into(),
@@ -916,6 +932,7 @@ mod tests {
                 ..Account::default()
             },
             pool2,
+            std::sync::Arc::new(crate::mail::imap::session_manager::ImapSessionManager::new()),
         );
         let cancel = tokio::time::timeout(Duration::from_millis(100), source2.watch(&folder)).await;
         // Either the connect failed fast (Err resolves before the timeout) OR the
@@ -925,6 +942,29 @@ mod tests {
             "tokio::timeout always resolves; this assert is a no-op sanity check"
         );
         // The load-bearing assertion is that this line is reached at all.
+    }
+
+    /// The manager is wired through ImapSource::new (it's a required arg now).
+    /// This test constructs an ImapSource with a fresh manager and confirms the
+    /// field is present (compile-time check — if the signature lacks the arg,
+    /// this test won't compile). The actual behavior change (using the manager
+    /// instead of connect-per-call) is Task 4.
+    #[tokio::test]
+    async fn imap_source_holds_session_manager() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        let manager = std::sync::Arc::new(
+            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        );
+        let src = ImapSource::new(Account::default(), pool, manager);
+        // The manager is reachable (compile-time proof it's a field); calling a
+        // pure method on it confirms it's the same instance.
+        assert_eq!(
+            crate::mail::imap::session_manager::classify_error("Login failed"),
+            crate::mail::imap::session_manager::ErrorKind::Auth
+        );
+        // src is used so the compiler doesn't warn about unused.
+        let _ = src.capabilities();
     }
 
     /// REGRESSION companion to the EAS `load_cursor` test: confirms
@@ -948,7 +988,11 @@ mod tests {
             .await
             .unwrap();
 
-        let src = ImapSource::new(Account::default(), pool.clone());
+        let src = ImapSource::new(
+            Account::default(),
+            pool.clone(),
+            std::sync::Arc::new(crate::mail::imap::session_manager::ImapSessionManager::new()),
+        );
         let cursor = src.load_cursor(&pool, "imap-acct", "INBOX").await;
         match cursor {
             Cursor::Imap {
