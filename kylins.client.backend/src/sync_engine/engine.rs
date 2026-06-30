@@ -44,6 +44,14 @@ pub struct NewMailEvent {
 pub struct StatusEvent {
     account_id: String,
     state: String,
+    /// Epoch-seconds payload. Carries `retry_after` for `rate_limited`,
+    /// omitted (None) for `syncing` / `idle` / `error`. Phase 3g renders the
+    /// status bar from this; here we only emit. Serialized as `null`-on-None
+    /// via `skip_serializing_if` so the frontend TS type stays a single
+    /// optional field (`detail?: number | null`) rather than a present/absent
+    /// key flip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<i64>,
 }
 
 /// Per-account pending-queue count, emitted after every replay round so the
@@ -423,9 +431,33 @@ async fn run_sync_round_with_source(
     provider: &str,
     src: &dyn MailSource,
 ) -> Result<(), String> {
+    // ---- Phase 3f Task 2: rate-limit short-circuit ----
+    // A live `provider_rate_limit` row skips the round entirely. This is NOT
+    // an error: the server told us to back off, so we emit a distinct state
+    // the UI can render ("Rate limited — retrying at X") and return Ok. The
+    // failure/breaker counter is NOT bumped on this path. `get_rate_limit`
+    // lazy-deletes an expired row, so a stale window self-heals on the next
+    // wake (the fail-open `Err` arm logs + proceeds so a transient SQLite
+    // blip does not wedge every account's sync).
+    match crate::db::rate_limit::get_rate_limit(&engine.pool, account_id).await {
+        Ok(Some(retry_after)) => {
+            engine.sink.emit_status(StatusEvent {
+                account_id: account_id.into(),
+                state: "rate_limited".into(),
+                detail: Some(retry_after),
+            });
+            return Ok(());
+        }
+        Ok(None) => {} // not limited — proceed
+        Err(e) => log::warn!(
+            "[sync] {account_id} rate_limit read failed (fail-open): {e}"
+        ),
+    }
+
     engine.sink.emit_status(StatusEvent {
         account_id: account_id.into(),
         state: "syncing".into(),
+        detail: None,
     });
 
     let folders = match src.list_folders().await {
@@ -435,6 +467,7 @@ async fn run_sync_round_with_source(
             engine.sink.emit_status(StatusEvent {
                 account_id: account_id.into(),
                 state: "error".into(),
+                detail: None,
             });
             return Err(e.to_string());
         }
@@ -570,6 +603,7 @@ async fn run_sync_round_with_source(
     engine.sink.emit_status(StatusEvent {
         account_id: account_id.into(),
         state: "idle".into(),
+        detail: None,
     });
 
     // Phase 1 Task 4: drain queued offline operations through the same source
@@ -859,6 +893,141 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sink.deltas.lock().unwrap().len(), 3);
+    }
+
+    // ---- Phase 3f Task 2: rate-limit short-circuit ----
+    //
+    // When provider_rate_limit has a live row, run_sync_round_with_source MUST
+    // skip the source entirely (Ok, not Err) and emit `rate_limited` with the
+    // retry_after payload. Distinct from any failure/breaker path: the server
+    // told us to back off, so we oblige.
+
+    use crate::db::rate_limit;
+
+    /// When provider_rate_limit has a live row, run_sync_round_with_source MUST:
+    ///   - emit exactly one sync:status { state: "rate_limited", detail: <epoch> }
+    ///   - NOT call list_folders on the source (the source's recorded calls
+    ///     stay empty AND no messages land in the DB, proving sync_folder was
+    ///     never drained)
+    ///   - return Ok(()) (rate-limiting is not an error)
+    ///   - NOT advance the cursor or touch last_sync_at
+    #[tokio::test]
+    async fn run_round_skips_when_rate_limited_and_emits_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        // Seed a live rate-limit window 300s in the future.
+        let retry_after = sqlx::query_as::<_, (i64,)>("SELECT unixepoch() + 300")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0;
+        rate_limit::set_rate_limit(&pool, "a", retry_after)
+            .await
+            .unwrap();
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        // MockSource with a folder + a message that must NEVER be fetched.
+        let src = MockSource::new(
+            vec![RemoteFolder {
+                remote_id: "INBOX".into(),
+                name: "INBOX".into(),
+                delimiter: "/".into(),
+                role: Some("inbox".into()),
+                ..Default::default()
+            }],
+            vec![RemoteMessage {
+                uid: 1,
+                folder: "INBOX".into(),
+                message_id: Some("<m1>".into()),
+                ..Default::default()
+            }],
+        );
+
+        run_sync_round_with_source(&engine, "a", "imap", &src)
+            .await
+            .unwrap();
+
+        // Source was never touched (no mutation calls recorded; the DB count
+        // below proves sync_folder was never drained either).
+        assert!(src.recorded_calls().is_empty(),
+            "rate-limited round must not call the source");
+        // No messages landed in the DB.
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id = 'a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+
+        // Exactly one status event, and it is rate_limited with the detail.
+        let statuses = sink.statuses.lock().unwrap().clone();
+        assert_eq!(
+            statuses.len(),
+            1,
+            "rate-limited round emits one status, not syncing+idle"
+        );
+        assert_eq!(statuses[0].state, "rate_limited");
+        assert_eq!(statuses[0].detail, Some(retry_after));
+        assert_eq!(statuses[0].account_id, "a");
+    }
+
+    /// After the rate-limit window passes, the next round runs normally
+    /// (lazy-delete on read un-wedges the account without manual clear).
+    #[tokio::test]
+    async fn run_round_runs_normally_after_rate_limit_window_expires() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        // Expired row.
+        let past = sqlx::query_as::<_, (i64,)>("SELECT unixepoch() - 100")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0;
+        rate_limit::set_rate_limit(&pool, "a", past).await.unwrap();
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        let src = MockSource::new(
+            vec![RemoteFolder {
+                remote_id: "INBOX".into(),
+                name: "INBOX".into(),
+                delimiter: "/".into(),
+                role: Some("inbox".into()),
+                ..Default::default()
+            }],
+            vec![RemoteMessage {
+                uid: 1,
+                folder: "INBOX".into(),
+                message_id: Some("<m1>".into()),
+                ..Default::default()
+            }],
+        );
+
+        run_sync_round_with_source(&engine, "a", "imap", &src)
+            .await
+            .unwrap();
+
+        // Normal round: syncing ... idle.
+        let states: Vec<String> = sink
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.state.clone())
+            .collect();
+        assert!(states.contains(&"syncing".to_string()));
+        assert!(states.contains(&"idle".to_string()));
+        assert!(!states.contains(&"rate_limited".to_string()));
+        // And the stale row was lazy-deleted.
+        let (cnt,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM provider_rate_limit WHERE account_id = 'a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cnt, 0);
     }
 
     // ---- Phase 1 Task 4: AccountWorker replay loop + sync:queue ----

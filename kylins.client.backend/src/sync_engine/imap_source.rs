@@ -840,6 +840,13 @@ mod tests {
             Err(SourceError::Unsupported) => {
                 // Acceptable: if caps somehow got cached without IDLE we still bail.
             }
+            // Phase 3f Task 2: watch() against a dead host will never return
+            // RateLimited (no server response to parse a Retry-After from),
+            // but the variant now exists on SourceError so this exhaustive
+            // match must acknowledge it. Treat it like Other/Unsupported —
+            // the assertion is only "watch() did not return Ok against a
+            // dead host", which any Err variant satisfies.
+            Err(SourceError::RateLimited { .. }) => {}
             Ok(()) => panic!("watch() must not return Ok against a dead host"),
         }
 

@@ -145,6 +145,12 @@ pub struct FolderDelta {
 pub enum SourceError {
     #[error("operation not supported by this source")]
     Unsupported,
+    /// Provider returned a throttle response (HTTP 429 / 503 with Retry-After,
+    /// or an EAS status indicating backoff). `retry_after` is epoch-seconds.
+    /// The engine records it via `db::rate_limit::set_rate_limit` so the next
+    /// round short-circuits until the window passes.
+    #[error("source rate-limited; retry after epoch {retry_after}")]
+    RateLimited { retry_after: i64 },
     #[error("{0}")]
     Other(String),
 }
