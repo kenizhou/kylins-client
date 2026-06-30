@@ -8,6 +8,12 @@ use tauri::{
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
+// KeepAll rotation: the plugin's default is `KeepOne`, which DELETES the old log
+// file once `max_file_size` is exceeded. On a chatty DEBUG log that rotates
+// constantly, so history looks like it was overwritten. KeepAll preserves the
+// rotated file as `{name}_{timestamp}.log; the 10 MB cap stops mid-session
+// rotation under normal use. Targets: LogDir (OS log dir) + Stdout (dev console).
+use tauri_plugin_log::{Target, TargetKind, RotationStrategy};
 
 pub mod commands;
 pub mod crypto;
@@ -223,6 +229,16 @@ pub fn run() {
                     tauri_plugin_log::Builder::default()
                         .level(level)
                         .level_for("sqlx::query", log::LevelFilter::Warn)
+                        // Default is KeepOne (deletes the old log on rotation);
+                        // KeepAll preserves rotated files as {name}_{timestamp}.log.
+                        .rotation_strategy(RotationStrategy::KeepAll)
+                        // 10 MB so a normal session doesn't rotate mid-run, while
+                        // still bounding the log dir over a long-lived desktop app.
+                        .max_file_size(10 * 1024 * 1024)
+                        .targets([
+                            Target::new(TargetKind::LogDir { file_name: None }),
+                            Target::new(TargetKind::Stdout),
+                        ])
                         .build(),
                 )?;
             }
