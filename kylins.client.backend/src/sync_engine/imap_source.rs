@@ -321,22 +321,71 @@ impl MailSource for ImapSource {
         let to_fetch: Vec<u32> = new_uids.into_iter().filter(|&u| u > since_high).collect();
 
         let mut added = Vec::new();
-        for chunk in to_fetch.chunks(100) {
+        // Probe the first chunk via async-imap. If it returns ASYNC_IMAP_EMPTY
+        // (server/parser incompatibility — async-imap's uid_fetch yields 0 items
+        // even when EXISTS > 0), switch to a SINGLE-CONNECTION raw fetch for the
+        // ENTIRE pending UID list. The previous per-chunk raw fallback opened a
+        // NEW connection per 100-UID chunk, so a large folder (~31 reconnects
+        // for 3133 msgs) tripped the server's connection/flood limit
+        // (`* BYE Connection closed. 14`), errored mid-folder, dropped the delta
+        // and left the cursor unchanged -> infinite retry from the same UID.
+        // raw_fetch_folder keeps ONE connection for all chunks and is best-effort
+        // (returns what it got if the server drops mid-stream) so the cursor
+        // still advances past fetched UIDs, breaking the loop.
+        //
+        // Each arm handles its own `added.push` so the match need not produce a
+        // common `res` value (the raw-bulk path fetches everything and breaks).
+        let chunks: Vec<&[u32]> = to_fetch.chunks(100).collect();
+        'chunk: for (i, chunk) in chunks.iter().enumerate() {
             let range = uid_set(chunk);
-            let res = match imap_client::fetch_messages(&mut session, &folder.remote_id, &range)
-                .await
-            {
-                Ok(r) => r,
+            match imap_client::fetch_messages(&mut session, &folder.remote_id, &range).await {
+                Ok(r) => {
+                    for m in r.messages {
+                        added.push(imap_message_to_remote(m));
+                    }
+                }
                 Err(e) if e.starts_with("ASYNC_IMAP_EMPTY:") => {
-                    log::info!("[sync] async-imap returned empty; falling back to raw TCP fetch for {} UIDs {range}", folder.remote_id);
-                    imap_client::raw_fetch_messages(&config, &folder.remote_id, &range)
+                    if i == 0 {
+                        // Probe failed on the first chunk -> the server is
+                        // incompatible with async-imap for this folder. Pull the
+                        // WHOLE pending list over one raw connection and skip the
+                        // remaining per-chunk iterations.
+                        log::info!(
+                            "[sync] async-imap empty for {}; using single-connection raw fetch for {} UID(s)",
+                            folder.remote_id,
+                            to_fetch.len()
+                        );
+                        let bulk = imap_client::raw_fetch_folder(
+                            &config,
+                            &folder.remote_id,
+                            &to_fetch,
+                            100,
+                        )
                         .await
-                        .map_err(other)?
+                        .map_err(other)?;
+                        for m in bulk.messages {
+                            added.push(imap_message_to_remote(m));
+                        }
+                        break 'chunk;
+                    } else {
+                        // Rare: chunk 0 worked via async-imap but a later chunk
+                        // returned empty. Fall back to a one-shot raw fetch for
+                        // just this chunk and keep going (existing behavior).
+                        log::info!(
+                            "[sync] async-imap empty for {} chunk {} UIDs {range}; per-chunk raw fallback",
+                            folder.remote_id,
+                            i + 1
+                        );
+                        let single =
+                            imap_client::raw_fetch_messages(&config, &folder.remote_id, &range)
+                                .await
+                                .map_err(other)?;
+                        for m in single.messages {
+                            added.push(imap_message_to_remote(m));
+                        }
+                    }
                 }
                 Err(e) => return Err(other(e)),
-            };
-            for m in res.messages {
-                added.push(imap_message_to_remote(m));
             }
         }
 

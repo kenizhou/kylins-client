@@ -1246,6 +1246,207 @@ pub async fn raw_fetch_messages(
     })
 }
 
+/// One-connection bulk fetch: connect + login + SELECT once, then UID FETCH each
+/// chunk of `uids` on the SAME raw connection. Avoids the per-chunk reconnect
+/// storm that `raw_fetch_messages` triggers when `async-imap`'s `uid_fetch`
+/// returns 0 items on a server (parser incompatibility) and forces the whole
+/// folder through the raw fallback — ~31 rapid reconnects for a 3133-message
+/// folder trips the server's connection/flood limit (`* BYE Connection closed.
+/// 14`), which errors mid-folder and drops the delta.
+///
+/// Best-effort: if a chunk errors mid-way (server drops the connection), logs
+/// the detail and returns what was fetched so far — the caller's cursor still
+/// advances past the UIDs it got, breaking the infinite-retry-from-same-UID
+/// loop. The caller passes the WHOLE folder's pending UIDs; this function owns
+/// the single connection lifecycle end-to-end.
+pub async fn raw_fetch_folder(
+    config: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+    chunk_size: usize,
+) -> Result<ImapFetchResult, String> {
+    if uids.is_empty() {
+        // Nothing to do; report a zero-status so callers can still advance.
+        return Ok(ImapFetchResult {
+            messages: vec![],
+            folder_status: ImapFolderStatus {
+                uidvalidity: 0,
+                uidnext: 0,
+                exists: 0,
+                unseen: 0,
+                highest_modseq: None,
+            },
+        });
+    }
+
+    log::info!(
+        "RAW IMAP FETCH FOLDER: connecting to {}:{} for {folder}, {} UID(s) in chunks of {chunk_size}",
+        config.host,
+        config.port,
+        uids.len()
+    );
+
+    // 1. connect (+ read greeting for plain/tls; STARTTLS path consumes it
+    //    during handshake) — mirrors raw_fetch_messages exactly.
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+
+    // 2. login (LOGIN vs XOAUTH2, same cmd shape as raw_fetch_messages).
+    let login_cmd = if config.auth_method == "oauth2" {
+        let xoauth2 = format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            config.username, config.password
+        );
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            xoauth2.as_bytes(),
+        );
+        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
+    } else {
+        format!(
+            "a1 LOGIN \"{}\" \"{}\"\r\n",
+            config.username, config.password
+        )
+    };
+    raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
+
+    // 3. SELECT once for the whole folder.
+    let select_cmd = format!("a2 SELECT \"{folder}\"\r\n");
+    let select_response = raw_send_and_wait(&mut reader, select_cmd.as_bytes(), "a2").await?;
+
+    let mut exists = 0u32;
+    let mut uidvalidity = 0u32;
+    let mut unseen = 0u32;
+    for line in select_response.lines() {
+        if let Some(n) = parse_untagged_number(line, "EXISTS") {
+            exists = n;
+        }
+        if line.contains("[UIDVALIDITY") {
+            if let Some(v) = extract_bracket_number(line, "UIDVALIDITY") {
+                uidvalidity = v;
+            }
+        }
+        if line.contains("[UNSEEN") {
+            if let Some(v) = extract_bracket_number(line, "UNSEEN") {
+                unseen = v;
+            }
+        }
+    }
+
+    let folder_status = ImapFolderStatus {
+        uidvalidity,
+        uidnext: 0,
+        exists,
+        unseen,
+        highest_modseq: None,
+    };
+
+    // 4. UID FETCH each chunk on the SAME connection. Fresh IMAP tag per chunk
+    //    (a3, a4, ...). On error: log the detail + break, returning what we have
+    //    so the caller's cursor still advances past fetched UIDs.
+    let parser = MessageParser::default();
+    let mut messages: Vec<ImapMessage> = Vec::new();
+    let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
+    let mut tag_index = 3u32;
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let range = uid_set_raw(chunk);
+        let tag = format!("a{tag_index}");
+        let fetch_cmd = format!("{tag} UID FETCH {range} ({SYNC_FETCH_QUERY})\r\n");
+
+        if let Err(e) = reader
+            .get_mut()
+            .write_all(fetch_cmd.as_bytes())
+            .await
+        {
+            log::warn!(
+                "[sync] raw fetch {folder} chunk {} (uids {range}): write failed: {e}; returning {} fetched so far",
+                i + 1,
+                messages.len()
+            );
+            break;
+        }
+
+        match raw_parse_fetch_responses(&mut reader, &tag).await {
+            Ok(raw_messages) => {
+                log::info!(
+                    "RAW IMAP FETCH FOLDER {folder} chunk {} (uids {range}): parsed {} raw messages",
+                    i + 1,
+                    raw_messages.len()
+                );
+                for raw_msg in &raw_messages {
+                    match parse_message(
+                        &parser,
+                        &raw_msg.body,
+                        raw_msg.uid,
+                        folder,
+                        raw_msg.body.len() as u32,
+                        raw_msg.is_read,
+                        raw_msg.is_starred,
+                        raw_msg.is_draft,
+                        raw_msg.internal_date,
+                    ) {
+                        Ok(msg) => messages.push(msg),
+                        Err(e) => log::warn!(
+                            "RAW FETCH FOLDER {folder}: failed to parse UID {}: {e}",
+                            raw_msg.uid
+                        ),
+                    }
+                }
+            }
+            Err(e) => {
+                // Best-effort mid-folder: connection closed / read failure / etc.
+                // Log the DETAIL (e.g. "Connection closed during FETCH" /
+                // "FETCH read: ...") so the root cause (BYE) is captured.
+                log::warn!(
+                    "[sync] raw fetch {folder} chunk {} (uids {range}) failed: {e}; returning {} fetched so far",
+                    i + 1,
+                    messages.len()
+                );
+                break;
+            }
+        }
+
+        tag_index = tag_index.saturating_add(1);
+    }
+
+    // 5. best-effort LOGOUT (ignore errors — connection may already be closed).
+    let _ = reader.get_mut().write_all(b"LOGOUT\r\n").await;
+
+    log::info!(
+        "RAW IMAP FETCH FOLDER {folder}: {}/{} UID(s) fetched across {} chunk(s)",
+        messages.len(),
+        uids.len(),
+        chunks.len()
+    );
+
+    Ok(ImapFetchResult {
+        messages,
+        folder_status,
+    })
+}
+
+/// Local comma-join of UIDs for the raw FETCH command (mirrors sync_engine's
+/// `uid_set` but kept private to this module so the raw path is self-contained).
+fn uid_set_raw(uids: &[u32]) -> String {
+    uids.iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 pub async fn raw_fetch_diagnostic(
     config: &ImapConfig,
     folder: &str,
@@ -2070,7 +2271,10 @@ pub async fn session_capabilities(
 
 #[cfg(test)]
 mod tests {
-    use super::{capabilities_from_strs, fetch_changed_flags_response_from_fetches, SYNC_FETCH_QUERY};
+    use super::{
+        capabilities_from_strs, fetch_changed_flags_response_from_fetches, uid_set_raw,
+        SYNC_FETCH_QUERY,
+    };
 
     /// RED test 1 for the CONDSTORE CHANGEDSINCE flag-change parser. Maps three
     /// parsed Fetch responses (uid, flags, modseq) into `ImapFlagChange`s and
@@ -2164,5 +2368,22 @@ mod tests {
     fn capabilities_from_strs_empty_iter() {
         let (idle, condstore, qresync, vanished) = capabilities_from_strs::<[&str; 0]>([]);
         assert!(!idle && !condstore && !qresync && !vanished);
+    }
+
+    /// Regression lock for the single-connection raw fetch path
+    /// (`raw_fetch_folder`). The per-chunk UID command MUST be a comma-joined
+    /// list with no trailing separator — a malformed set (`1,2,3,`) makes the
+    /// server reject the FETCH and we lose the whole chunk. This is the one
+    /// pure piece of the bulk-fetch path; the socket/login/SELECT logic is
+    /// exercised in the manual e2e (large folder finishes instead of BYE-looping).
+    #[test]
+    fn uid_set_raw_joins_comma_no_trailing_separator() {
+        assert_eq!(uid_set_raw(&[]), "");
+        assert_eq!(uid_set_raw(&[42]), "42");
+        assert_eq!(uid_set_raw(&[1, 2, 3]), "1,2,3");
+        assert_eq!(uid_set_raw(&[100, 200, 300, 400]), "100,200,300,400");
+        // No trailing comma on any length.
+        let s = uid_set_raw(&[7, 8, 9, 10, 11]);
+        assert!(!s.ends_with(','), "uid_set_raw must not trail with a comma: {s}");
     }
 }
