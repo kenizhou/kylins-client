@@ -110,6 +110,7 @@ mod tests {
         let e = EasError::HttpStatus {
             status: 401,
             body: "Unauthorized".to_string(),
+            retry_after: None,
         };
         let s = to_display(e);
         assert!(s.contains("401"));

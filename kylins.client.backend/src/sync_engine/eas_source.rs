@@ -29,6 +29,7 @@ use async_trait::async_trait;
 
 use crate::db::accounts::Account;
 use crate::eas::client::EasClient;
+use crate::eas::client::EasError;
 use crate::eas::types::{EasConfig, EasFolder, EasItem, PingCollection, PingRequest, SyncRequest};
 use crate::eas::types::SyncResult;
 
@@ -36,6 +37,42 @@ use super::{Capabilities, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteM
 
 fn nyi() -> SourceError {
     SourceError::Other("EasSource method not yet implemented".into())
+}
+
+/// Default rate-limit window (seconds) used when the server returns 429/503
+/// WITHOUT a delta-seconds `Retry-After` header (or with an HTTP-date form we
+/// don't parse). Conservative: sheds one poll tick (60s) without wedging the
+/// account for minutes. The breaker handles escalation for persistent failures.
+const RATE_LIMIT_DEFAULT_WINDOW_SECS: i64 = 60;
+
+/// Map an `EasError` to a `SourceError`, promoting a 429/503 `HttpStatus` to
+/// `SourceError::RateLimited`. Pure / no I/O — factored out of `list_folders`
+/// and `sync_folder` so the rate-limit promotion decision is unit-testable
+/// without a live `EasClient`.
+///
+/// - 429/503 + `retry_after = Some(ra)` -> `RateLimited { retry_after: ra }`
+///   (server told us exactly how long to wait).
+/// - 429/503 + `retry_after = None`     -> `RateLimited { retry_after:
+///   RATE_LIMIT_DEFAULT_WINDOW_SECS }` (server throttled us without a window;
+///   use the conservative default).
+/// - Any other `EasError` (transport, WBXML, CommandStatus, HttpStatus 5xx
+///   other than 503, etc.) -> `SourceError::Other(..)` (preserves the existing
+///   behavior for non-throttle failures; the breaker may bump on these).
+fn map_eas_error(err: EasError) -> SourceError {
+    match err {
+        EasError::HttpStatus {
+            status: 429 | 503,
+            retry_after: Some(ra),
+            ..
+        } => SourceError::RateLimited { retry_after: ra },
+        EasError::HttpStatus {
+            status: 429 | 503,
+            ..
+        } => SourceError::RateLimited {
+            retry_after: RATE_LIMIT_DEFAULT_WINDOW_SECS,
+        },
+        other => SourceError::Other(other.to_string()),
+    }
 }
 
 /// Recovery action for an EAS Sync collection status (MS-ASSYNC 2.2.3.23).
@@ -240,10 +277,12 @@ impl MailSource for EasSource {
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
         let client = EasClient::new(self.eas_config());
         // Initial FolderSync uses sync_key "0" for the full hierarchy.
+        // `map_eas_error` promotes a 429/503 HttpStatus (with or without a
+        // Retry-After) to SourceError::RateLimited; anything else stays Other.
         let result = client
             .folder_sync("0")
             .await
-            .map_err(|e| SourceError::Other(e.to_string()))?;
+            .map_err(map_eas_error)?;
         Ok(result
             .changes
             .into_iter()
@@ -281,7 +320,7 @@ impl MailSource for EasSource {
         let result: SyncResult = client
             .sync(&req)
             .await
-            .map_err(|e| SourceError::Other(e.to_string()))?;
+            .map_err(map_eas_error)?;
 
         // Status recovery. MS-ASSYNC collection status: 1 = success,
         // 6 = (server-side) optional partial success treated as ok, 3 = invalid
@@ -759,5 +798,101 @@ mod tests {
             classify_collection_status(8),
             CollectionStatusAction::Error
         );
+    }
+
+    // ---- Phase 3f Task 5: EasError -> SourceError rate-limit promotion ----
+    //
+    // `map_eas_error` is the pure decision function factored out of
+    // `list_folders` / `sync_folder`. A 429/503 HttpStatus with a parsed
+    // Retry-After promotes to SourceError::RateLimited (carrying the server's
+    // epoch); a 429/503 without one falls back to the default window; anything
+    // else stays SourceError::Other (so the breaker can still bump on real
+    // connectivity failures).
+
+    #[test]
+    fn map_eas_error_promotes_429_with_retry_after_to_rate_limited() {
+        let err = EasError::HttpStatus {
+            status: 429,
+            body: "Too Many Requests".into(),
+            retry_after: Some(1234567890),
+        };
+        match map_eas_error(err) {
+            SourceError::RateLimited { retry_after } => {
+                assert_eq!(retry_after, 1234567890)
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_eas_error_promotes_503_with_retry_after_to_rate_limited() {
+        // 503 is also a throttle signal when sent with Retry-After (RFC 7231
+        // §7.1.3). Some Exchange deployments use 503 instead of 429.
+        let err = EasError::HttpStatus {
+            status: 503,
+            body: "Service Unavailable".into(),
+            retry_after: Some(999),
+        };
+        match map_eas_error(err) {
+            SourceError::RateLimited { retry_after } => assert_eq!(retry_after, 999),
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_eas_error_promotes_429_without_retry_after_to_default_window() {
+        // Server throttled us but gave no window — fall back to the default.
+        let err = EasError::HttpStatus {
+            status: 429,
+            body: "".into(),
+            retry_after: None,
+        };
+        match map_eas_error(err) {
+            SourceError::RateLimited { retry_after } => {
+                assert_eq!(retry_after, RATE_LIMIT_DEFAULT_WINDOW_SECS)
+            }
+            other => panic!("expected RateLimited with default window, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_eas_error_promotes_503_without_retry_after_to_default_window() {
+        let err = EasError::HttpStatus {
+            status: 503,
+            body: "".into(),
+            retry_after: None,
+        };
+        match map_eas_error(err) {
+            SourceError::RateLimited { retry_after } => {
+                assert_eq!(retry_after, RATE_LIMIT_DEFAULT_WINDOW_SECS)
+            }
+            other => panic!("expected RateLimited with default window, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_eas_error_passes_other_http_status_through_as_other() {
+        // 500 is a server error, not a throttle — must NOT promote. The engine
+        // bumps the breaker on this path (real failure, not "server told us to
+        // wait").
+        let err = EasError::HttpStatus {
+            status: 500,
+            body: "boom".into(),
+            retry_after: None,
+        };
+        assert!(matches!(map_eas_error(err), SourceError::Other(_)));
+    }
+
+    #[test]
+    fn map_eas_error_passes_non_http_status_through_as_other() {
+        // Transport / WBXML / CommandStatus errors are not throttles.
+        let transport = EasError::Transport("connection reset".into());
+        assert!(matches!(map_eas_error(transport), SourceError::Other(_)));
+
+        let cmd = EasError::CommandStatus {
+            status: 142,
+            message: "provisioning required".into(),
+        };
+        assert!(matches!(map_eas_error(cmd), SourceError::Other(_)));
     }
 }

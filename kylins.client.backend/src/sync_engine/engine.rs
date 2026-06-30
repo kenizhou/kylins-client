@@ -574,11 +574,25 @@ async fn run_sync_round_with_source(
         Ok(f) => f,
         Err(e) => {
             log::warn!("[sync] {account_id} list_folders failed: {e}");
-            // Bump the breaker: at SHORT/LONG thresholds this schedules a
-            // cooldown the next round will observe. Per-folder sync_folder
-            // failures do NOT reach here (they are logged + continue further
-            // below), so a single bad folder cannot trip the account.
-            breaker_record_failure(engine, account_id).await;
+            // Phase 3f Task 5: if the source signalled a rate limit, persist
+            // the window so the NEXT round short-circuits at the top via the
+            // rate-limit check. This is NOT a breaker failure (the server told
+            // us to wait, not a dead socket), so do NOT bump the counter —
+            // other Err variants keep the existing breaker-bump path.
+            match &e {
+                crate::sync_engine::SourceError::RateLimited { retry_after } => {
+                    if let Err(e2) = crate::db::rate_limit::set_rate_limit(
+                        &engine.pool,
+                        account_id,
+                        *retry_after,
+                    )
+                    .await
+                    {
+                        log::warn!("[sync] {account_id} set_rate_limit failed: {e2}");
+                    }
+                }
+                _ => breaker_record_failure(engine, account_id).await,
+            }
             engine.sink.emit_status(StatusEvent {
                 account_id: account_id.into(),
                 state: "error".into(),
@@ -1393,6 +1407,149 @@ mod tests {
             "two normal failure rounds each emit syncing+error (>=4 events); \
              a cooldown bypass would emit 1 (got {len_after_two_failures})"
         );
+    }
+
+    /// A MailSource whose `list_folders` returns `SourceError::RateLimited` —
+    /// simulates an EAS 429 with Retry-After. All other methods return
+    /// `Unsupported` (shape copied from `ListFoldersFailingSource`).
+    struct RateLimitedSource {
+        retry_after: i64,
+    }
+    #[async_trait::async_trait]
+    impl MailSource for RateLimitedSource {
+        fn capabilities(&self) -> crate::sync_engine::Capabilities {
+            crate::sync_engine::Capabilities::default()
+        }
+        async fn list_folders(
+            &self,
+        ) -> Result<Vec<RemoteFolder>, crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::RateLimited {
+                retry_after: self.retry_after,
+            })
+        }
+        async fn sync_folder(
+            &self,
+            _f: &RemoteFolder,
+            _c: crate::sync_engine::Cursor,
+        ) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn fetch_body(
+            &self,
+            _f: &RemoteFolder,
+            _u: u32,
+        ) -> Result<Option<String>, crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn set_flags(
+            &self,
+            _f: &RemoteFolder,
+            _u: &[u32],
+            _flag: &str,
+            _add: bool,
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn move_messages(
+            &self,
+            _s: &RemoteFolder,
+            _u: &[u32],
+            _d: &RemoteFolder,
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn delete_messages(
+            &self,
+            _f: &RemoteFolder,
+            _u: &[u32],
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn append(
+            &self,
+            _f: &RemoteFolder,
+            _r: &[u8],
+            _fl: &[&str],
+        ) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+        async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+            Err(crate::sync_engine::SourceError::Unsupported)
+        }
+    }
+
+    // ---- Phase 3f Task 5: list_folders RateLimited -> set_rate_limit ----
+    //
+    // When a source's list_folders returns SourceError::RateLimited, the engine
+    // MUST record the window via set_rate_limit (so the NEXT round short-
+    // circuits at the top via the rate-limit check) and MUST NOT bump the
+    // breaker (a 429 is the server telling us to wait, not a dead socket).
+    // Other SourceError variants keep the existing breaker-bump + error path.
+
+    /// When `list_folders` returns `SourceError::RateLimited { retry_after }`,
+    /// the engine records it in `provider_rate_limit` and does NOT bump the
+    /// breaker. Drives one round, then asserts:
+    ///   - the `provider_rate_limit` row was written with the source's epoch;
+    ///   - the breaker counter for the account is still 0 (no failure recorded).
+    #[tokio::test]
+    async fn list_folders_rate_limited_records_window_and_skips_breaker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+
+        // The source hands back a rate-limit epoch ~300s in the future. Use
+        // SQLite's clock so the assertion can compare apples-to-apples.
+        let retry_after = sqlx::query_as::<_, (i64,)>("SELECT unixepoch() + 300")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0;
+        let src = RateLimitedSource { retry_after };
+
+        // The round returns Err (list_folders failed) — but the side effect we
+        // care about is the recorded rate-limit row, not the return value.
+        let res = run_sync_round_with_source(&engine, "a", "eas", &src).await;
+        assert!(res.is_err(), "list_folders Err surfaces as round Err");
+
+        // provider_rate_limit row written with the source's retry_after.
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT retry_after FROM provider_rate_limit WHERE account_id = 'a'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            row,
+            Some((retry_after,)),
+            "RateLimited list_folders must persist the retry_after window"
+        );
+
+        // Breaker NOT bumped: no entry (or zero failures). The engine resets
+        // the breaker on success, but on this Err path the only mutation would
+        // be `breaker_record_failure`; we assert it did NOT happen.
+        let bs = engine.breakers.lock().await;
+        let failures = bs.get("a").map(|s| s.failures).unwrap_or(0);
+        assert_eq!(
+            failures, 0,
+            "RateLimited must NOT bump the breaker (server told us to wait, not a dead socket)"
+        );
+        drop(bs);
+
+        // The NEXT round must short-circuit at the rate-limit check at the top
+        // of run_sync_round_with_source — emitting exactly one `rate_limited`
+        // status and NOT calling the source's list_folders again (the source's
+        // list_folders would error with RateLimited again, but the short-
+        // circuit means we never reach it). Clearing statuses then driving one
+        // more round proves the window is live.
+        sink.statuses.lock().unwrap().clear();
+        run_sync_round_with_source(&engine, "a", "eas", &src)
+            .await
+            .unwrap();
+        let statuses = sink.statuses.lock().unwrap().clone();
+        assert_eq!(statuses.len(), 1, "next round short-circuits on rate-limit");
+        assert_eq!(statuses[0].state, "rate_limited");
+        assert_eq!(statuses[0].detail, Some(retry_after));
     }
 
     /// The breaker check runs AFTER the rate-limit short-circuit, so a live

@@ -41,8 +41,18 @@ const GIE_ROOT: u8 = 0x05;
 pub enum EasError {
     #[error("HTTP transport error: {0}")]
     Transport(String),
+    /// Non-200 HTTP response. `retry_after` carries the parsed `Retry-After`
+    /// header (delta-seconds form, converted to absolute epoch) when the server
+    /// sent one alongside a 429/503; `None` otherwise (including the HTTP-date
+    /// form, which we do not parse — caller falls back to a default window).
+    /// The EAS source promotes a 429/503 HttpStatus with `retry_after` to
+    /// `SourceError::RateLimited`.
     #[error("HTTP {status}: {body}")]
-    HttpStatus { status: u16, body: String },
+    HttpStatus {
+        status: u16,
+        body: String,
+        retry_after: Option<i64>,
+    },
     #[error("WBXML codec error: {0}")]
     Wbxml(#[from] WbxmlError),
     #[error("unexpected response root: page {page} token {token}")]
@@ -128,6 +138,25 @@ impl EasClient {
             .await?;
 
         let status = response.status().as_u16();
+
+        // Phase 3f Task 5: capture Retry-After (delta-seconds) before we
+        // consume the body via `.text()`. HTTP-date form falls back to None
+        // (caller uses the default rate-limit window). We use SystemTime (not
+        // chrono or SQLite unixepoch()) because the EAS client does not hold a
+        // SqlitePool and this is a transport-layer concern — the resulting
+        // epoch is compared against SQLite's clock by the engine, which is
+        // fine because both read the same wall clock (drift of a few ms is
+        // immaterial for a >=60s backoff window).
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let retry_after = response
+            .headers()
+            .get("Retry-After")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| parse_retry_after_delta(s, now_epoch));
+
         let content_type = response
             .headers()
             .get("Content-Type")
@@ -143,7 +172,11 @@ impl EasClient {
 
         if status != 200 {
             let body = response.text().await.unwrap_or_default();
-            return Err(EasError::HttpStatus { status, body });
+            return Err(EasError::HttpStatus {
+                status,
+                body,
+                retry_after,
+            });
         }
         // Check for command-level error in headers (MS-ASProtocolStatus)
         if let Some(proto_status) = response.headers().get("MS-ASProtocolStatus") {
@@ -322,6 +355,23 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// Parse a `Retry-After` header value (delta-seconds form) into an absolute
+/// epoch-seconds timestamp. Returns `None` for:
+///   - the HTTP-date form (RFC 7231 §7.1.3, e.g. `Wed, 21 Oct 2026 07:28:00
+///     GMT`) — we deliberately do NOT parse it; the caller falls back to the
+///     default rate-limit window. This is an honest, documented limitation
+///     (HTTP-date support is tracked as a follow-up).
+///   - any non-integer / unparseable input.
+///
+/// Pure / no I/O — extracted from the HTTP-response handling path so it is
+/// unit-testable without a live socket. The caller passes the current epoch
+/// (`SystemTime::now()` at the response site) so the parser itself is
+/// deterministic.
+fn parse_retry_after_delta(header_value: &str, now_epoch: i64) -> Option<i64> {
+    let delta: i64 = header_value.trim().parse().ok()?;
+    Some(now_epoch + delta)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +396,25 @@ mod tests {
     #[test]
     fn urlencode_empty() {
         assert_eq!(urlencode(""), "");
+    }
+
+    // ---- Phase 3f Task 5: Retry-After (delta-seconds) parsing ----
+
+    #[test]
+    fn parse_retry_after_delta_seconds() {
+        // Plain delta-seconds: result is now + delta.
+        assert_eq!(parse_retry_after_delta("30", 1000), Some(1030));
+        // Whitespace is tolerated (reqwest/HeaderValue strips most already, but
+        // `trim()` makes the parser robust to a stray leading/trailing space).
+        assert_eq!(parse_retry_after_delta("  120  ", 0), Some(120));
+        // HTTP-date form (RFC 7231 §7.1.3) — we do NOT parse it; caller falls
+        // back to the default window. Honest limitation.
+        assert_eq!(
+            parse_retry_after_delta("Wed, 21 Oct 2026 07:28:00 GMT", 0),
+            None
+        );
+        // Non-numeric / empty -> None.
+        assert_eq!(parse_retry_after_delta("garbage", 0), None);
+        assert_eq!(parse_retry_after_delta("", 0), None);
     }
 }
