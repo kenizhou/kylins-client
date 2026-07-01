@@ -390,7 +390,17 @@ async fn upsert_message(
     let has_attachments: i64 = if m.has_attachments { 1 } else { 0 };
     let is_read: i64 = if m.is_read { 1 } else { 0 };
     let is_starred: i64 = if m.is_starred { 1 } else { 0 };
-    let body_cached: i64 = if m.body_html.is_some() { 1 } else { 0 };
+    // `apply_folder_delta` runs ONLY on the headers-only sync path ( sole
+    // caller is the SyncEngine at engine.rs ~812), so no real body was
+    // fetched — always insert body_cached = 0. The body-fetch path
+    // (`message_bodies::set_message_body`) flips this to 1 when a real body
+    // lands. Do NOT derive it from `m.body_html`: mail_parser's `body_html(0)`
+    // synthesizes `<html><body></body></html>` for a headers-only message, so
+    // `m.body_html.is_some()` is true even when no body exists — that lie is
+    // what poisoned the cache (29K shell rows marked cached). The ON CONFLICT
+    // branch below deliberately does NOT update body_cached, so a real body
+    // cached later by the prefetch path survives subsequent re-syncs.
+    let body_cached: i64 = 0;
 
     // Thread (placeholder: one thread per message).
     sqlx::query(
@@ -479,19 +489,15 @@ async fn upsert_message(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Body (split store; only when present).
-    if let Some(html) = &m.body_html {
-        sqlx::query(
-            "INSERT OR REPLACE INTO message_bodies (account_id, message_id, body_html, fetched_at)
-             VALUES (?, ?, ?, unixepoch())",
-        )
-        .bind(account_id)
-        .bind(&message_id)
-        .bind(html)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| e.to_string())?;
-    }
+    // NOTE: do NOT write to `message_bodies` here. This is the headers-only
+    // sync path — no real body was fetched. mail_parser's `body_html(0)` on a
+    // headers-only message returns the synthesized shell `<html><body></body>
+    // </html>`, and writing that here poisoned the cache (every synced message
+    // got a 26-char shell row that the reading pane then rendered as blank).
+    // `message_bodies` is owned exclusively by the body-fetch path
+    // (`message_bodies::set_message_body`, called from `request_bodies_inner`
+    // via `fetch_bodies_batch`). body_cached stays 0 (see above) so the
+    // viewport prefetch / select-on-demand paths re-fetch the real body.
 
     Ok(())
 }
@@ -552,7 +558,10 @@ mod tests {
         assert_eq!(count(&pool, "threads").await, 2);
         assert_eq!(count(&pool, "messages").await, 2);
         assert_eq!(count(&pool, "thread_labels").await, 2);
-        assert_eq!(count(&pool, "message_bodies").await, 1); // only m1 had html
+        // apply_folder_delta is the HEADERS-only sync path — it must NOT write
+        // message_bodies (that's the body-fetch path's job). Even though m1
+        // carried body_html=Some, no row is written here.
+        assert_eq!(count(&pool, "message_bodies").await, 0);
     }
 
     #[tokio::test]
@@ -819,6 +828,18 @@ mod tests {
             .await
             .unwrap();
 
+        // apply_folder_delta is headers-only and does NOT cache bodies (the
+        // body-fetch path owns message_bodies). Seed a real body the
+        // production way so we can assert the flag update doesn't clobber it.
+        crate::db::message_bodies::set_message_body(
+            &pool,
+            "acc",
+            "imap-acc-INBOX-7",
+            "<p>x</p>",
+        )
+        .await
+        .unwrap();
+
         // CONDSTORE says: uid 7 now read + starred. apply_flag_updates must flip flags
         // but leave subject/from/body untouched.
         let n = apply_flag_updates(
@@ -977,11 +998,9 @@ mod tests {
             250,
             "thread_labels written inside the same chunked tx"
         );
-        assert_eq!(
-            count(&pool, "message_bodies").await,
-            250,
-            "every seeded msg had body_html — bodies must persist too"
-        );
+        // apply_folder_delta is headers-only — it never writes message_bodies
+        // (the body-fetch path owns that table). bodies are fetched on demand.
+        assert_eq!(count(&pool, "message_bodies").await, 0);
 
         // Spot-check a row from the SECOND chunk (uid 225 > 200) to prove the
         // later batch landed and didn't get dropped at the boundary.

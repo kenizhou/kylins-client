@@ -574,14 +574,13 @@ impl MailSource for ImapSource {
                         let mut flag_updates: Vec<FlagUpdate> = Vec::new();
                         let mut next_modseq = status.highest_modseq.unwrap_or(0);
 
-                        // Diagnostic: log the CONDSTORE gate so the user can tell
-                        // whether flag-sync is even being attempted. The known
-                        // async-imap-0 quirk (CHANGEDSINCE returns 0 items even
-                        // when there are real flag changes on this server) makes
-                        // the "0 flag changes" branch ambiguous without this log
-                        // — it could mean "no changes" OR "async-imap parsed the
-                        // response to zero items".
-                        log::info!(
+                        // Per-poll CONDSTORE gate decision. Demoted to DEBUG:
+                        // on a non-CONDSTORE server (this one) it fires for
+                        // every folder every ~30s poll and floods the log with
+                        // "skipped" lines. The active path (caps.condstore &&
+                        // since_modseq > 0) still logs at INFO below. Flip the
+                        // filter to DEBUG to see whether flag-sync is attempted.
+                        log::debug!(
                             "[sync] CONDSTORE {} gate: caps.condstore={} since_modseq={} (skipped if 0)",
                             folder_remote,
                             caps.condstore,
@@ -705,7 +704,7 @@ impl MailSource for ImapSource {
             Stage1Result::Done { delta, caps_tuple }
             | Stage1Result::UidValidityChanged { delta, caps_tuple } => (delta, caps_tuple),
             Stage1Result::NeedsRawFetch {
-                to_fetch,
+                to_fetch: _to_fetch,
                 partial_added,
                 status_uidvalidity,
                 status_highest_modseq,
@@ -725,51 +724,29 @@ impl MailSource for ImapSource {
                 self.manager.disconnect_account(&account_id).await;
 
                 let mut added = partial_added;
-                if remaining_chunks.len() == 1 && remaining_chunks[0].len() == to_fetch.len() {
-                    // Chunk 0 was the empty hit -> bulk raw-fetch the whole
-                    // pending UID list in ONE connection (raw_fetch_folder
-                    // owns its single-connection lifecycle end-to-end).
+                // Flatten whatever the typed path couldn't fetch into ONE UID
+                // list and raw-fetch it over a SINGLE connection. raw_fetch_folder
+                // chunks internally at 100 UIDs on the same connection, so this
+                // covers both the "chunk-0 empty" case (remaining == all of
+                // to_fetch) and the "chunk-i>0 empty" case (remaining == the
+                // later chunks). The previous per-chunk path (raw_fetch_messages)
+                // opened a fresh LOGIN+SELECT per 100-UID chunk, which tripped
+                // this Exchange server's connection/flood limit and logged a
+                // LOGIN storm on large folders (>100 new messages).
+                let remaining_uids: Vec<u32> =
+                    remaining_chunks.iter().flatten().copied().collect();
+                if !remaining_uids.is_empty() {
                     log::info!(
-                        "[sync] async-imap empty for {}; using single-connection raw fetch for {} UID(s)",
+                        "[sync] async-imap empty for {}; single-connection raw fetch for {} UID(s)",
                         folder_remote,
-                        to_fetch.len()
+                        remaining_uids.len()
                     );
-                    let bulk = imap_client::raw_fetch_folder(
-                        &config,
-                        &folder_remote,
-                        &to_fetch,
-                        100,
-                    )
-                    .await
-                    .map_err(other)?;
+                    let bulk =
+                        imap_client::raw_fetch_folder(&config, &folder_remote, &remaining_uids, 100)
+                            .await
+                            .map_err(other)?;
                     for m in bulk.messages {
                         added.push(imap_message_to_remote(m));
-                    }
-                } else {
-                    // Chunk i>0 was the empty hit -> per-chunk raw fallback for
-                    // each remaining chunk. Each raw_fetch_messages call opens
-                    // its OWN connection; the persistent session is already
-                    // disconnected above so no concurrency. The previous
-                    // per-chunk path on a large folder tripped the server's
-                    // connection/flood limit, but this branch only fires on the
-                    // rare "first chunk typed-succeeded, later chunk typed-
-                    // empty" case (typically the bulk path above handles it).
-                    for chunk in &remaining_chunks {
-                        let range = uid_set(chunk);
-                        log::info!(
-                            "[sync] async-imap empty for {} chunk UIDs {range}; per-chunk raw fallback",
-                            folder_remote
-                        );
-                        let single = imap_client::raw_fetch_messages(
-                            &config,
-                            &folder_remote,
-                            &range,
-                        )
-                        .await
-                        .map_err(other)?;
-                        for m in single.messages {
-                            added.push(imap_message_to_remote(m));
-                        }
                     }
                 }
 
@@ -816,12 +793,13 @@ impl MailSource for ImapSource {
                                 let mut next_modseq =
                                     status_highest_modseq.unwrap_or(0);
 
-                                // Diagnostic: same gate log as Stage 1 (see above).
-                                // Stage 2 runs after the raw-fetch fallback, so
-                                // this is the path that actually executes for the
-                                // test server (Stage 1 bails to NeedsRawFetch on
-                                // the async-imap-empty quirk).
-                                log::info!(
+                                // Same gate log as Stage 1, demoted to DEBUG to
+                                // avoid per-poll log flood on non-CONDSTORE servers.
+                                // Stage 2 runs after the raw-fetch fallback, so this
+                                // is the path that actually executes for the test
+                                // server (Stage 1 bails to NeedsRawFetch on the
+                                // async-imap-empty quirk).
+                                log::debug!(
                                     "[sync] CONDSTORE {} gate (stage2): caps.condstore={} since_modseq={} (skipped if 0)",
                                     folder_remote,
                                     caps.condstore,
