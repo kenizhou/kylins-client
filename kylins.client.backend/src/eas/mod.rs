@@ -4,6 +4,7 @@
 // SmartReply, ItemOperations, GetItemEstimate, Ping, FolderCreate/Delete/Update.
 
 pub mod auth;
+pub mod autodiscover;
 pub mod client;
 pub mod commands;
 pub mod provision;
