@@ -2599,7 +2599,14 @@ fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAtta
                     .to_string(),
                 mime_type,
                 size: att.len() as u32,
-                content_id: att.content_id().map(|s| s.to_string()),
+                // Trim RFC 2392 angle brackets (`<foo@bar>`) so the stored
+                // value matches the bare `cid:foo@bar` form used in HTML and
+                // by fetch_inline_cid_parts. Without this, AttachmentList's
+                // "hide cid:-referenced parts" filter (`inlineCids.has(cid)`)
+                // misses and inline images show twice (in-body + as a chip).
+                content_id: att
+                    .content_id()
+                    .map(|s| s.trim_matches(['<', '>']).to_string()),
                 is_inline: att
                     .content_disposition()
                     .is_some_and(|cd| cd.is_inline()),
