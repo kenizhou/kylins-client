@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::eas::auth::EasAuth;
+
 // ---------- Configuration ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +41,20 @@ pub struct EasConfig {
     /// Accept invalid TLS certs (self-signed Exchange servers). Default false.
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// Auth strategy selector. `"basic"` (default, historical) uses
+    /// `username` / `password`. `"oauth"` means the source layer also fills
+    /// `auth` with an `EasAuth::OAuth { .. }` built from the account's stored
+    /// OAuth fields. Kept as a free-form `String` (not an enum) so the config
+    /// round-trips through serde without a migration when new modes land.
+    #[serde(default)]
+    pub auth_type: String,
+    /// Typed auth payload. Built by `EasSource::eas_config()` when
+    /// `auth_type == "oauth"`; the transport calls
+    /// `auth.authorization_header()` when `Some`, else falls back to Basic
+    /// with `username` / `password`. `None` preserves the historical Basic
+    /// path (existing tests construct `EasConfig { .. }` without it).
+    #[serde(default)]
+    pub auth: Option<EasAuth>,
 }
 
 fn default_protocol_version() -> String {
@@ -51,6 +67,29 @@ fn default_device_type() -> String {
 
 fn default_user_agent() -> String {
     "KylinsMail/1.0".to_string()
+}
+
+/// Manual `Default` so adding new optional fields (`auth_type`, `auth`) doesn't
+/// break the literal construction in `eas_source::eas_config` — that site uses
+/// `..Default::default()` and only overrides the fields it explicitly maps.
+/// The `#[serde(default = "...")]` attributes only cover deserialization, so
+/// without this impl, `EasConfig { ..Default::default() }` wouldn't compile.
+impl Default for EasConfig {
+    fn default() -> Self {
+        Self {
+            url: String::default(),
+            username: String::default(),
+            password: String::default(),
+            protocol_version: default_protocol_version(),
+            device_id: String::default(),
+            device_type: default_device_type(),
+            user_agent: default_user_agent(),
+            policy_key: String::default(),
+            accept_invalid_certs: false,
+            auth_type: String::default(),
+            auth: None,
+        }
+    }
 }
 
 // ---------- Folders (FolderSync) ----------

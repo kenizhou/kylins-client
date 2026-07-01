@@ -155,6 +155,9 @@ impl EasSource {
                 .unwrap_or_else(|| "KylinsMail/1.0".to_string()),
             policy_key: self.account.eas_policy_key.clone().unwrap_or_default(),
             accept_invalid_certs: self.account.accept_invalid_certs,
+            // auth_type / auth default to "" / None (Basic path). The OAuth
+            // wiring lands in a later task; for now EAS stays Basic-only.
+            ..Default::default()
         }
     }
 }

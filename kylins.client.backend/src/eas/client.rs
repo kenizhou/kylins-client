@@ -59,6 +59,12 @@ pub enum EasError {
     UnexpectedRoot { page: u8, token: u8 },
     #[error("command status {status}: {message}")]
     CommandStatus { status: u32, message: String },
+    /// OAuth token refresh failed (network, non-2xx, or JSON parse error).
+    /// Surfaces to the caller so it can prompt the user to re-authenticate.
+    /// Basic auth never produces this error — `EasAuth::refresh()` is a no-op
+    /// for Basic.
+    #[error("OAuth token refresh failed: {0}")]
+    AuthRefreshFailed(String),
 }
 
 impl From<reqwest::Error> for EasError {

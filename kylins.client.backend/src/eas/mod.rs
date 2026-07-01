@@ -3,6 +3,7 @@
 // MVP scope: FolderSync, Sync (mail/calendar/contacts), SendMail, SmartForward,
 // SmartReply, ItemOperations, GetItemEstimate, Ping, FolderCreate/Delete/Update.
 
+pub mod auth;
 pub mod client;
 pub mod commands;
 pub mod provision;
