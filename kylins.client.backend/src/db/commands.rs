@@ -177,6 +177,16 @@ pub async fn db_get_unread_counts_by_account(
     labels::get_unread_counts_by_account(&pool, &account_id).await
 }
 
+/// Total unread across all accounts (when `account_id` is None) or one account.
+/// Used by the tray tooltip + StatusBar aggregate badge.
+#[tauri::command]
+pub async fn db_get_total_unread(
+    pool: State<'_, SqlitePool>,
+    account_id: Option<String>,
+) -> Result<i64, String> {
+    labels::get_total_unread(&pool, account_id.as_deref()).await
+}
+
 #[tauri::command]
 pub async fn db_upsert_folders(
     pool: State<'_, SqlitePool>,

@@ -209,6 +209,39 @@ pub async fn get_unread_counts_by_account(
     Ok(rows.into_iter().collect())
 }
 
+/// Total unread thread count across all accounts (or one account when
+/// `account_id` is `Some`). This is the aggregate shown in the tray tooltip
+/// ("Kylins Mail — N unread") and is the source of truth for the StatusBar's
+/// pending badge numerator. Uses the same `thread_labels × threads` join as
+/// [`get_unread_counts_by_account`] so the two stay consistent.
+pub async fn get_total_unread(
+    pool: &SqlitePool,
+    account_id: Option<&str>,
+) -> Result<i64, String> {
+    let total: (i64,) = if let Some(id) = account_id {
+        sqlx::query_as(
+            "SELECT COUNT(*) AS total
+             FROM thread_labels tl
+             JOIN threads t ON t.account_id = tl.account_id AND t.id = tl.thread_id
+             WHERE tl.account_id = ? AND t.is_read = 0",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+    } else {
+        sqlx::query_as(
+            "SELECT COUNT(*) AS total
+             FROM thread_labels tl
+             JOIN threads t ON t.account_id = tl.account_id AND t.id = tl.thread_id
+             WHERE t.is_read = 0",
+        )
+        .fetch_one(pool)
+        .await
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(total.0)
+}
+
 /// Persist canonical folders (from any source adapter) into the `labels`
 /// table. Deterministic ids mean re-syncs upsert in place. Counts
 /// (`unread_count` / `total_count`) are intentionally NOT overwritten on
@@ -628,6 +661,109 @@ mod tests {
         let accounts: Vec<&str> = all.iter().map(|f| f.account_id.as_str()).collect();
         assert!(accounts.contains(&"a1"));
         assert!(accounts.contains(&"a2"));
+    }
+
+    /// Plant `unread` threads under `(acct, label_id)` for an account, each
+    /// with a `thread_labels` row, all marked unread (`is_read = 0`). Thread ids
+    /// are derived from `thread_id` + index so they're deterministic per call.
+    async fn plant_unread_threads(
+        pool: &SqlitePool,
+        acct: &str,
+        label_id: &str,
+        thread_id: &str,
+        unread: i64,
+    ) {
+        for i in 0..unread {
+            let tid = format!("{thread_id}-{i}");
+            sqlx::query("INSERT INTO threads (id, account_id, is_read) VALUES (?, ?, 0)")
+                .bind(&tid)
+                .bind(acct)
+                .execute(pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO thread_labels (account_id, thread_id, label_id) VALUES (?, ?, ?)")
+                .bind(acct)
+                .bind(&tid)
+                .bind(label_id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// Plant two accounts with known unread counts so aggregation tests are stable.
+    /// acct-1: 3 unread in "INBOX", 2 in "Trash". acct-2: 4 unread in "INBOX".
+    async fn seed_two_accounts_with_unread(pool: &SqlitePool) {
+        for id in ["acct-1", "acct-2"] {
+            sqlx::query(
+                "INSERT INTO accounts (id, email, provider, is_active, is_default, sort_order, created_at, updated_at)
+                 VALUES (?, ?, 'imap', 1, 0, 0, strftime('%s','now'), strftime('%s','now'))",
+            )
+            .bind(id)
+            .bind(format!("{id}@x.com"))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // Folders (labels) — minimal columns; id is the deterministic "{acct}:{remote}".
+        for (acct, label_id, remote) in [
+            ("acct-1", "acct-1:INBOX", "INBOX"),
+            ("acct-1", "acct-1:Trash", "Trash"),
+            ("acct-2", "acct-2:INBOX", "INBOX"),
+        ] {
+            sqlx::query(
+                "INSERT INTO labels (id, account_id, name, type, visible, sort_order, source, role, parent_id, remote_id, delimiter, mail_class, hierarchical_name)
+                 VALUES (?, ?, ?, 'system', 1, 0, 'imap', NULL, NULL, ?, '/', '', '')",
+            )
+            .bind(label_id)
+            .bind(acct)
+            .bind(remote)
+            .bind(remote)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        plant_unread_threads(pool, "acct-1", "acct-1:INBOX", "t-in", 3).await;
+        plant_unread_threads(pool, "acct-1", "acct-1:Trash", "t-tr", 2).await;
+        plant_unread_threads(pool, "acct-2", "acct-2:INBOX", "t-in2", 4).await;
+    }
+
+    #[tokio::test]
+    async fn get_total_unread_zero_when_no_threads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        // Seed an account so the table exists but has no threads.
+        crate::db::accounts::create(
+            &pool,
+            crate::db::accounts::CreateAccountInput {
+                email: "a@x.com".into(),
+                provider: "imap".into(),
+                ..Default::default()
+            },
+        ).await.unwrap();
+        let total = get_total_unread(&pool, None).await.unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn get_total_unread_sums_unread_across_labels_for_one_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_two_accounts_with_unread(&pool).await;
+        // seed_two_accounts_with_unread plants: acct-1 has 3 unread in INBOX + 2 in Trash;
+        // acct-2 has 4 unread in INBOX. Total for acct-1 = 5.
+        let one = get_total_unread(&pool, Some("acct-1")).await.unwrap();
+        assert_eq!(one, 5);
+    }
+
+    #[tokio::test]
+    async fn get_total_unread_all_accounts_aggregates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_two_accounts_with_unread(&pool).await;
+        // acct-1 (5) + acct-2 (4) = 9.
+        let all = get_total_unread(&pool, None).await.unwrap();
+        assert_eq!(all, 9);
     }
 
     #[tokio::test]

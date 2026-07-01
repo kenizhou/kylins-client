@@ -133,6 +133,7 @@ pub fn run() {
             db::commands::db_get_all_folders,
             db::commands::db_get_folder_by_role,
             db::commands::db_get_unread_counts_by_account,
+            db::commands::db_get_total_unread,
             db::commands::db_upsert_folders,
             db::commands::db_create_folder,
             db::commands::db_rename_folder,
