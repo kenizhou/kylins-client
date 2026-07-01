@@ -6,6 +6,7 @@ import { formatBindingForDisplay } from '../../services/shortcuts/shortcutEngine
 import { isMac } from '../../utils/platform';
 import { MenuItem } from './MenuItem';
 import { ViewMenu } from '../../features/view/components/ViewMenu';
+import { useComposerStore } from '../../stores/composerStore';
 
 // ---------- Shared hover-timeout hook ----------
 
@@ -53,6 +54,7 @@ type MenuActionItem = {
   commandId?: string;
   shortcut?: string;
   disabled?: boolean;
+  checked?: boolean;
   onClick?: () => void;
 };
 
@@ -109,7 +111,7 @@ const EDIT_ITEMS: MenuItemData[] = [
   },
 ];
 
-const MENU_CATEGORIES: MenuCategoryData[] = [
+const MAIN_CATEGORIES: MenuCategoryData[] = [
   {
     label: 'File',
     items: [
@@ -187,6 +189,159 @@ const MENU_CATEGORIES: MenuCategoryData[] = [
   },
 ];
 
+const VIEWER_CATEGORIES: MenuCategoryData[] = [
+  {
+    label: 'Message',
+    items: [
+      { label: 'Reply', commandId: 'mail:reply' },
+      { label: 'Reply All', commandId: 'mail:reply-all' },
+      { label: 'Forward', commandId: 'mail:forward' },
+      { type: 'separator' },
+      { label: 'Mark as Read', commandId: 'mail:toggle-read' },
+      { label: 'Archive', commandId: 'mail:archive' },
+      { type: 'separator' },
+      { label: 'Close Window', commandId: 'app:close-window' },
+    ],
+  },
+  {
+    label: 'View',
+    items: [],
+    customContent: true,
+  },
+  {
+    label: 'Help',
+    items: [
+      { label: 'Documentation', commandId: 'app:show-shortcuts-help', disabled: true },
+      { type: 'separator' },
+      { label: 'About', disabled: true },
+    ],
+  },
+];
+
+function runDocCommand(command: string): void {
+  try {
+    document.execCommand(command, false);
+  } catch {
+    /* ignore */
+  }
+}
+
+function getComposeCategories(): MenuCategoryData[] {
+  const store = useComposerStore.getState();
+  return [
+    {
+      label: 'Message',
+      items: [
+        {
+          label: 'Send',
+          onClick: () => {
+            useUIStore.getState().setActiveMenuCategory(null);
+            // Composer window sends via its own Send button; this is a fallback.
+            window.dispatchEvent(new Event('composer:send-requested'));
+          },
+        },
+        { type: 'separator' },
+        { label: 'Attach File…', disabled: true },
+        { type: 'separator' },
+        { label: 'Close Window', commandId: 'app:close-window' },
+      ],
+    },
+    {
+      label: 'Insert',
+      items: [
+        { label: 'Attachment…', disabled: true },
+        { label: 'Link…', onClick: () => window.dispatchEvent(new Event('composer:insert-link')) },
+        { type: 'separator' },
+        { label: 'Signature', disabled: true },
+      ],
+    },
+    {
+      label: 'Options',
+      items: [
+        {
+          label: 'High Importance',
+          checked: store.importance === 'high',
+          onClick: () => useComposerStore.getState().setImportance('high'),
+        },
+        {
+          label: 'Low Importance',
+          checked: store.importance === 'low',
+          onClick: () => useComposerStore.getState().setImportance('low'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Request Read Receipt',
+          checked: store.requestReadReceipt,
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setRequestReadReceipt(!s.requestReadReceipt);
+          },
+        },
+        {
+          label: 'Delay Delivery…',
+          onClick: () => window.dispatchEvent(new Event('composer:schedule-requested')),
+        },
+        { type: 'separator' },
+        {
+          label: 'Encrypt',
+          checked: store.isEncrypted,
+          disabled:
+            store.classificationId === 'confidential' || store.classificationId === 'restricted',
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setIsEncrypted(!s.isEncrypted);
+          },
+        },
+        {
+          label: 'Sign',
+          checked: store.isSigned,
+          disabled:
+            store.classificationId === 'confidential' || store.classificationId === 'restricted',
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setIsSigned(!s.isSigned);
+          },
+        },
+        {
+          label: 'Prevent Copy',
+          checked: store.preventCopy,
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setPreventCopy(!s.preventCopy);
+          },
+        },
+      ],
+    },
+    {
+      label: 'Format',
+      items: [
+        { label: 'Bold', onClick: () => runDocCommand('bold') },
+        { label: 'Italic', onClick: () => runDocCommand('italic') },
+        { label: 'Underline', onClick: () => runDocCommand('underline') },
+        { type: 'separator' },
+        { label: 'Bulleted List', onClick: () => runDocCommand('insertUnorderedList') },
+        { label: 'Numbered List', onClick: () => runDocCommand('insertOrderedList') },
+      ],
+    },
+    {
+      label: 'Review',
+      items: [
+        { label: 'Spelling', disabled: true },
+        { type: 'separator' },
+        { label: 'Check Accessibility', disabled: true },
+      ],
+    },
+    {
+      label: 'Help',
+      items: [
+        { label: 'Documentation', commandId: 'app:show-shortcuts-help', disabled: true },
+        { type: 'separator' },
+        { label: 'About', disabled: true },
+      ],
+    },
+  ];
+}
+
 function isSeparator(item: MenuItemData): item is MenuSeparatorItem {
   return 'type' in item && item.type === 'separator';
 }
@@ -245,6 +400,7 @@ function MenuDropdown({ items, onClose, className = '' }: MenuDropdownProps) {
                 : undefined)
             }
             disabled={item.disabled}
+            checked={item.checked}
             onClick={() => {
               if (item.onClick) {
                 item.onClick();
@@ -260,7 +416,17 @@ function MenuDropdown({ items, onClose, className = '' }: MenuDropdownProps) {
   );
 }
 
-export function MenuBar() {
+export interface MenuBarProps {
+  variant?: 'main' | 'viewer' | 'compose';
+}
+
+export function MenuBar({ variant = 'main' }: MenuBarProps) {
+  const categories =
+    variant === 'compose'
+      ? getComposeCategories()
+      : variant === 'viewer'
+        ? VIEWER_CATEGORIES
+        : MAIN_CATEGORIES;
   const activeCategory = useUIStore((s) => s.activeMenuCategory);
   const setActiveCategory = useUIStore((s) => s.setActiveMenuCategory);
   const ref = useRef<HTMLDivElement>(null);
@@ -291,7 +457,7 @@ export function MenuBar() {
 
   return (
     <div ref={ref} className="flex items-center ml-1">
-      {MENU_CATEGORIES.map((category) => {
+      {categories.map((category) => {
         const isActive = active === category.label;
         return (
           <div

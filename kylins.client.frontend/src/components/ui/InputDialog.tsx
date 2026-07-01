@@ -5,6 +5,7 @@
 // "Insert Link" toolbar action). Styled with Kylins' CSS-var tokens.
 
 import { useEffect, useRef, useState } from 'react';
+import { CloseIcon } from '../icons';
 
 export interface InputField {
   key: string;
@@ -64,9 +65,17 @@ export function InputDialog({
       <form
         onClick={(e) => e.stopPropagation()}
         onSubmit={handleSubmit}
-        className="w-80 rounded-md border border-[var(--border)] bg-[var(--background)] p-4 shadow-xl"
+        className="relative w-80 rounded-lg border border-[var(--border)] bg-[var(--background)] p-4 shadow-xl"
       >
-        <h3 className="mb-3 text-sm font-medium text-[var(--foreground)]">{title}</h3>
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+          aria-label="Close"
+        >
+          <CloseIcon size={14} />
+        </button>
+        <h3 className="mb-3 pr-6 text-sm font-medium text-[var(--foreground)]">{title}</h3>
         <div className="space-y-3">
           {fields.map((f, i) => (
             <label key={f.key} className="block">
@@ -77,7 +86,7 @@ export function InputDialog({
                 value={values[f.key] ?? ''}
                 placeholder={f.placeholder}
                 onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                className="h-7 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                className="h-8 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
               />
             </label>
           ))}
@@ -86,13 +95,13 @@ export function InputDialog({
           <button
             type="button"
             onClick={onClose}
-            className="h-7 rounded px-3 text-sm text-[var(--foreground)] hover:bg-[var(--hover)]"
+            className="h-8 rounded px-3 text-sm text-[var(--foreground)] hover:bg-[var(--hover)]"
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="h-7 rounded bg-[var(--primary)] px-3 text-sm text-[var(--primary-fg)] hover:opacity-90"
+            className="h-8 rounded bg-[var(--primary)] px-3 text-sm text-[var(--primary-fg)] hover:opacity-90"
           >
             {submitLabel}
           </button>

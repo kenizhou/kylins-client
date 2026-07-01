@@ -13,6 +13,7 @@
 // to/cc/bcc/attachments columns, exactly as the historical code wrote them.
 
 import { invoke } from '@tauri-apps/api/core';
+import type { Importance } from '@/stores/composerStore';
 import { formatRecipients, type Recipient } from '@/features/composer/contacts';
 
 /**
@@ -44,6 +45,15 @@ export interface DraftInput {
   classificationId?: string | null;
   isEncrypted?: boolean;
   isSigned?: boolean;
+  importance?: Importance;
+  requestReadReceipt?: boolean;
+  deliverAt?: number | null;
+  preventCopy?: boolean;
+  /**
+   * Best-effort headers to emit at send time. Stored on the draft so they
+   * survive app restarts and can be previewed before sending.
+   */
+  extraHeaders?: Record<string, string>;
 }
 
 /** Raw `local_drafts` row. Array/attachment columns are JSON-encoded strings. */
@@ -64,6 +74,12 @@ export interface DbDraft {
   classification_id: string | null;
   is_encrypted: number;
   is_signed: number;
+  /** 'low' | 'normal' | 'high' */
+  importance: string | null;
+  request_read_receipt: number;
+  deliver_at: number | null;
+  prevent_copy: number;
+  extra_headers: string | null;
   created_at: number;
   updated_at: number;
   sync_status: string;
@@ -75,6 +91,18 @@ export interface DbDraft {
  * cc/bcc/attachments become null (matching the historical `inputToColumns`).
  */
 function toRustInput(input: DraftInput) {
+  const extraHeaders: Record<string, string> = { ...(input.extraHeaders ?? {}) };
+  if (input.importance && input.importance !== 'normal') {
+    extraHeaders['X-Priority'] = input.importance === 'high' ? '1' : '5';
+    extraHeaders['Importance'] = input.importance;
+  }
+  if (input.requestReadReceipt) {
+    extraHeaders['Disposition-Notification-To'] = input.fromEmail ?? '';
+  }
+  if (input.preventCopy) {
+    extraHeaders['X-Classification-Prevent-Copy'] = 'true';
+  }
+
   return {
     accountId: input.accountId,
     // to_addresses is always a non-empty array (composer always has at least the To box)
@@ -92,6 +120,11 @@ function toRustInput(input: DraftInput) {
     classificationId: input.classificationId ?? null,
     isEncrypted: input.isEncrypted ?? false,
     isSigned: input.isSigned ?? false,
+    importance: input.importance ?? 'normal',
+    requestReadReceipt: input.requestReadReceipt ?? false,
+    deliverAt: input.deliverAt ?? null,
+    preventCopy: input.preventCopy ?? false,
+    extraHeaders: Object.keys(extraHeaders).length > 0 ? JSON.stringify(extraHeaders) : null,
   };
 }
 

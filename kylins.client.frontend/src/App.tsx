@@ -131,6 +131,10 @@ export default function App() {
                 classificationId: composeParams.classificationId,
                 isEncrypted: composeParams.isEncrypted,
                 isSigned: composeParams.isSigned,
+                importance: composeParams.importance,
+                requestReadReceipt: composeParams.requestReadReceipt,
+                deliverAt: composeParams.deliverAt,
+                preventCopy: composeParams.preventCopy,
               });
             }
 

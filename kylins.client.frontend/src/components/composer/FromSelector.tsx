@@ -18,7 +18,7 @@ export function FromSelector({ aliases, selectedEmail, onChange }: FromSelectorP
 
   return (
     <div className="flex items-center gap-2">
-      <span className="w-8 shrink-0 text-xs text-[var(--muted-foreground)]">From</span>
+      <span className="w-8 shrink-0 pt-1.5 text-xs font-medium text-[var(--muted-text)]">From</span>
       <select
         value={selectedEmail}
         onChange={(e) => {

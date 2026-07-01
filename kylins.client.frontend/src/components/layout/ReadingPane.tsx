@@ -1,15 +1,14 @@
-import { type ReactNode, useEffect, useState } from 'react';
-import { HugeiconsIcon } from '@hugeicons/react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
-import { ArrowBendDoubleUpLeft, Archive } from '@phosphor-icons/react';
 import {
-  CornerUpLeftIcon,
-  CornerUpRightIcon,
-  MoreIcon,
-  DeleteIcon,
-  FlagIcon,
-  ClassificationIcon,
-} from '../icons';
+  ArrowBendDoubleUpLeft,
+  ArrowBendUpLeft,
+  ArrowBendUpRight,
+  Archive,
+} from '@phosphor-icons/react';
+import { MoreIcon, DeleteIcon, FlagIcon, MailIcon } from '../icons';
+import { IconButton } from '../ui/IconButton';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { useThreadStore } from '../../stores/threadStore';
@@ -21,7 +20,11 @@ import { InlineReply } from '../email/InlineReply';
 import { formatFullDate } from '../../utils/formatDate';
 import { getInitials } from '../../data/demoMessages';
 import { useClassification } from '../../features/classification/useClassification';
-import { useSecurityIndicatorIcons } from '../../features/classification/useSecurityIndicatorIcons';
+import { isProminent, levelStyle } from '../../features/classification/classificationStyle';
+import { ClassificationBanner } from '../../features/classification/components/ClassificationBanner';
+import { ClassificationWatermark } from '../../features/classification/components/ClassificationWatermark';
+import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
+import { SecurityChips } from '../../features/classification/components/SecurityChips';
 
 function hashString(str: string): number {
   let h = 0;
@@ -37,6 +40,28 @@ function senderGradient(name: string): string {
   return `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 40) % 360} 70% 45%))`;
 }
 
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  s /= 100;
+  l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) =>
+    l - a * Math.max(-1, Math.min(((n + h / 30) % 12) - 3, 9 - ((n + h / 30) % 12), 1));
+  return [f(0), f(8), f(4)];
+}
+
+function luminance(r: number, g: number, b: number): number {
+  const values = [r, g, b].map((v) =>
+    v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4),
+  );
+  return 0.2126 * (values[0] ?? 0) + 0.7152 * (values[1] ?? 0) + 0.0722 * (values[2] ?? 0);
+}
+
+function avatarTextColor(name: string): string {
+  const hue = hashString(name) % 360;
+  const [r, g, b] = hslToRgb(hue, 70, 55);
+  return luminance(r, g, b) > 0.55 ? '#0f172a' : '#ffffff';
+}
+
 function recipientList(recipients: { name: string; address: string }[]): string {
   if (recipients.length === 0) return '';
   const first = recipients[0]!;
@@ -44,60 +69,55 @@ function recipientList(recipients: { name: string; address: string }[]): string 
   return `${first.name} <${first.address}> +${recipients.length - 1} more`;
 }
 
-function SubjectActionTextButton({
-  icon,
-  label,
-  title,
-  onClick,
-  className,
-  labelClassName,
-}: {
-  icon: ReactNode;
-  label: string;
-  title: string;
-  onClick?: () => void;
-  className?: string;
-  labelClassName?: string;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 px-2.5 h-8 whitespace-nowrap text-sm font-medium rounded-md transition-colors hover:bg-[var(--hover)] ${
-        className ?? 'text-[var(--muted-text)] hover:text-[var(--foreground)]'
-      }`}
-    >
-      {icon}
-      <span className={labelClassName ?? 'hidden sm:inline'}>{label}</span>
-    </button>
-  );
+interface MoreActionsMenuProps {
+  x: number;
+  y: number;
+  isRead?: boolean;
+  disabled?: boolean;
+  onToggleRead: () => void;
+  onClose: () => void;
 }
 
-function SubjectActionButton({
-  icon,
-  title,
-  onClick,
-  className,
-}: {
-  icon: ReactNode;
-  title: string;
-  onClick?: () => void;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--hover)] ${
-        className ?? 'text-[var(--muted-text)] hover:text-[var(--foreground)]'
-      }`}
-      title={title}
-      aria-label={title}
-      onClick={onClick}
+function MoreActionsMenu({ x, y, isRead, disabled, onToggleRead, onClose }: MoreActionsMenuProps) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    function onPointer(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onPointer);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onPointer);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      ref={ref}
+      role="menu"
+      className="fixed min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg"
+      style={{ left: x, top: y, zIndex: 'var(--z-dropdown)' }}
     >
-      {icon}
-    </button>
+      <button
+        type="button"
+        role="menuitem"
+        disabled={disabled}
+        onClick={() => {
+          onToggleRead();
+          onClose();
+        }}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <MailIcon size={16} />
+        <span>{isRead ? 'Mark as unread' : 'Mark as read'}</span>
+      </button>
+    </div>,
+    document.body,
   );
 }
 
@@ -112,7 +132,6 @@ export function ReadingPane() {
   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
   const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
   const { getLevelById } = useClassification();
-  const { encryptedIcon, signedIcon } = useSecurityIndicatorIcons();
   const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
   const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
   // Reset per-message ephemeral state when the selected message changes. Uses
@@ -127,6 +146,8 @@ export function ReadingPane() {
   }
 
   const [moreOpen, setMoreOpen] = useState(false);
+  const [morePos, setMorePos] = useState<{ x: number; y: number } | null>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
 
   // Inline `cid:` image resolution. When the selected message changes, fetch
   // its inline Content-ID parts in ONE round-trip and build a cid → data: URL
@@ -184,25 +205,47 @@ export function ReadingPane() {
   }
 
   const handleReply = () => setComposeMode('reply');
-
   const handleReplyAll = () => setComposeMode('replyAll');
-
   const handleForward = () => setComposeMode('forward');
 
   const isSuspicious = message.subject.toLowerCase().includes('verify your account');
 
   const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
-  const isConfidential = level?.id === 'confidential';
+  const prominent = level ? isProminent(level) : false;
+  const style = level ? levelStyle(level) : null;
+
+  const handleToggleMore = () => {
+    if (!moreOpen && moreButtonRef.current) {
+      const rect = moreButtonRef.current.getBoundingClientRect();
+      setMorePos({
+        x: Math.max(8, rect.right - 160),
+        y: rect.bottom + 4,
+      });
+    }
+    setMoreOpen((v) => !v);
+  };
+
+  const handleMarkRead = () => {
+    if (selectedThread) {
+      void markThreadRead(selectedThread, !selectedThread.isRead);
+    }
+  };
+
+  const handleStar = () => {
+    if (selectedThread) void toggleThreadStarred(selectedThread);
+  };
+
+  const handleDelete = () => {
+    if (selectedThread) void deleteThread(selectedThread);
+  };
 
   return (
-    <div className="reading-pane flex h-full min-w-0 flex-col bg-[var(--card)]">
+    <div className="reading-pane relative flex h-full min-w-0 flex-col bg-[var(--card)]">
+      {prominent && level && <ClassificationBanner level={level} position="top" />}
+
       <div
         className="reading-pane-header border-b border-[var(--border)] px-5 pt-4 pb-3"
-        style={{
-          borderTopWidth: '4px',
-          borderTopColor: level?.color ?? 'transparent',
-          backgroundColor: isConfidential ? `${level?.color}10` : undefined,
-        }}
+        style={prominent && style ? { backgroundColor: style.tint } : undefined}
       >
         <h1 className="reading-pane-subject min-w-0 text-[22px] font-semibold leading-[1.25] tracking-tight text-[var(--text)]">
           {message.subject}
@@ -210,47 +253,29 @@ export function ReadingPane() {
 
         {level && (
           <div className="mt-2 flex items-center gap-2">
-            <span
-              className="inline-flex items-center gap-1.5 rounded border px-2.5 py-0.5 text-xs font-medium"
-              style={{
-                borderColor: level.color,
-                color: level.color,
-                backgroundColor: `${level.color}15`,
-              }}
-            >
-              <ClassificationIcon icon={level.icon} size={12} />
-              {!level.icon && (
-                <span
-                  className="inline-block h-2 w-2 rounded-full"
-                  style={{ backgroundColor: level.color }}
-                />
-              )}
-              {level.name}
-            </span>
-            {(message.isEncrypted || message.isSigned) && (
-              <span className="inline-flex items-center gap-1 text-[var(--muted-text)]">
-                {message.isEncrypted && (
-                  <span className="inline-flex items-center gap-0.5 text-[11px]">
-                    <ClassificationIcon icon={encryptedIcon} size={12} />
-                    Encrypted
-                  </span>
-                )}
-                {message.isSigned && (
-                  <span className="inline-flex items-center gap-0.5 text-[11px]">
-                    <ClassificationIcon icon={signedIcon} size={12} />
-                    Signed
-                  </span>
-                )}
-              </span>
+            <ClassificationBadge level={level} />
+            <SecurityChips
+              isEncrypted={message.isEncrypted}
+              isSigned={message.isSigned}
+              variant="label"
+            />
+            {message.preventCopy && (
+              <span className="text-[11px] text-[var(--muted-text)]">Prevent Copy</span>
+            )}
+            {message.readReceiptRequested && (
+              <span className="text-[11px] text-[var(--muted-text)]">Read Receipt</span>
             )}
           </div>
         )}
 
         <div className="reading-pane-sender-row mt-3 flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3 min-w-0 flex-1">
+          <div className="flex min-w-0 flex-1 items-start gap-3">
             <div
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold text-white shadow-sm"
-              style={{ background: senderGradient(message.from.name) }}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold shadow-sm"
+              style={{
+                background: senderGradient(message.from.name),
+                color: avatarTextColor(message.from.name),
+              }}
               aria-hidden="true"
             >
               {getInitials(message.from.name)}
@@ -271,86 +296,85 @@ export function ReadingPane() {
           </div>
 
           <div className="reading-pane-actions mt-0.5 flex flex-wrap items-center gap-1 shrink-0">
-            <SubjectActionTextButton
-              icon={
-                <span className="text-[var(--primary)]">
-                  <HugeiconsIcon icon={CornerUpLeftIcon} size={18} strokeWidth={2} />
-                </span>
-              }
+            <IconButton
+              size="md"
               label="Reply"
               title="Reply"
               onClick={handleReply}
-              labelClassName="reading-pane-action-label"
+              icon={
+                <span className="text-[var(--primary)]">
+                  <ArrowBendUpLeft size={18} weight="bold" />
+                </span>
+              }
             />
-            <SubjectActionTextButton
+            <IconButton
+              size="md"
+              label="Reply all"
+              title="Reply all"
+              onClick={handleReplyAll}
               icon={
                 <span className="text-[var(--primary)]">
                   <ArrowBendDoubleUpLeft size={18} weight="bold" />
                 </span>
               }
-              label="Reply all"
-              title="Reply all"
-              onClick={handleReplyAll}
-              labelClassName="reading-pane-action-label"
             />
-            <SubjectActionTextButton
-              icon={
-                <span className="text-[var(--primary)]">
-                  <HugeiconsIcon icon={CornerUpRightIcon} size={18} strokeWidth={2} />
-                </span>
-              }
+            <IconButton
+              size="md"
               label="Forward"
               title="Forward"
               onClick={handleForward}
-              labelClassName="reading-pane-action-label"
+              icon={
+                <span className="text-[var(--primary)]">
+                  <ArrowBendUpRight size={18} weight="bold" />
+                </span>
+              }
             />
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
-            <SubjectActionButton icon={<Archive size={18} />} title="Archive" />
-            <SubjectActionButton
-              icon={<FlagIcon size={17} />}
+            <IconButton size="sm" title="Archive" onClick={() => {}} icon={<Archive size={18} />} />
+            <IconButton
+              size="sm"
               title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
-              className={selectedThread?.isStarred ? 'text-[var(--amber)]' : undefined}
-              onClick={() => {
-                if (selectedThread) void toggleThreadStarred(selectedThread);
-              }}
+              onClick={handleStar}
+              className={
+                selectedThread?.isStarred
+                  ? 'text-[var(--amber)] hover:text-[var(--amber)]'
+                  : undefined
+              }
+              icon={<FlagIcon size={17} />}
             />
-            <SubjectActionButton
-              icon={<DeleteIcon size={17} />}
+            <IconButton
+              size="sm"
               title="Delete"
-              onClick={() => {
-                if (selectedThread) void deleteThread(selectedThread);
-              }}
+              onClick={handleDelete}
+              icon={<DeleteIcon size={17} />}
             />
-            <div className="relative">
-              <SubjectActionButton
-                icon={<MoreIcon size={17} />}
-                title="More actions"
-                onClick={() => setMoreOpen((v) => !v)}
+            <IconButton
+              ref={moreButtonRef}
+              size="sm"
+              title="More actions"
+              onClick={handleToggleMore}
+              icon={<MoreIcon size={17} />}
+            />
+            {moreOpen && morePos && (
+              <MoreActionsMenu
+                x={morePos.x}
+                y={morePos.y}
+                isRead={selectedThread?.isRead}
+                disabled={!selectedThread}
+                onToggleRead={handleMarkRead}
+                onClose={() => setMoreOpen(false)}
               />
-              {moreOpen && (
-                <div className="absolute right-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
-                  <button
-                    type="button"
-                    disabled={!selectedThread}
-                    onClick={() => {
-                      setMoreOpen(false);
-                      if (selectedThread) {
-                        void markThreadRead(selectedThread, !selectedThread.isRead);
-                      }
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover)] disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <MailIcon size={16} />
-                    <span>{selectedThread?.isRead ? 'Mark as unread' : 'Mark as read'}</span>
-                  </button>
-                </div>
-              )}
-            </div>
+            )}
           </div>
         </div>
       </div>
 
-      <main className="flex-1 overflow-auto p-5 leading-[1.6] text-[var(--text)]">
+      <main
+        className="relative flex-1 overflow-auto p-5 leading-[1.6] text-[var(--text)]"
+        style={message.preventCopy ? { userSelect: 'none' } : undefined}
+        onContextMenu={message.preventCopy ? (e) => e.preventDefault() : undefined}
+      >
+        {prominent && level && <ClassificationWatermark level={level} identity={accountEmail} />}
         <AttachmentList
           accountId={activeAccountId}
           messageId={message.id}
@@ -367,26 +391,8 @@ export function ReadingPane() {
           cidMap={cidMap}
         />
       </main>
+      {prominent && level && <ClassificationBanner level={level} position="bottom" />}
       <InjectedComponentSet role="reading-pane:footer" containersRequired={false} />
     </div>
-  );
-}
-
-function MailIcon({ size }: { size?: number }) {
-  // Inline fallback so ReadingPane doesn't depend on the full icon set just for the empty state.
-  return (
-    <svg
-      width={size ?? 16}
-      height={size ?? 16}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect x="3" y="5" width="18" height="14" rx="2" />
-      <path d="M3.5 7.5L12 13l8.5-5.5" />
-    </svg>
   );
 }

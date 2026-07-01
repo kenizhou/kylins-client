@@ -2,7 +2,7 @@
 - conversationId: 2542cd0e-8ca2-4e85-b9b8-bad362b0c3c9
 - provider: anthropic
 - title: Email Future In AI Era
-- exportAt: 17:49:59 GMT+0800 (Hong Kong Standard Time)
+- exportAt: 09:05:47 GMT+0800 (Hong Kong Standard Time)
 
 ## Options
 - provider: anthropic
@@ -1317,5 +1317,715 @@ struct ImapProvider { /* uses async-imap + lettre */ }
 - 和前端的 IPC 协议设计
 
 或者如果你想看 Electron 路线的具体方案，我也可以展开。你倾向哪个方向？
+
+
+**You**
+确定 Rust路线，请推荐一个技术栈（包括具体的框架名称，特别是记忆系统），以及详细的系统架构图（markdown）
+
+
+**claude-opus-4-7**
+好，我们把这事认真做。下面是一份**生产级 AI Native 邮件客户端的完整技术栈和系统架构**，针对 Rust + Tauri 路线，覆盖到记忆系统的具体实现。
+
+## 一、技术栈总览
+
+### 1. 应用框架层
+
+| 用途 | 选型 | 说明 |
+|------|------|------|
+| 桌面框架 | **Tauri 2.x** | 跨平台、Rust 后端、轻量 |
+| 前端框架 | **React 18 + TypeScript** | 生态成熟 |
+| UI 组件 | **shadcn/ui + Radix UI + Tailwind CSS** | 现代、可定制 |
+| 状态管理 | **Zustand** + **TanStack Query** | 轻量本地状态 + 异步数据 |
+| 路由 | **TanStack Router** | 类型安全 |
+| 富文本编辑器 | **Tiptap** (基于 ProseMirror) | 邮件编辑器首选 |
+| 图标 | **Lucide React** | 一致风格 |
+| 虚拟列表 | **TanStack Virtual** | 长邮件列表必备 |
+
+### 2. Rust 后端核心
+
+| 用途 | 选型 | 说明 |
+|------|------|------|
+| 异步运行时 | **Tokio** | 事实标准 |
+| HTTP 客户端 | **reqwest** | OAuth、API 调用 |
+| 序列化 | **serde + serde_json** | 标配 |
+| 错误处理 | **thiserror + anyhow** | 库用 thiserror，应用用 anyhow |
+| 日志 | **tracing + tracing-subscriber** | 现代结构化日志 |
+| 配置 | **figment** 或 **config-rs** | 多源配置 |
+| 加密 | **ring** 或 **rustls** | TLS 和加解密 |
+
+### 3. 邮件协议层
+
+| 协议 | 选型 | 说明 |
+|------|------|------|
+| IMAP | **async-imap** | 现代 async/await |
+| SMTP | **lettre** | Rust SMTP 事实标准 |
+| MIME 解析 | **mail-parser** (Stalwart) | 性能极好 |
+| MIME 构建 | **mail-builder** (Stalwart) | 同上 |
+| Gmail API | **google-gmail1** (google-apis-rs) | 自动生成的 SDK |
+| Microsoft Graph | **graph-rs-sdk** | Outlook/O365 |
+| JMAP | **jmap-client** (Stalwart) | 未来兼容 Fastmail 等 |
+| OAuth2 | **oauth2** crate | 标准实现 |
+
+### 4. 数据存储层
+
+| 用途 | 选型 | 说明 |
+|------|------|------|
+| 主数据库 | **SQLite** via **sqlx** | 异步 SQL |
+| 数据库加密 | **SQLCipher** (通过 sqlx feature) | 邮件数据加密 |
+| 迁移 | **sqlx migrate** | 内置 |
+| 全文搜索 | **Tantivy** | Rust 版 Lucene，比 SQLite FTS5 强得多 |
+| 向量搜索 | **LanceDB** | 嵌入式向量库，Rust 原生 |
+| 图存储 | **CozoDB** 或 **KuzuDB** | 嵌入式图数据库（用于实体图） |
+| 文件存储 | 文件系统 + **age** 加密 | 附件加密存储 |
+| 缓存 | **moka** | 内存缓存，性能极好 |
+
+> **关于记忆系统的存储选型**：这是核心，下面专门展开。
+
+### 5. AI 能力层
+
+| 用途 | 选型 | 说明 |
+|------|------|------|
+| LLM 统一接入 | **async-openai** + **自建路由层** | OpenAI 兼容协议是事实标准 |
+| 本地模型运行时 | **Ollama** (HTTP API) 或 **mistral.rs** | 推荐 Ollama，跨平台稳定 |
+| 嵌入模型（云） | OpenAI `text-embedding-3-small` | 性价比最高 |
+| 嵌入模型（本地） | **fastembed-rs** | 内置 BGE/Nomic，纯 Rust |
+| Prompt 管理 | **自建** + **minijinja** 模板引擎 | 不要用 LangChain |
+| Token 计数 | **tiktoken-rs** | OpenAI 模型 |
+| 文档解析 | **pdf-extract** + **docx-rs** + **calamine** | PDF/Word/Excel 附件理解 |
+| HTML 清洗 | **ammonia** + **html2text** | 邮件正文处理 |
+
+### 6. 记忆系统专属栈
+
+这是 AI Native 的核心，单独列出：
+
+| 层 | 选型 | 用途 |
+|----|------|------|
+| Episodic Memory | **SQLite + sqlx** | 邮件原始事件记录 |
+| Semantic Memory | **LanceDB** | 语义向量检索 |
+| Entity Graph | **CozoDB** | 实体关系图（人/项目/承诺） |
+| Working Memory | **moka** 内存缓存 | 当前会话上下文 |
+| Procedural Memory | **SQLite (JSONB)** | 用户偏好、习惯规则 |
+| 摘要/压缩 | 自建 LLM 调用层 | 长期记忆压缩 |
+
+> 关键决策：**不用 mem0、letta 这种 Python 框架**——它们在 Rust 生态里没有对等方案，且抽象过重。直接基于 LanceDB + CozoDB 自建，更可控。
+
+### 7. 同步引擎专属
+
+| 用途 | 选型 |
+|------|------|
+| 增量同步状态 | SQLite 中持久化 token |
+| 推送通知 | **tokio-tungstenite** (WebSocket) + **Pub/Sub HTTP** |
+| 后台任务队列 | **自建** + **tokio::sync::mpsc** + **sqlx** 持久化 |
+| 重试策略 | **backoff** crate |
+| 速率限制 | **governor** crate |
+
+### 8. 可观测性
+
+| 用途 | 选型 |
+|------|------|
+| 日志 | **tracing** |
+| 错误上报 | **sentry-rust** |
+| 性能监控 | **tracing** + 自建 metrics |
+| 崩溃报告 | **tauri-plugin-sentry** |
+
+### 9. 开发工具链
+
+| 用途 | 选型 |
+|------|------|
+| 包管理 | **pnpm** (前端) + **cargo** (后端) |
+| Monorepo | **Turborepo** 或 **Nx**（如果未来多端） |
+| 代码格式化 | **rustfmt** + **prettier** + **biome** |
+| Linting | **clippy** + **biome** |
+| 测试 | **cargo test** + **vitest** + **playwright** |
+| CI/CD | **GitHub Actions** |
+| 应用签名 | Tauri 内置 updater + signing |
+
+## 二、系统架构图
+
+下面是完整的分层架构。
+
+### 总体架构
+
+```mermaid
+graph TB
+    subgraph "Frontend (React + TypeScript)"
+        UI_Trad[Traditional UI<br/>邮件列表/阅读窗]
+        UI_Conv[Conversational UI<br/>对话式交互]
+        UI_Amb[Ambient UI<br/>Daily Briefing/卡片]
+        Editor[Tiptap Editor]
+        State[Zustand + TanStack Query]
+    end
+
+    subgraph "Tauri IPC Bridge"
+        IPC[Tauri Commands + Events]
+    end
+
+    subgraph "Rust Backend Core"
+        subgraph "Application Services"
+            AppOrch[App Orchestrator]
+            AgentLayer[Agent / Tool Use Layer]
+            BriefingSvc[Briefing Service]
+        end
+
+        subgraph "AI Layer"
+            LLMRouter[LLM Router<br/>L1/L2/L3 分层]
+            EmbedSvc[Embedding Service]
+            PromptMgr[Prompt Manager<br/>minijinja]
+        end
+
+        subgraph "Memory System ★"
+            WorkingMem[Working Memory<br/>moka]
+            EpisodicMem[Episodic Memory<br/>SQLite]
+            SemanticMem[Semantic Memory<br/>LanceDB]
+            EntityGraph[Entity Graph<br/>CozoDB]
+            ProceduralMem[Procedural Memory<br/>SQLite JSONB]
+            MemoryOrch[Memory Orchestrator]
+        end
+
+        subgraph "Mail Engine"
+            SyncEngine[Sync Engine]
+            ProviderMgr[Provider Manager]
+            GmailAdapter[Gmail Adapter]
+            GraphAdapter[Graph Adapter]
+            ImapAdapter[IMAP Adapter]
+            MimeProc[MIME Processor]
+        end
+
+        subgraph "Storage Layer"
+            MainDB[(SQLite + SQLCipher)]
+            VectorDB[(LanceDB)]
+            GraphDB[(CozoDB)]
+            FTS[(Tantivy Index)]
+            FileStore[Encrypted File Store]
+        end
+
+        subgraph "Background Workers"
+            SyncWorker[Sync Worker]
+            IndexWorker[Index Worker]
+            AIWorker[AI Processing Worker]
+            BriefingWorker[Briefing Worker]
+        end
+    end
+
+    subgraph "External Services"
+        Gmail[Gmail API]
+        Graph[Microsoft Graph]
+        ImapSrv[IMAP Server]
+        OpenAI[OpenAI API]
+        Anthropic[Anthropic API]
+        Ollama[Local Ollama]
+    end
+
+    UI_Trad --> State
+    UI_Conv --> State
+    UI_Amb --> State
+    Editor --> State
+    State <--> IPC
+    IPC <--> AppOrch
+
+    AppOrch --> AgentLayer
+    AppOrch --> BriefingSvc
+    AppOrch --> SyncEngine
+
+    AgentLayer --> LLMRouter
+    AgentLayer --> MemoryOrch
+    BriefingSvc --> MemoryOrch
+    BriefingSvc --> LLMRouter
+
+    LLMRouter --> OpenAI
+    LLMRouter --> Anthropic
+    LLMRouter --> Ollama
+    EmbedSvc --> OpenAI
+    EmbedSvc --> Ollama
+
+    MemoryOrch --> WorkingMem
+    MemoryOrch --> EpisodicMem
+    MemoryOrch --> SemanticMem
+    MemoryOrch --> EntityGraph
+    MemoryOrch --> ProceduralMem
+
+    SyncEngine --> ProviderMgr
+    ProviderMgr --> GmailAdapter
+    ProviderMgr --> GraphAdapter
+    ProviderMgr --> ImapAdapter
+    GmailAdapter --> Gmail
+    GraphAdapter --> Graph
+    ImapAdapter --> ImapSrv
+    SyncEngine --> MimeProc
+
+    EpisodicMem --> MainDB
+    SemanticMem --> VectorDB
+    EntityGraph --> GraphDB
+    ProceduralMem --> MainDB
+    SyncEngine --> MainDB
+    MimeProc --> FileStore
+    IndexWorker --> FTS
+
+    SyncWorker --> SyncEngine
+    IndexWorker --> EmbedSvc
+    IndexWorker --> SemanticMem
+    AIWorker --> LLMRouter
+    AIWorker --> EntityGraph
+    BriefingWorker --> BriefingSvc
+
+    style MemoryOrch fill:#ff9,stroke:#333,stroke-width:3px
+    style LLMRouter fill:#9cf,stroke:#333,stroke-width:2px
+    style SyncEngine fill:#fc9,stroke:#333,stroke-width:2px
+```
+
+### 记忆系统详细架构
+
+记忆系统是 AI Native 的灵魂，单独展开：
+
+```mermaid
+graph TB
+    subgraph "Memory Input 输入"
+        NewEmail[新邮件到达]
+        UserAction[用户操作]
+        UserChat[用户对话]
+    end
+
+    subgraph "Memory Orchestrator 记忆编排器"
+        Router[Memory Router]
+        Extractor[Entity/Fact Extractor<br/>使用 LLM]
+        Compressor[Memory Compressor<br/>长期压缩]
+        Retriever[Hybrid Retriever]
+    end
+
+    subgraph "Working Memory 工作记忆 (短期)"
+        SessionCtx[当前会话上下文]
+        ActiveThread[正在处理的邮件线程]
+        CacheLayer[moka in-memory cache]
+    end
+
+    subgraph "Episodic Memory 情景记忆 (事件级)"
+        EmailEvents[(邮件事件流<br/>SQLite)]
+        UserEvents[(用户行为事件<br/>SQLite)]
+        Timeline[时间线索引]
+    end
+
+    subgraph "Semantic Memory 语义记忆 (向量)"
+        EmailVecs[(邮件向量<br/>LanceDB)]
+        ChunkVecs[(文档片段向量<br/>LanceDB)]
+        SummaryVecs[(摘要向量<br/>LanceDB)]
+    end
+
+    subgraph "Entity Graph 实体图 (结构化关系)"
+        People[(人物节点<br/>CozoDB)]
+        Orgs[(组织节点)]
+        Projects[(项目节点)]
+        Commitments[(承诺节点)]
+        Topics[(话题节点)]
+        Relations[(关系边)]
+    end
+
+    subgraph "Procedural Memory 程序记忆 (偏好/规则)"
+        UserPrefs[(用户偏好<br/>SQLite JSONB)]
+        WritingStyle[(写作风格)]
+        Rules[(自定义规则)]
+        Patterns[(行为模式)]
+    end
+
+    subgraph "Memory Output 输出"
+        ContextForLLM[LLM 上下文]
+        Suggestions[主动建议]
+        SearchResults[搜索结果]
+    end
+
+    NewEmail --> Router
+    UserAction --> Router
+    UserChat --> Router
+
+    Router --> Extractor
+    Router --> SessionCtx
+
+    Extractor --> EmailEvents
+    Extractor --> EmailVecs
+    Extractor --> ChunkVecs
+    Extractor --> People
+    Extractor --> Orgs
+    Extractor --> Projects
+    Extractor --> Commitments
+    Extractor --> Topics
+    Extractor --> Relations
+
+    UserAction --> UserEvents
+    UserAction --> UserPrefs
+    UserAction --> Patterns
+
+    Compressor --> SummaryVecs
+    EmailEvents --> Compressor
+    EmailVecs --> Compressor
+
+    UserChat --> Retriever
+    Retriever --> CacheLayer
+    Retriever --> EmailVecs
+    Retriever --> ChunkVecs
+    Retriever --> SummaryVecs
+    Retriever --> People
+    Retriever --> Projects
+    Retriever --> Commitments
+    Retriever --> EmailEvents
+    Retriever --> UserPrefs
+
+    Retriever --> ContextForLLM
+    Commitments --> Suggestions
+    Patterns --> Suggestions
+    Retriever --> SearchResults
+
+    style Router fill:#ff9,stroke:#333,stroke-width:2px
+    style Retriever fill:#ff9,stroke:#333,stroke-width:2px
+    style Extractor fill:#9cf,stroke:#333,stroke-width:2px
+```
+
+### LLM 路由分层
+
+```mermaid
+graph LR
+    Request[AI Request] --> Classifier{Task Classifier}
+
+    Classifier -->|实时/简单/隐私| L1[L1: Local SLM<br/>Ollama + Qwen2.5-1.5B<br/>or fastembed]
+    Classifier -->|常规/中等| L2[L2: Cloud Mid<br/>GPT-4o-mini<br/>Claude Haiku<br/>Gemini Flash]
+    Classifier -->|复杂推理/Agent| L3[L3: Cloud Top<br/>GPT-4o<br/>Claude Sonnet 4.5<br/>Gemini Pro]
+
+    L1 --> Response
+    L2 --> Response
+    L3 --> Response
+
+    Classifier -.fallback.-> L1
+    L2 -.fallback.-> L1
+    L3 -.fallback.-> L2
+
+    subgraph "Routing Rules"
+        R1[实体提取 → L2]
+        R2[敏感词检测 → L1]
+        R3[邮件摘要 → L2]
+        R4[Daily Briefing → L3]
+        R5[Agent 多步 → L3]
+        R6[嵌入 → 独立 Embedding Service]
+    end
+
+    style L1 fill:#9f9,stroke:#333
+    style L2 fill:#ff9,stroke:#333
+    style L3 fill:#f99,stroke:#333
+```
+
+### 同步引擎架构
+
+```mermaid
+graph TB
+    subgraph "Sync Triggers"
+        Push[Push Notification<br/>Gmail Pub/Sub<br/>Graph Webhook<br/>IMAP IDLE]
+        Schedule[定时拉取]
+        Manual[手动刷新]
+        Startup[启动同步]
+    end
+
+    subgraph "Sync Engine"
+        SyncCoord[Sync Coordinator]
+        TokenMgr[Sync Token Manager]
+        DeltaProc[Delta Processor]
+        ConflictRes[Conflict Resolver]
+        OpQueue[Operation Queue<br/>Local-First]
+    end
+
+    subgraph "Provider Adapters"
+        Gmail_A[Gmail Adapter<br/>historyId based]
+        Graph_A[Graph Adapter<br/>deltaToken based]
+        Imap_A[IMAP Adapter<br/>CONDSTORE/QRESYNC]
+    end
+
+    subgraph "Local State"
+        SyncState[(Sync State DB)]
+        EmailStore[(Email Store)]
+        PendingOps[(Pending Operations)]
+    end
+
+    subgraph "Post-Sync Pipeline"
+        MimeParse[MIME Parse]
+        FTSIndex[FTS Indexing]
+        Embed[Embedding Generation]
+        EntityExtract[Entity Extraction]
+        AIEnrich[AI Enrichment]
+    end
+
+    Push --> SyncCoord
+    Schedule --> SyncCoord
+    Manual --> SyncCoord
+    Startup --> SyncCoord
+
+    SyncCoord --> TokenMgr
+    TokenMgr --> SyncState
+    SyncCoord --> Gmail_A
+    SyncCoord --> Graph_A
+    SyncCoord --> Imap_A
+
+    Gmail_A --> DeltaProc
+    Graph_A --> DeltaProc
+    Imap_A --> DeltaProc
+
+    DeltaProc --> ConflictRes
+    OpQueue --> ConflictRes
+    PendingOps --> OpQueue
+    ConflictRes --> EmailStore
+
+    EmailStore --> MimeParse
+    MimeParse --> FTSIndex
+    MimeParse --> Embed
+    MimeParse --> EntityExtract
+    EntityExtract --> AIEnrich
+
+    style SyncCoord fill:#fc9,stroke:#333,stroke-width:2px
+    style ConflictRes fill:#fc9,stroke:#333,stroke-width:2px
+```
+
+## 三、关键模块的具体说明
+
+### 1. Memory Orchestrator 的设计哲学
+
+记忆系统的核心理念：**借鉴认知科学，但不照搬。**
+
+不要被一些 hype 概念误导（什么"无限记忆"），实际工程上：
+
+- **Working Memory** = 当前会话的 context window，纯内存，几分钟到几小时
+- **Episodic Memory** = 原始事件流，邮件本身就是天然的 episodic memory
+- **Semantic Memory** = 通过 embedding 实现的"语义相似"召回
+- **Entity Graph** = 结构化的事实，回答"谁是谁、做过什么"
+- **Procedural Memory** = 用户偏好和规则，回答"我应该怎么做"
+
+**关键 trick：分层召回（Hybrid Retrieval）**
+
+当用户问 "Q4 项目的进展如何"，召回应该是：
+
+```
+1. Query → Embedding → 语义搜索 LanceDB（拿到 top-20 相关邮件）
+2. Query → Entity Extraction → 在 CozoDB 找 "Q4项目" 节点 → 拿到关联的人、承诺、子话题
+3. 时间过滤 → 最近 N 天的相关 episodic events
+4. 用户偏好 → 从 Procedural Memory 拿"用户关心什么维度"
+5. Rerank → 用 cross-encoder 或 LLM 重排
+6. 组装成 LLM context（注意 token budget）
+```
+
+这种 hybrid retrieval 比纯向量检索效果好 30-50%。
+
+### 2. Entity Graph 的 schema 设计
+
+用 CozoDB 的 Datalog 语法，schema 大概这样：
+
+```
+// 节点类型
+:create person {
+    id: String,
+    primary_email: String,
+    name: String?,
+    org_id: String?,
+    first_seen: Validity,
+    last_interaction: Validity,
+    interaction_count: Int,
+    relationship_summary: String?,  // LLM 生成的关系摘要
+}
+
+:create organization {
+    id: String,
+    name: String,
+    domain: String?,
+}
+
+:create project {
+    id: String,
+    name: String,
+    status: String,  // active/paused/done
+    summary: String?,  // LLM 维护的项目摘要
+    last_updated: Validity,
+}
+
+:create commitment {
+    id: String,
+    description: String,
+    owner_id: String,        // 承诺人
+    receiver_id: String,     // 接受人
+    deadline: Validity?,
+    status: String,          // pending/fulfilled/overdue
+    source_email_id: String, // 来自哪封邮件
+}
+
+// 关系（边）
+:create works_at {person_id: String => org_id: String}
+:create involved_in {person_id: String, project_id: String => role: String}
+:create mentioned_in {entity_id: String, email_id: String => count: Int}
+:create related_to {project_id_a: String => project_id_b: String, strength: Float}
+```
+
+**关键点**：所有实体都关联到原始邮件 ID，这样任何 AI 生成的"事实"都能溯源到证据。
+
+### 3. LLM Router 的具体规则
+
+```rust
+enum TaskType {
+    EntityExtraction,      // L2
+    SensitivityCheck,      // L1
+    Summary,               // L2
+    DraftGeneration,       // L2 or L3 depending on length
+    AgentMultiStep,        // L3
+    DailyBriefing,         // L3
+    Translation,           // L2
+    Classification,        // L1
+    SemanticSearch,        // Embedding only
+}
+
+struct RouterConfig {
+    privacy_mode: PrivacyMode,  // LocalOnly / Balanced / Performance
+    budget: TokenBudget,
+    fallback_chain: Vec<ModelTier>,
+}
+
+impl LlmRouter {
+    fn route(&self, task: TaskType, ctx: &Context) -> ModelChoice {
+        if self.config.privacy_mode == PrivacyMode::LocalOnly {
+            return ModelChoice::Local(self.local_model.clone());
+        }
+        match task {
+            TaskType::SensitivityCheck | TaskType::Classification => {
+                ModelChoice::Local(self.local_model.clone())
+            }
+            TaskType::AgentMultiStep | TaskType::DailyBriefing => {
+                ModelChoice::Cloud(self.top_tier.clone())
+            }
+            _ => ModelChoice::Cloud(self.mid_tier.clone()),
+        }
+    }
+}
+```
+
+### 4. Tauri IPC 设计
+
+前后端通信用 Tauri 的 Command + Event：
+
+```rust
+// 前端调用后端
+#[tauri::command]
+async fn search_emails(query: String, state: State<'_, AppState>) -> Result<Vec<EmailResult>>;
+
+#[tauri::command]
+async fn ask_assistant(question: String, context: AssistantContext) -> Result<AssistantResponse>;
+
+#[tauri::command]
+async fn get_daily_briefing() -> Result<Briefing>;
+
+// 后端推送给前端
+// Event: "email:new"        - 新邮件
+// Event: "sync:progress"    - 同步进度
+// Event: "ai:streaming"     - LLM 流式输出
+// Event: "memory:updated"   - 记忆更新
+```
+
+**关键设计**：LLM 的 streaming 输出通过 Tauri Event 推送到前端，UI 实时渲染。
+
+## 四、目录结构建议
+
+```
+your-mail-app/
+├── apps/
+│   └── desktop/                    # Tauri 应用
+│       ├── src/                    # React 前端
+│       │   ├── components/
+│       │   ├── features/
+│       │   │   ├── inbox/
+│       │   │   ├── compose/
+│       │   │   ├── assistant/      # 对话式 UI
+│       │   │   ├── briefing/       # Daily Briefing
+│       │   │   └── settings/
+│       │   ├── lib/
+│       │   ├── stores/             # Zustand stores
+│       │   └── routes/
+│       ├── src-tauri/              # Rust 后端
+│       │   ├── src/
+│       │   │   ├── main.rs
+│       │   │   ├── commands/       # Tauri commands
+│       │   │   └── events/
+│       │   └── Cargo.toml
+│       └── package.json
+├── crates/                         # Rust 内部 crates
+│   ├── mail-core/                  # 核心数据模型
+│   ├── mail-engine/                # 同步引擎
+│   ├── mail-providers/             # Gmail/Graph/IMAP adapters
+│   │   ├── gmail/
+│   │   ├── graph/
+│   │   └── imap/
+│   ├── mail-storage/               # SQLite/Tantivy/LanceDB/CozoDB 封装
+│   ├── ai-core/                    # LLM 路由、prompt 管理
+│   ├── ai-memory/                  # 记忆系统
+│   │   ├── working/
+│   │   ├── episodic/
+│   │   ├── semantic/
+│   │   ├── entity_graph/
+│   │   └── procedural/
+│   ├── ai-agent/                   # Agent / Tool Use
+│   └── common/                     # 共享工具
+├── packages/                       # 前端共享包
+│   └── ui/                         # 共享 UI 组件
+├── Cargo.toml                      # Workspace
+├── package.json
+└── pnpm-workspace.yaml
+```
+
+## 五、几个容易被忽视的关键点
+
+### 1. **不要从第一天就追求完美记忆系统**
+MVP 阶段，Entity Graph 可以先用 SQLite 的关系表凑合，等数据量上来再迁 CozoDB。**LanceDB 是必上的，没它没法做语义搜索。**
+
+### 2. **LLM 调用必须有强 timeout 和 fallback**
+任何 LLM 调用都可能挂、超时、限流。每个调用都要有：
+- timeout（一般 30s）
+- 重试（指数退避）
+- fallback（降级到本地模型或简单实现）
+- 用户可见的错误处理
+
+### 3. **隐私分级要在架构层面体现**
+```rust
+enum PrivacyMode {
+    LocalOnly,    // 完全本地，无任何云端调用
+    Balanced,     // 元数据可上云，正文加密
+    Performance,  // 全功能云端
+}
+```
+这个 enum 要贯穿整个系统，每个跨网请求都要检查。
+
+### 4. **Token 预算管理**
+LLM 上下文有限，必须管理 token：
+- 用 tiktoken-rs 计数
+- 给每个任务设 token budget
+- 超出时 trigger memory compression（用 LLM 把旧内容压缩）
+
+### 5. **后台任务的 backpressure**
+新邮件到达 → 触发 embedding、entity extraction、AI enrichment。如果不做 backpressure，初次同步几千封邮件会把系统打挂。用 `tokio::sync::Semaphore` 限制并发。
+
+### 6. **Tauri 2 的 sidecar 能力**
+如果有些库只有 Python 版本（比如某个 embedding 模型），可以用 Tauri 的 sidecar 机制启动 Python 进程通信，但能不用就不用。Rust 生态现在够了。
+
+## 六、推荐的开发顺序
+
+1. **Phase 0 (2 周)**：Tauri + React 脚手架，登录 Gmail（OAuth），能拉到邮件列表
+2. **Phase 1 (4 周)**：Sync Engine + 本地存储 + 邮件阅读/发送的传统 UI
+3. **Phase 2 (3 周)**：LanceDB 集成 + 语义搜索 + 简单 RAG 问答
+4. **Phase 3 (4 周)**：LLM Router + Entity Extraction + Entity Graph 基础版
+5. **Phase 4 (3 周)**：Daily Briefing + Compose Assistant
+6. **Phase 5 (3 周)**：Outlook (Graph) 支持
+7. **Phase 6 (4 周)**：完整记忆系统 + Agent 能力 + 打磨
+8. **Phase 7 (持续)**：性能优化、稳定性、用户体验细节
+
+**约 6 个月可以做出有差异化的 MVP**，团队规模 3-5 人（2 Rust + 2 前端 + 1 设计/产品）。
+
+---
+
+如果想再深入，我可以展开任何一块：
+
+- **Entity Extraction 的 prompt 工程和具体 schema**
+- **Hybrid Retrieval 的具体实现代码**
+- **Sync Engine 的状态机和冲突解决细节**
+- **Memory Compression 的策略**
+- **LLM Router 的 cost optimization 实战**
+
+你想先深入哪一块？
 
 

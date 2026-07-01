@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import { parseRecipients, type Recipient } from '@/features/composer/contacts';
 
+export type Importance = 'low' | 'normal' | 'high';
 export type ComposerMode = 'new' | 'reply' | 'replyAll' | 'forward';
 export type ComposerViewMode = 'modal' | 'fullpage';
 
@@ -58,6 +59,14 @@ export interface ComposerState {
   classificationId: string | null;
   isEncrypted: boolean;
   isSigned: boolean;
+  /** Message importance. Default: normal. */
+  importance: Importance;
+  /** Request a read receipt from each recipient. */
+  requestReadReceipt: boolean;
+  /** Unix timestamp (ms) when the message should be delivered (delay delivery). */
+  deliverAt: number | null;
+  /** Best-effort flag; deep IRM/DRM enforcement is backend-side. */
+  preventCopy: boolean;
 
   openComposer: (opts?: {
     mode?: ComposerMode;
@@ -75,6 +84,10 @@ export interface ComposerState {
     classificationId?: string | null;
     isEncrypted?: boolean;
     isSigned?: boolean;
+    importance?: Importance;
+    requestReadReceipt?: boolean;
+    deliverAt?: number | null;
+    preventCopy?: boolean;
   }) => void;
   closeComposer: () => void;
   setTo: (to: RecipientInput) => void;
@@ -99,6 +112,10 @@ export interface ComposerState {
   setClassificationId: (id: string | null) => void;
   setIsEncrypted: (value: boolean) => void;
   setIsSigned: (value: boolean) => void;
+  setImportance: (value: Importance) => void;
+  setRequestReadReceipt: (value: boolean) => void;
+  setDeliverAt: (value: number | null) => void;
+  setPreventCopy: (value: boolean) => void;
 }
 
 export const useComposerStore = create<ComposerState>((set) => ({
@@ -126,6 +143,10 @@ export const useComposerStore = create<ComposerState>((set) => ({
   classificationId: null,
   isEncrypted: false,
   isSigned: false,
+  importance: 'normal',
+  requestReadReceipt: false,
+  deliverAt: null,
+  preventCopy: false,
 
   openComposer: (opts) =>
     set({
@@ -151,6 +172,10 @@ export const useComposerStore = create<ComposerState>((set) => ({
       classificationId: opts?.classificationId ?? null,
       isEncrypted: opts?.isEncrypted ?? false,
       isSigned: opts?.isSigned ?? false,
+      importance: opts?.importance ?? 'normal',
+      requestReadReceipt: opts?.requestReadReceipt ?? false,
+      deliverAt: opts?.deliverAt ?? null,
+      preventCopy: opts?.preventCopy ?? false,
     }),
   closeComposer: () =>
     set({
@@ -176,6 +201,10 @@ export const useComposerStore = create<ComposerState>((set) => ({
       classificationId: null,
       isEncrypted: false,
       isSigned: false,
+      importance: 'normal',
+      requestReadReceipt: false,
+      deliverAt: null,
+      preventCopy: false,
     }),
   setTo: (to) => set({ to: normalizeRecipients(to) }),
   setCc: (cc) => set({ cc: normalizeRecipients(cc) }),
@@ -201,4 +230,8 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setClassificationId: (classificationId) => set({ classificationId }),
   setIsEncrypted: (isEncrypted) => set({ isEncrypted }),
   setIsSigned: (isSigned) => set({ isSigned }),
+  setImportance: (importance) => set({ importance }),
+  setRequestReadReceipt: (requestReadReceipt) => set({ requestReadReceipt }),
+  setDeliverAt: (deliverAt) => set({ deliverAt }),
+  setPreventCopy: (preventCopy) => set({ preventCopy }),
 }));

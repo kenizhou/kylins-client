@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { CloseIcon } from '../icons';
 
 export interface ModalProps {
   isOpen: boolean;
@@ -64,7 +65,7 @@ export function Modal({
       aria-label={title || 'Dialog'}
     >
       <div
-        className={`relative flex flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl ${SIZE_CLASSES[size]} ${className}`}
+        className={`relative flex flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-2xl ${SIZE_CLASSES[size]} ${className}`}
       >
         {hasHeader && (
           <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
@@ -75,17 +76,19 @@ export function Modal({
                 </span>
               )}
               <div>
-                {title && <h2 className="text-lg font-semibold text-[var(--foreground)]">{title}</h2>}
+                {title && (
+                  <h2 className="text-lg font-semibold text-[var(--foreground)]">{title}</h2>
+                )}
                 {subtitle && <p className="text-xs text-[var(--muted-text)]">{subtitle}</p>}
               </div>
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               aria-label="Close"
             >
-              ✕
+              <CloseIcon size={16} />
             </button>
           </div>
         )}
@@ -94,14 +97,16 @@ export function Modal({
           <button
             type="button"
             onClick={onClose}
-            className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
+            className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Close"
           >
-            ✕
+            <CloseIcon size={16} />
           </button>
         )}
 
-        <div className={`flex-1 overflow-auto kylins-scrollbar ${contentClassName}`}>{children}</div>
+        <div className={`flex-1 overflow-auto kylins-scrollbar ${contentClassName}`}>
+          {children}
+        </div>
 
         {footer && (
           <div className="flex items-center justify-between px-6 py-3 border-t border-[var(--border)] bg-[color-mix(in_oklab,var(--surface),black_4%)] shrink-0">

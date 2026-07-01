@@ -25,7 +25,8 @@ function isValidLevel(value: unknown): value is ClassificationLevel {
     HEX_COLOR_RE.test(v.color) &&
     (v.icon === undefined || v.icon === null || typeof v.icon === 'string') &&
     typeof v.order === 'number' &&
-    Number.isFinite(v.order)
+    Number.isFinite(v.order) &&
+    (v.prominent === undefined || typeof v.prominent === 'boolean')
   );
 }
 
@@ -34,7 +35,11 @@ export function sanitizeClassificationLevels(value: unknown): ClassificationLeve
 
   const levels = value
     .filter(isValidLevel)
-    .map((level) => ({ ...level, icon: level.icon ?? null }))
+    .map((level) => ({
+      ...level,
+      icon: level.icon ?? null,
+      ...(level.prominent === undefined ? {} : { prominent: level.prominent }),
+    }))
     .sort((a, b) => a.order - b.order);
 
   // Deduplicate by id, keeping the first occurrence.

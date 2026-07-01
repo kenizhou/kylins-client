@@ -8,6 +8,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { searchContacts, type DbContact } from '@/services/db/contacts';
 import { parseRecipients, isValidEmail, type Recipient } from '@/features/composer/contacts';
 import { CopyIcon, MoveIcon, TrashIcon } from '@/components/icons';
+import { CaretDown } from '@phosphor-icons/react';
 
 export type MoveTarget = 'to' | 'cc' | 'bcc';
 
@@ -194,7 +195,7 @@ export function RecipientField({
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
               >
-                ▾
+                <CaretDown size={10} weight="bold" />
               </button>
               {menuOpen && (
                 <>
@@ -269,7 +270,7 @@ export function RecipientField({
           }}
           placeholder={recipients.length === 0 ? placeholder : ''}
           aria-label={label}
-          className="min-w-[120px] flex-1 bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/50"
+          className="min-w-[120px] flex-1 bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
         />
 
         {showSuggestions && (

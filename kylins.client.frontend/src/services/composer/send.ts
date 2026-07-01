@@ -39,6 +39,19 @@ function inputToEmailDraft(input: DraftInput, fallbackFrom: string) {
   // Recipient[] → RFC address strings at the MIME boundary. Reply-To only when set.
   const replyTo =
     input.replyTo && input.replyTo.length > 0 ? formatRecipients(input.replyTo) : undefined;
+
+  const extraHeaders: Record<string, string> = { ...(input.extraHeaders ?? {}) };
+  if (input.importance && input.importance !== 'normal') {
+    extraHeaders['X-Priority'] = input.importance === 'high' ? '1' : '5';
+    extraHeaders['Importance'] = input.importance;
+  }
+  if (input.requestReadReceipt) {
+    extraHeaders['Disposition-Notification-To'] = input.fromEmail ?? fallbackFrom;
+  }
+  if (input.preventCopy) {
+    extraHeaders['X-Classification-Prevent-Copy'] = 'true';
+  }
+
   return {
     from: input.fromEmail ?? fallbackFrom,
     to: formatRecipients(input.to),
@@ -53,6 +66,7 @@ function inputToEmailDraft(input: DraftInput, fallbackFrom: string) {
     inReplyTo: input.inReplyToMessageId ?? undefined,
     threadId: input.threadId ?? undefined,
     attachments: attachments.length > 0 ? attachments : undefined,
+    extraHeaders: Object.keys(extraHeaders).length > 0 ? extraHeaders : undefined,
   };
 }
 

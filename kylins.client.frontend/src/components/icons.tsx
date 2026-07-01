@@ -263,6 +263,7 @@ export const MinimizeIcon = makeIcon(MinusSignIcon);
 export const MaximizeIcon = makeIcon(ArrowExpand01Icon);
 export const RestoreIcon = makeIcon(ArrowShrink01Icon);
 export const CloseIcon = makeIcon(Cancel01Icon);
+export const WarningIcon = makeIcon(Alert01Icon);
 export const ClockIcon = makeIcon(Clock01Icon);
 export const AttachmentIcon = makeIcon(Attachment01Icon);
 
