@@ -549,12 +549,44 @@ impl Handle {
         if guard.is_some() {
             return Ok(());
         }
-        let session = imap_client::connect(config).await?;
-        *guard = Some(session);
-        // New session = nothing selected yet. Acquired after `session` per the
-        // documented lock ordering; released at the statement boundary.
-        *self.selected_mailbox.lock().await = None;
-        Ok(())
+        // Trace logging at the connect boundary: the worker reaches
+        // `ensure_connected` right after the keyring-decrypt step (one log line)
+        // and then either hangs or dies silently. Logging BEFORE + AFTER the
+        // connect call pinpoints whether the worker is wedged inside the dial
+        // (TLS handshake / TCP / XOAUTH2) or died before reaching it. The
+        // `&self.account_id` is captured in `Handle` so the log is per-account.
+        log::info!(
+            "[imap-mgr] {}: connecting to {}:{} (security={})...",
+            self.account_id,
+            config.host,
+            config.port,
+            config.security
+        );
+        match imap_client::connect(config).await {
+            Ok(session) => {
+                log::info!(
+                    "[imap-mgr] {}: connected to {}:{}",
+                    self.account_id,
+                    config.host,
+                    config.port
+                );
+                *guard = Some(session);
+                // New session = nothing selected yet. Acquired after `session`
+                // per the documented lock ordering; released at the statement
+                // boundary.
+                *self.selected_mailbox.lock().await = None;
+                Ok(())
+            }
+            Err(e) => {
+                log::warn!(
+                    "[imap-mgr] {}: connect to {}:{} failed: {e}",
+                    self.account_id,
+                    config.host,
+                    config.port
+                );
+                Err(e)
+            }
+        }
     }
 
     /// Drop the current session (if any) and dial a fresh one. Used by the

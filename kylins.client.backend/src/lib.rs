@@ -257,6 +257,32 @@ pub fn run() {
                 )?;
             }
 
+            // Panic hook: forward every panic (any thread, including spawned
+            // tokio worker tasks — whose panics otherwise go only to stderr and
+            // are silently swallowed by `tokio::spawn`'s detached JoinHandle)
+            // into the log file via `log::error!`. The default hook is chained
+            // afterward so the std panic print to stderr is preserved (Tauri's
+            // terminal in dev, the crash handler in prod). Installed AFTER the
+            // log plugin is up so `log::error!` has a subscriber; BEFORE the db
+            // pool + sync engine spawn so a panic during init is captured too.
+            {
+                let default_hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    let location = info
+                        .location()
+                        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                        .unwrap_or_default();
+                    let payload = info
+                        .payload()
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap_or("<non-string panic payload>");
+                    log::error!("PANIC at {location}: {payload}");
+                    default_hook(info);
+                }));
+            }
+
             // Open the SQLite database (creates mailclient.db + WAL files if
             // absent) and run embedded sqlx migrations. The pool is exposed to
             // later Tauri commands via State<'_, DbPool>. Tauri's setup runs

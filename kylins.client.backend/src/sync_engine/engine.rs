@@ -289,7 +289,15 @@ impl SyncEngine {
                 idle_watcher: None,
             },
         );
-        tokio::spawn(async move {
+        // Capture the worker's JoinHandle so a supervisor can observe its exit.
+        // Pre-fix the handle was discarded (detached spawn), which meant a
+        // panic inside the worker loop was swallowed silently by tokio — the
+        // panic went to stderr only (not the tauri-plugin-log file), and the
+        // worker vanished with no log line, leaving the account's sync seemingly
+        // "stuck" at the last emitted status. The supervisor below awaits the
+        // handle and logs the exit cause (normal / cancelled / panicked) so the
+        // log shows exactly when + why a worker died.
+        let worker_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
             // Initial sync immediately — this also warms the source's caps
             // cache (ImapSource caches IDLE/CONDSTORE/etc. on the first
             // successful connect), so the strategy decision below sees the
@@ -409,6 +417,35 @@ impl SyncEngine {
                 }
             }
             // (the idle_watcher JoinHandle is aborted by stop_all / worker removal)
+        });
+
+        // Supervisor: log when the worker exits. A panic in the worker loop
+        // surfaces here as `Err(join_err)` with `is_panic() == true` — without
+        // this supervisor the panic is silent (tokio::spawn detaches, the
+        // default JoinHandle drop does not await). The worker is never polled
+        // after exit, so this supervisor runs exactly once per worker and then
+        // itself exits. `aid_log` is captured by move so the supervisor is
+        // self-contained (no borrow on `account_id` which is moved into the
+        // worker above).
+        let aid_log = account_id.clone();
+        tokio::spawn(async move {
+            match worker_handle.await {
+                Ok(()) => log::warn!(
+                    "[sync] worker for account {aid_log} exited normally"
+                ),
+                Err(join_err) => {
+                    if join_err.is_panic() {
+                        log::error!(
+                            "[sync] worker for account {aid_log} PANICKED: {:?}",
+                            join_err
+                        );
+                    } else {
+                        log::warn!(
+                            "[sync] worker for account {aid_log} cancelled: {join_err}"
+                        );
+                    }
+                }
+            }
         });
     }
 
