@@ -41,6 +41,18 @@ interface ThreadState {
   selectThread: (thread: Thread) => Promise<void>;
   refresh: () => Promise<void>;
 
+  /**
+   * Patch `snippet` on threads already loaded in `state.threads`, in place.
+   * Scroll-preserving: unpatched thread objects keep their `===` reference so a
+   * virtualized list (react-virtualized #1837) does not invalidate measured row
+   * sizes. Only matching rows are replaced with `{ ...t, snippet }`. Never
+   * triggers a `refresh()` (which would reset scroll).
+   *
+   * Fed by the `sync:bodies-written` event from the Rust SyncEngine after a
+   * viewport-aware body-prefetch batch writes new bodies (Task 2 → Task 4).
+   */
+  patchSnippets: (updates: { threadId: string; snippet: string }[]) => void;
+
   // ---- User-driven thread mutations ----
   markThreadRead: (thread: Thread, read: boolean, messages?: DbMessageRow[]) => Promise<void>;
   toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
@@ -126,6 +138,14 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   refresh: async () => {
     const q = get().currentQuery;
     if (q) await get().loadThreads(q.accountId, q.labelId);
+  },
+
+  patchSnippets: (updates) => {
+    if (updates.length === 0) return;
+    const byId = new Map(updates.map((u) => [u.threadId, u.snippet]));
+    set((s) => ({
+      threads: s.threads.map((t) => (byId.has(t.id) ? { ...t, snippet: byId.get(t.id)! } : t)),
+    }));
   },
 
   // ---- User-driven thread mutations ----

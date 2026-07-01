@@ -1,9 +1,11 @@
 // Subscribes to Rust SyncEngine events and refreshes the relevant stores. The engine
 // (Rust) owns all sync; the frontend is a reactive view layer.
-//   sync:delta   -> a folder changed on disk -> reload folder list + open thread page
-//   sync:new-mail-> new unread in an Inbox-equivalent -> OS notification
-//   sync:queue   -> pending-operations count changed -> update uiStore.pendingCount
-//   sync:status  -> per-account state transition (syncing/idle/error/rate_limited)
+//   sync:delta          -> a folder changed on disk -> reload folder list + open thread page
+//   sync:new-mail       -> new unread in an Inbox-equivalent -> OS notification
+//   sync:queue          -> pending-operations count changed -> update uiStore.pendingCount
+//   sync:status         -> per-account state transition (syncing/idle/error/rate_limited)
+//   sync:bodies-written -> a viewport body-prefetch batch landed -> in-place snippet patch
+//                          (scroll-preserving; never calls threadStore.refresh())
 //   tray-check-mail (tray menu) -> nudge every account to sync now
 //
 // No-op outside Tauri (tests/jsdom).
@@ -99,6 +101,18 @@ export function useSyncEvents(): void {
             useUIStore
               .getState()
               .setRateLimited(e.payload.accountId, e.payload.state === 'rate_limited');
+          }),
+        );
+
+        unlisteners.push(
+          await listen<{
+            accountId: string;
+            updates: { threadId: string; snippet: string }[];
+          }>('sync:bodies-written', (e) => {
+            // Viewport-aware body-prefetch (Task 2) just wrote N bodies. Patch
+            // the matching threads' snippets in place so the list updates
+            // without a scroll-resetting refresh() (react-virtualized #1837).
+            useThreadStore.getState().patchSnippets(e.payload.updates);
           }),
         );
 
