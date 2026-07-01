@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { ArrowBendDoubleUpLeft, Archive } from '@phosphor-icons/react';
@@ -14,7 +14,9 @@ import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { useThreadStore } from '../../stores/threadStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
+import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
+import { fetchInlineImages } from '../../services/db/attachments';
 import { InlineReply } from '../email/InlineReply';
 import { formatFullDate } from '../../utils/formatDate';
 import { getInitials } from '../../data/demoMessages';
@@ -112,16 +114,45 @@ export function ReadingPane() {
   const { getLevelById } = useClassification();
   const { encryptedIcon, signedIcon } = useSecurityIndicatorIcons();
   const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
-  // Reset the inline composer when the selected message changes. Uses the
-  // prev-value render pattern (setState-during-render to correct stale state)
-  // rather than setState-in-effect.
+  const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
+  // Reset per-message ephemeral state when the selected message changes. Uses
+  // the prev-value render pattern (setState-during-render to correct stale
+  // state) rather than setState-in-effect (the project's eslint rule
+  // react-hooks/set-state-in-effect rejects synchronous setState in effects).
   const [activeMsgId, setActiveMsgId] = useState<string | undefined>(message?.id);
   if (message?.id !== activeMsgId) {
     setActiveMsgId(message?.id);
     setComposeMode(null);
+    setCidMap(new Map());
   }
 
   const [moreOpen, setMoreOpen] = useState(false);
+
+  // Inline `cid:` image resolution. When the selected message changes, fetch
+  // its inline Content-ID parts in ONE round-trip and build a cid → data: URL
+  // map that EmailRenderer substitutes into the HTML (before the remote-image
+  // block, so inline images render without the "Load images" toggle). The map
+  // is reset at render time above (on message change); this effect only fetches
+  // and calls setState from the async callback (lint-allowed).
+  useEffect(() => {
+    const id = message?.id;
+    const acct = activeAccountId;
+    if (!id || !acct) return;
+    let cancelled = false;
+    fetchInlineImages(acct, id)
+      .then((parts) => {
+        if (cancelled) return;
+        const m = new Map<string, string>();
+        for (const p of parts) {
+          m.set(p.contentId, `data:${p.mimeType};base64,${p.base64}`);
+        }
+        setCidMap(m);
+      })
+      .catch((e) => console.error('[reading-pane] fetchInlineImages failed', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [message?.id, activeAccountId]);
 
   if (!message) {
     return (
@@ -320,6 +351,11 @@ export function ReadingPane() {
       </div>
 
       <main className="flex-1 overflow-auto p-5 leading-[1.6] text-[var(--text)]">
+        <AttachmentList
+          accountId={activeAccountId}
+          messageId={message.id}
+          bodyHtml={message.html}
+        />
         <EmailRenderer
           html={message.html}
           text={message.text}
@@ -328,7 +364,7 @@ export function ReadingPane() {
           accountId={activeAccountId}
           senderAllowlisted={false}
           isMessageSuspicious={isSuspicious}
-          cidMap={null}
+          cidMap={cidMap}
         />
       </main>
       <InjectedComponentSet role="reading-pane:footer" containersRequired={false} />

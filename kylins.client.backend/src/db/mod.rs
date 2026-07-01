@@ -14,6 +14,7 @@
 
 pub mod accounts;
 pub mod ai_cache;
+pub mod attachments;
 pub mod calendar_events;
 pub mod commands;
 pub mod contact_sync_state;

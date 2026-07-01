@@ -14,6 +14,7 @@ use tauri::State;
 use sqlx::SqlitePool;
 
 use crate::db::accounts::{self, Account, AccountUpdates, CreateAccountInput};
+use crate::db::attachments::{self, AttachmentRow};
 use crate::db::labels::{self, MailFolder};
 use crate::db::message_bodies;
 use crate::db::messages;
@@ -249,6 +250,17 @@ pub async fn db_get_messages_for_thread(
     thread_id: String,
 ) -> Result<Vec<MessageRow>, String> {
     threads::get_messages_for_thread(&pool, &account_id, &thread_id).await
+}
+
+/// List attachment metadata for a message (filename, mime_type, size,
+/// content_id, is_inline, imap_part_id). Populated by the body-fetch path.
+#[tauri::command]
+pub async fn db_get_attachments(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<Vec<AttachmentRow>, String> {
+    attachments::get_attachments(&pool, &account_id, &message_id).await
 }
 
 /// Mark every message in a thread (and the thread row) as read, atomically.

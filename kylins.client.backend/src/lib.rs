@@ -68,6 +68,7 @@ pub fn run() {
             commands::decrypt_secret,
             commands::read_text_file,
             commands::write_text_file,
+            commands::write_binary_file,
             commands::get_autostart_state,
             commands::set_autostart_enabled,
             commands::send_desktop_notification,
@@ -140,6 +141,7 @@ pub fn run() {
             db::commands::db_delete_folder,
             db::commands::db_get_threads,
             db::commands::db_get_messages_for_thread,
+            db::commands::db_get_attachments,
             db::commands::db_mark_thread_read,
             db::commands::db_get_message_body,
             db::commands::db_set_message_body,
@@ -218,6 +220,8 @@ pub fn run() {
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,
             sync_engine::commands::sync_request_bodies,
+            sync_engine::commands::sync_fetch_attachment,
+            sync_engine::commands::sync_fetch_inline_images,
             sync_engine::commands::sync_apply_mutation,
         ])
         .setup(|app| {

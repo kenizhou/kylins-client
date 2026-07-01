@@ -1475,6 +1475,202 @@ fn derive_snippet(body_text: &str) -> String {
     collapsed.chars().take(200).collect()
 }
 
+/// Build the `a1 LOGIN` / `a1 AUTHENTICATE XOAUTH2` command for `config`. Used
+/// by the raw-fetch paths so they share one auth-string construction.
+fn build_login_cmd(config: &ImapConfig) -> String {
+    if config.auth_method == "oauth2" {
+        let xoauth2 = format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            config.username, config.password
+        );
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            xoauth2.as_bytes(),
+        );
+        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
+    } else {
+        format!(
+            "a1 LOGIN \"{}\" \"{}\"\r\n",
+            config.username, config.password
+        )
+    }
+}
+
+/// Open a raw IMAP connection, LOGIN, SELECT `folder`, then `UID FETCH <uid>
+/// (UID BODY.PEEK[])` and parse the single returned message with mail_parser.
+/// Used by `fetch_attachment_bytes` and the `sync_fetch_inline_images` command
+/// to obtain the parsed MIME tree (so a specific part can be located by section
+/// and decoded). Single connection lifecycle (connect → login → select → fetch
+/// → drop), like `fetch_bodies_batch`. Raw (NOT async-imap) because async-imap
+/// returns 0 items on this server. Returns `Ok(None)` if the server sent no
+/// FETCH response for the UID.
+async fn fetch_parsed_message(
+    config: &ImapConfig,
+    folder: &str,
+    uid: u32,
+) -> Result<Option<mail_parser::Message<'static>>, String> {
+    log::info!(
+        "FETCH PARSED: {}:{} {folder} UID {uid}",
+        config.host,
+        config.port
+    );
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+    raw_send_and_wait(&mut reader, build_login_cmd(config).as_bytes(), "a1").await?;
+    let _ = raw_send_and_wait(
+        &mut reader,
+        format!("a2 SELECT \"{folder}\"\r\n").as_bytes(),
+        "a2",
+    )
+    .await?;
+    // (UID BODY.PEEK[]) — UID must be requested explicitly (RFC 3501) so the
+    // response carries `UID <u>` (see commit a4d50f4). BODY.PEEK so opening /
+    // extracting a part does not mark the message \Seen.
+    let fetch_cmd = format!("a3 UID FETCH {uid} (UID BODY.PEEK[])\r\n");
+    log::debug!("C: a3 UID FETCH {uid} (UID BODY.PEEK[])");
+    reader
+        .get_mut()
+        .write_all(fetch_cmd.as_bytes())
+        .await
+        .map_err(|e| format!("write fetch cmd: {e}"))?;
+    let raws = raw_parse_fetch_responses(&mut reader, "a3").await?;
+    let raw = match raws.into_iter().next() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    // parse() borrows from raw.body (a local); into_owned() detaches the
+    // message into Message<'static> so it can be returned.
+    Ok(MessageParser::default().parse(&raw.body).map(|m| m.into_owned()))
+}
+
+/// Fetch ONE attachment part by IMAP MIME section (`part_id`, e.g. "1.2") and
+/// return its decoded bytes + mime type. Fetches the FULL message via
+/// `fetch_parsed_message`, locates the part via `build_imap_section_map`, and
+/// returns mail_parser's already-decoded bytes (mail_parser handles
+/// Content-Transfer-Encoding: base64 / quoted-printable). Whole-message fetch
+/// (not `BODY[section]`) because raw `BODY[section]` returns transfer-encoded
+/// bytes that we'd have to decode ourselves; letting mail_parser decode is
+/// simpler and matches what `parse_message`/`fetch_bodies_batch` already do.
+pub async fn fetch_attachment_bytes(
+    config: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    part_id: &str,
+) -> Result<(String, Vec<u8>), String> {
+    let message = fetch_parsed_message(config, folder, uid)
+        .await?
+        .ok_or_else(|| format!("UID {uid} in {folder}: no parseable message"))?;
+    let section_map = build_imap_section_map(&message);
+    let target_part_idx = section_map
+        .iter()
+        .find(|(_, section)| section.as_str() == part_id)
+        .map(|(&idx, _)| idx)
+        .ok_or_else(|| {
+            format!(
+                "Section {part_id} not found in UID {uid} (known sections: {:?})",
+                section_map.values().collect::<Vec<_>>()
+            )
+        })?;
+    let part = message
+        .parts
+        .get(target_part_idx)
+        .ok_or_else(|| format!("Part index {target_part_idx} out of range for UID {uid}"))?;
+    let mime_type = part
+        .content_type()
+        .map(|ct| {
+            let ctype = ct.ctype();
+            let subtype = ct.subtype().unwrap_or("octet-stream");
+            format!("{ctype}/{subtype}")
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let data = match &part.body {
+        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+            d.as_ref().to_vec()
+        }
+        mail_parser::PartType::Text(t) => t.as_bytes().to_vec(),
+        mail_parser::PartType::Html(h) => h.as_bytes().to_vec(),
+        mail_parser::PartType::Message(m) => m.raw_message.as_ref().to_vec(),
+        mail_parser::PartType::Multipart(_) => {
+            return Err(format!(
+                "Section {part_id} is a multipart container, not a leaf part (UID {uid})"
+            ));
+        }
+    };
+    Ok((mime_type, data))
+}
+
+/// Fetch all inline parts that carry a `Content-ID` (the parts referenced by
+/// `cid:` in an HTML body) for a message in ONE round-trip — returns each as
+/// `(content_id, mime_type, base64-bytes)`. Used by `sync_fetch_inline_images`
+/// so the reading pane can build a `cid -> data:` URL map without N full-message
+/// fetches. Fetches the full message once via `fetch_parsed_message` and walks
+/// the parsed MIME tree. Best-effort: parts that fail to extract are skipped.
+pub async fn fetch_inline_cid_parts(
+    config: &ImapConfig,
+    folder: &str,
+    uid: u32,
+) -> Result<Vec<InlineCidPart>, String> {
+    let message = fetch_parsed_message(config, folder, uid)
+        .await?
+        .ok_or_else(|| format!("UID {uid} in {folder}: no parseable message"))?;
+    let section_map = build_imap_section_map(&message);
+    let mut out = Vec::new();
+    for &part_idx in section_map.keys() {
+        let part = match message.parts.get(part_idx) {
+            Some(p) => p,
+            None => continue,
+        };
+        let content_id = match part.content_id() {
+            Some(s) => s.trim_matches(['<', '>']).to_string(),
+            None => continue,
+        };
+        let mime_type = part
+            .content_type()
+            .map(|ct| {
+                let ctype = ct.ctype();
+                let subtype = ct.subtype().unwrap_or("octet-stream");
+                format!("{ctype}/{subtype}")
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let data = match &part.body {
+            mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+                d.as_ref().to_vec()
+            }
+            mail_parser::PartType::Text(t) => t.as_bytes().to_vec(),
+            mail_parser::PartType::Html(h) => h.as_bytes().to_vec(),
+            mail_parser::PartType::Message(m) => m.raw_message.as_ref().to_vec(),
+            mail_parser::PartType::Multipart(_) => continue,
+        };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        out.push(InlineCidPart {
+            content_id,
+            mime_type,
+            base64: b64,
+        });
+    }
+    Ok(out)
+}
+
+/// One inline `cid:` part returned by [`fetch_inline_cid_parts`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InlineCidPart {
+    pub content_id: String,
+    pub mime_type: String,
+    pub base64: String,
+}
+
 /// Viewport-aware batch body prefetch. ONE connect + login + SELECT + chunked
 /// `UID FETCH <uid-set> BODY.PEEK[]` + LOGOUT (reuses `raw_fetch_folder`'s
 /// single-connection skeleton — never per-UID reconnects). `BODY.PEEK[]` (not
@@ -1604,11 +1800,17 @@ pub async fn fetch_bodies_batch(
                     let body_text = parsed.body_text(0).map(|s| s.to_string());
                     let body_html = parsed.body_html(0).map(|s| s.to_string());
                     let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
+                    // Extract attachment metadata from the SAME parsed message
+                    // (no extra fetch) so the engine can persist it to the
+                    // `attachments` table for the reading-pane list + inline
+                    // cid: resolution. Same helper `parse_message` uses.
+                    let attachments = extract_attachments(&parsed, raw_msg.uid);
                     out.push(FetchedBody {
                         uid: raw_msg.uid,
                         body_html,
                         body_text,
                         snippet,
+                        attachments,
                     });
                 }
                 log::info!(
@@ -2317,7 +2519,44 @@ fn parse_message(
         "Authentication-Results".into(),
     )));
 
-    let section_map = build_imap_section_map(&message);
+    let attachments = extract_attachments(&message, uid);
+
+    Ok(ImapMessage {
+        uid,
+        folder: folder.to_string(),
+        message_id,
+        in_reply_to,
+        references,
+        from_address,
+        from_name,
+        to_addresses,
+        cc_addresses,
+        bcc_addresses,
+        reply_to,
+        subject,
+        date,
+        is_read,
+        is_starred,
+        is_draft,
+        body_html,
+        body_text,
+        snippet,
+        raw_size,
+        list_unsubscribe,
+        list_unsubscribe_post,
+        auth_results,
+        attachments,
+    })
+}
+
+/// Extract attachment metadata (IMAP MIME section `part_id`, filename,
+/// mime_type, size, content_id, is_inline) from a parsed message. Shared by
+/// `parse_message` (folder sync) and `fetch_bodies_batch` (on-demand body
+/// fetch) so both paths produce identical `ImapAttachment` metadata that can be
+/// persisted to the `attachments` table and later used to fetch a single part
+/// via `BODY.PEEK[<part_id>]`. `uid` is for log correlation only.
+fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAttachment> {
+    let section_map = build_imap_section_map(message);
 
     log::debug!(
         "IMAP parse UID {uid}: {} parts, {} attachment indices {:?}, section_map: {:?}",
@@ -2327,7 +2566,7 @@ fn parse_message(
         section_map,
     );
 
-    let attachments: Vec<ImapAttachment> = message
+    message
         .attachments
         .iter()
         .filter_map(|&part_idx| {
@@ -2361,37 +2600,12 @@ fn parse_message(
                 mime_type,
                 size: att.len() as u32,
                 content_id: att.content_id().map(|s| s.to_string()),
-                is_inline: att.content_disposition().is_some_and(|cd| cd.is_inline()),
+                is_inline: att
+                    .content_disposition()
+                    .is_some_and(|cd| cd.is_inline()),
             })
         })
-        .collect();
-
-    Ok(ImapMessage {
-        uid,
-        folder: folder.to_string(),
-        message_id,
-        in_reply_to,
-        references,
-        from_address,
-        from_name,
-        to_addresses,
-        cc_addresses,
-        bcc_addresses,
-        reply_to,
-        subject,
-        date,
-        is_read,
-        is_starred,
-        is_draft,
-        body_html,
-        body_text,
-        snippet,
-        raw_size,
-        list_unsubscribe,
-        list_unsubscribe_post,
-        auth_results,
-        attachments,
-    })
+        .collect()
 }
 
 fn build_imap_section_map(

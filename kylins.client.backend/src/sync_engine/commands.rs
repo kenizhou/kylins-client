@@ -9,7 +9,7 @@ use tauri::State;
 
 use super::engine::{BodiesWrittenEvent, SnippetUpdate, SyncEngine};
 use super::{source_for_account, RemoteFolder};
-use crate::db::{message_bodies, messages, mutations::MutationOp, queue};
+use crate::db::{attachments, message_bodies, messages, mutations::MutationOp, queue};
 
 #[tauri::command]
 pub async fn sync_start(engine: State<'_, Arc<SyncEngine>>) -> Result<(), String> {
@@ -188,6 +188,24 @@ pub async fn request_bodies_inner(
                                         );
                                         continue;
                                     }
+                                    // Persist attachment metadata parsed from
+                                    // the same body (no extra fetch) so the
+                                    // reading pane can list attachments +
+                                    // resolve inline cid: images. Best-effort.
+                                    if !fb.attachments.is_empty() {
+                                        if let Err(e) = attachments::upsert_attachments(
+                                            pool,
+                                            account_id,
+                                            mid,
+                                            &fb.attachments,
+                                        )
+                                        .await
+                                        {
+                                            log::warn!(
+                                                "[sync] request_bodies: upsert attachments for {mid} failed: {e}"
+                                            );
+                                        }
+                                    }
                                     // Resolve thread_id for the event payload.
                                     match messages::get_thread_id_for_message(
                                         pool, account_id, mid,
@@ -284,6 +302,104 @@ pub async fn request_bodies_inner(
         });
     }
     Ok(())
+}
+
+/// Decoded attachment bytes (base64) returned by `sync_fetch_attachment`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentBytes {
+    pub mime_type: String,
+    pub base64: String,
+}
+
+/// Resolve `(folder, uid, ImapConfig)` for a message — shared by
+/// `sync_fetch_attachment_inner` and `sync_fetch_inline_images_inner`. Also
+/// disconnects the persistent IMAP session first so the raw single-connection
+/// fetch doesn't trip the server's concurrent-connection limit (same guard as
+/// `request_bodies_inner`). Returns `Err` for non-IMAP sources (no config).
+async fn resolve_imap_for_message(
+    engine: &Arc<SyncEngine>,
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<(String, u32, crate::mail::imap::types::ImapConfig), String> {
+    let (folder, uid) = messages::get_folder_uid_for_message(pool, account_id, message_id)
+        .await
+        .map_err(|e| format!("lookup folder/uid for {message_id}: {e}"))?
+        .ok_or_else(|| format!("no imap_folder/uid for message {message_id}"))?;
+    let src = source_for_account(pool, account_id, &engine.session_manager)
+        .await
+        .map_err(|e| format!("source for {account_id}: {e}"))?;
+    let config = src
+        .imap_config_for_folder(&folder)
+        .await
+        .map_err(|e| format!("imap config for {folder}: {e}"))?
+        .ok_or_else(|| format!("no IMAP config for {account_id} (non-IMAP source?)"))?;
+    engine.session_manager.disconnect_account(account_id).await;
+    Ok((folder, uid, config))
+}
+
+/// Testable core of [`sync_fetch_attachment`]. Resolves the message's
+/// folder+uid+config, fetches the part, returns decoded bytes as base64.
+pub async fn sync_fetch_attachment_inner(
+    engine: Arc<SyncEngine>,
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+    part_id: &str,
+) -> Result<AttachmentBytes, String> {
+    let (folder, uid, config) =
+        resolve_imap_for_message(&engine, pool, account_id, message_id).await?;
+    let (mime_type, data) =
+        crate::mail::imap::client::fetch_attachment_bytes(&config, &folder, uid, part_id).await?;
+    let base64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &data,
+    );
+    Ok(AttachmentBytes { mime_type, base64 })
+}
+
+/// Fetch a single attachment part (by IMAP section `part_id`) as base64 for
+/// download. Resolves the account's IMAP config server-side so the frontend
+/// only needs accountId + messageId + partId.
+#[tauri::command]
+pub async fn sync_fetch_attachment(
+    engine: State<'_, Arc<SyncEngine>>,
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+    part_id: String,
+) -> Result<AttachmentBytes, String> {
+    sync_fetch_attachment_inner(engine.inner().clone(), pool.inner(), &account_id, &message_id, &part_id)
+        .await
+}
+
+/// Testable core of [`sync_fetch_inline_images`]. Fetches the full message
+/// ONCE and returns every `Content-ID`-bearing inline part as
+/// `(content_id, mime_type, base64)` so the frontend can build a
+/// `cid -> data:` URL map in a single round-trip (not one fetch per image).
+pub async fn sync_fetch_inline_images_inner(
+    engine: Arc<SyncEngine>,
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Vec<crate::mail::imap::client::InlineCidPart>, String> {
+    let (folder, uid, config) =
+        resolve_imap_for_message(&engine, pool, account_id, message_id).await?;
+    crate::mail::imap::client::fetch_inline_cid_parts(&config, &folder, uid).await
+}
+
+/// Fetch every inline `cid:` image for a message in one round-trip (so the
+/// reading pane can render inline images without N full-message fetches).
+#[tauri::command]
+pub async fn sync_fetch_inline_images(
+    engine: State<'_, Arc<SyncEngine>>,
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<Vec<crate::mail::imap::client::InlineCidPart>, String> {
+    sync_fetch_inline_images_inner(engine.inner().clone(), pool.inner(), &account_id, &message_id)
+        .await
 }
 
 /// Apply a mail mutation optimistically (local DB), then enqueue one
