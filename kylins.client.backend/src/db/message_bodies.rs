@@ -117,6 +117,54 @@ pub async fn evict_body(
     Ok(())
 }
 
+/// Bounded-cache eviction: if `message_bodies` exceeds `cap_rows`, delete the
+/// oldest-`fetched_at` rows beyond the cap (LRU-by-rows) and clear their
+/// `body_cached` flag. One transaction. Idempotent. The cap is a row count
+/// (each body is ~10s of KB on average → 2000 rows ≈ a few hundred MB).
+pub async fn maybe_evict(pool: &SqlitePool, cap_rows: i64) -> Result<u64, String> {
+    let (cnt,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM message_bodies")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if cnt <= cap_rows {
+        return Ok(0);
+    }
+    let to_delete = cnt - cap_rows;
+    let mut tx = pool.begin().await.map_err(|e| format!("begin tx: {e}"))?;
+    // SQLite supports the `DELETE ... WHERE rowid IN (SELECT ... ORDER BY …
+    // LIMIT n)` form; we delete the oldest-N message_ids first, then clear
+    // their body_cached flag.
+    let deleted_ids: Vec<String> = sqlx::query_scalar(
+        "DELETE FROM message_bodies \
+         WHERE rowid IN ( \
+             SELECT rowid FROM message_bodies \
+             ORDER BY fetched_at ASC \
+             LIMIT ? \
+         ) RETURNING message_id",
+    )
+    .bind(to_delete)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let n = deleted_ids.len() as u64;
+    // Clear body_cached for the evicted messages (so a future prefetch will
+    // re-fetch them if they scroll back into view).
+    for mid in &deleted_ids {
+        // account_id is implicit in the message_id uniqueness, but the column
+        // is on messages — we have only message_id here, so clear by id alone
+        // (account_id is redundant for the WHERE because message ids are
+        // globally unique: "imap-{account}-{folder}-{uid}").
+        sqlx::query("UPDATE messages SET body_cached = 0 WHERE id = ?")
+            .bind(mid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    log::info!("[db] message_bodies evicted {n} row(s) (was {cnt}, cap {cap_rows})");
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +362,68 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn maybe_evict_deletes_oldest_rows_beyond_cap_and_clears_cached_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        // Seed 3 messages with bodies fetched at increasing fetched_at.
+        for i in 1..=3 {
+            let mid = format!("m{i}");
+            seed_message(&pool, "a", &format!("t{i}"), &mid).await;
+            set_message_body(&pool, "a", &mid, &format!("body{i}"))
+                .await
+                .unwrap();
+            // Force distinct fetched_at so the eviction order is deterministic.
+            sqlx::query("UPDATE message_bodies SET fetched_at = ? WHERE message_id = ?")
+                .bind(i as i64) // m1 oldest, m3 newest
+                .bind(&mid)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        // Cap at 2 rows → m1 (oldest) evicted; m2 + m3 stay.
+        let evicted = maybe_evict(&pool, 2).await.unwrap();
+        assert_eq!(evicted, 1);
+
+        let (cnt,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM message_bodies")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cnt, 2);
+        let (cached_m1,): (i64,) =
+            sqlx::query_as("SELECT body_cached FROM messages WHERE id = 'm1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            cached_m1, 0,
+            "evicted message's body_cached flag must be cleared"
+        );
+        // m2 + m3 still cached.
+        for keep in ["m2", "m3"] {
+            let (c,): (i64,) =
+                sqlx::query_as("SELECT body_cached FROM messages WHERE id = ?")
+                    .bind(keep)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(c, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn maybe_evict_noop_when_under_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_message(&pool, "a", "t1", "m1").await;
+        set_message_body(&pool, "a", "m1", "x").await.unwrap();
+        let evicted = maybe_evict(&pool, 100).await.unwrap();
+        assert_eq!(evicted, 0);
     }
 
     #[tokio::test]

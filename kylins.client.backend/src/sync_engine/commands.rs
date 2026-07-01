@@ -239,7 +239,18 @@ pub async fn request_bodies_inner(
         }
     }
 
-    // 4. Emit ONE bodies-written event with all updates so the frontend
+    // 4. Bounded cache: evict oldest bodies past the cap. Best-effort — log on
+    //    error. Run unconditionally (even if this round wrote nothing) so the
+    //    cache converges to the cap regardless of which call happens to push it
+    //    over. `set_message_body`/`INSERT OR REPLACE` bumped the row count, so
+    //    `maybe_evict` is the symmetric reclaim step that keeps `message_bodies`
+    //    from growing unbounded across a long-running session.
+    const BODY_CACHE_CAP_ROWS: i64 = 2000;
+    if let Err(e) = message_bodies::maybe_evict(pool, BODY_CACHE_CAP_ROWS).await {
+        log::warn!("[sync] request_bodies: maybe_evict failed (non-fatal): {e}");
+    }
+
+    // 5. Emit ONE bodies-written event with all updates so the frontend
     //    patches every thread in a single scroll-preserving pass.
     if !updates.is_empty() {
         engine.emit_bodies_written_public(BodiesWrittenEvent {
