@@ -13,7 +13,7 @@ use tauri_plugin_autostart::MacosLauncher;
 // constantly, so history looks like it was overwritten. KeepAll preserves the
 // rotated file as `{name}_{timestamp}.log; the 10 MB cap stops mid-session
 // rotation under normal use. Targets: LogDir (OS log dir) + Stdout (dev console).
-use tauri_plugin_log::{Target, TargetKind, RotationStrategy};
+use tauri_plugin_log::{Target, TargetKind, RotationStrategy, TimezoneStrategy};
 
 pub mod commands;
 pub mod crypto;
@@ -229,6 +229,18 @@ pub fn run() {
                 };
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
+                        // FIRST in the chain (plugins-workspace #2262 workaround:
+                        // timezone_strategy applied after `level`/`targets` in
+                        // some versions silently no-ops). Default is Utc; without
+                        // this, log timestamps are hours off from the local
+                        // clock, which makes correlating log lines to user actions
+                        // painful. Local timestamps match what `fern`/`env_logger`
+                        // emit in dev so prod + dev logs read the same.
+                        // (Variant is `UseLocal`, not `Local`, in v2.x — confirmed
+                        // against tauri-plugin-log 2.8.0 which is pinned in
+                        // Cargo.lock; the brief's `TimezoneStrategy::Local` was a
+                        // slight misnomer.)
+                        .timezone_strategy(TimezoneStrategy::UseLocal)
                         .level(level)
                         .level_for("sqlx::query", log::LevelFilter::Warn)
                         // Default is KeepOne (deletes the old log on rotation);

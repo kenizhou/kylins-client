@@ -13,7 +13,7 @@
 //
 // No-op outside Tauri (tests/jsdom).
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useFolderStore } from '../stores/folderStore';
@@ -43,6 +43,18 @@ export interface StatusEvent {
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export function useSyncEvents(): void {
+  // Trailing debounce for `threadStore.refresh()` on `sync:delta{messages}`.
+  // The engine emits one delta per folder that changed in a round; on an
+  // account with several dirty folders (or a CONDSTORE round touching INBOX +
+  // Sent + Drafts) that's a burst of 2-5 deltas within a few hundred ms, each
+  // previously triggering a full page reload (db_get_threads round-trip +
+  // react-virtualized re-render — visible as a flicker + scroll reset).
+  // Coalescing into one trailing reload 2s after the last delta collapses the
+  // burst while staying well under a user's perception of "instant" (the
+  // 60s poll cadence means 2s of extra latency on a refresh is negligible).
+  // Lives in a ref so the timer survives re-renders and is cleared on unmount.
+  const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (!isTauri) return;
     const unlisteners: Array<() => void> = [];
@@ -65,11 +77,22 @@ export function useSyncEvents(): void {
               if (e.payload.table === 'labels') return;
 
               const q = useThreadStore.getState().currentQuery;
-              if (q)
+              if (!q) return;
+              // Trailing debounce: clear any pending refresh and schedule a new
+              // one 2s out. A burst of N deltas in <2s results in exactly one
+              // reload (the last delta's timer wins). The guard above (`if (!q)
+              // return`) already short-circuits when no folder is open, so this
+              // path only fires when a refresh would actually be visible.
+              if (refreshDebounceRef.current) {
+                clearTimeout(refreshDebounceRef.current);
+              }
+              refreshDebounceRef.current = setTimeout(() => {
+                refreshDebounceRef.current = null;
                 useThreadStore
                   .getState()
                   .refresh()
                   .catch(() => {});
+              }, 2000);
             },
           ),
         );
@@ -180,6 +203,12 @@ export function useSyncEvents(): void {
           /* ignore */
         }
       });
+      // Cancel any pending trailing refresh so we don't fire a store update
+      // after the hook (and its owning component) has unmounted.
+      if (refreshDebounceRef.current) {
+        clearTimeout(refreshDebounceRef.current);
+        refreshDebounceRef.current = null;
+      }
     };
   }, []);
 }

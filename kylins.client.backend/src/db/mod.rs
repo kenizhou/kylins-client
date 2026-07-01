@@ -174,6 +174,20 @@ pub async fn init_db(dir: &Path) -> Result<DbPool, sqlx::Error> {
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
+        // 5s ceiling on *pool acquisition* — distinct from `busy_timeout` above,
+        // which only governs the SQLite write lock on a connection we already
+        // hold. `max_connections(5)` means at most 5 connections are checked out
+        // at once; the 6th caller (a foreground `db_*` IPC during a large
+        // `apply_folder_delta` write, or a second account's worker) parks on the
+        // pool's semaphore. sqlx's default `acquire_timeout` is **forever**, so a
+        // stuck transaction (or one that legitimately takes seconds on a 13k-
+        // message folder) suspends every later caller indefinitely — the
+        // "never times out, all suspended" symptom. 5s bounds the park: a
+        // timed-out acquisition returns `PoolAcquire(TimedOut)`, which the IPC
+        // layer already maps to `String` + logs as a soft error (the user gets a
+        // "couldn't load right now, retry" rather than a permanent hang). 5s is
+        // generous for a desktop app with at most a few concurrent writers.
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect_with(opts)
         .await?;
 

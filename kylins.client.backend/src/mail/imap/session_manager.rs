@@ -96,6 +96,17 @@ pub fn classify_error(err_str: &str) -> ErrorKind {
         || lower.contains("eof")
         || lower.contains("connection refused")
         || lower.contains("parse")
+        // Windows WSAECONNABORTED (10053): the server (or a middlebox) aborted
+        // the established TCP connection. Hyper/Rustls surfaces this as
+        // "connection aborted" / "established connection was aborted", and the
+        // raw OS error text carries the numeric code. Pre-fix this fell through
+        // to `Other`, so a mid-round server abort never triggered reconnect-once
+        // — every subsequent folder in the round failed against the dead socket
+        // (the "reconnect storm / all folders fail with 10053" symptom).
+        // Treating it as Transient lets the existing reconnect-once loop fire.
+        || lower.contains("connection aborted")
+        || lower.contains("established connection was aborted")
+        || lower.contains("10053")
     {
         return ErrorKind::Transient;
     }
@@ -283,7 +294,28 @@ impl ImapSessionManager {
                     Ok(r) => return Ok(r),
                     Err(e) => {
                         match retry_decision(&e, attempt) {
-                            RetryDecision::Surface => return Err(e),
+                            RetryDecision::Surface => {
+                                // Reconnect-once exhausted (attempt 2 transient)
+                                // OR auth/non-transient on attempt 1. Either way
+                                // the session is suspect — for the 10053 / abort
+                                // case it's provably dead, and even for a
+                                // non-fatal BAD the connection may be in an
+                                // indeterminate state. Drop it in place so the
+                                // NEXT execute() (next folder in the round, or
+                                // the next poll tick) starts fresh via
+                                // ensure_connected rather than reusing a
+                                // poisoned socket. Pre-fix this arm returned
+                                // without clearing, so every subsequent folder
+                                // in the round failed against the same dead
+                                // connection (the "all folders fail with 10053"
+                                // storm). Release the session lock BEFORE
+                                // touching selected_mailbox (lock ordering:
+                                // session → selected).
+                                *guard = None;
+                                drop(guard);
+                                *handle.selected_mailbox.lock().await = None;
+                                return Err(e);
+                            }
                             RetryDecision::ReconnectAndRetry => {
                                 log::warn!(
                                     "[imap-mgr] {} transient error (attempt {}): {e}; \
@@ -299,6 +331,17 @@ impl ImapSessionManager {
                                 *guard = None;
                                 drop(guard);
                                 *handle.selected_mailbox.lock().await = None;
+                                // 500ms cooldown before the redial so we don't
+                                // hammer a server that is actively aborting our
+                                // connections (the 10053 reconnect-storm symptom:
+                                // attempt 2's fresh dial gets aborted just as
+                                // fast, and without a gap the round burns through
+                                // every folder in <1s of failed reconnects). Half
+                                // a second is enough for the server/middlebox to
+                                // recycle the connection slot without materially
+                                // slowing a normal recovery (the 60s poll cadence
+                                // hides it).
+                                tokio::time::sleep(Duration::from_millis(500)).await;
                                 continue; // -> attempt 2
                             }
                         }
@@ -584,6 +627,34 @@ mod tests {
         );
         // Server-initiated BYE:
         assert_eq!(classify_error("* BYE Connection closed"), ErrorKind::Transient);
+    }
+
+    /// Regression: Windows WSAECONNABORTED (10053) — the server/middlebox
+    /// aborted the established TCP connection. Pre-fix this fell through to
+    /// `Other`, so a mid-round abort never triggered reconnect-once and every
+    /// subsequent folder in the round failed against the dead socket. The
+    /// matching is case-insensitive across all three forms the error surfaces
+    /// in practice (hyper's "connection aborted", rustls's "established
+    /// connection was aborted", and the raw OS code "10053").
+    #[test]
+    fn classify_error_connection_aborted_is_transient() {
+        assert_eq!(
+            classify_error("connection aborted"),
+            ErrorKind::Transient
+        );
+        assert_eq!(
+            classify_error("An established connection was aborted by the software in your host machine"),
+            ErrorKind::Transient
+        );
+        assert_eq!(
+            classify_error("FETCH failed: os error 10053"),
+            ErrorKind::Transient
+        );
+        // Mixed case (hyper-style phrasing) must also match.
+        assert_eq!(
+            classify_error("Connection aborted"),
+            ErrorKind::Transient
+        );
     }
 
     #[test]

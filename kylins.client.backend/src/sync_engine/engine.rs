@@ -766,7 +766,21 @@ async fn run_sync_round_with_source(
             )
             .await;
         }
-        if counts.added > 0 {
+        // Emit a `sync:delta{messages}` only when the round actually changed
+        // something — a no-op round (cursor advanced but DB unchanged: 0 added,
+        // 0 updated, 0 deleted) must NOT emit. Pre-fix this was guarded by
+        // `counts.added > 0` alone, which (a) skipped legitimate flag-update /
+        // expunge rounds (the UI never learned a message was marked read on
+        // another client via CONDSTORE, or expunged server-side), and (b) still
+        // fired every poll round on accounts that see a constant trickle of new
+        // mail (the symptom behind the "message list fully refreshed every 60s"
+        // bug). Adding updated/deleted to the guard fixes (a); the per-folder
+        // burst is collapsed on the frontend via a trailing debounce in
+        // `useSyncEvents`. The count field carries `added` (the most common
+        // case + what the new-mail path needs); updated/deleted are signalled
+        // by the event's existence, not the count — the frontend reloads the
+        // page either way.
+        if counts.added > 0 || counts.updated > 0 || counts.deleted > 0 {
             engine.sink.emit_delta(DeltaEvent {
                 op: "persist".into(),
                 table: "messages".into(),
