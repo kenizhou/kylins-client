@@ -685,7 +685,10 @@ async fn run_sync_round_with_source(
     });
 
     let folders = match src.list_folders().await {
-        Ok(f) => f,
+        Ok(f) => {
+            log::info!("[sync] {account_id} list_folders returned {} folder(s)", f.len());
+            f
+        }
         Err(e) => {
             log::warn!("[sync] {account_id} list_folders failed: {e}");
             // Phase 3f Task 5: if the source signalled a rate limit, persist
