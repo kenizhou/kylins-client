@@ -123,6 +123,14 @@ mod tests {
         assert_eq!(recovery_action_for_sync(12), RecoveryAction::RunFolderSync);
         assert_eq!(recovery_action_for_sync(1), RecoveryAction::Ok);
         assert_eq!(recovery_action_for_sync(6), RecoveryAction::Ok);
+        // Plan mapping table — Sync 4/5/8/16 are permanent client/server
+        // errors (conflict, sync key corruption, object not found, etc.).
+        // Exhaustive pin so a future refactor of the match arms can't
+        // silently regress these to a retry path.
+        assert_eq!(recovery_action_for_sync(4), RecoveryAction::SurfacePermanent);
+        assert_eq!(recovery_action_for_sync(5), RecoveryAction::SurfacePermanent);
+        assert_eq!(recovery_action_for_sync(8), RecoveryAction::SurfacePermanent);
+        assert_eq!(recovery_action_for_sync(16), RecoveryAction::SurfacePermanent);
     }
 
     #[test]
@@ -138,6 +146,29 @@ mod tests {
         assert_eq!(recovery_action_for_ping(7), RecoveryAction::RunFolderSync);
         assert_eq!(recovery_action_for_ping(1), RecoveryAction::Ok);
         assert_eq!(recovery_action_for_ping(2), RecoveryAction::Ok);
+        // Plan mapping table — Ping 5 = bad parameters, surface permanently.
+        assert_eq!(recovery_action_for_ping(5), RecoveryAction::SurfacePermanent);
+    }
+
+    /// Task 7 Step 2 — Provision status contract. The plan's mapping table
+    /// pins 1→Ok, 2/3→SurfacePermanent, but T1 had no provision test at all.
+    /// This is the exhaustive pin for the Provision column.
+    #[test]
+    fn provision_status_table_is_exhaustive() {
+        assert_eq!(recovery_action_for_provision(1), RecoveryAction::Ok);
+        assert_eq!(
+            recovery_action_for_provision(2),
+            RecoveryAction::SurfacePermanent
+        );
+        assert_eq!(
+            recovery_action_for_provision(3),
+            RecoveryAction::SurfacePermanent
+        );
+        // Any other status is also permanent (defensive default).
+        assert_eq!(
+            recovery_action_for_provision(999),
+            RecoveryAction::SurfacePermanent
+        );
     }
 
     #[test]

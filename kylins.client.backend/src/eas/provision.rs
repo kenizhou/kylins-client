@@ -224,4 +224,51 @@ mod tests {
         let r = parse_provision_response(&tree).unwrap();
         assert!(r.remote_wipe, "must flag RemoteWipe so caller surfaces it");
     }
+
+    /// Task 7 Step 1 — WBXML codec round-trip integration test.
+    /// The T2 tests above build the Phase-1 tree and parse a hand-built
+    /// response tree, but never push the tree through the WBXML codec. This
+    /// proves `build_provision_phase1_request()` → bytes → tree survives a
+    /// full serialize/deserialize cycle with the PolicyType leaf intact, so
+    /// the orchestrator can rely on the codec for the live transport path.
+    #[test]
+    fn phase1_request_round_trips_through_wbxml_codec() {
+        use crate::eas::wbxml::{deserialize_to_tree, serialize_tree};
+
+        let tree = build_provision_phase1_request();
+        let bytes = serialize_tree(&tree).expect("serialize Phase-1 Provision request");
+        assert!(
+            !bytes.is_empty(),
+            "serializer must emit a non-empty WBXML document"
+        );
+        let back = deserialize_to_tree(&bytes).expect("deserialize round-tripped bytes");
+
+        // Root must still be Provision (page 14, token 0x05).
+        assert_eq!(back.page, pages::PROVISION);
+        assert_eq!(back.token, provision::PROVISION);
+
+        // Walk Provision > Policies > Policy > PolicyType and confirm the
+        // leaf text survived the codec round-trip. This is the exact contract
+        // the live request relies on (server rejects empty/wrong PolicyType).
+        let policies = back
+            .children
+            .iter()
+            .find(|c| c.token == provision::POLICIES)
+            .expect("Policies container survived round-trip");
+        let policy = policies
+            .children
+            .iter()
+            .find(|c| c.token == provision::POLICY)
+            .expect("Policy container survived round-trip");
+        let ptype = policy
+            .children
+            .iter()
+            .find(|c| c.token == provision::POLICY_TYPE)
+            .expect("PolicyType leaf survived round-trip");
+        assert_eq!(
+            text_str(ptype),
+            "MS-EAS-Provisioning-WBXML",
+            "PolicyType leaf text must survive the WBXML codec round-trip"
+        );
+    }
 }
