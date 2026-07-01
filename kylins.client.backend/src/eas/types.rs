@@ -311,23 +311,8 @@ pub struct FolderDeleteRequest {
     pub server_id: String,
 }
 
-// ---------- Common status / errors ----------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EasError {
-    pub status: u32,
-    pub message: String,
-    pub command: String,
-}
-
-impl std::fmt::Display for EasError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "EAS {} status {}: {}",
-            self.command, self.status, self.message
-        )
-    }
-}
-
-impl std::error::Error for EasError {}
+// NOTE: The legacy `pub struct EasError { status, message, command }` that
+// previously lived here was dead code — every live EAS error in the codebase
+// flows through `crate::eas::client::EasError` (the `thiserror` enum declared
+// in `client.rs`). It was removed in Phase 3b Task 1. If you need to surface
+// an EAS error, use `client::EasError`.

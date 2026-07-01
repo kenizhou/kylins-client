@@ -6,5 +6,6 @@
 pub mod client;
 pub mod commands;
 pub mod service;
+pub mod status;
 pub mod types;
 pub mod wbxml;
