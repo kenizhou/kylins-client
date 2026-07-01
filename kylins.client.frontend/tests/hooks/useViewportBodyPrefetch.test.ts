@@ -126,4 +126,73 @@ describe('useViewportBodyPrefetch', () => {
     });
     expect(mockInvoke).not.toHaveBeenCalled();
   });
+
+  // ---- Task 3b: robustness scenarios ----
+
+  it('fires immediately on first mount (no debounce) when items are visible', async () => {
+    // First-mount must NOT wait for the 250ms debounce — the initial viewport
+    // should prefetch on the next tick. We do NOT advance the 250ms timer.
+    mockGetUncached.mockResolvedValue(['t1']);
+    const virtualizer = {
+      getVirtualItems: () => [{ index: 0 }, { index: 1 }],
+    } as never;
+    renderHook(() =>
+      useViewportBodyPrefetch({
+        virtualizer,
+        threads: [{ id: 't0' }, { id: 't1' }] as never,
+        accountId: 'a',
+      }),
+    );
+    // Flush the microtask queue so the 0-ms timeout's async body can run,
+    // WITHOUT advancing the 250ms debounce timer.
+    await act(async () => {
+      // A 0-ms timeout still needs one timer tick to fire.
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockInvoke).toHaveBeenCalledWith('sync_request_bodies', {
+      accountId: 'a',
+      messageIds: ['t1'],
+    });
+  });
+
+  it('throttles to <=1 batch/sec on rapid scroll-settle', async () => {
+    // Two rapid re-runs within 1s must coalesce to ONE invoke; after the 1s
+    // throttle window elapses, a new trigger fires a second time.
+    mockGetUncached.mockResolvedValue(['t1']);
+    const virtualizer = { getVirtualItems: () => [{ index: 0 }] } as never;
+    const { rerender } = renderHook(
+      ({ vr }: { vr: unknown } = {}) =>
+        useViewportBodyPrefetch({
+          virtualizer: vr as never,
+          threads: [{ id: 't0' }, { id: 't1' }] as never,
+          accountId: 'a',
+        }),
+      { initialProps: { vr: virtualizer } },
+    );
+
+    // First fire: first-mount immediate path (0-ms timeout).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+    // Rapid second trigger well inside the 1s throttle window — must NOT fire.
+    // Drive Date.now() forward 400ms; re-run the effect by passing a new
+    // virtualizer ref (deps include virtualizer).
+    vi.setSystemTime(new Date(Date.now() + 400));
+    rerender({ vr: { getVirtualItems: () => [{ index: 0 }] } as never });
+    await act(async () => {
+      // Advance past the debounce; the throttle should still suppress.
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+    // After the 1s throttle window elapses, a new trigger fires.
+    vi.setSystemTime(new Date(Date.now() + 1200));
+    rerender({ vr: { getVirtualItems: () => [{ index: 0 }] } as never });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
 });
