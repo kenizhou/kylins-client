@@ -1556,11 +1556,17 @@ pub async fn fetch_bodies_batch(
     for (i, chunk) in chunks.iter().enumerate() {
         let range = uid_set_raw(chunk);
         let tag = format!("a{tag_index}");
-        // BODY.PEEK[] — never BODY[] (prefetch must not set \Seen).
-        let fetch_cmd = format!("{tag} UID FETCH {range} BODY.PEEK[]\r\n");
+        // (UID BODY.PEEK[]) — NEVER plain BODY.PEEK[]. RFC 3501: a UID FETCH
+        // response only includes UID if it was requested as an item. With plain
+        // BODY.PEEK[], Exchange replies `* N FETCH (BODY[] {size}` — no UID —
+        // and raw_parse_fetch_responses then can't extract the UID, discards the
+        // literal, and skips the message (`parsed 0 bodies`, every uid "not in
+        // batch result"). Requesting UID explicitly yields `UID <u> BODY[] {size}`.
+        // BODY.PEEK (not BODY) so prefetch does not set \Seen.
+        let fetch_cmd = format!("{tag} UID FETCH {range} (UID BODY.PEEK[])\r\n");
 
-        // Protocol trace: log the UID FETCH BODY.PEEK[] command at DEBUG.
-        log::debug!("C: {tag} UID FETCH {range} BODY.PEEK[]");
+        // Protocol trace: log the UID FETCH (UID BODY.PEEK[]) command at DEBUG.
+        log::debug!("C: {tag} UID FETCH {range} (UID BODY.PEEK[])");
 
         if let Err(e) = reader.get_mut().write_all(fetch_cmd.as_bytes()).await {
             log::warn!(
