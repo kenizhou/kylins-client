@@ -60,6 +60,7 @@ pub async fn sync_request_bodies(
     account_id: String,
     message_ids: Vec<String>,
 ) -> Result<(), String> {
+    log::info!("[sync] sync_request_bodies called: account={}, ids={}", account_id, message_ids.len());
     request_bodies_inner(engine.inner().clone(), pool.inner(), &account_id, &message_ids).await
 }
 
