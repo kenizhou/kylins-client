@@ -262,7 +262,7 @@ pub async fn source_for_account(
             pool.clone(),
             std::sync::Arc::clone(manager),
         )),
-        "eas" => Arc::new(eas_source::EasSource::new(acc)),
+        "eas" => Arc::new(eas_source::EasSource::new(acc, pool.clone())),
         other => return Err(format!("unsupported provider {other}")),
     })
 }

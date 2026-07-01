@@ -116,11 +116,15 @@ fn classify_collection_status(status: u32) -> CollectionStatusAction {
 
 pub struct EasSource {
     account: Account,
+    /// DB pool so `sync_folder` can persist the rotated EAS policy key after a
+    /// successful Provision handshake. Cheap `Arc`-backed clone from the
+    /// engine's single shared pool (matches ImapSource's pattern).
+    pool: sqlx::SqlitePool,
 }
 
 impl EasSource {
-    pub fn new(account: Account) -> Self {
-        Self { account }
+    pub fn new(account: Account, pool: sqlx::SqlitePool) -> Self {
+        Self { account, pool }
     }
 
     /// Map the stored `Account` row onto an `EasConfig` for the EAS client.
@@ -129,7 +133,45 @@ impl EasSource {
     /// the ImapSource convention). `protocol_version` falls back to `"16.1"`
     /// (Exchange 2016/2019/Online). `policy_key` falls back to `""` (the HTTP
     /// layer sends header `X-MS-PolicyKey: 0` for empty, per the EAS client).
+    ///
+    /// When `account.auth_type == Some("oauth")`, builds an `EasAuth::OAuth`
+    /// from the stored access/refresh tokens and the well-known M365 public-
+    /// client constants. The transport then sends `Authorization: Bearer
+    /// <token>` and the retry layer refreshes the token on a 401. Anything
+    /// else (including `None` / `"basic"`) leaves `auth` unset so the
+    /// transport falls back to the historical Basic-with-username/password
+    /// path preserved byte-for-byte.
     fn eas_config(&self) -> EasConfig {
+        // Well-known M365 public-client OAuth constants. Used when the account
+        // is on the OAuth path and per-account overrides aren't stored. These
+        // are the Azure-registered first-party client id + common tenant
+        // endpoint; the desktop app is a public client (PKCE), so no secret.
+        // Hard-coding avoids a migration for MVP; per-account overrides can
+        // land in a follow-up (the plan's `oauth_client_id` columns).
+        const M365_CLIENT_ID: &str = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
+        const M365_TOKEN_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+        const M365_SCOPE: &str = "https://outlook.office365.com/.default offline_access";
+
+        let is_oauth = self
+            .account
+            .auth_type
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("oauth"))
+            .unwrap_or(false);
+
+        let auth = if is_oauth {
+            Some(crate::eas::auth::EasAuth::OAuth {
+                access_token: self.account.access_token.clone().unwrap_or_default(),
+                refresh_token: self.account.refresh_token.clone(),
+                client_id: M365_CLIENT_ID.to_string(),
+                client_secret: None,
+                token_url: M365_TOKEN_URL.to_string(),
+                scope: Some(M365_SCOPE.to_string()),
+            })
+        } else {
+            None
+        };
+
         EasConfig {
             url: self.account.eas_url.clone().unwrap_or_default(),
             username: self
@@ -155,9 +197,47 @@ impl EasSource {
                 .unwrap_or_else(|| "KylinsMail/1.0".to_string()),
             policy_key: self.account.eas_policy_key.clone().unwrap_or_default(),
             accept_invalid_certs: self.account.accept_invalid_certs,
-            // auth_type / auth default to "" / None (Basic path). The OAuth
-            // wiring lands in a later task; for now EAS stays Basic-only.
+            auth_type: self
+                .account
+                .auth_type
+                .clone()
+                .unwrap_or_else(|| "basic".to_string()),
+            auth,
+        }
+    }
+
+    /// Persist the EAS policy key to the accounts row if the client's current
+    /// key differs from what's stored. Called after a successful sync round —
+    /// the retry layer may have run a Provision handshake (HTTP 449) and
+    /// rotated `client.config.policy_key` in place; without this persistence
+    /// the next round starts cold and re-provisions.
+    ///
+    /// Best-effort: logs on DB failure and returns `()` either way. A stale
+    /// key is recoverable (the next round re-provisions), so we don't surface
+    /// this as a sync failure.
+    async fn persist_policy_key_if_changed(&self, client: &EasClient) {
+        let current = client.policy_key();
+        let stored = self
+            .account
+            .eas_policy_key
+            .as_deref()
+            .unwrap_or_default();
+        if current == stored {
+            return;
+        }
+        let updates = crate::db::accounts::AccountUpdates {
+            eas_policy_key: Some(current.to_string()),
             ..Default::default()
+        };
+        if let Err(e) =
+            crate::db::accounts::update(&self.pool, &self.account.id, updates).await
+        {
+            log::warn!(
+                "[eas] failed to persist rotated policy key for account {}: {} \
+                 (next round will re-provision)",
+                self.account.id,
+                e
+            );
         }
     }
 }
@@ -278,7 +358,7 @@ impl MailSource for EasSource {
     }
 
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
-        let client = EasClient::new(self.eas_config());
+        let mut client = EasClient::new(self.eas_config());
         // Initial FolderSync uses sync_key "0" for the full hierarchy.
         // `map_eas_error` promotes a 429/503 HttpStatus (with or without a
         // Retry-After) to SourceError::RateLimited; anything else stays Other.
@@ -286,6 +366,12 @@ impl MailSource for EasSource {
             .folder_sync("0")
             .await
             .map_err(map_eas_error)?;
+        // If the retry layer ran a Provision handshake during folder_sync
+        // (HTTP 449 → RunProvision), persist the new policy key so the next
+        // round starts warm. Best-effort: a DB failure here is logged but not
+        // surfaced — the sync already succeeded and the next round will
+        // re-provision if needed.
+        self.persist_policy_key_if_changed(&client).await;
         Ok(result
             .changes
             .into_iter()
@@ -311,7 +397,7 @@ impl MailSource for EasSource {
             _ => (folder.remote_id.clone(), "0".to_string()),
         };
 
-        let client = EasClient::new(self.eas_config());
+        let mut client = EasClient::new(self.eas_config());
         let req = SyncRequest {
             collection_id: collection_id.clone(),
             sync_key: sync_key.clone(),
@@ -324,6 +410,12 @@ impl MailSource for EasSource {
             .sync(&req)
             .await
             .map_err(map_eas_error)?;
+        // If the retry layer ran a Provision handshake during the Sync (HTTP
+        // 449 → RunProvision), persist the new policy key. Done right after
+        // the network call (before status-recovery, which may short-circuit
+        // on Resync) so the key isn't lost even if this round resets the
+        // sync_key. Best-effort: logged on failure, not surfaced.
+        self.persist_policy_key_if_changed(&client).await;
 
         // Status recovery. MS-ASSYNC collection status: 1 = success,
         // 6 = (server-side) optional partial success treated as ok, 3 = invalid
@@ -446,7 +538,7 @@ impl MailSource for EasSource {
     /// comes first. Returns `Ok(())` on either outcome (change detected OR
     /// heartbeat elapsed); the caller then re-syncs and re-enters ping.
     async fn ping(&self, collections: &[(&str, &str)]) -> Result<(), SourceError> {
-        let client = EasClient::new(self.eas_config());
+        let mut client = EasClient::new(self.eas_config());
         let req = PingRequest {
             heartbeat_interval: 1800,
             monitored_collections: collections
@@ -470,7 +562,17 @@ mod tests {
     use super::*;
     use crate::db::init_db;
     use crate::db::sync_state::advance_eas_cursor;
+    use crate::eas::auth::EasAuth;
     use crate::eas::types::{EasFolder, EasItem};
+
+    /// Build a throwaway in-memory DB pool for tests that construct an
+    /// `EasSource` (the constructor now requires a pool so the source can
+    /// persist the rotated EAS policy key). Tests that don't actually touch
+    /// the DB still pay the cheap init cost; tests that do seed rows after.
+    async fn test_pool() -> sqlx::SqlitePool {
+        let tmp = tempfile::tempdir().unwrap();
+        init_db(tmp.path()).await.unwrap()
+    }
 
     #[test]
     fn eas_item_to_remote_maps_fields() {
@@ -502,9 +604,9 @@ mod tests {
         assert_eq!(m.message_id, None);
     }
 
-    #[test]
-    fn capabilities_advertises_ping_only() {
-        let src = EasSource::new(Account::default());
+    #[tokio::test]
+    async fn capabilities_advertises_ping_only() {
+        let src = EasSource::new(Account::default(), test_pool().await);
         let caps = src.capabilities();
         assert!(caps.ping, "EAS sources must advertise ping support");
         assert!(
@@ -585,8 +687,8 @@ mod tests {
         assert_eq!(r.parent_id, None, "empty parent_id should become None");
     }
 
-    #[test]
-    fn eas_config_maps_account_fields_with_defaults() {
+    #[tokio::test]
+    async fn eas_config_maps_account_fields_with_defaults() {
         let account = Account {
             email: "user@example.com".to_string(),
             imap_username: Some("user@example.com".to_string()),
@@ -598,7 +700,7 @@ mod tests {
             accept_invalid_certs: true,
             ..Account::default()
         };
-        let src = EasSource::new(account);
+        let src = EasSource::new(account, test_pool().await);
         let cfg = src.eas_config();
         assert_eq!(
             cfg.url,
@@ -612,22 +714,25 @@ mod tests {
         assert_eq!(cfg.user_agent, "KylinsMail/1.0");
         assert_eq!(cfg.policy_key, "policy-abc");
         assert!(cfg.accept_invalid_certs);
+        // Default auth_type is "basic"; no EasAuth is built.
+        assert_eq!(cfg.auth_type, "basic");
+        assert!(cfg.auth.is_none(), "Basic path must not build EasAuth");
     }
 
-    #[test]
-    fn eas_config_falls_back_to_email_when_username_missing() {
+    #[tokio::test]
+    async fn eas_config_falls_back_to_email_when_username_missing() {
         let account = Account {
             email: "fallback@example.com".to_string(),
             imap_username: None,
             ..Account::default()
         };
-        let src = EasSource::new(account);
+        let src = EasSource::new(account, test_pool().await);
         let cfg = src.eas_config();
         assert_eq!(cfg.username, "fallback@example.com");
     }
 
-    #[test]
-    fn eas_config_falls_back_to_defaults_when_optional_fields_blank() {
+    #[tokio::test]
+    async fn eas_config_falls_back_to_defaults_when_optional_fields_blank() {
         let account = Account {
             email: "x@y.com".to_string(),
             eas_protocol_version: None,
@@ -635,11 +740,86 @@ mod tests {
             eas_policy_key: None,
             ..Account::default()
         };
-        let src = EasSource::new(account);
+        let src = EasSource::new(account, test_pool().await);
         let cfg = src.eas_config();
         assert_eq!(cfg.protocol_version, "16.1");
         assert_eq!(cfg.user_agent, "KylinsMail/1.0");
         assert_eq!(cfg.policy_key, "");
+    }
+
+    // ---- Phase 3b Task 5: EasSource OAuth wiring ----
+    //
+    // When `account.auth_type == Some("oauth")`, eas_config must build an
+    // `EasAuth::OAuth` from the stored tokens + well-known M365 constants so
+    // the transport sends `Authorization: Bearer <token>` and the retry layer
+    // can refresh on a 401. Anything else leaves `auth` None (Basic fallback).
+
+    #[tokio::test]
+    async fn eas_config_builds_oauth_auth_when_auth_type_is_oauth() {
+        let account = Account {
+            email: "user@contoso.com".to_string(),
+            auth_type: Some("oauth".into()),
+            access_token: Some("ATOM".into()),
+            refresh_token: Some("rtok".into()),
+            ..Account::default()
+        };
+        let src = EasSource::new(account, test_pool().await);
+        let cfg = src.eas_config();
+        assert_eq!(cfg.auth_type, "oauth");
+        let auth = cfg.auth.expect("OAuth account must build EasAuth");
+        match auth {
+            EasAuth::OAuth {
+                access_token,
+                refresh_token,
+                client_id,
+                token_url,
+                scope,
+                ..
+            } => {
+                assert_eq!(access_token, "ATOM");
+                assert_eq!(refresh_token.as_deref(), Some("rtok"));
+                // Well-known M365 public-client constants (hard-coded for MVP
+                // per the plan; per-account overrides are a follow-up).
+                assert_eq!(client_id, "9e5f94bc-e8a4-4e73-b8be-63364c29d753");
+                assert_eq!(
+                    token_url,
+                    "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+                );
+                assert_eq!(
+                    scope.as_deref(),
+                    Some("https://outlook.office365.com/.default offline_access")
+                );
+            }
+            other => panic!("expected EasAuth::OAuth, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn eas_config_leaves_auth_none_for_basic() {
+        // auth_type = "basic" explicitly -> Basic path (auth stays None).
+        let account = Account {
+            email: "u@x.com".to_string(),
+            auth_type: Some("basic".into()),
+            ..Account::default()
+        };
+        let src = EasSource::new(account, test_pool().await);
+        let cfg = src.eas_config();
+        assert_eq!(cfg.auth_type, "basic");
+        assert!(cfg.auth.is_none());
+    }
+
+    #[tokio::test]
+    async fn eas_config_leaves_auth_none_when_auth_type_missing() {
+        // auth_type = None -> default to Basic (auth stays None).
+        let account = Account {
+            email: "u@x.com".to_string(),
+            auth_type: None,
+            ..Account::default()
+        };
+        let src = EasSource::new(account, test_pool().await);
+        let cfg = src.eas_config();
+        assert_eq!(cfg.auth_type, "basic");
+        assert!(cfg.auth.is_none());
     }
 
     /// `list_folders` against a non-existent host surfaces a connection error
@@ -654,7 +834,7 @@ mod tests {
             eas_device_id: Some("TESTDEVICE".to_string()),
             ..Account::default()
         };
-        let src = EasSource::new(account);
+        let src = EasSource::new(account, test_pool().await);
         let res = src.list_folders().await;
         assert!(
             res.is_err(),
@@ -692,7 +872,7 @@ mod tests {
             .await
             .unwrap();
 
-        let src = EasSource::new(Account::default());
+        let src = EasSource::new(Account::default(), pool.clone());
         let cursor = src.load_cursor(&pool, "eas-acct", "INBOX").await;
 
         // The load-bearing assertion: the cursor is EAS-shaped and carries the
@@ -722,7 +902,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
 
-        let src = EasSource::new(Account::default());
+        let src = EasSource::new(Account::default(), pool.clone());
         let cursor = src.load_cursor(&pool, "eas-acct", "INBOX").await;
 
         // get_eas_cursor falls back to Cursor::initial_eas(folder_id) when no

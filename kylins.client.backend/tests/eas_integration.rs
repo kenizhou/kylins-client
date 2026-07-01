@@ -36,6 +36,7 @@ fn load_dominated_config() -> Option<EasConfig> {
         user_agent: "KylinsMail/1.0".to_string(),
         policy_key: "0".to_string(),
         accept_invalid_certs: true,
+        ..Default::default()
     })
 }
 
@@ -58,6 +59,7 @@ fn load_paired_config() -> Option<EasConfig> {
         user_agent: "KylinsMail/1.0".to_string(),
         policy_key: "0".to_string(),
         accept_invalid_certs: true,
+        ..Default::default()
     })
 }
 
@@ -72,7 +74,7 @@ fn load_paired_config() -> Option<EasConfig> {
 #[ignore]
 async fn folder_sync_initial_dominant_account() {
     let config = load_dominated_config().expect("set EAS_TEST_* env vars");
-    let client = EasClient::new(config);
+    let mut client = EasClient::new(config);
     let result = client.folder_sync("0").await;
 
     match result {
@@ -201,7 +203,7 @@ fn requires_provision(err_msg: &str) -> bool {
 #[ignore]
 async fn folder_sync_steady_state() {
     let config = load_dominated_config().expect("set EAS_TEST_* env vars");
-    let client = EasClient::new(config);
+    let mut client = EasClient::new(config);
 
     let first = client.folder_sync("0").await;
     let first = match first {
@@ -239,7 +241,7 @@ async fn folder_sync_steady_state() {
 #[ignore]
 async fn folder_sync_paired_account() {
     let config = load_paired_config().expect("set EAS_TEST_USER_PAIRED_* env vars");
-    let client = EasClient::new(config);
+    let mut client = EasClient::new(config);
     let result = client.folder_sync("0").await;
     match result {
         Ok(r) => {
@@ -266,7 +268,7 @@ async fn folder_sync_paired_account() {
 async fn folder_sync_wrong_password_fails() {
     let mut config = load_dominated_config().expect("set EAS_TEST_* env vars");
     config.password = "definitely-wrong-password-12345".to_string();
-    let client = EasClient::new(config);
+    let mut client = EasClient::new(config);
     let result = client.folder_sync("0").await;
     assert!(result.is_err(), "wrong password should fail");
     let err = result.unwrap_err().to_string();
@@ -283,7 +285,7 @@ async fn folder_sync_wrong_password_fails() {
 #[ignore]
 async fn ping_returns_ok_or_timeout() {
     let config = load_dominated_config().expect("set EAS_TEST_* env vars");
-    let client = EasClient::new(config);
+    let mut client = EasClient::new(config);
 
     let folders = match client.folder_sync("0").await {
         Ok(r) => r,
@@ -326,7 +328,7 @@ async fn ping_returns_ok_or_timeout() {
 #[ignore]
 async fn folder_create_and_delete_round_trip() {
     let config = load_dominated_config().expect("set EAS_TEST_* env vars");
-    let client = EasClient::new(config);
+    let mut client = EasClient::new(config);
 
     let initial = match client.folder_sync("0").await {
         Ok(r) => r,
@@ -383,7 +385,7 @@ async fn folder_create_and_delete_round_trip() {
 #[ignore]
 async fn item_operations_fetch_returns_metadata() {
     let config = load_dominated_config().expect("set EAS_TEST_* env vars");
-    let client = EasClient::new(config);
+    let mut client = EasClient::new(config);
 
     let folders = match client.folder_sync("0").await {
         Ok(r) => r,

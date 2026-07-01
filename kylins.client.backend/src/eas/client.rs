@@ -73,6 +73,56 @@ impl From<reqwest::Error> for EasError {
     }
 }
 
+// ---- Phase 3b Task 5: send_command retry layer ----
+//
+// The public `send_command` wrapper classifies an HTTP-level error returned by
+// `send_command_no_retry` and decides whether ONE retry is warranted. This enum
+// is the output of the pure decision function below — kept separate from the
+// more granular `crate::eas::status::RecoveryAction` because the transport
+// layer only acts on three recovery types (provision, refresh, redirect);
+// everything else (Ok, RateLimited, SurfaceAuth, SurfacePermanent) is surfaced
+// to the caller unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryDecision {
+    /// Do not retry — surface the original error. Covers HTTP 401+Basic,
+    /// 403, 429, 5xx (the engine's 60s poll loop is the retry for those),
+    /// and any other non-recoverable status.
+    None,
+    /// Run the Provision handshake (`self.provision()`), then re-issue the
+    /// command once. Triggered by HTTP 449 (Provision required).
+    RunProvision,
+    /// Refresh the OAuth access token (`auth.refresh()`), then re-issue once.
+    /// Triggered by HTTP 401 when the account is on the OAuth path.
+    RefreshToken,
+    /// Follow the X-MS-Location redirect, then re-issue once. Triggered by
+    /// HTTP 451. Full redirect-follow is deferred (see the wrapper comment);
+    /// the decision is classified here so the recovery layer is complete.
+    FollowRedirect,
+}
+
+/// Classify an HTTP status into a retry decision for the `send_command`
+/// wrapper. Pure / no I/O — delegates to
+/// `crate::eas::status::recovery_action_for_http` and maps the granular
+/// `RecoveryAction` into the three actions the transport can take itself.
+///
+/// `is_oauth` distinguishes 401-on-OAuth (refresh) from 401-on-Basic (surface)
+/// — mirrors the `recovery_action_for_http` contract.
+fn retry_decision_for_http_err(status: u16, is_oauth: bool) -> RetryDecision {
+    use crate::eas::status::RecoveryAction as A;
+    match crate::eas::status::recovery_action_for_http(status, is_oauth) {
+        A::RetryProvision => RetryDecision::RunProvision,
+        A::RefreshToken => RetryDecision::RefreshToken,
+        A::FollowRedirect => RetryDecision::FollowRedirect,
+        // Ok: the wrapper is only called on Err(HttpStatus), so Ok never
+        // arrives here in practice; treat it as None defensively.
+        // RetryTransient (429/5xx), SurfaceAuth (401 Basic / 403),
+        // ResetSyncKey/RunFolderSync (command-level, not HTTP), and
+        // SurfacePermanent all surface — the engine's poll loop / breaker
+        // handles retries for those.
+        _ => RetryDecision::None,
+    }
+}
+
 /// High-level EAS client. Cheap to clone (just wraps a `reqwest::Client` and config).
 #[derive(Clone)]
 pub struct EasClient {
@@ -94,17 +144,111 @@ impl EasClient {
         Self { config, http }
     }
 
-    /// Issue a single EAS command request. Sends WBXML bytes, reads WBXML
-    /// response, deserializes to a tree. Each command method wraps this.
-    async fn send_command(
+    /// Read-only access to the current policy key. The retry layer's
+    /// `RunProvision` branch rotates this in place via `provision()`; the
+    /// source layer reads it after a successful round to persist the rotated
+    /// key for the next sync. Avoids leaking the full `EasConfig` (which
+    /// carries secrets).
+    pub fn policy_key(&self) -> &str {
+        &self.config.policy_key
+    }
+
+    /// Public entry: send an EAS command, applying ONE classified retry on
+    /// transport-level signals (HTTP 449 Provision required, HTTP 401 OAuth
+    /// token refresh, HTTP 451 redirect).
+    ///
+    /// Command-level status errors (Sync 3, FolderSync 9, Common 142, etc.)
+    /// surface in the response body and are decoded by the caller — the caller
+    /// maps them via `status::recovery_action_for_*`. The wrapper only acts on
+    /// `EasError::HttpStatus` because that is the only error class where a
+    /// blind retry (without consulting the parsed response) is correct.
+    ///
+    /// One retry per command max (no loops). On `RunProvision` it runs the full
+    /// two-phase Provision handshake; on `RefreshToken` it rotates the OAuth
+    /// access token; on `FollowRedirect` it currently surfaces (full
+    /// redirect-follow is deferred per the plan — the X-MS-Location header
+    /// would need to be captured into the error variant, and AutoDiscover
+    /// re-run is the user-facing recovery). Provision and OAuth refresh both
+    /// mutate `self.config`, so this method takes `&mut self`.
+    pub async fn send_command(
+        &mut self,
+        cmd_name: &str,
+        request_root: &WbxmlElement,
+    ) -> Result<WbxmlElement, EasError> {
+        match self.send_command_no_retry(cmd_name, request_root).await {
+            Ok(root) => Ok(root),
+            Err(EasError::HttpStatus { status, .. }) => {
+                let is_oauth = self
+                    .config
+                    .auth
+                    .as_ref()
+                    .map(|a| a.is_oauth())
+                    .unwrap_or(false);
+                match retry_decision_for_http_err(status, is_oauth) {
+                    RetryDecision::RunProvision => {
+                        // Re-provision, then retry the original command once.
+                        // provision() itself calls send_command_no_retry
+                        // internally (never the retry wrapper) so there is no
+                        // unbounded recursion.
+                        self.provision().await?;
+                        self.send_command_no_retry(cmd_name, request_root).await
+                    }
+                    RetryDecision::RefreshToken => {
+                        // OAuth only — Basic EasAuth::refresh() is a no-op.
+                        if let Some(auth) = self.config.auth.as_mut() {
+                            auth.refresh().await?;
+                        }
+                        self.send_command_no_retry(cmd_name, request_root).await
+                    }
+                    RetryDecision::FollowRedirect => {
+                        // Full redirect-follow is deferred (plan §1050). The
+                        // X-MS-Location header would need to be captured on
+                        // the error variant; the engine surfaces the error
+                        // and the user re-runs AutoDiscover. Classification is
+                        // wired here so the recovery layer is complete.
+                        Err(EasError::HttpStatus {
+                            status,
+                            body: "redirect handling pending".into(),
+                            retry_after: None,
+                        })
+                    }
+                    RetryDecision::None => Err(EasError::HttpStatus {
+                        status,
+                        body: format!("http {}", status),
+                        retry_after: None,
+                    }),
+                }
+            }
+            // Transport / WBXML / CommandStatus errors: surface, don't retry.
+            // The engine's 60s poll loop is the retry for transient failures.
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Single EAS command request, no retry. Sends WBXML bytes, reads WBXML
+    /// response, deserializes to a tree. The public `send_command` wraps this
+    /// with the classified retry layer; `provision()` calls this directly so
+    /// its internal command sends never recurse through the retry wrapper.
+    async fn send_command_no_retry(
         &self,
         cmd_name: &str,
         request_root: &WbxmlElement,
     ) -> Result<WbxmlElement, EasError> {
         let wbxml_bytes = serialize_tree(request_root).map_err(EasError::Wbxml)?;
 
-        let auth_value = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", self.config.username, self.config.password));
+        // Authorization header: prefer the typed EasAuth (OAuth Bearer or
+        // Basic-over-enum) when `config.auth` is set; fall back to the
+        // historical Basic path built inline from username/password. The
+        // fallback preserves the original byte-for-byte header value so
+        // existing Basic-auth tests stay green.
+        let auth_header = match &self.config.auth {
+            Some(auth) => auth.authorization_header(),
+            None => {
+                let auth_value = base64::engine::general_purpose::STANDARD
+                    .encode(format!("{}:{}", self.config.username, self.config.password));
+                format!("Basic {}", auth_value)
+            }
+        };
 
         // Query string per [MS-ASHTTP] section 2.1: Cmd + User + DeviceId + DeviceType.
         // Note: the server URL is typically
@@ -123,7 +267,7 @@ impl EasClient {
         let response = self
             .http
             .post(&url)
-            .header("Authorization", format!("Basic {}", auth_value))
+            .header("Authorization", &auth_header)
             .header("MS-ASProtocolVersion", &self.config.protocol_version)
             .header("Content-Type", "application/vnd.ms-sync.wbxml")
             .header("Accept", "application/vnd.ms-sync.wbxml")
@@ -225,7 +369,7 @@ impl EasClient {
     }
 
     /// FolderSync — full folder hierarchy sync.
-    pub async fn folder_sync(&self, sync_key: &str) -> Result<FolderSyncResult, EasError> {
+    pub async fn folder_sync(&mut self, sync_key: &str) -> Result<FolderSyncResult, EasError> {
         let req = commands::build_folder_sync_request(sync_key);
         let resp = self.send_command("FolderSync", &req).await?;
         expect_root(&resp, PAGE_FOLDER, FH_FOLDER_SYNC)?;
@@ -233,7 +377,7 @@ impl EasClient {
     }
 
     /// Sync — single-collection item sync.
-    pub async fn sync(&self, req: &SyncRequest) -> Result<SyncResult, EasError> {
+    pub async fn sync(&mut self, req: &SyncRequest) -> Result<SyncResult, EasError> {
         let tree = commands::build_sync_request(req);
         let resp = self.send_command("Sync", &tree).await?;
         // Verify the server returned a Sync element. A non-Sync root typically
@@ -245,7 +389,7 @@ impl EasClient {
     }
 
     /// SendMail — send a single MIME message.
-    pub async fn send_mail(&self, req: &SendMailRequest) -> Result<u32, EasError> {
+    pub async fn send_mail(&mut self, req: &SendMailRequest) -> Result<u32, EasError> {
         let tree = commands::build_send_mail_request(req);
         let resp = self.send_command("SendMail", &tree).await?;
         expect_root(&resp, PAGE_COMPOSE, CM_SEND_MAIL)?;
@@ -253,7 +397,7 @@ impl EasClient {
     }
 
     /// SmartForward — forward an existing server-side message with new MIME body.
-    pub async fn smart_forward(&self, req: &SmartForwardRequest) -> Result<u32, EasError> {
+    pub async fn smart_forward(&mut self, req: &SmartForwardRequest) -> Result<u32, EasError> {
         let tree = commands::build_smart_forward_request(req);
         let resp = self.send_command("SmartForward", &tree).await?;
         expect_root(&resp, PAGE_COMPOSE, CM_SMART_FORWARD)?;
@@ -261,7 +405,7 @@ impl EasClient {
     }
 
     /// SmartReply — reply to an existing server-side message with new MIME body.
-    pub async fn smart_reply(&self, req: &SmartReplyRequest) -> Result<u32, EasError> {
+    pub async fn smart_reply(&mut self, req: &SmartReplyRequest) -> Result<u32, EasError> {
         let tree = commands::build_smart_reply_request(req);
         let resp = self.send_command("SmartReply", &tree).await?;
         expect_root(&resp, PAGE_COMPOSE, CM_SMART_REPLY)?;
@@ -270,7 +414,7 @@ impl EasClient {
 
     /// ItemOperations — fetch an attachment or item by server id.
     pub async fn item_operations(
-        &self,
+        &mut self,
         req: &ItemOperationsFetchRequest,
     ) -> Result<ItemOperationsFetchResult, EasError> {
         let tree = commands::build_item_operations_request(req);
@@ -281,7 +425,7 @@ impl EasClient {
 
     /// GetItemEstimate — count of pending items for a collection.
     pub async fn get_item_estimate(
-        &self,
+        &mut self,
         req: &GetItemEstimateRequest,
     ) -> Result<GetItemEstimateResult, EasError> {
         let tree = commands::build_get_item_estimate_request(req);
@@ -292,7 +436,7 @@ impl EasClient {
     }
 
     /// Ping — block up to heartbeat_interval waiting for changes.
-    pub async fn ping(&self, req: &PingRequest) -> Result<PingResult, EasError> {
+    pub async fn ping(&mut self, req: &PingRequest) -> Result<PingResult, EasError> {
         let tree = commands::build_ping_request(req);
         let resp = self.send_command("Ping", &tree).await?;
         expect_root(&resp, PAGE_PING, PING_PING)?;
@@ -301,7 +445,7 @@ impl EasClient {
 
     /// FolderCreate — create a new folder under a parent.
     pub async fn folder_create(
-        &self,
+        &mut self,
         req: &FolderCreateRequest,
     ) -> Result<(u32, Option<String>), EasError> {
         let tree = commands::build_folder_create_request(req);
@@ -312,7 +456,7 @@ impl EasClient {
 
     /// FolderDelete — delete a folder by server id.
     pub async fn folder_delete(
-        &self,
+        &mut self,
         req: &FolderDeleteRequest,
     ) -> Result<(u32, Option<String>), EasError> {
         let tree = commands::build_folder_delete_request(req);
@@ -323,7 +467,7 @@ impl EasClient {
 
     /// FolderUpdate — rename or move a folder.
     pub async fn folder_update(
-        &self,
+        &mut self,
         req: &FolderUpdateRequest,
     ) -> Result<(u32, Option<String>), EasError> {
         let tree = commands::build_folder_update_request(req);
@@ -337,8 +481,12 @@ impl EasClient {
     /// Subsequent commands then send it via the X-MS-PolicyKey header (already
     /// wired in `send_command`).
     ///
-    /// Takes `&mut self` because Phase 2 writes the permanent key. Other
-    /// command methods remain `&self` — only Provision mutates config.
+    /// Takes `&mut self` because Phase 2 writes the permanent key. The other
+    /// command methods also take `&mut self` now that `send_command` does —
+    /// Provision is no longer unique in that regard, but it is the only method
+    /// that goes through `send_command_no_retry` directly (to avoid recursing
+    /// back into the retry wrapper's `RunProvision` branch, which calls
+    /// `provision()`).
     ///
     /// Errors with `CommandStatus { status: 140, ... }` if either phase
     /// returns a `<RemoteWipe>` element — we surface, NEVER auto-execute
@@ -347,9 +495,13 @@ impl EasClient {
     pub async fn provision(&mut self) -> Result<(), EasError> {
         // Phase 1: request the policy. Server returns a temp PolicyKey + the
         // policy XML in <Data>.
+        //
+        // IMPORTANT: provision() is invoked by the retry wrapper's
+        // `RunProvision` branch. It MUST send via `send_command_no_retry`
+        // (never the retry wrapper) so a 449 during the Provision handshake
+        // surfaces instead of recursing into `provision()` again.
         let req1 = crate::eas::provision::build_provision_phase1_request();
-        // TODO(3b T5): switch to send_command_no_retry once the retry wrapper lands.
-        let resp1 = self.send_command("Provision", &req1).await?;
+        let resp1 = self.send_command_no_retry("Provision", &req1).await?;
         let parsed1 = crate::eas::provision::parse_provision_response(&resp1)?;
         if parsed1.remote_wipe {
             return Err(EasError::CommandStatus {
@@ -368,10 +520,10 @@ impl EasClient {
         })?;
 
         // Phase 2: ack with the temp key and Status 1 (client compliant).
-        // Server replies with the permanent PolicyKey.
+        // Server replies with the permanent PolicyKey. Uses
+        // `send_command_no_retry` for the same anti-recursion reason as phase 1.
         let req2 = crate::eas::provision::build_provision_phase2_request(&temp_key);
-        // TODO(3b T5): switch to send_command_no_retry once the retry wrapper lands.
-        let resp2 = self.send_command("Provision", &req2).await?;
+        let resp2 = self.send_command_no_retry("Provision", &req2).await?;
         let parsed2 = crate::eas::provision::parse_provision_response(&resp2)?;
         if parsed2.remote_wipe {
             return Err(EasError::CommandStatus {
@@ -482,5 +634,36 @@ mod tests {
         // Non-numeric / empty -> None.
         assert_eq!(parse_retry_after_delta("garbage", 0), None);
         assert_eq!(parse_retry_after_delta("", 0), None);
+    }
+
+    // ---- Phase 3b Task 5: send_command retry DECISION ----
+    //
+    // `retry_decision_for_http_err` is the pure decision function the public
+    // `send_command` wrapper consults after `send_command_no_retry` returns an
+    // `EasError::HttpStatus`. The wrapper itself needs a live server (covered
+    // by Task 7's manual e2e); the decision logic is unit-testable.
+
+    #[test]
+    fn retry_decision_449_triggers_provision() {
+        let d = retry_decision_for_http_err(449, false);
+        assert_eq!(d, RetryDecision::RunProvision);
+    }
+
+    #[test]
+    fn retry_decision_401_oauth_triggers_refresh() {
+        let d = retry_decision_for_http_err(401, true);
+        assert_eq!(d, RetryDecision::RefreshToken);
+    }
+
+    #[test]
+    fn retry_decision_401_basic_no_retry() {
+        let d = retry_decision_for_http_err(401, false);
+        assert_eq!(d, RetryDecision::None);
+    }
+
+    #[test]
+    fn retry_decision_451_triggers_redirect() {
+        let d = retry_decision_for_http_err(451, false);
+        assert_eq!(d, RetryDecision::FollowRedirect);
     }
 }
