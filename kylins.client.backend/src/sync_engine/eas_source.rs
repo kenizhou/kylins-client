@@ -75,45 +75,6 @@ fn map_eas_error(err: EasError) -> SourceError {
     }
 }
 
-/// Recovery action for an EAS Sync collection status (MS-ASSYNC 2.2.3.23).
-///
-/// Factored out of `sync_folder` so the status-recovery decision is unit-
-/// testable without a live `EasClient`. `sync_folder` consults this and then
-/// either applies the delta (`Ok`), returns a wipe-and-resync `FolderDelta`
-/// (`Resync`), or surfaces a `SourceError::Other` (`Error`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CollectionStatusAction {
-    /// Status 1 (success) or 6 (partial success) — apply the returned delta.
-    Ok,
-    /// Status 3 (invalid sync key) or 12 (folder hierarchy changed) — reset
-    /// sync_key to "0" and signal `uidvalidity_changed` so the engine wipes
-    /// the folder cache and re-bootstraps on the next round.
-    ///
-    /// Status 12 ideally also triggers a FolderSync (the hierarchy change may
-    /// have moved/renamed the collection). The MVP-safe fallback (cache wipe +
-    /// re-sync) is a correct superset of the status-3 recovery and un-wedges
-    /// the folder; a follow-up wires the explicit FolderSync.
-    Resync,
-    /// Any other status — surface as `SourceError::Other` rather than silently
-    /// succeeding or wedging on a resync loop.
-    Error,
-}
-
-/// Classify an EAS Sync collection status into a recovery action. Pure / no I/O.
-///
-/// MS-ASSYNC 2.2.3.23 status codes:
-///   1  = success
-///   3  = invalid synchronization key (server lost state)
-///   6  = (server-side) optional partial success
-///   12 = server detected the folder hierarchy changed since the last sync
-fn classify_collection_status(status: u32) -> CollectionStatusAction {
-    match status {
-        1 | 6 => CollectionStatusAction::Ok,
-        3 | 12 => CollectionStatusAction::Resync,
-        _ => CollectionStatusAction::Error,
-    }
-}
-
 pub struct EasSource {
     account: Account,
     /// DB pool so `sync_folder` can persist the rotated EAS policy key after a
@@ -417,21 +378,28 @@ impl MailSource for EasSource {
         // sync_key. Best-effort: logged on failure, not surfaced.
         self.persist_policy_key_if_changed(&client).await;
 
-        // Status recovery. MS-ASSYNC collection status: 1 = success,
-        // 6 = (server-side) optional partial success treated as ok, 3 = invalid
-        // sync key (server lost state), 12 = folder hierarchy changed since the
-        // last sync. Statuses 3 and 12 both require a resync: reset the sync_key
-        // to "0" and signal uidvalidity_changed so the engine wipes the folder
-        // cache before applying the (empty) delta from this round; the next
-        // round re-enters sync_folder with sync_key "0" for a full pull.
-        //
-        // Status 12 ideally also triggers a FolderSync (the hierarchy change may
-        // have moved/renamed the collection); the MVP-safe fallback (cache wipe
-        // + re-sync) is a correct superset of the status-3 recovery and un-
-        // wedges the folder. See `classify_collection_status` and the file's
-        // MVP-limitations note.
-        match classify_collection_status(result.status) {
-            CollectionStatusAction::Resync => {
+        // Status recovery. The single source of truth for the status → action
+        // mapping is `crate::eas::status::recovery_action_for_sync` (MS-ASSYNC
+        // 2.2.3.23). Recovery semantics at this call site:
+        //   * `ResetSyncKey` (status 3, invalid sync key) — reset sync_key to
+        //     "0" and signal `uidvalidity_changed = true` so the engine wipes
+        //     the folder cache before applying this round's (empty) delta; the
+        //     next round re-enters with sync_key "0" for a full pull.
+        //   * `RunFolderSync` (status 12, hierarchy changed) — MVP degrades to
+        //     the same cache-wipe+resync as `ResetSyncKey`. The ideal path also
+        //     triggers a FolderSync (the hierarchy change may have moved/renamed
+        //     the collection); the cache wipe is a correct superset of the
+        //     status-3 recovery and un-wedges the folder. Tracked as a
+        //     follow-up; the typed action lets a future wiring distinguish the
+        //     two recoveries.
+        //   * `Ok` (status 1 success / 6 partial success) — proceed to apply
+        //     the returned delta.
+        //   * Anything else (SurfacePermanent / RetryProvision / etc.) —
+        //     surface as `SourceError::Other` rather than silently succeeding
+        //     or wedging on a resync loop.
+        match crate::eas::status::recovery_action_for_sync(result.status) {
+            crate::eas::status::RecoveryAction::ResetSyncKey
+            | crate::eas::status::RecoveryAction::RunFolderSync => {
                 return Ok(FolderDelta {
                     added: vec![],
                     updated: vec![],
@@ -444,11 +412,11 @@ impl MailSource for EasSource {
                     uidvalidity_changed: true,
                 });
             }
-            CollectionStatusAction::Ok => {}
-            CollectionStatusAction::Error => {
+            crate::eas::status::RecoveryAction::Ok => {}
+            other => {
                 return Err(SourceError::Other(format!(
-                    "EAS sync status {}",
-                    result.status
+                    "EAS sync status {} ({:?})",
+                    result.status, other
                 )));
             }
         }
@@ -922,64 +890,75 @@ mod tests {
         }
     }
 
-    // ---- Phase 3a final-review fix I-2: status-12 (hierarchy changed) resync ----
+    // ---- Phase 3 EAS hardening Task 6: status recovery unified through
+    // `status::recovery_action_for_sync` ----
+    //
+    // The local `CollectionStatusAction` + `classify_collection_status` were
+    // deleted — `crate::eas::status` is now the single source of truth for the
+    // status → action mapping. `sync_folder` consults `recovery_action_for_sync`
+    // directly. These tests pin the contract `sync_folder` relies on: 1/6 → Ok,
+    // 3 → ResetSyncKey, 12 → RunFolderSync (degraded to cache-wipe+resync at the
+    // call site), anything else → SurfacePermanent (surfaced as Other).
     //
     // `sync_folder` calls a live `EasClient::sync`, so a pure unit test of the
     // status branch through `sync_folder` is infeasible without a mock client.
-    // The status-recovery decision is factored into the pure helper
-    // `classify_collection_status(status)`, which these tests exercise directly.
-    // The brief's note "at minimum add a test on the status-recovery logic if
-    // it's factored into a testable function" is satisfied here.
+    // The mapping itself is exhaustively tested in `eas::status`; these tests
+    // are the eas_source-side contract mirror.
 
-    /// Status 3 (invalid sync key, MS-ASSYNC 2.2.3.23) must classify as `Resync`
-    /// so `sync_folder` resets the sync_key to "0" and signals
+    /// Status 3 (invalid sync key, MS-ASSYNC 2.2.3.23) must map to
+    /// `ResetSyncKey` so `sync_folder` resets the sync_key to "0" and signals
     /// `uidvalidity_changed = true` for a cache wipe + re-bootstrap.
     #[test]
-    fn classify_status_3_is_resync() {
+    fn classify_status_3_is_reset_sync_key() {
         assert_eq!(
-            classify_collection_status(3),
-            CollectionStatusAction::Resync
+            crate::eas::status::recovery_action_for_sync(3),
+            crate::eas::status::RecoveryAction::ResetSyncKey
         );
     }
 
-    /// Status 12 (folder hierarchy changed) must classify as `Resync` — the
-    /// same recovery as status 3. Before the fix this fell through to
-    /// `SourceError::Other("EAS sync status 12")`, which the engine logged and
-    /// `continue`d past, wedging the folder (it failed every 60s tick with no
-    /// recovery because the required FolderSync was never triggered).
-    ///
-    /// The MVP-safe fallback (cache wipe + re-sync) is a superset of the
-    /// status-3 recovery and un-wedges sync correctly; an ideal implementation
-    /// would also trigger a FolderSync, tracked as a follow-up.
+    /// Status 12 (folder hierarchy changed) must map to `RunFolderSync`. The
+    /// MVP call site degrades this to the same cache-wipe+resync as status 3
+    /// (a correct superset of the status-3 recovery that un-wedges the folder);
+    /// an ideal implementation would also trigger a FolderSync, tracked as a
+    /// follow-up. Before the unification this status was collapsed into the
+    /// local `Resync` variant alongside status 3; the typed action now lets the
+    /// call site distinguish them when the FolderSync wiring lands.
     #[test]
-    fn classify_status_12_is_resync_not_error() {
+    fn classify_status_12_is_run_folder_sync() {
         assert_eq!(
-            classify_collection_status(12),
-            CollectionStatusAction::Resync,
-            "status 12 must resync, not fall through to Other error"
+            crate::eas::status::recovery_action_for_sync(12),
+            crate::eas::status::RecoveryAction::RunFolderSync,
+            "status 12 must map to RunFolderSync (MVP-degraded to resync at the call site), \
+             not SurfacePermanent"
         );
     }
 
-    /// Status 1 and 6 (success / partial success) must classify as `Ok` so the
+    /// Status 1 and 6 (success / partial success) must map to `Ok` so the
     /// engine applies the returned delta normally.
     #[test]
     fn classify_status_1_and_6_are_ok() {
-        assert_eq!(classify_collection_status(1), CollectionStatusAction::Ok);
-        assert_eq!(classify_collection_status(6), CollectionStatusAction::Ok);
-    }
-
-    /// Any other status (e.g. 4, 8) must classify as `Error` so `sync_folder`
-    /// surfaces `SourceError::Other` rather than silently treating it as
-    /// success or wedging on a resync loop.
-    #[test]
-    fn classify_other_statuses_are_error() {
         assert_eq!(
-            classify_collection_status(4),
-            CollectionStatusAction::Error
+            crate::eas::status::recovery_action_for_sync(1),
+            crate::eas::status::RecoveryAction::Ok
         );
         assert_eq!(
-            classify_collection_status(8),
-            CollectionStatusAction::Error
+            crate::eas::status::recovery_action_for_sync(6),
+            crate::eas::status::RecoveryAction::Ok
+        );
+    }
+
+    /// Any other status (e.g. 4, 8) must map to `SurfacePermanent` so
+    /// `sync_folder` surfaces `SourceError::Other` rather than silently
+    /// treating it as success or wedging on a resync loop.
+    #[test]
+    fn classify_other_statuses_are_surface_permanent() {
+        assert_eq!(
+            crate::eas::status::recovery_action_for_sync(4),
+            crate::eas::status::RecoveryAction::SurfacePermanent
+        );
+        assert_eq!(
+            crate::eas::status::recovery_action_for_sync(8),
+            crate::eas::status::RecoveryAction::SurfacePermanent
         );
     }
 
