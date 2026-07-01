@@ -358,33 +358,95 @@ impl MailSource for ImapSource {
         // poll-only set, and condstore stays false until a prior connect cached it.)
         let caps_captured = self.caps.lock().unwrap().unwrap_or_default();
 
-        // Owned clone of config for the closure's raw_fetch fallback path (the
-        // fallback opens its OWN connection — see async-imap-0-quirk note above).
-        // We pass &config to execute() (borrowed for the call) and move a clone
-        // into the closure so the inner async is 'static + Send.
-        let config_for_closure = config.clone();
-
-        // The whole body runs against the persistent session inside ONE execute()
-        // trip (folder=Some: the mailbox lock re-SELECTs only if the folder
-        // differs from the currently-selected one). The closure returns
-        // (FolderDelta, Option<CapsTuple>) so caps can be refreshed on the SAME
-        // trip without borrowing &self.caps inside the closure.
+        // sync_folder now runs in TWO stages (see Stage 1 / Stage 1.5 / Stage 2
+        // blocks below). The PRE-fix code held the persistent session alive via
+        // a single execute() WHILE raw_fetch_folder opened a SECOND connection
+        // inside the same closure — the concurrent-connection 10053 storm root
+        // cause. The new structure returns the typed-path closure BEFORE any raw
+        // fetch, disconnects the persistent session, then runs the raw fetch
+        // outside execute(), then re-enters execute() (lazily reconnects) for
+        // CONDSTORE + expunge SEARCH. No two connections are ever open at once.
         //
-        // FnMut discipline (CRITICAL — load-bearing): execute()'s reconnect-once
-        // path may invoke this closure TWICE. The outer `move` closure OWNS
-        // folder_remote / config_for_closure / since_captured / local_uids /
-        // caps_captured (caps is Copy). Each invocation of the outer FnMut RE-
-        // CLONES the consumed values (folder_remote, config, since, local_uids)
-        // into fresh locals BEFORE constructing the inner `async move` block, so
-        // the outer closure's owned captures are never moved out of — they're
-        // only read (cloned) per call. This compiles under FnMut (and even Fn).
+        // FnMut discipline (CRITICAL — load-bearing): each stage's execute()
+        // closure is FnMut because the reconnect-once path inside execute() may
+        // invoke it TWICE. The outer `move` closure OWNS its captures; each
+        // invocation RE-CLONES the consumed values (folder_remote, since,
+        // local_uids) into fresh locals BEFORE constructing the inner `async
+        // move` block, so the outer closure's owned captures are never moved
+        // out of — they're only read (cloned) per call.
+        //
+        // `since_captured` and `local_uids` are ALSO used in the Stage 1.5 /
+        // Stage 2 outer scope (after Stage 1's closure returns), so the Stage 1
+        // closure must clone them per call (not move them in) — the outer
+        // values must survive the closure. `caps_captured` is Copy.
         let since_captured = since;
+        let local_uids_for_outer = local_uids.clone(); // Stage 1.5/2 still need it
+        // Clone the outer-scoped values that BOTH the Stage 1 closure AND the
+        // Stage 1.5/Stage 2 outer code need to read. The closure captures these
+        // `_for_closure` bindings by move; the outer-scoped originals stay live
+        // for the post-Stage-1 dispatch (Stage 1.5 raw fetch + Stage 2 execute).
+        let since_captured_for_closure = since_captured.clone();
+        let local_uids_for_closure = local_uids_for_outer.clone();
         // folder_remote is borrowed by `Some(&folder_remote)` below AND captured
         // by the closure. Clone it into a separate binding for the closure so the
         // borrow and the move don't conflict (E0505).
         let folder_remote_for_closure = folder_remote.clone();
 
-        let (delta, caps_tuple) = self
+        // ---- STAGE 1: typed FETCH path on the persistent session ----
+        //
+        // The first execute() trip does the session-bound typed work: status,
+        // UIDVALIDITY check, fetch_new_uids, and the typed `fetch_messages`
+        // loop. CONDSTORE flag-delta, expunge SEARCH, and caps refresh ALSO
+        // run here when the typed path completes (they use the persistent
+        // session legitimately and no raw connection is opened concurrently).
+        //
+        // CRITICAL (concurrent-connection 10053 storm fix): if the typed FETCH
+        // loop hits `ASYNC_IMAP_EMPTY`, the closure returns `NeedsRawFetch`
+        // INSTEAD of calling `raw_fetch_folder` / `raw_fetch_messages` from
+        // inside the closure. Returning here releases the persistent-session
+        // lock (and the TCP connection it holds). The caller then calls
+        // `disconnect_account` to GUARANTEE the persistent session is dropped
+        // before opening the raw-fetch connection — so the server never sees
+        // 2 concurrent connections from this client (which was killing the
+        // persistent one with `* BYE Connection closed. 14` and cascading the
+        // failure to every subsequent folder via the dead persistent socket).
+        //
+        // The post-raw expunge SEARCH + CONDSTORE (if raw path was taken) run
+        // in a SECOND execute() below — they lazily reconnect to a fresh
+        // session, so they don't fight the just-closed raw connection either.
+        enum Stage1Result {
+            /// Typed path fully completed (no raw fetch needed). Carries the
+            /// full delta + caps. The caller just writes caps and returns.
+            Done {
+                delta: FolderDelta,
+                caps_tuple: Option<(bool, bool, bool, bool)>,
+            },
+            /// UIDVALIDITY changed — early signal to the engine (cache wipe +
+            /// full resync). Carries the placeholder delta + best-effort caps.
+            UidValidityChanged {
+                delta: FolderDelta,
+                caps_tuple: Option<(bool, bool, bool, bool)>,
+            },
+            /// Typed FETCH hit ASYNC_IMAP_EMPTY. Caller must run the raw-fetch
+            /// fallback (with the persistent session disconnected first), then
+            // run CONDSTORE + expunge SEARCH in a second execute() trip.
+            NeedsRawFetch {
+                /// UIDs the typed path never got to fetch (caller raw-fetches).
+                to_fetch: Vec<u32>,
+                /// Messages the typed path already fetched before the empty hit.
+                partial_added: Vec<RemoteMessage>,
+                /// Folder status (UIDVALIDITY / highest_modseq) — needed for the
+                /// cursor and for the second-stage CONDSTORE gate.
+                status_uidvalidity: u32,
+                status_highest_modseq: Option<u64>,
+                /// Remaining chunks (after the empty-hit chunk) that still need
+                /// raw_fetch_messages. Empty when the empty hit was on chunk 0
+                /// (raw_fetch_folder handles the whole list in one connection).
+                remaining_chunks: Vec<Vec<u32>>,
+            },
+        }
+
+        let stage1 = self
             .manager
             .execute(
                 &account_id,
@@ -393,10 +455,12 @@ impl MailSource for ImapSource {
                 move |session| {
                     // Re-clone per call so the outer closure's owned captures
                     // survive a second invocation (reconnect-once retry path).
+                    // local_uids is also cloned PER CALL so the outer scope's
+                    // copy survives for Stage 2's expunge SEARCH (the typed-
+                    // success branch below consumes this per-call clone).
                     let folder_remote = folder_remote_for_closure.clone();
-                    let config = config_for_closure.clone();
-                    let since = since_captured.clone();
-                    let local_uids = local_uids.clone();
+                    let since = since_captured_for_closure.clone();
+                    let local_uids = local_uids_for_closure.clone();
                     let caps = caps_captured; // Copy
 
                     Box::pin(async move {
@@ -420,8 +484,8 @@ impl MailSource for ImapSource {
                             // the early-return path (cheap, ignores errors).
                             let caps_tuple =
                                 imap_client::session_capabilities(session).await.ok();
-                            return Ok::<_, String>((
-                                FolderDelta {
+                            return Ok::<_, String>(Stage1Result::UidValidityChanged {
+                                delta: FolderDelta {
                                     added: vec![],
                                     updated: vec![],
                                     flag_updates: vec![],
@@ -434,7 +498,7 @@ impl MailSource for ImapSource {
                                     uidvalidity_changed: true,
                                 },
                                 caps_tuple,
-                            ));
+                            });
                         }
 
                         let new_uids =
@@ -443,24 +507,23 @@ impl MailSource for ImapSource {
                         let to_fetch: Vec<u32> =
                             new_uids.into_iter().filter(|&u| u > since_high).collect();
 
-                        let mut added = Vec::new();
-                        // Probe the first chunk via async-imap. If it returns
-                        // ASYNC_IMAP_EMPTY (server/parser incompatibility —
-                        // async-imap's uid_fetch yields 0 items even when
-                        // EXISTS > 0), switch to a SINGLE-CONNECTION raw fetch
-                        // for the ENTIRE pending UID list. The previous per-chunk
-                        // raw fallback opened a NEW connection per 100-UID chunk,
-                        // so a large folder (~31 reconnects for 3133 msgs)
-                        // tripped the server's connection/flood limit
-                        // (`* BYE Connection closed. 14`). raw_fetch_folder keeps
-                        // ONE connection for all chunks and is best-effort.
+                        // Probe chunks via async-imap until either:
+                        //   (a) all chunks typed-succeed -> continue to CONDSTORE
+                        //       + expunge SEARCH + caps in THIS closure, OR
+                        //   (b) chunk 0 returns ASYNC_IMAP_EMPTY -> bail out with
+                        //       NeedsRawFetch { remaining_chunks: [] } so the
+                        //       caller disconnects + raw_fetch_folder(bulk), OR
+                        //   (c) chunk i>0 returns ASYNC_IMAP_EMPTY -> bail with
+                        //       NeedsRawFetch { remaining_chunks: [i..] } so the
+                        //       caller disconnects + raw_fetch_messages(chunk).
                         //
-                        // NOTE: raw_fetch_folder opens its OWN separate connection
-                        // (NOT routed through the persistent session — async-imap
-                        // 0.10.4 has no public raw-write API). Routing raw bytes
-                        // through the persistent socket is deferred to Task 5.
+                        // Pre-fix the raw calls were issued from INSIDE this
+                        // closure, holding the persistent-session lock while a
+                        // SECOND TCP connection was opened — the concurrent-
+                        // connection 10053 storm root cause.
                         let chunks: Vec<&[u32]> = to_fetch.chunks(100).collect();
-                        'chunk: for (i, chunk) in chunks.iter().enumerate() {
+                        let mut added: Vec<RemoteMessage> = Vec::new();
+                        for (i, chunk) in chunks.iter().enumerate() {
                             let range = uid_set(chunk);
                             match imap_client::fetch_messages(session, &folder_remote, &range).await
                             {
@@ -470,44 +533,35 @@ impl MailSource for ImapSource {
                                     }
                                 }
                                 Err(e) if e.starts_with("ASYNC_IMAP_EMPTY:") => {
-                                    if i == 0 {
-                                        log::info!(
-                                            "[sync] async-imap empty for {}; using single-connection raw fetch for {} UID(s)",
-                                            folder_remote,
-                                            to_fetch.len()
-                                        );
-                                        let bulk = imap_client::raw_fetch_folder(
-                                            &config,
-                                            &folder_remote,
-                                            &to_fetch,
-                                            100,
-                                        )
-                                        .await?;
-                                        for m in bulk.messages {
-                                            added.push(imap_message_to_remote(m));
-                                        }
-                                        break 'chunk;
-                                    } else {
-                                        log::info!(
-                                            "[sync] async-imap empty for {} chunk {} UIDs {range}; per-chunk raw fallback",
-                                            folder_remote,
-                                            i + 1
-                                        );
-                                        let single = imap_client::raw_fetch_messages(
-                                            &config,
-                                            &folder_remote,
-                                            &range,
-                                        )
-                                        .await?;
-                                        for m in single.messages {
-                                            added.push(imap_message_to_remote(m));
-                                        }
-                                    }
+                                    // Hand the chunk(s) that still need fetching
+                                    // back to the caller. Chunk 0 empty -> the
+                                    // caller bulk-raw-fetches the whole list
+                                    // (raw_fetch_folder, ONE connection for all
+                                    // chunks) AND any chunks that haven't been
+                                    // tried yet, so remaining_chunks = all chunks
+                                    // from i onward. For i>0 the prior chunks
+                                    // already succeeded (typed); only this chunk
+                                    // + later ones need raw_fetch_messages.
+                                    let remaining_chunks: Vec<Vec<u32>> = chunks[i..]
+                                        .iter()
+                                        .map(|c| c.to_vec())
+                                        .collect();
+                                    return Ok(Stage1Result::NeedsRawFetch {
+                                        to_fetch: to_fetch.clone(),
+                                        partial_added: added,
+                                        status_uidvalidity: status.uidvalidity,
+                                        status_highest_modseq: status.highest_modseq,
+                                        remaining_chunks,
+                                    });
                                 }
                                 Err(e) => return Err(e),
                             }
                         }
 
+                        // Typed path fully succeeded — finish the round in this
+                        // closure (CONDSTORE + expunge SEARCH + caps all use the
+                        // persistent session legitimately; no raw connection is
+                        // open concurrently, so no storm).
                         let new_high = added.iter().map(|m| m.uid).max().unwrap_or(since_high);
 
                         // CONDSTORE flag-delta (RFC 7162 §3.1). Best-effort: a
@@ -584,8 +638,8 @@ impl MailSource for ImapSource {
                         // Best-effort caps refresh on the same trip.
                         let caps_tuple = imap_client::session_capabilities(session).await.ok();
 
-                        Ok::<_, String>((
-                            FolderDelta {
+                        Ok(Stage1Result::Done {
+                            delta: FolderDelta {
                                 added,
                                 updated: vec![],
                                 flag_updates,
@@ -598,12 +652,235 @@ impl MailSource for ImapSource {
                                 uidvalidity_changed: false,
                             },
                             caps_tuple,
-                        ))
+                        })
                     })
                 },
             )
             .await
             .map_err(other)?;
+
+        // ---- Dispatch on Stage 1 result ----
+        //
+        // Done / UidValidityChanged: typed path finished everything; write caps
+        // (no &self.caps borrow outstanding — the closure already returned) and
+        // return the delta.
+        //
+        // NeedsRawFetch: drop to Stage 1.5 (disconnect + raw fetch) and then
+        // Stage 2 (CONDSTORE + expunge SEARCH + caps on a FRESH persistent
+        // session, lazily reconnected by execute()).
+        let (delta, caps_tuple) = match stage1 {
+            Stage1Result::Done { delta, caps_tuple }
+            | Stage1Result::UidValidityChanged { delta, caps_tuple } => (delta, caps_tuple),
+            Stage1Result::NeedsRawFetch {
+                to_fetch,
+                partial_added,
+                status_uidvalidity,
+                status_highest_modseq,
+                remaining_chunks,
+            } => {
+                // ---- STAGE 1.5: raw-fetch fallback (OUTSIDE execute) ----
+                //
+                // The persistent-session execute() trip has returned, so the
+                // per-account session mutex is released. But the manager may
+                // still be HOLDING a live TCP connection (the keepalive task
+                // keeps it warm, and execute() only drops the Session on the
+                // transient-error surface path — a clean typed-path return
+                // leaves it Some). Before we open the raw-fetch connection,
+                // explicitly disconnect so the server sees at most ONE
+                // connection from this client. This is the load-bearing line
+                // of the concurrent-connection 10053 storm fix.
+                self.manager.disconnect_account(&account_id).await;
+
+                let mut added = partial_added;
+                if remaining_chunks.len() == 1 && remaining_chunks[0].len() == to_fetch.len() {
+                    // Chunk 0 was the empty hit -> bulk raw-fetch the whole
+                    // pending UID list in ONE connection (raw_fetch_folder
+                    // owns its single-connection lifecycle end-to-end).
+                    log::info!(
+                        "[sync] async-imap empty for {}; using single-connection raw fetch for {} UID(s)",
+                        folder_remote,
+                        to_fetch.len()
+                    );
+                    let bulk = imap_client::raw_fetch_folder(
+                        &config,
+                        &folder_remote,
+                        &to_fetch,
+                        100,
+                    )
+                    .await
+                    .map_err(other)?;
+                    for m in bulk.messages {
+                        added.push(imap_message_to_remote(m));
+                    }
+                } else {
+                    // Chunk i>0 was the empty hit -> per-chunk raw fallback for
+                    // each remaining chunk. Each raw_fetch_messages call opens
+                    // its OWN connection; the persistent session is already
+                    // disconnected above so no concurrency. The previous
+                    // per-chunk path on a large folder tripped the server's
+                    // connection/flood limit, but this branch only fires on the
+                    // rare "first chunk typed-succeeded, later chunk typed-
+                    // empty" case (typically the bulk path above handles it).
+                    for chunk in &remaining_chunks {
+                        let range = uid_set(chunk);
+                        log::info!(
+                            "[sync] async-imap empty for {} chunk UIDs {range}; per-chunk raw fallback",
+                            folder_remote
+                        );
+                        let single = imap_client::raw_fetch_messages(
+                            &config,
+                            &folder_remote,
+                            &range,
+                        )
+                        .await
+                        .map_err(other)?;
+                        for m in single.messages {
+                            added.push(imap_message_to_remote(m));
+                        }
+                    }
+                }
+
+                let (since_high, since_modseq_for_stage2) = match &since_captured {
+                    Cursor::Imap {
+                        highest_uid,
+                        highest_modseq,
+                        ..
+                    } => (*highest_uid, *highest_modseq),
+                    _ => (0, 0),
+                };
+                let new_high = added.iter().map(|m| m.uid).max().unwrap_or(since_high);
+                let caps_for_stage2 = caps_captured;
+
+                // ---- STAGE 2: CONDSTORE flag-delta + expunge SEARCH + caps ----
+                //
+                // Fresh execute() trip. The persistent session was disconnected
+                // in Stage 1.5, and the raw-fetch connection has been closed by
+                // raw_fetch_folder / raw_fetch_messages returning, so this
+                // execute() lazily dials a brand-new connection (clean socket,
+                // no concurrency). SELECT is forced (folder=Some) since the new
+                // session starts un-SELECTed.
+                let local_uids_for_stage2 = local_uids_for_outer.clone();
+                let folder_remote_for_stage2 = folder_remote.clone();
+                let (flag_updates, vanished_uids, next_modseq, caps_tuple) = self
+                    .manager
+                    .execute(
+                        &account_id,
+                        &config,
+                        Some(&folder_remote),
+                        move |session| {
+                            // Re-clone per call (FnMut twice-callable on the
+                            // reconnect-once retry path inside execute()).
+                            let folder_remote = folder_remote_for_stage2.clone();
+                            let local_uids = local_uids_for_stage2.clone();
+                            let caps = caps_for_stage2; // Copy
+
+                            Box::pin(async move {
+                                // CONDSTORE flag-delta. Best-effort: a CHANGEDSINCE
+                                // failure is logged and the round completes
+                                // append-only — it must NOT break the sync. First
+                                // sync (modseq 0) is explicitly skipped.
+                                let mut flag_updates: Vec<FlagUpdate> = Vec::new();
+                                let mut next_modseq =
+                                    status_highest_modseq.unwrap_or(0);
+
+                                if caps.condstore && since_modseq_for_stage2 > 0 {
+                                    match imap_client::fetch_changed_flags(
+                                        session,
+                                        &folder_remote,
+                                        since_modseq_for_stage2,
+                                    )
+                                    .await
+                                    {
+                                        Ok((changes, advanced)) => {
+                                            next_modseq = advanced;
+                                            flag_updates = changes
+                                                .into_iter()
+                                                .map(|c| FlagUpdate {
+                                                    uid: c.uid,
+                                                    is_read: c.is_read,
+                                                    is_starred: c.is_starred,
+                                                })
+                                                .collect();
+                                            log::info!(
+                                                "[sync] CONDSTORE {}: {} flag change(s) since modseq {} (-> {})",
+                                                folder_remote,
+                                                flag_updates.len(),
+                                                since_modseq_for_stage2,
+                                                next_modseq
+                                            );
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "[sync] CONDSTORE {} CHANGEDSINCE failed, skipping flag delta: {e}",
+                                                folder_remote
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // Expunge detection via set-difference. Server
+                                // `UID SEARCH ALL` is the source of truth; local
+                                // UIDs not in that set were expunged. Best-effort.
+                                let mut vanished_uids: Vec<u32> = Vec::new();
+                                if !local_uids.is_empty() {
+                                    match imap_client::search_all_uids(session, &folder_remote)
+                                        .await
+                                    {
+                                        Ok(server_uids) => {
+                                            let server_set: std::collections::HashSet<u32> =
+                                                server_uids.into_iter().collect();
+                                            vanished_uids = local_uids
+                                                .into_iter()
+                                                .filter(|u| !server_set.contains(u))
+                                                .collect();
+                                            if !vanished_uids.is_empty() {
+                                                log::info!(
+                                                    "[sync] {}: {} locally-cached uid(s) expunged on server",
+                                                    folder_remote,
+                                                    vanished_uids.len()
+                                                );
+                                            }
+                                        }
+                                        Err(e) => log::warn!(
+                                            "[sync] UID SEARCH ALL {} for expunge diff failed: {e}",
+                                            folder_remote
+                                        ),
+                                    }
+                                }
+
+                                // Best-effort caps refresh on this trip.
+                                let caps_tuple =
+                                    imap_client::session_capabilities(session).await.ok();
+
+                                Ok::<_, String>((
+                                    flag_updates,
+                                    vanished_uids,
+                                    next_modseq,
+                                    caps_tuple,
+                                ))
+                            })
+                        },
+                    )
+                    .await
+                    .map_err(other)?;
+
+                (
+                    FolderDelta {
+                        added,
+                        updated: vec![],
+                        flag_updates,
+                        vanished_uids,
+                        next_cursor: Cursor::Imap {
+                            uidvalidity: status_uidvalidity,
+                            highest_uid: new_high,
+                            highest_modseq: next_modseq,
+                        },
+                        uidvalidity_changed: false,
+                    },
+                    caps_tuple,
+                )
+            }
+        };
 
         // Write caps AFTER the closure returns (no &self.caps borrow held inside
         // the closure — that would conflict with &self.manager via execute()).
