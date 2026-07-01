@@ -20,7 +20,7 @@ import { useFolderStore } from '../stores/folderStore';
 import { useThreadStore } from '../stores/threadStore';
 import { useAccountStore } from '../stores/accountStore';
 import { useUIStore } from '../stores/uiStore';
-import { notifyNewMailBatch } from '../services/notifications/notificationManager';
+import { notifyNewMailBatchDeduped } from '../services/notifications/notificationManager';
 
 /**
  * Per-account sync state, emitted by the Rust SyncEngine on every round
@@ -98,15 +98,22 @@ export function useSyncEvents(): void {
         );
 
         unlisteners.push(
-          await listen<{ accountId: string; folderId: string; count: number }>(
-            'sync:new-mail',
-            (e) => {
-              // Notify with dedupe (Task 5 wires notifyNewMailBatchDeduped).
-              // For now the simple count-based call stays; Task 5 swaps it.
-              notifyNewMailBatch(e.payload.count);
-              refreshTray();
-            },
-          ),
+          await listen<{
+            accountId: string;
+            folderId: string;
+            count: number;
+            // Stable message ids (`messages.id` shape) carried since Task 5;
+            // absent/empty for sources that don't surface ids, in which case
+            // notifyNewMailBatchDeduped falls back to the raw count.
+            messageIds?: string[];
+          }>('sync:new-mail', (e) => {
+            // Per-message dedupe: the engine populates `messageIds` with the
+            // just-arrived ids, so a re-fetch of the same UIDs (e.g. a folder
+            // whose cursor didn't advance) doesn't re-notify. DND + the
+            // new-unread toggle are honored inside the manager.
+            notifyNewMailBatchDeduped(e.payload.count, e.payload.messageIds);
+            refreshTray();
+          }),
         );
 
         unlisteners.push(

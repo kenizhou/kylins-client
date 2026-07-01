@@ -253,6 +253,12 @@ export function GeneralPreferences() {
             onChange={s.setShowNotificationsForNewUnread}
           />
           <CheckboxRow
+            label="Do Not Disturb (silence all notifications)"
+            checked={s.doNotDisturb}
+            onChange={s.setDoNotDisturb}
+            description="When on, no desktop notifications will be shown, even for new mail."
+          />
+          <CheckboxRow
             label="Show notifications for repeated opens / clicks"
             checked={s.showNotificationsForRepeatedOpens}
             onChange={s.setShowNotificationsForRepeatedOpens}

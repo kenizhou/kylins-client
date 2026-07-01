@@ -4,10 +4,16 @@ export function CheckboxRow({
   label,
   checked,
   onChange,
+  description,
 }: {
   label: string;
   checked: boolean;
   onChange: (value: boolean) => void;
+  /**
+   * Optional help text rendered under the label. Used by controls whose
+   * effect isn't obvious from the label alone (e.g. Do Not Disturb).
+   */
+  description?: string;
 }) {
   return (
     <label className="flex items-start gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors">
@@ -17,7 +23,12 @@ export function CheckboxRow({
         onChange={(e) => onChange(e.target.checked)}
         className="mt-0.5 rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
       />
-      <span className="text-sm text-[var(--foreground)]">{label}</span>
+      <span className="space-y-0.5">
+        <span className="block text-sm text-[var(--foreground)]">{label}</span>
+        {description && (
+          <span className="block text-xs text-[var(--muted-text)]">{description}</span>
+        )}
+      </span>
     </label>
   );
 }

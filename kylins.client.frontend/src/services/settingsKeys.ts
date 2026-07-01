@@ -36,6 +36,11 @@ export const SETTING_KEYS = {
   playSoundOnNewMail: 'play_sound_on_new_mail',
   resurfaceMessagesOnUnsnooze: 'resurface_messages_on_unsnooze',
   appIconBadge: 'app_icon_badge',
+  // Do Not Disturb: when true, suppress all desktop notifications (still
+  // surfaces in-app unread badges + tray tooltip). Stored as a string KV
+  // ('true'/'false') to match the rest of the preferences store; no new
+  // table.
+  doNotDisturb: 'do_not_disturb',
 
   // Attachments / Storage
   openAttachmentFolder: 'open_attachment_folder',

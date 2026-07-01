@@ -54,6 +54,7 @@ const BOOL_FIELDS: Record<string, BoolField> = {
     key: SETTING_KEYS.showNotificationsForRepeatedOpens,
     defaultValue: true,
   },
+  doNotDisturb: { key: SETTING_KEYS.doNotDisturb, defaultValue: false },
   playSoundOnNewMail: { key: SETTING_KEYS.playSoundOnNewMail, defaultValue: true },
   resurfaceMessagesOnUnsnooze: {
     key: SETTING_KEYS.resurfaceMessagesOnUnsnooze,
@@ -153,6 +154,13 @@ export interface PreferencesState {
   setShowNotificationsForNewUnread: (value: boolean) => void;
   showNotificationsForRepeatedOpens: boolean;
   setShowNotificationsForRepeatedOpens: (value: boolean) => void;
+  /**
+   * Do Not Disturb: when true, all desktop notifications are suppressed (the
+   * in-app unread badge + tray tooltip still update). Surfaced as a toggle in
+   * the Notifications preferences panel.
+   */
+  doNotDisturb: boolean;
+  setDoNotDisturb: (value: boolean) => void;
   playSoundOnNewMail: boolean;
   setPlaySoundOnNewMail: (value: boolean) => void;
   resurfaceMessagesOnUnsnooze: boolean;
@@ -329,6 +337,10 @@ export const usePreferencesStore = create<PreferencesState>((set) => ({
   setShowNotificationsForRepeatedOpens: (value) => {
     set({ showNotificationsForRepeatedOpens: value });
     persist(SETTING_KEYS.showNotificationsForRepeatedOpens, value);
+  },
+  setDoNotDisturb: (value) => {
+    set({ doNotDisturb: value });
+    persist(SETTING_KEYS.doNotDisturb, value);
   },
   setPlaySoundOnNewMail: (value) => {
     set({ playSoundOnNewMail: value });

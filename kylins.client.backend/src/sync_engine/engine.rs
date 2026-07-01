@@ -59,6 +59,13 @@ pub struct NewMailEvent {
     account_id: String,
     folder_id: String,
     count: i64,
+    /// Stable message ids (`messages.id` shape: `imap-{account}-{folder}-{uid}`
+    /// for IMAP) of the just-arrived messages, so the frontend can dedupe
+    /// notifications per-message instead of per-batch. Empty when the source
+    /// did not surface ids (the frontend falls back to count-only dedupe in
+    /// that case). Populated from `delta.added` at the emit site.
+    #[serde(default)]
+    message_ids: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -768,10 +775,22 @@ async fn run_sync_round_with_source(
                 count: counts.added as i64,
             });
             if f.role.as_deref() == Some("inbox") {
+                // Collect the stable message ids (`messages.id` shape) of the
+                // just-arrived messages so the frontend can dedupe
+                // notifications per-message. `delta.added` is the same slice
+                // `apply_folder_delta` just persisted, and `m.folder` is the
+                // IMAP path matching the `imap-{account}-{folder}-{uid}` id
+                // built in `db::messages::upsert_message`. `Vec::with_capacity`
+                // + `push` keeps this O(n) with one allocation.
+                let mut added_ids: Vec<String> = Vec::with_capacity(delta.added.len());
+                for m in &delta.added {
+                    added_ids.push(format!("imap-{account_id}-{}-{}", m.folder, m.uid));
+                }
                 engine.sink.emit_new_mail(NewMailEvent {
                     account_id: account_id.into(),
                     folder_id: label_id,
                     count: counts.added as i64,
+                    message_ids: added_ids,
                 });
             }
         }
