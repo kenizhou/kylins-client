@@ -96,8 +96,10 @@ pub async fn upsert_attachments(
     Ok(())
 }
 
-/// List attachment metadata for a message, ordered by part id (sections like
-/// "1", "1.2", "2" — lexicographic keeps top-level parts in order).
+/// List attachment metadata for a message, ordered by IMAP section. Sorting is
+/// done in Rust by numeric segment (`part_sort_key`) so MIME sections sort
+/// correctly past 9 siblings — a SQL `ORDER BY imap_part_id` text sort would
+/// put "10" before "2".
 pub async fn get_attachments(
     pool: &SqlitePool,
     account_id: &str,
@@ -105,14 +107,28 @@ pub async fn get_attachments(
 ) -> Result<Vec<AttachmentRow>, String> {
     let rows = sqlx::query(
         "SELECT id, account_id, message_id, filename, mime_type, size, content_id, is_inline, imap_part_id \
-         FROM attachments WHERE account_id = ? AND message_id = ? ORDER BY imap_part_id ASC",
+         FROM attachments WHERE account_id = ? AND message_id = ?",
     )
     .bind(account_id)
     .bind(message_id)
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(rows.iter().map(row_to_attachment).collect())
+    let mut out: Vec<AttachmentRow> = rows.iter().map(row_to_attachment).collect();
+    out.sort_by_key(|r| part_sort_key(r.imap_part_id.as_deref()));
+    Ok(out)
+}
+
+/// Parse an IMAP MIME section ("1.2.3") into numeric segments for correct
+/// ordering: `1 < 1.2 < 2 < 10 < 10.1`. Non-numeric segments / NULL / empty
+/// sort last via `u64::MAX` (so a malformed `imap_part_id` doesn't panic).
+fn part_sort_key(part_id: Option<&str>) -> Vec<u64> {
+    match part_id {
+        Some(s) if !s.is_empty() => {
+            s.split('.').map(|seg| seg.parse::<u64>().unwrap_or(u64::MAX)).collect()
+        }
+        _ => vec![u64::MAX],
+    }
 }
 
 #[cfg(test)]
@@ -251,5 +267,32 @@ mod tests {
         assert_eq!(a1.len(), 1);
         assert_eq!(a1[0].filename.as_deref(), Some("a1f"));
         assert!(get_attachments(&pool, "a1", "nope").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_attachments_sorts_by_numeric_section() {
+        // A text sort would order "10" before "2"; numeric-segment sort must
+        // give 1 < 1.2 < 2 < 10.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a1").await;
+        seed_message(&pool, "a1", "t1", "m1").await;
+        upsert_attachments(
+            &pool,
+            "a1",
+            "m1",
+            &[
+                att("10", "tenth", "x", 0, None, false),
+                att("2", "second", "x", 0, None, false),
+                att("1.2", "one_two", "x", 0, None, false),
+                att("1", "first", "x", 0, None, false),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let rows = get_attachments(&pool, "a1", "m1").await.unwrap();
+        let order: Vec<&str> = rows.iter().map(|r| r.imap_part_id.as_deref().unwrap()).collect();
+        assert_eq!(order, vec!["1", "1.2", "2", "10"]);
     }
 }

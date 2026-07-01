@@ -91,7 +91,6 @@ pub fn run() {
             commands::imap_copy_messages,
             commands::imap_delete_messages,
             commands::imap_get_folder_status,
-            commands::imap_fetch_attachment,
             commands::imap_append_message,
             commands::imap_create_folder,
             commands::imap_delete_folder,

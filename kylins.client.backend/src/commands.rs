@@ -403,19 +403,6 @@ pub async fn imap_get_folder_status(
 }
 
 #[tauri::command]
-pub async fn imap_fetch_attachment(
-    config: ImapConfig,
-    folder: String,
-    uid: u32,
-    part_id: String,
-) -> Result<String, String> {
-    let mut session = imap_client::connect(&config).await?;
-    let data = imap_client::fetch_attachment(&mut session, &folder, uid, &part_id).await?;
-    let _ = session.logout().await;
-    Ok(data)
-}
-
-#[tauri::command]
 pub async fn imap_append_message(
     config: ImapConfig,
     folder: String,
