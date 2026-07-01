@@ -20,7 +20,13 @@ use crate::db::{accounts, labels, messages, sync_state};
 use crate::mail::imap::session_manager::ImapSessionManager;
 use crate::sync_engine::{source_for_account, Cursor, MailSource, RemoteFolder};
 
-const POLL_INTERVAL_SECS: u64 = 60;
+// 30s poll interval (interim measure). IDLE is the preferred push path, but
+// on servers that kill one of the two concurrent connections (persistent
+// session + IDLE) the IDLE watcher may fail more often than the 60s poll can
+// recover from. 30s keeps the worst-case staleness bounded while the
+// persistent-connection + IDLE coexistence is hardened. Revisit once IDLE is
+// observed stable alongside the persistent session (Task 5+).
+const POLL_INTERVAL_SECS: u64 = 30;
 
 // ---- Phase 3f Task 3: circuit-breaker thresholds + cooldowns ----
 //
@@ -317,6 +323,19 @@ impl SyncEngine {
                 .await
                 .ok();
                 let caps = src.as_ref().map(|s| s.capabilities());
+                // Log the realtime-strategy decision + the gate input so the user
+                // can see why IDLE did/didn't spawn. The strategy is recomputed
+                // here (after the first sync round warms the source's caps cache);
+                // `pick_realtime_strategy` only flips to Idle when caps.idle is
+                // true, so logging caps.idle alongside makes the gate auditable.
+                let strategy = caps
+                    .as_ref()
+                    .map(pick_realtime_strategy)
+                    .unwrap_or(RealtimeStrategy::Poll);
+                let idle_cap = caps.as_ref().map(|c| c.idle).unwrap_or(false);
+                log::info!(
+                    "[sync] {aid} realtime strategy: {strategy:?} (idle_cap={idle_cap})"
+                );
                 match (src, caps) {
                     (Some(src), Some(caps))
                         if pick_realtime_strategy(&caps) == RealtimeStrategy::Idle =>
@@ -332,6 +351,7 @@ impl SyncEngine {
                         // and the next `watch()` reconnects cleanly. On the happy path
                         // (`Ok(())` on NewData) `watch()` calls `done()` cleanly and
                         // no leak occurs.
+                        log::info!("[sync] {aid} spawning IDLE watcher for INBOX");
                         Some(tokio::spawn(async move {
                             loop {
                                 // Resolve the INBOX folder (role=inbox) from the DB.
@@ -378,10 +398,14 @@ impl SyncEngine {
                                         engine2.nudge_worker(&aid2).await;
                                     }
                                     Err(e) => {
-                                        log::warn!("[sync] {aid2} IDLE err: {e}");
+                                        log::warn!(
+                                            "[sync] {aid2} IDLE watcher err: {e}; reconnecting after backoff"
+                                        );
                                         // Brief backoff before reconnecting to avoid a
                                         // hot loop on persistent failures (e.g. server
-                                        // flapping, dead socket).
+                                        // flapping, dead socket, or the server killing
+                                        // the IDLE connection because a concurrent
+                                        // persistent session is also open).
                                         tokio::time::sleep(Duration::from_secs(30)).await;
                                     }
                                 }

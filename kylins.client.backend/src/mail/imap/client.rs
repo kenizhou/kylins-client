@@ -1366,6 +1366,11 @@ pub async fn raw_fetch_folder(
         let tag = format!("a{tag_index}");
         let fetch_cmd = format!("{tag} UID FETCH {range} ({SYNC_FETCH_QUERY})\r\n");
 
+        // Protocol trace: the UID FETCH command (without the parenthesized list
+        // body, which is long and constant — see SYNC_FETCH_QUERY). Logged at
+        // DEBUG so it ships in dev builds but not release.
+        log::debug!("C: {tag} UID FETCH {range} (SYNC_FETCH_QUERY)");
+
         if let Err(e) = reader
             .get_mut()
             .write_all(fetch_cmd.as_bytes())
@@ -1381,6 +1386,11 @@ pub async fn raw_fetch_folder(
 
         match raw_parse_fetch_responses(&mut reader, &tag).await {
             Ok(raw_messages) => {
+                log::debug!(
+                    "S: {tag} OK (FETCH FOLDER chunk {} uids {range}: {} message(s))",
+                    i + 1,
+                    raw_messages.len()
+                );
                 log::info!(
                     "RAW IMAP FETCH FOLDER {folder} chunk {} (uids {range}): parsed {} raw messages",
                     i + 1,
@@ -1410,6 +1420,7 @@ pub async fn raw_fetch_folder(
                 // Best-effort mid-folder: connection closed / read failure / etc.
                 // Log the DETAIL (e.g. "Connection closed during FETCH" /
                 // "FETCH read: ...") so the root cause (BYE) is captured.
+                log::debug!("S: {tag} <error: {e}> (FETCH FOLDER chunk {})", i + 1);
                 log::warn!(
                     "[sync] raw fetch {folder} chunk {} (uids {range}) failed: {e}; returning {} fetched so far",
                     i + 1,
@@ -1548,6 +1559,9 @@ pub async fn fetch_bodies_batch(
         // BODY.PEEK[] — never BODY[] (prefetch must not set \Seen).
         let fetch_cmd = format!("{tag} UID FETCH {range} BODY.PEEK[]\r\n");
 
+        // Protocol trace: log the UID FETCH BODY.PEEK[] command at DEBUG.
+        log::debug!("C: {tag} UID FETCH {range} BODY.PEEK[]");
+
         if let Err(e) = reader.get_mut().write_all(fetch_cmd.as_bytes()).await {
             log::warn!(
                 "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}): write failed: {e}; returning {} fetched so far",
@@ -1558,6 +1572,11 @@ pub async fn fetch_bodies_batch(
         }
         match raw_parse_fetch_responses(&mut reader, &tag).await {
             Ok(raw_messages) => {
+                log::debug!(
+                    "S: {tag} OK (BODIES BATCH chunk {} uids {range}: {} body(ies))",
+                    i + 1,
+                    raw_messages.len()
+                );
                 for raw_msg in &raw_messages {
                     // body_text(0) / body_html(0): per mail-parser 0.9.4, these
                     // return the first text/html part AND auto-convert when one
@@ -1593,6 +1612,7 @@ pub async fn fetch_bodies_batch(
                 );
             }
             Err(e) => {
+                log::debug!("S: {tag} <error: {e}> (BODIES BATCH chunk {})", i + 1);
                 log::warn!(
                     "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}) failed: {e}; returning {} fetched so far",
                     i + 1,
@@ -1768,6 +1788,32 @@ async fn raw_send_and_wait(
     cmd: &[u8],
     tag: &str,
 ) -> Result<String, String> {
+    // Protocol trace: log the command being sent (C: ...) at DEBUG. Trim the
+    // trailing CRLF + mask the password in LOGIN/AUTHENTICATE so the trace is
+    // safe to ship in a log file. The raw bytes here are exactly what goes on
+    // the wire (tag + command + CRLF), matching the IMAP convention of logging
+    // "C: <command>" / "S: <response>".
+    let cmd_str = String::from_utf8_lossy(cmd);
+    let cmd_trimmed = cmd_str.trim_end_matches(['\r', '\n']);
+    let masked = if cmd_trimmed.starts_with("a1 LOGIN")
+        || cmd_trimmed.starts_with("a1 AUTHENTICATE")
+    {
+        // Mask credentials: keep the command verb + tag, drop the payload.
+        if let Some(space_idx) = cmd_trimmed.find(' ') {
+            // "a1 LOGIN ..." -> "a1 LOGIN <masked>"
+            let verb_end = cmd_trimmed[space_idx + 1..]
+                .find(' ')
+                .map(|i| space_idx + 1 + i)
+                .unwrap_or(cmd_trimmed.len());
+            format!("{} <masked>", &cmd_trimmed[..verb_end])
+        } else {
+            "<masked>".to_string()
+        }
+    } else {
+        cmd_trimmed.to_string()
+    };
+    log::debug!("C: {masked}");
+
     reader
         .get_mut()
         .write_all(cmd)
@@ -1787,18 +1833,31 @@ async fn raw_send_and_wait(
         )
         .await
         {
-            Ok(Ok(0)) => return Err(format!("{tag}: connection closed")),
+            Ok(Ok(0)) => {
+                log::debug!("S: <connection closed> (tag={tag})");
+                return Err(format!("{tag}: connection closed"));
+            }
             Ok(Ok(_)) => {
                 response.push_str(&line);
                 if line.starts_with(&tag_ok) {
+                    // Log the tagged OK status line (the final response). Trimming
+                    // the CRLF keeps the trace one-line-per-command.
+                    log::debug!("S: {}", line.trim_end_matches(['\r', '\n']));
                     return Ok(response);
                 }
                 if line.starts_with(&tag_no) || line.starts_with(&tag_bad) {
+                    log::debug!("S: {}", line.trim_end_matches(['\r', '\n']));
                     return Err(format!("{tag} failed: {line}"));
                 }
             }
-            Ok(Err(e)) => return Err(format!("{tag} read: {e}")),
-            Err(_) => return Err(format!("{tag}: timeout")),
+            Ok(Err(e)) => {
+                log::debug!("S: <read error: {e}> (tag={tag})");
+                return Err(format!("{tag} read: {e}"));
+            }
+            Err(_) => {
+                log::debug!("S: <timeout> (tag={tag})");
+                return Err(format!("{tag}: timeout"));
+            }
         }
     }
 }

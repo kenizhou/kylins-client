@@ -311,6 +311,9 @@ impl MailSource for ImapSource {
             .map_err(other)?;
 
         if let Some((idle, condstore, qresync, vanished)) = caps_tuple {
+            log::info!(
+                "[sync] {account_id} IMAP capabilities: idle={idle} condstore={condstore} qresync={qresync} vanished={vanished}"
+            );
             *self.caps.lock().unwrap() = Some(Capabilities {
                 idle,
                 condstore,
@@ -571,6 +574,19 @@ impl MailSource for ImapSource {
                         let mut flag_updates: Vec<FlagUpdate> = Vec::new();
                         let mut next_modseq = status.highest_modseq.unwrap_or(0);
 
+                        // Diagnostic: log the CONDSTORE gate so the user can tell
+                        // whether flag-sync is even being attempted. The known
+                        // async-imap-0 quirk (CHANGEDSINCE returns 0 items even
+                        // when there are real flag changes on this server) makes
+                        // the "0 flag changes" branch ambiguous without this log
+                        // — it could mean "no changes" OR "async-imap parsed the
+                        // response to zero items".
+                        log::info!(
+                            "[sync] CONDSTORE {} gate: caps.condstore={} since_modseq={} (skipped if 0)",
+                            folder_remote,
+                            caps.condstore,
+                            since_modseq
+                        );
                         if caps.condstore && since_modseq > 0 {
                             match imap_client::fetch_changed_flags(
                                 session,
@@ -589,13 +605,30 @@ impl MailSource for ImapSource {
                                             is_starred: c.is_starred,
                                         })
                                         .collect();
-                                    log::info!(
-                                        "[sync] CONDSTORE {}: {} flag change(s) since modseq {} (-> {})",
-                                        folder_remote,
-                                        flag_updates.len(),
-                                        since_modseq,
-                                        next_modseq
-                                    );
+                                    if flag_updates.is_empty() {
+                                        // Ambiguous-zero signal: on this test server
+                                        // async-imap has been observed to return 0
+                                        // items from CHANGEDSINCE even when other
+                                        // clients changed flags (see Phase 3e Task 2
+                                        // + MEMORY.md "async-imap-0-returns-0
+                                        // quirk"). A real no-change round and the
+                                        // quirk both land here; surface both to the
+                                        // log so the user knows flag-sync ran.
+                                        log::info!(
+                                            "[sync] CONDSTORE {}: 0 changes detected (async-imap quirk?); since_modseq={} -> next_modseq={}",
+                                            folder_remote,
+                                            since_modseq,
+                                            next_modseq
+                                        );
+                                    } else {
+                                        log::info!(
+                                            "[sync] CONDSTORE {}: {} flag change(s) since modseq {} (-> {})",
+                                            folder_remote,
+                                            flag_updates.len(),
+                                            since_modseq,
+                                            next_modseq
+                                        );
+                                    }
                                 }
                                 Err(e) => {
                                     log::warn!(
@@ -783,6 +816,17 @@ impl MailSource for ImapSource {
                                 let mut next_modseq =
                                     status_highest_modseq.unwrap_or(0);
 
+                                // Diagnostic: same gate log as Stage 1 (see above).
+                                // Stage 2 runs after the raw-fetch fallback, so
+                                // this is the path that actually executes for the
+                                // test server (Stage 1 bails to NeedsRawFetch on
+                                // the async-imap-empty quirk).
+                                log::info!(
+                                    "[sync] CONDSTORE {} gate (stage2): caps.condstore={} since_modseq={} (skipped if 0)",
+                                    folder_remote,
+                                    caps.condstore,
+                                    since_modseq_for_stage2
+                                );
                                 if caps.condstore && since_modseq_for_stage2 > 0 {
                                     match imap_client::fetch_changed_flags(
                                         session,
@@ -801,13 +845,22 @@ impl MailSource for ImapSource {
                                                     is_starred: c.is_starred,
                                                 })
                                                 .collect();
-                                            log::info!(
-                                                "[sync] CONDSTORE {}: {} flag change(s) since modseq {} (-> {})",
-                                                folder_remote,
-                                                flag_updates.len(),
-                                                since_modseq_for_stage2,
-                                                next_modseq
-                                            );
+                                            if flag_updates.is_empty() {
+                                                log::info!(
+                                                    "[sync] CONDSTORE {} (stage2): 0 changes detected (async-imap quirk?); since_modseq={} -> next_modseq={}",
+                                                    folder_remote,
+                                                    since_modseq_for_stage2,
+                                                    next_modseq
+                                                );
+                                            } else {
+                                                log::info!(
+                                                    "[sync] CONDSTORE {} (stage2): {} flag change(s) since modseq {} (-> {})",
+                                                    folder_remote,
+                                                    flag_updates.len(),
+                                                    since_modseq_for_stage2,
+                                                    next_modseq
+                                                );
+                                            }
                                         }
                                         Err(e) => {
                                             log::warn!(
