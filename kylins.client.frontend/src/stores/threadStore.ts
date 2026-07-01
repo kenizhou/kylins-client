@@ -98,15 +98,9 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
 
   selectThread: async (thread) => {
     set({ selectedThreadId: thread.id });
-    // TEMPORARY diagnostic (body-prefetch not firing on select).
-    console.log('[selectThread]', { threadId: thread.id, accountId: thread.accountId });
     try {
       const messages = await getMessagesForThread(thread.accountId, thread.id);
       const latest = messages[messages.length - 1] ?? null;
-      console.log('[selectThread] messages', {
-        count: messages.length,
-        latestId: latest?.id ?? null,
-      });
       if (latest) {
         // Headers-first sync: the folder sweep no longer downloads bodies, so
         // open them on demand. If the body is uncached, ask the backend to
@@ -114,10 +108,6 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         // upsert) then re-read. Best-effort: on failure we render whatever the
         // cache has (null body → reading pane shows the text fallback).
         let body = await getMessageBody(thread.accountId, latest.id);
-        console.log('[selectThread] cached body', {
-          hasBody: !!body,
-          bodyHtmlNull: body?.bodyHtml == null,
-        });
         if (!body || body.bodyHtml == null) {
           try {
             await invoke('sync_request_bodies', {

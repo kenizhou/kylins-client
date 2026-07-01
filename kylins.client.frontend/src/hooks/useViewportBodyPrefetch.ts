@@ -76,14 +76,6 @@ function isTauriEnv(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-/** TEMPORARY diagnostic flag (body-prefetch not firing). Sprays a log at every
- * decision point so the browser console shows exactly where the hook stops.
- * Remove once the failure is localized. */
-const PREFETCH_DEBUG = true;
-function dbg(...args: unknown[]): void {
-  if (PREFETCH_DEBUG) console.log('[prefetch]', ...args);
-}
-
 /**
  * Viewport-aware batch body prefetch. Skipped entirely when the account is
  * rate-limited (Phase 3f) — prefetch is low-priority and the next poll will
@@ -111,12 +103,7 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
   }, [threads]);
 
   useEffect(() => {
-    const tauri = isTauriEnv();
-    dbg('effect run', { tauri, accountId, threadsLen: threads.length });
-    if (!tauri || !accountId) {
-      dbg('effect: bailed (no tauri or no accountId)');
-      return;
-    }
+    if (!isTauriEnv() || !accountId) return;
 
     // Run one prefetch batch against the CURRENT viewport + store state.
     const runBatch = async (): Promise<void> => {
@@ -126,20 +113,12 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
       const storeThreads = useThreadStore.getState().threads;
       const liveThreads =
         storeThreads && storeThreads.length > 0 ? storeThreads : threadsRef.current;
-      dbg('runBatch entry', { storeLen: storeThreads?.length ?? 0, liveLen: liveThreads.length });
-      if (liveThreads.length === 0) {
-        dbg('runBatch: liveThreads empty, skip');
-        return;
-      }
+      if (liveThreads.length === 0) return;
 
       // Rate-limit gate.
-      if (useUIStore.getState().rateLimitedAccountIds.has(accountId)) {
-        dbg('runBatch: rate-limited, skip');
-        return;
-      }
+      if (useUIStore.getState().rateLimitedAccountIds.has(accountId)) return;
 
       const visible = virtualizer.getVirtualItems();
-      dbg('runBatch: visible items', visible.length);
       if (visible.length === 0) return;
       const firstIdx = Math.max(0, visible[0]!.index - VIEWPORT_BUFFER);
       const lastIdx = Math.min(
@@ -155,7 +134,6 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
         if (t) candidateIds.push(t.id);
         if (candidateIds.length >= MAX_PREFETCH) break;
       }
-      dbg('runBatch: candidates', { firstIdx, lastIdx, count: candidateIds.length });
       if (candidateIds.length === 0) return;
 
       // Filter to uncached only — don't re-request what we already have.
@@ -166,19 +144,13 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
         console.error('[prefetch] getUncachedBodyMessageIds failed', e);
         return;
       }
-      dbg('runBatch: uncached', uncached.length, uncached.slice(0, 3));
-      if (uncached.length === 0) {
-        dbg('runBatch: all cached, skip invoke');
-        return;
-      }
+      if (uncached.length === 0) return;
 
       try {
-        dbg('invoke sync_request_bodies', { accountId, count: uncached.length });
         await invoke('sync_request_bodies', {
           accountId,
           messageIds: uncached,
         });
-        dbg('invoke ok');
         // Throttle bookkeeping: stamp the moment a batch successfully went
         // out so the next fire is delayed by the remaining MIN_INTERVAL_MS.
         lastFireRef.current = Date.now();
@@ -193,10 +165,7 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
     // once things settle. If a batch is already pending, ignore further
     // triggers — the pending one will read the freshest state when it fires.
     const scheduleBatch = (forceImmediate: boolean): void => {
-      if (pendingTimerRef.current != null) {
-        dbg('scheduleBatch: already pending, skip');
-        return;
-      }
+      if (pendingTimerRef.current != null) return;
       let delay: number;
       if (forceImmediate) {
         delay = 0;
@@ -205,7 +174,6 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
         delay = Math.max(DEBOUNCE_MS, MIN_INTERVAL_MS - elapsed);
         if (!Number.isFinite(delay) || delay < 0) delay = DEBOUNCE_MS;
       }
-      dbg('scheduleBatch', { forceImmediate, delay });
       pendingTimerRef.current = window.setTimeout(() => {
         pendingTimerRef.current = null;
         void runBatch();
@@ -231,11 +199,6 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
     ).options;
     const getScrollEl = opts?.getScrollElement;
     const scrollEl = typeof getScrollEl === 'function' ? getScrollEl() : null;
-    dbg('scroll listener', {
-      hasOptions: !!opts,
-      hasFn: typeof getScrollEl === 'function',
-      attached: !!scrollEl,
-    });
     const onScroll = (): void => scheduleBatch(false);
     if (scrollEl) {
       scrollEl.addEventListener('scroll', onScroll, { passive: true });
