@@ -403,17 +403,38 @@ impl SyncEngine {
             let mut tick = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
             // Drop the first immediate tick (we already synced above).
             tick.tick().await;
+            // The channel may close if the Sender is dropped unexpectedly (the
+            // original `tx` local in spawn_worker is dropped when the function
+            // returns; the clone in WorkerHandle *should* keep it alive, but
+            // if it doesn't, `rx.recv()` returns None). Pre-fix, `None => break`
+            // caused the worker to EXIT SILENTLY — sync stopped with no error.
+            // Now: switch to tick-only mode (the 60s poll continues regardless
+            // of channel state; SyncNow nudges are best-effort).
+            let mut channel_open = true;
             loop {
-                tokio::select! {
-                    _ = tick.tick() => {
-                        let _ = run_sync_round(&engine, &aid, &provider).await;
-                    }
-                    op = rx.recv() => match op {
-                        Some(SyncOp::SyncNow) => {
+                if channel_open {
+                    tokio::select! {
+                        _ = tick.tick() => {
                             let _ = run_sync_round(&engine, &aid, &provider).await;
                         }
-                        Some(SyncOp::Shutdown) | None => break,
+                        op = rx.recv() => match op {
+                            Some(SyncOp::SyncNow) => {
+                                let _ = run_sync_round(&engine, &aid, &provider).await;
+                            }
+                            Some(SyncOp::Shutdown) => {
+                                log::info!("[sync] {aid} worker received Shutdown; exiting");
+                                break;
+                            }
+                            None => {
+                                log::warn!("[sync] {aid} worker channel closed; switching to tick-only poll");
+                                channel_open = false;
+                            }
+                        }
                     }
+                } else {
+                    // Channel closed — poll via tick only (no busy-loop).
+                    tick.tick().await;
+                    let _ = run_sync_round(&engine, &aid, &provider).await;
                 }
             }
             // (the idle_watcher JoinHandle is aborted by stop_all / worker removal)
