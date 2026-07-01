@@ -322,6 +322,16 @@ impl SyncEngine {
                 )
                 .await
                 .ok();
+                // Populate the caps cache: this fresh source hasn't queried
+                // CAPABILITY yet (its caps are empty/default). list_folders
+                // calls session_capabilities on the persistent session, caching
+                // the real caps so pick_realtime_strategy sees the server's
+                // actual IDLE/CONDSTORE support. Without this, idle_cap is
+                // always false on the fresh source -> strategy picks Poll
+                // even when the server advertises IDLE.
+                if let Some(src) = &src {
+                    let _ = src.list_folders().await;
+                }
                 let caps = src.as_ref().map(|s| s.capabilities());
                 // Log the realtime-strategy decision + the gate input so the user
                 // can see why IDLE did/didn't spawn. The strategy is recomputed
