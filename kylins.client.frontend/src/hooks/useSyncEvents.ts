@@ -1,9 +1,12 @@
 // Subscribes to Rust SyncEngine events and refreshes the relevant stores. The engine
 // (Rust) owns all sync; the frontend is a reactive view layer.
 //   sync:delta          -> a folder changed on disk -> reload folder list + open thread page
-//   sync:new-mail       -> new unread in an Inbox-equivalent -> OS notification
-//   sync:queue          -> pending-operations count changed -> update uiStore.pendingCount
+//   sync:new-mail       -> new unread in an Inbox-equivalent -> OS notification + tray refresh
+//   sync:queue          -> pending-operations count changed -> uiStore.setPendingForAccount
+//                          (StatusBar aggregates across accounts; legacy setPendingCount zeros
+//                          the per-account map, so sync:queue no longer calls it)
 //   sync:status         -> per-account state transition (syncing/idle/error/rate_limited)
+//                          -> setSyncStateForAccount + setRateLimited (prefetch gate)
 //   sync:bodies-written -> a viewport body-prefetch batch landed -> in-place snippet patch
 //                          (scroll-preserving; never calls threadStore.refresh())
 //   tray-check-mail (tray menu) -> nudge every account to sync now
@@ -27,9 +30,9 @@ import { notifyNewMailBatch } from '../services/notifications/notificationManage
  * - `state`: one of `"syncing" | "idle" | "error" | "rate_limited"`.
  * - `detail`: epoch-seconds payload. Carries `retry_after` for `rate_limited`
  *   and `cooldown_until` for breaker-tripped `error`; `null`/absent for
- *   `syncing` / `idle` / non-breaker `error`. Phase 3g renders the status bar
- *   from this; the listener currently only subscribes so the event is not
- *   dropped (no UI yet).
+ *   `syncing` / `idle` / non-breaker `error`. Phase 3g's StatusBar renders the
+ *   "worst" state across accounts from this; useSyncEvents mirrors it into
+ *   uiStore.setSyncStateForAccount (Task 3) + setRateLimited (Phase 3f).
  */
 export interface StatusEvent {
   accountId: string;
@@ -71,33 +74,64 @@ export function useSyncEvents(): void {
           ),
         );
 
+        // Tray tooltip + (Task 5) notification dedupe refresh on every change
+        // that could move the unread count. Best-effort; failures are swallowed
+        // inside refreshTrayTooltip. Dynamic-imported so the tray module never
+        // loads in jsdom (no Tauri runtime); the static string literal resolves
+        // at build time and does NOT need the @vite-ignore plugin comment.
+        const refreshTray = () => {
+          import('../services/tray/traySync').then((m) => m.refreshTrayTooltip()).catch(() => {});
+        };
+
+        // A second sync:delta listener for the tray tooltip. Kept separate
+        // from the store-reload listener above so concerns stay decoupled —
+        // both fire on the same event; order is not guaranteed but neither
+        // blocks the other. Skipped for label-only deltas (read state didn't
+        // change, only the folder list did).
+        unlisteners.push(
+          await listen<{ accountId: string; labelId?: string; table?: string }>(
+            'sync:delta',
+            (e) => {
+              if (e.payload.table !== 'labels') refreshTray();
+            },
+          ),
+        );
+
         unlisteners.push(
           await listen<{ accountId: string; folderId: string; count: number }>(
             'sync:new-mail',
             (e) => {
+              // Notify with dedupe (Task 5 wires notifyNewMailBatchDeduped).
+              // For now the simple count-based call stays; Task 5 swaps it.
               notifyNewMailBatch(e.payload.count);
+              refreshTray();
             },
           ),
         );
 
         unlisteners.push(
           await listen<{ accountId: string; pending: number }>('sync:queue', (e) => {
-            // Pending-operations count for this account changed. The status bar
-            // shows the aggregate; we keep it simple and surface the latest
-            // account's count (multi-account aggregation is a later refinement).
-            useUIStore.getState().setPendingCount(e.payload.pending);
+            // Per-account pending count -> aggregated store. StatusBar reads
+            // the sum (useUIStore.aggregatedPending), not just this account.
+            // Do NOT call legacy setPendingCount here — it zeros the
+            // per-account map, discarding other accounts' counts.
+            useUIStore.getState().setPendingForAccount(e.payload.accountId, e.payload.pending);
           }),
         );
 
         unlisteners.push(
           await listen<StatusEvent>('sync:status', (e) => {
             // Per-account state transition (syncing / idle / error /
-            // rate_limited). Phase 3g will render the status bar from
-            // e.payload.detail (retry_after / cooldown_until). Here we mirror
-            // the rate-limit flag into uiStore so the viewport body-prefetch
-            // hook can skip any account the server has throttled (prefetch is
-            // low-priority — the next poll refills the cache once the cooldown
-            // lifts).
+            // rate_limited). Phase 3g renders the status bar from
+            // e.payload.detail (retry_after / cooldown_until). We mirror two
+            // things into uiStore:
+            //   1. setSyncStateForAccount — StatusBar renders the "worst"
+            //      state across accounts (Task 4). 'rate_limited' is optional
+            //      (Phase 3f); if never emitted, that value never surfaces.
+            //   2. setRateLimited — the viewport body-prefetch hook skips any
+            //      account the server has throttled (prefetch is low-priority;
+            //      the next poll refills the cache once the cooldown lifts).
+            useUIStore.getState().setSyncStateForAccount(e.payload.accountId, e.payload.state);
             useUIStore
               .getState()
               .setRateLimited(e.payload.accountId, e.payload.state === 'rate_limited');
