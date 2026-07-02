@@ -581,8 +581,7 @@ export function Composer({ windowed = false }: ComposerProps) {
             : 'h-[min(760px,85vh)] w-[min(900px,92vw)]'
       } ${isDragging ? 'border-2 border-[var(--primary)]' : 'border-[var(--border)]'}`}
       style={{
-        borderTopWidth: '3px',
-        borderTopColor: currentLevel.color,
+        ...(windowed ? {} : { borderTopWidth: '3px', borderTopColor: currentLevel.color }),
         backgroundColor: prominent ? `${currentLevel.color}10` : undefined,
       }}
       onDragEnter={handleDragEnter}
