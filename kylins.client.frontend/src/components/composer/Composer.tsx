@@ -601,13 +601,9 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       {/* Header */}
       {windowed ? (
-        <div className="relative">
-          <WindowTitleBar title={modeLabel} />
-          {prominent && <ClassificationWatermark level={currentLevel} />}
-        </div>
+        <WindowTitleBar title={modeLabel} />
       ) : (
-        <div className="relative flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
-          {prominent && <ClassificationWatermark level={currentLevel} />}
+        <div className="flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
           <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
           <div className="flex items-center gap-0.5">
             <IconButton
@@ -645,67 +641,72 @@ export function Composer({ windowed = false }: ComposerProps) {
         </div>
       )}
 
-      {/* Address fields */}
-      <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
-        <FromSelector
-          aliases={aliases}
-          selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
-          onChange={(alias) => setFromEmail(alias.email)}
-        />
-        <RecipientField
-          label="To"
-          recipients={to}
-          onChange={setTo}
-          placeholder="Recipients"
-          moveTargets={[
-            { label: 'Cc', target: 'cc' },
-            { label: 'Bcc', target: 'bcc' },
-          ]}
-          onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
-        />
-        {showCcBcc ? (
-          <>
-            <RecipientField
-              label="Cc"
-              recipients={cc}
-              onChange={setCc}
-              placeholder="Cc recipients"
-              moveTargets={[
-                { label: 'To', target: 'to' },
-                { label: 'Bcc', target: 'bcc' },
-              ]}
-              onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
-            />
-            <RecipientField
-              label="Bcc"
-              recipients={bcc}
-              onChange={setBcc}
-              placeholder="Bcc recipients"
-              moveTargets={[
-                { label: 'To', target: 'to' },
-                { label: 'Cc', target: 'cc' },
-              ]}
-              onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-            />
-          </>
-        ) : (
-          <button onClick={() => setShowCcBcc(true)} className="kylins-link ml-10 text-xs">
-            Cc / Bcc
-          </button>
-        )}
-      </div>
+      {/* Address fields + subject (watermark overlays this area) */}
+      <div className="relative shrink-0">
+        {prominent && <ClassificationWatermark level={currentLevel} />}
 
-      {/* Subject */}
-      <div className="border-b border-[var(--border)] px-3 py-1.5">
-        <div className="flex items-center gap-2">
-          <ClassificationSelector />
-          <input
-            type="text"
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            placeholder="Subject"
-            className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+        {/* Address fields */}
+        <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
+          <FromSelector
+            aliases={aliases}
+            selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
+            onChange={(alias) => setFromEmail(alias.email)}
           />
+          <RecipientField
+            label="To"
+            recipients={to}
+            onChange={setTo}
+            placeholder="Recipients"
+            moveTargets={[
+              { label: 'Cc', target: 'cc' },
+              { label: 'Bcc', target: 'bcc' },
+            ]}
+            onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
+          />
+          {showCcBcc ? (
+            <>
+              <RecipientField
+                label="Cc"
+                recipients={cc}
+                onChange={setCc}
+                placeholder="Cc recipients"
+                moveTargets={[
+                  { label: 'To', target: 'to' },
+                  { label: 'Bcc', target: 'bcc' },
+                ]}
+                onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+              />
+              <RecipientField
+                label="Bcc"
+                recipients={bcc}
+                onChange={setBcc}
+                placeholder="Bcc recipients"
+                moveTargets={[
+                  { label: 'To', target: 'to' },
+                  { label: 'Cc', target: 'cc' },
+                ]}
+                onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
+              />
+            </>
+          ) : (
+            <button onClick={() => setShowCcBcc(true)} className="kylins-link ml-10 text-xs">
+              Cc / Bcc
+            </button>
+          )}
+        </div>
+
+        {/* Subject */}
+        <div className="border-b border-[var(--border)] px-3 py-1.5">
+          <div className="flex items-center gap-2">
+            <ClassificationSelector />
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Subject"
+              className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+            />
+          </div>
         </div>
       </div>
 
