@@ -477,7 +477,7 @@ export function FolderPane() {
 
   return (
     <div className="flex flex-col h-full bg-[var(--surface)] rounded-xl">
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto [scrollbar-width:none] hover:[scrollbar-width:thin] [&::-webkit-scrollbar]:w-0 hover:[&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[var(--muted-text)]/40 hover:[&::-webkit-scrollbar-thumb]:bg-[var(--muted-text)]/60">
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-[var(--muted-text)]">
             No folders yet. Add an account to get started.
