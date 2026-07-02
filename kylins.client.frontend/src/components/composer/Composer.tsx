@@ -603,9 +603,23 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       {/* Header */}
       {windowed ? (
-        <WindowTitleBar title={modeLabel} />
+        <div className="relative">
+          <WindowTitleBar title={modeLabel} />
+          {prominent && (
+            <ClassificationWatermark
+              level={currentLevel}
+              identity={fromEmail ?? activeAccount?.email}
+            />
+          )}
+        </div>
       ) : (
-        <div className="flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+        <div className="relative flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+          {prominent && (
+            <ClassificationWatermark
+              level={currentLevel}
+              identity={fromEmail ?? activeAccount?.email}
+            />
+          )}
           <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
           <div className="flex items-center gap-0.5">
             <IconButton
@@ -714,12 +728,6 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       {/* Editor */}
       <div className="relative flex-1 overflow-y-auto">
-        {prominent && (
-          <ClassificationWatermark
-            level={currentLevel}
-            identity={fromEmail ?? activeAccount?.email}
-          />
-        )}
         <EditorContent editor={editor} />
       </div>
 
