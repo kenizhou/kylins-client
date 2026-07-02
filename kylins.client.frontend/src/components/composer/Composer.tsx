@@ -603,21 +603,11 @@ export function Composer({ windowed = false }: ComposerProps) {
       {windowed ? (
         <div className="relative">
           <WindowTitleBar title={modeLabel} />
-          {prominent && (
-            <ClassificationWatermark
-              level={currentLevel}
-              identity={fromEmail ?? activeAccount?.email}
-            />
-          )}
+          {prominent && <ClassificationWatermark level={currentLevel} />}
         </div>
       ) : (
         <div className="relative flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
-          {prominent && (
-            <ClassificationWatermark
-              level={currentLevel}
-              identity={fromEmail ?? activeAccount?.email}
-            />
-          )}
+          {prominent && <ClassificationWatermark level={currentLevel} />}
           <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
           <div className="flex items-center gap-0.5">
             <IconButton
