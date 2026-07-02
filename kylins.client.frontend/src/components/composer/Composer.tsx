@@ -64,7 +64,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { MenuBar } from '@/components/ui/MenuBar';
 import { CommandRibbon } from '@/components/layout/CommandRibbon';
 import { ClassificationWatermark } from '@/features/classification/components/ClassificationWatermark';
-import { ClassificationBanner } from '@/features/classification/components/ClassificationBanner';
 import { isProminent } from '@/features/classification/classificationStyle';
 import { WindowErrorBoundary } from '@/components/ui/WindowErrorBoundary';
 
@@ -638,8 +637,6 @@ export function Composer({ windowed = false }: ComposerProps) {
       <div className="shrink-0" style={noDragStyle}>
         <CommandRibbon mode="compose" />
       </div>
-
-      {prominent && <ClassificationBanner level={currentLevel} position="top" />}
 
       {requiresClassification && (
         <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
