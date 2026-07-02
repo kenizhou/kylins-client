@@ -90,8 +90,10 @@ describe('FolderPane', () => {
         ],
       },
     });
-    const { getByText } = render(<FolderPane />);
+    const { getByText, getByLabelText } = render(<FolderPane />);
     expect(getByText('Projects')).toBeInTheDocument();
+    // Folder levels are collapsed by default; expand Projects to reveal Apollo.
+    fireEvent.click(getByLabelText('Expand folder'));
     expect(getByText('Apollo')).toBeInTheDocument();
   });
 });

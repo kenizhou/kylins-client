@@ -153,13 +153,41 @@ function FolderRow({
   );
 }
 
-function FolderGroup({ title, children }: { title: string; children: React.ReactNode }) {
+function FolderGroup({
+  title,
+  children,
+  collapsible,
+}: {
+  title: string;
+  children: React.ReactNode;
+  collapsible?: { expanded: boolean; onToggle: () => void };
+}) {
   return (
     <div className="first:pt-3 pt-2 pb-2 last:pb-0">
-      <div className="px-3 pb-1.5 text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide">
-        {title}
-      </div>
-      <div className="space-y-0.5 px-0">{children}</div>
+      <button
+        type="button"
+        onClick={collapsible ? collapsible.onToggle : undefined}
+        className={`flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold text-[var(--foreground)] uppercase tracking-wide ${
+          collapsible ? 'cursor-pointer hover:text-[var(--primary)]' : 'cursor-default'
+        }`}
+        aria-expanded={collapsible ? collapsible.expanded : undefined}
+      >
+        {collapsible && (
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`size-3 shrink-0 transition-transform ${collapsible.expanded ? 'rotate-90' : ''}`}
+          >
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        )}
+        <span className="truncate">{title}</span>
+      </button>
+      {(!collapsible || collapsible.expanded) && <div className="space-y-0.5 px-0">{children}</div>}
     </div>
   );
 }
@@ -304,12 +332,41 @@ export function FolderPane() {
   const [inline, setInline] = useState<InlineEdit | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MailFolder | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsedInitialized, setCollapsedInitialized] = useState(false);
+  const [accountsCollapsed, setAccountsCollapsed] = useState<Set<string>>(new Set());
 
   const toggleCollapsed = (folderId: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(folderId)) next.delete(folderId);
       else next.add(folderId);
+      return next;
+    });
+  };
+
+  const toggleAccountCollapsed = (accountId: string) => {
+    setAccountsCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(accountId)) next.delete(accountId);
+      else next.add(accountId);
+      return next;
+    });
+  };
+
+  const expandFolder = (folderId: string) => {
+    setCollapsed((prev) => {
+      if (!prev.has(folderId)) return prev;
+      const next = new Set(prev);
+      next.delete(folderId);
+      return next;
+    });
+  };
+
+  const expandAccount = (accountId: string) => {
+    setAccountsCollapsed((prev) => {
+      if (!prev.has(accountId)) return prev;
+      const next = new Set(prev);
+      next.delete(accountId);
       return next;
     });
   };
@@ -352,6 +409,27 @@ export function FolderPane() {
 
   const totalFolders = Object.values(byAccount).reduce((sum, fs) => sum + fs.length, 0);
 
+  // Fold folder levels by default on first load, but only once.
+  if (!collapsedInitialized && totalFolders > 0) {
+    const remoteToId = new Map<string, string>();
+    for (const folders of Object.values(byAccount)) {
+      for (const f of folders) {
+        remoteToId.set(f.remoteId, f.id);
+      }
+    }
+    const next = new Set<string>();
+    for (const folders of Object.values(byAccount)) {
+      for (const f of folders) {
+        if (f.parentId) {
+          const parentId = remoteToId.get(f.parentId);
+          if (parentId) next.add(parentId);
+        }
+      }
+    }
+    setCollapsed(next);
+    setCollapsedInitialized(true);
+  }
+
   const menuItems: ContextMenuItem[] = menu
     ? [
         {
@@ -368,13 +446,17 @@ export function FolderPane() {
         {
           label: 'New Subfolder',
           icon: PlusIcon,
-          onSelect: () =>
+          onSelect: () => {
+            const parent = menu.folder;
             setInline({
               kind: 'create',
-              accountId: menu.folder.accountId,
-              parentId: menu.folder.remoteId,
+              accountId: parent.accountId,
+              parentId: parent.remoteId ?? parent.id,
               name: '',
-            }),
+            });
+            expandFolder(parent.id);
+            expandAccount(parent.accountId);
+          },
         },
         {
           label: 'Rename Folder',
@@ -440,9 +522,17 @@ export function FolderPane() {
                 inline.kind === 'create' &&
                 inline.parentId === null &&
                 inline.accountId === account.id;
+              const accountExpanded = !accountsCollapsed.has(account.id);
               return (
-                <FolderGroup key={account.id} title={title}>
-                  {topCreate && (
+                <FolderGroup
+                  key={account.id}
+                  title={title}
+                  collapsible={{
+                    expanded: accountExpanded,
+                    onToggle: () => toggleAccountCollapsed(account.id),
+                  }}
+                >
+                  {accountExpanded && topCreate && (
                     <InlineFolderInput
                       depth={0}
                       initialValue=""
@@ -451,19 +541,21 @@ export function FolderPane() {
                       onCancel={cancelInline}
                     />
                   )}
-                  <FolderNodes
-                    nodes={allTree}
-                    depth={0}
-                    inline={inline}
-                    collapsed={collapsed}
-                    toggleCollapsed={toggleCollapsed}
-                    isSelected={isSelected}
-                    unreadFor={unreadFor}
-                    onSelect={onSelect}
-                    onContextMenu={openMenu}
-                    onCommitInline={commitInline}
-                    onCancelInline={cancelInline}
-                  />
+                  {accountExpanded && (
+                    <FolderNodes
+                      nodes={allTree}
+                      depth={0}
+                      inline={inline}
+                      collapsed={collapsed}
+                      toggleCollapsed={toggleCollapsed}
+                      isSelected={isSelected}
+                      unreadFor={unreadFor}
+                      onSelect={onSelect}
+                      onContextMenu={openMenu}
+                      onCommitInline={commitInline}
+                      onCancelInline={cancelInline}
+                    />
+                  )}
                 </FolderGroup>
               );
             })}
