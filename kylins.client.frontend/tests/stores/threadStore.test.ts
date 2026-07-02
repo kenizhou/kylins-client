@@ -385,19 +385,20 @@ describe('threadStore.toggleThreadStarred', () => {
 });
 
 describe('threadStore.deleteThread', () => {
-  it('removes the thread, clears selection, and sends delete mutation', async () => {
+  it('removes the thread, selects the next thread, and sends delete mutation', async () => {
     useThreadStore.setState({
-      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2' })],
+      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: true })],
       selectedThreadId: 't1',
       currentQuery: { accountId: 'a1', labelId: 'inbox' },
     });
     useFolderStore.setState({ unreadCounts: { a1__inbox: 3 } });
-    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow({ thread_id: 't2' })]);
 
     await useThreadStore.getState().deleteThread(thread({ id: 't1', isRead: false }));
 
     expect(useThreadStore.getState().threads.map((t) => t.id)).toEqual(['t2']);
-    expect(useThreadStore.getState().selectedThreadId).toBeNull();
+    expect(useThreadStore.getState().selectedThreadId).toBe('t2');
+    expect(useViewStore.getState().selectedMessage?.threadId).toBe('t2');
     expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(2);
     expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
       accountId: 'a1',

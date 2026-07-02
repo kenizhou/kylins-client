@@ -48,14 +48,15 @@ import { formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
 import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { readFileAsBase64 } from '@/utils/fileUtils';
+import { getAttachments, fetchAttachment } from '@/services/db/attachments';
 import {
   MaximizeIcon,
   RestoreIcon,
   PopOutIcon,
   PlusIcon,
   WarningIcon,
-  ClockIcon,
   CloseIcon,
+  SendIcon,
 } from '../icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
@@ -69,6 +70,29 @@ import { WindowErrorBoundary } from '@/components/ui/WindowErrorBoundary';
 const noDragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
   WebkitAppRegion: 'no-drag',
 };
+
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+}
+
+function buildMinimalEml(subject: string, body: string): string {
+  return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
+}
+
+function newAttachmentId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 interface ComposerProps {
   windowed?: boolean;
@@ -100,6 +124,12 @@ export function Composer({ windowed = false }: ComposerProps) {
   const setFromEmail = useComposerStore((s) => s.setFromEmail);
   const setViewMode = useComposerStore((s) => s.setViewMode);
   const addAttachment = useComposerStore((s) => s.addAttachment);
+  const originalMessageId = useComposerStore((s) => s.originalMessageId);
+  const includeOriginalAttachments = useComposerStore((s) => s.includeOriginalAttachments);
+  const forwardAsAttachment = useComposerStore((s) => s.forwardAsAttachment);
+  const originalMessageSubject = useComposerStore((s) => s.originalMessageSubject);
+  const originalMessageHtml = useComposerStore((s) => s.originalMessageHtml);
+  const originalMessageText = useComposerStore((s) => s.originalMessageText);
 
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
@@ -114,12 +144,84 @@ export function Composer({ windowed = false }: ComposerProps) {
   const messageSentSound = usePreferencesStore((s) => s.messageSentSound);
 
   const sendingRef = useRef(false);
+  const attachmentSeededRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
   const dragCounterRef = useRef(0);
+
+  // Seed reply/forward attachments from the original message when requested.
+  useEffect(() => {
+    if (!isOpen) {
+      attachmentSeededRef.current = false;
+      return;
+    }
+    if (!originalMessageId || (!includeOriginalAttachments && !forwardAsAttachment)) return;
+    if (attachmentSeededRef.current) return;
+
+    const messageId = originalMessageId;
+    let cancelled = false;
+    async function seed() {
+      attachmentSeededRef.current = true;
+
+      if (includeOriginalAttachments && activeAccountId) {
+        try {
+          const rows = await getAttachments(activeAccountId, messageId);
+          for (const row of rows) {
+            if (cancelled) break;
+            const partId = row.imapPartId || row.id;
+            const bytes = await fetchAttachment(activeAccountId, messageId, partId);
+            if (cancelled) break;
+            addAttachment({
+              id: newAttachmentId(),
+              file: new File([], row.filename || 'attachment'),
+              filename: row.filename || 'attachment',
+              mimeType: bytes.mimeType || row.mimeType || 'application/octet-stream',
+              size: row.size,
+              content: bytes.base64,
+            });
+          }
+        } catch (err) {
+          console.error('[Composer] failed to seed original attachments', err);
+        }
+      }
+
+      if (forwardAsAttachment && !cancelled) {
+        try {
+          const body = originalMessageText ?? htmlToPlainText(originalMessageHtml ?? '');
+          const eml = buildMinimalEml(originalMessageSubject ?? 'Forwarded message', body);
+          const content = btoa(unescape(encodeURIComponent(eml)));
+          const filename = `${(originalMessageSubject ?? 'message').replace(/[^a-z0-9]/gi, '_')}.eml`;
+          addAttachment({
+            id: newAttachmentId(),
+            file: new File([], filename),
+            filename,
+            mimeType: 'message/rfc822',
+            size: content.length,
+            content,
+          });
+        } catch (err) {
+          console.error('[Composer] failed to build forward-as-attachment', err);
+        }
+      }
+    }
+    seed();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isOpen,
+    includeOriginalAttachments,
+    forwardAsAttachment,
+    originalMessageId,
+    activeAccountId,
+    addAttachment,
+    originalMessageSubject,
+    originalMessageHtml,
+    originalMessageText,
+  ]);
 
   const editor = useEditor({
     extensions: buildComposerExtensions('Write your message...'),
@@ -329,6 +431,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       isSigned: state.isSigned,
       importance: state.importance,
       requestReadReceipt: state.requestReadReceipt,
+      requestDeliveryReceipt: state.requestDeliveryReceipt,
       deliverAt: state.deliverAt,
       preventCopy: state.preventCopy,
     };
@@ -520,6 +623,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       params.set('isSigned', state.isSigned ? '1' : '0');
       params.set('importance', state.importance);
       params.set('requestReadReceipt', state.requestReadReceipt ? '1' : '0');
+      params.set('requestDeliveryReceipt', state.requestDeliveryReceipt ? '1' : '0');
       if (state.deliverAt != null) params.set('deliverAt', state.deliverAt.toString());
       params.set('preventCopy', state.preventCopy ? '1' : '0');
       const bodyHtml = editor?.getHTML() ?? '';
@@ -629,83 +733,87 @@ export function Composer({ windowed = false }: ComposerProps) {
       )}
 
       {/* Command ribbon + address fields + subject (watermark overlays this area) */}
-      <div className="relative shrink-0">
+      <div
+        className="relative shrink-0"
+        style={{ backgroundColor: prominent ? `${currentLevel.color}08` : undefined }}
+      >
         {prominent && <ClassificationWatermark level={currentLevel} />}
-
-        <div className="shrink-0" style={noDragStyle}>
-          <CommandRibbon mode="compose" />
-        </div>
-
-        {requiresClassification && (
-          <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
-            <span className="inline-flex items-center gap-1.5">
-              <WarningIcon size={14} />
-              <span>Select a classification before sending.</span>
-            </span>
+        <div className="relative z-20">
+          <div className="shrink-0" style={noDragStyle}>
+            <CommandRibbon mode="compose" />
           </div>
-        )}
 
-        {/* Address fields */}
-        <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
-          <FromSelector
-            aliases={aliases}
-            selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
-            onChange={(alias) => setFromEmail(alias.email)}
-          />
-          <RecipientField
-            label="To"
-            recipients={to}
-            onChange={setTo}
-            placeholder="Recipients"
-            moveTargets={[
-              { label: 'Cc', target: 'cc' },
-              { label: 'Bcc', target: 'bcc' },
-            ]}
-            onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
-          />
-          {showCcBcc ? (
-            <>
-              <RecipientField
-                label="Cc"
-                recipients={cc}
-                onChange={setCc}
-                placeholder="Cc recipients"
-                moveTargets={[
-                  { label: 'To', target: 'to' },
-                  { label: 'Bcc', target: 'bcc' },
-                ]}
-                onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
-              />
-              <RecipientField
-                label="Bcc"
-                recipients={bcc}
-                onChange={setBcc}
-                placeholder="Bcc recipients"
-                moveTargets={[
-                  { label: 'To', target: 'to' },
-                  { label: 'Cc', target: 'cc' },
-                ]}
-                onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-              />
-            </>
-          ) : (
-            <button onClick={() => setShowCcBcc(true)} className="kylins-link ml-10 text-xs">
-              Cc / Bcc
-            </button>
+          {requiresClassification && (
+            <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
+              <span className="inline-flex items-center gap-1.5">
+                <WarningIcon size={14} />
+                <span>Select a classification before sending.</span>
+              </span>
+            </div>
           )}
-        </div>
 
-        {/* Subject */}
-        <div className="border-b border-[var(--border)] px-3 py-1.5">
-          <div className="flex items-center gap-2">
-            <ClassificationSelector />
-            <input
-              type="text"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder="Subject"
-              className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+          {/* Address fields */}
+          <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
+            <FromSelector
+              aliases={aliases}
+              selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
+              onChange={(alias) => setFromEmail(alias.email)}
             />
+            <RecipientField
+              label="To"
+              recipients={to}
+              onChange={setTo}
+              placeholder="Recipients"
+              moveTargets={[
+                { label: 'Cc', target: 'cc' },
+                { label: 'Bcc', target: 'bcc' },
+              ]}
+              onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
+            />
+            {showCcBcc ? (
+              <>
+                <RecipientField
+                  label="Cc"
+                  recipients={cc}
+                  onChange={setCc}
+                  placeholder="Cc recipients"
+                  moveTargets={[
+                    { label: 'To', target: 'to' },
+                    { label: 'Bcc', target: 'bcc' },
+                  ]}
+                  onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+                />
+                <RecipientField
+                  label="Bcc"
+                  recipients={bcc}
+                  onChange={setBcc}
+                  placeholder="Bcc recipients"
+                  moveTargets={[
+                    { label: 'To', target: 'to' },
+                    { label: 'Cc', target: 'cc' },
+                  ]}
+                  onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
+                />
+              </>
+            ) : (
+              <button onClick={() => setShowCcBcc(true)} className="kylins-link ml-10 text-xs">
+                Cc / Bcc
+              </button>
+            )}
+          </div>
+
+          {/* Subject */}
+          <div className="border-b border-[var(--border)] px-3 py-1.5">
+            <div className="flex items-center gap-2">
+              <ClassificationSelector />
+              <input
+                type="text"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="Subject"
+                className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -750,24 +858,15 @@ export function Composer({ windowed = false }: ComposerProps) {
           >
             Discard
           </button>
-          <div className="flex items-center">
-            <button
-              onClick={windowed ? handleSendAndCloseWindow : handleSend}
-              disabled={to.length === 0 || requiresClassification}
-              title={requiresClassification ? 'Select a classification before sending' : undefined}
-              className="rounded-l-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Send
-            </button>
-            <button
-              onClick={() => setShowSchedule(true)}
-              disabled={to.length === 0 || requiresClassification}
-              className="rounded-r-md border-l border-white/20 bg-[var(--primary)] py-1.5 px-2 text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              title="Schedule send"
-            >
-              <ClockIcon size={12} />
-            </button>
-          </div>
+          <button
+            onClick={windowed ? handleSendAndCloseWindow : handleSend}
+            disabled={to.length === 0 || requiresClassification}
+            title={requiresClassification ? 'Select a classification before sending' : undefined}
+            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <SendIcon size={14} />
+            Send
+          </button>
         </div>
       </div>
 

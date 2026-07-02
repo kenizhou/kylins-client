@@ -133,8 +133,15 @@ export default function App() {
                 isSigned: composeParams.isSigned,
                 importance: composeParams.importance,
                 requestReadReceipt: composeParams.requestReadReceipt,
+                requestDeliveryReceipt: composeParams.requestDeliveryReceipt,
                 deliverAt: composeParams.deliverAt,
                 preventCopy: composeParams.preventCopy,
+                originalMessageId: composeParams.originalMessageId,
+                includeOriginalAttachments: composeParams.includeOriginalAttachments,
+                forwardAsAttachment: composeParams.forwardAsAttachment,
+                originalMessageSubject: composeParams.originalMessageSubject,
+                originalMessageHtml: composeParams.originalMessageHtml,
+                originalMessageText: composeParams.originalMessageText,
               });
             }
 

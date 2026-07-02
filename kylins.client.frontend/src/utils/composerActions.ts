@@ -13,6 +13,18 @@ const COMPOSER_FN: Record<ComposerMode, (message: MailMessage, fromEmail: string
     forward: openForwardComposer,
   };
 
+function baseReplyInput(message: MailMessage, fromEmail: string | null) {
+  return {
+    threadId: message.threadId ?? message.id,
+    fromEmail,
+    subject: message.subject,
+    inReplyToMessageId: message.messageId ?? null,
+    classificationId: message.classificationId ?? undefined,
+    isEncrypted: message.isEncrypted,
+    isSigned: message.isSigned,
+  };
+}
+
 /**
  * Shared modal-composer entry points for reply / reply-all / forward.
  *
@@ -25,38 +37,60 @@ const COMPOSER_FN: Record<ComposerMode, (message: MailMessage, fromEmail: string
 export function openReplyComposer(message: MailMessage, fromEmail: string | null): void {
   void openComposerWindow({
     mode: 'reply',
-    threadId: message.threadId ?? message.id,
-    fromEmail,
-    subject: message.subject,
-    inReplyToMessageId: message.messageId ?? null,
-    classificationId: message.classificationId ?? undefined,
-    isEncrypted: message.isEncrypted,
-    isSigned: message.isSigned,
+    ...baseReplyInput(message, fromEmail),
   });
 }
 
 export function openReplyAllComposer(message: MailMessage, fromEmail: string | null): void {
   void openComposerWindow({
     mode: 'replyAll',
-    threadId: message.threadId ?? message.id,
-    fromEmail,
-    subject: message.subject,
-    inReplyToMessageId: message.messageId ?? null,
-    classificationId: message.classificationId ?? undefined,
-    isEncrypted: message.isEncrypted,
-    isSigned: message.isSigned,
+    ...baseReplyInput(message, fromEmail),
   });
 }
 
 export function openForwardComposer(message: MailMessage, fromEmail: string | null): void {
   void openComposerWindow({
     mode: 'forward',
-    threadId: message.threadId ?? message.id,
-    fromEmail,
-    subject: message.subject,
-    classificationId: message.classificationId ?? undefined,
-    isEncrypted: message.isEncrypted,
-    isSigned: message.isSigned,
+    ...baseReplyInput(message, fromEmail),
+  });
+}
+
+export function openReplyComposerWithAttachments(
+  message: MailMessage,
+  fromEmail: string | null,
+): void {
+  void openComposerWindow({
+    mode: 'reply',
+    ...baseReplyInput(message, fromEmail),
+    originalMessageId: message.id,
+    includeOriginalAttachments: true,
+  });
+}
+
+export function openReplyAllComposerWithAttachments(
+  message: MailMessage,
+  fromEmail: string | null,
+): void {
+  void openComposerWindow({
+    mode: 'replyAll',
+    ...baseReplyInput(message, fromEmail),
+    originalMessageId: message.id,
+    includeOriginalAttachments: true,
+  });
+}
+
+export function openForwardComposerAsAttachment(
+  message: MailMessage,
+  fromEmail: string | null,
+): void {
+  void openComposerWindow({
+    mode: 'forward',
+    ...baseReplyInput(message, fromEmail),
+    originalMessageId: message.id,
+    forwardAsAttachment: true,
+    originalMessageSubject: message.subject,
+    originalMessageHtml: message.html,
+    originalMessageText: message.text,
   });
 }
 

@@ -20,8 +20,8 @@
     "*.{ts,tsx,js,mjs,cjs,json,css,md,html}": "prettier --write"
   },
   "dependencies": {
-    "@hugeicons/core-free-icons": "^1.0.39",
-    "@hugeicons/react": "^1.0.7",
+    "@hugeicons/core-free-icons": "^4.2.2",
+    "@hugeicons/react": "^1.1.9",
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-router": "^1.170.16",
     "@tanstack/react-virtual": "^3.14.3",

@@ -339,7 +339,36 @@ export function MessageList() {
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 overflow-auto">
+      <div
+        ref={scrollRef}
+        tabIndex={0}
+        className="flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+          e.preventDefault();
+          const direction = e.key === 'ArrowDown' ? 1 : -1;
+          const currentIndex = items.findIndex(
+            (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+          );
+          function nextThreadIndex(start: number, dir: 1 | -1): number | null {
+            let i = start + dir;
+            while (i >= 0 && i < items.length) {
+              if (items[i]?.kind === 'thread') return i;
+              i += dir;
+            }
+            return null;
+          }
+          const nextIndex =
+            currentIndex === -1
+              ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
+              : nextThreadIndex(currentIndex, direction);
+          if (nextIndex == null) return;
+          const nextItem = items[nextIndex];
+          if (!nextItem || nextItem.kind !== 'thread') return;
+          void selectThread(nextItem.thread);
+          virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+        }}
+      >
         {isLoading && items.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
             <MailIcon size={24} className="opacity-50" />

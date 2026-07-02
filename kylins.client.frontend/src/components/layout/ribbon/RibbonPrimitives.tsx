@@ -7,7 +7,7 @@ export interface RibbonGroupProps {
 
 export function RibbonGroup({ children }: RibbonGroupProps) {
   return (
-    <div className="flex items-stretch px-1 border-r border-[var(--border)] last:border-r-0">
+    <div className="flex min-w-0 flex-wrap items-stretch px-1 border-r border-[var(--border)] last:border-r-0">
       {children}
     </div>
   );

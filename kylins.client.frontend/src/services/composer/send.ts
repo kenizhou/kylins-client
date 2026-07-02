@@ -48,6 +48,9 @@ function inputToEmailDraft(input: DraftInput, fallbackFrom: string) {
   if (input.requestReadReceipt) {
     extraHeaders['Disposition-Notification-To'] = input.fromEmail ?? fallbackFrom;
   }
+  if (input.requestDeliveryReceipt) {
+    extraHeaders['Return-Receipt-To'] = input.fromEmail ?? fallbackFrom;
+  }
   if (input.preventCopy) {
     extraHeaders['X-Classification-Prevent-Copy'] = 'true';
   }

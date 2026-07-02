@@ -1,27 +1,27 @@
 import {
+  MailAddIcon,
+  ReplyIcon,
+  ReplyAllIcon,
+  MailSendIcon,
+  CaretDownIcon,
   DeleteIcon,
   MoveIcon,
   TagIcon,
   MailIcon,
   FlagIcon,
   PinIcon,
-  UndoIcon,
-  RedoIcon,
   MoreIcon,
-  PlusIcon,
+  ArchiveIcon,
+  ClassificationIcon,
 } from '../../icons';
-import {
-  ArrowBendUpLeft,
-  ArrowBendDoubleUpLeft,
-  ArrowBendUpRight,
-  Archive as PhosphorArchive,
-  CaretDown,
-} from '@phosphor-icons/react';
 import { openComposerWindow } from '../../../utils/composeWindow';
 import {
   openReplyComposer,
   openReplyAllComposer,
   openForwardComposer,
+  openReplyComposerWithAttachments,
+  openReplyAllComposerWithAttachments,
+  openForwardComposerAsAttachment,
 } from '../../../utils/composerActions';
 import { useViewStore } from '../../../features/view/viewStore';
 import { useAccountStore } from '../../../stores/accountStore';
@@ -33,13 +33,91 @@ import { ClassificationBadge } from '../../../features/classification/components
 import { SecurityChips } from '../../../features/classification/components/SecurityChips';
 import { RibbonButton, RibbonGroup, RibbonStatusItem } from './RibbonPrimitives';
 import { RibbonShell } from './RibbonShell';
-import { ClassificationIcon } from '../../icons';
 import { ShieldCheck, Eye } from '@phosphor-icons/react';
 
 function defaultSecurityForLevel(levelId: string): { isEncrypted: boolean; isSigned: boolean } {
   if (levelId === 'confidential' || levelId === 'restricted')
     return { isEncrypted: true, isSigned: true };
   return { isEncrypted: false, isSigned: false };
+}
+
+interface SplitMenuItem {
+  label: string;
+  onClick: () => void;
+}
+
+interface SplitRibbonButtonProps {
+  icon: React.ReactNode;
+  label: string;
+  disabled?: boolean;
+  title?: string;
+  primary: () => void;
+  items: SplitMenuItem[];
+}
+
+function SplitRibbonButton({
+  icon,
+  label,
+  disabled,
+  title,
+  primary,
+  items,
+}: SplitRibbonButtonProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative flex items-stretch">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={primary}
+        title={title}
+        className="flex items-center gap-1.5 rounded-l px-2.5 h-8 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent"
+      >
+        {icon}
+        <span className="whitespace-nowrap">{label}</span>
+      </button>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        className="my-auto flex h-8 items-center rounded-r border-r border-[var(--border)] px-1.5 text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label={`${label} options`}
+        title={`${label} options`}
+      >
+        <CaretDownIcon size={10} className="opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+          {items.map((item, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => {
+                item.onClick();
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover)]"
+            >
+              <span className="flex-1 whitespace-nowrap">{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ClassificationMenuItem({
@@ -67,7 +145,7 @@ function ClassificationMenuItem({
   );
 }
 
-export function ReadRibbon() {
+export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   const selectedMessage = useViewStore((s) => s.selectedMessage);
   const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
@@ -112,14 +190,29 @@ export function ReadRibbon() {
     openReplyComposer(selectedMessage, accountEmail);
   };
 
+  const handleReplyWithAttachments = () => {
+    if (!selectedMessage) return;
+    openReplyComposerWithAttachments(selectedMessage, accountEmail);
+  };
+
   const handleReplyAll = () => {
     if (!selectedMessage) return;
     openReplyAllComposer(selectedMessage, accountEmail);
   };
 
+  const handleReplyAllWithAttachments = () => {
+    if (!selectedMessage) return;
+    openReplyAllComposerWithAttachments(selectedMessage, accountEmail);
+  };
+
   const handleForward = () => {
     if (!selectedMessage) return;
     openForwardComposer(selectedMessage, accountEmail);
+  };
+
+  const handleForwardAsAttachment = () => {
+    if (!selectedMessage) return;
+    openForwardComposerAsAttachment(selectedMessage, accountEmail);
   };
 
   const hasMessage = selectedMessage != null;
@@ -131,72 +224,83 @@ export function ReadRibbon() {
 
   return (
     <RibbonShell>
-      <RibbonGroup>
-        <div className="relative flex items-stretch">
-          <RibbonButton icon={<PlusIcon />} onClick={handleNewEmail}>
-            New Email
-          </RibbonButton>
-          <button
-            type="button"
-            onClick={() => setMenuOpen((v) => !v)}
-            className="my-auto flex h-8 items-center rounded-r border-l border-[var(--border)] px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-            aria-label="Choose classification"
-            title="Choose classification"
-          >
-            <CaretDown size={10} />
-          </button>
-          {menuOpen && (
-            <div
-              ref={menuRef}
-              className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg"
+      {!viewer && (
+        <RibbonGroup>
+          <div className="relative flex items-stretch">
+            <RibbonButton icon={<MailAddIcon size={18} />} onClick={handleNewEmail}>
+              New Email
+            </RibbonButton>
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              className="my-auto flex h-8 items-center rounded-r px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              aria-label="Choose classification"
+              title="Choose classification"
             >
-              {levels.map((level) => (
-                <ClassificationMenuItem
-                  key={level.id}
-                  level={level}
-                  onClick={() => openComposerForLevel(level)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </RibbonGroup>
+              <CaretDownIcon size={10} />
+            </button>
+            {menuOpen && (
+              <div
+                ref={menuRef}
+                className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg"
+              >
+                {levels.map((level) => (
+                  <ClassificationMenuItem
+                    key={level.id}
+                    level={level}
+                    onClick={() => openComposerForLevel(level)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </RibbonGroup>
+      )}
 
       <RibbonGroup>
-        <RibbonButton
+        <SplitRibbonButton
           icon={
             <span className="text-[var(--primary)]">
-              <ArrowBendUpLeft size={18} weight="bold" />
+              <ReplyIcon size={18} />
             </span>
           }
+          label="Reply"
           disabled={!hasMessage}
-          onClick={handleReply}
-        >
-          Reply
-        </RibbonButton>
-        <RibbonButton
+          primary={handleReply}
+          items={[
+            { label: 'Reply', onClick: handleReply },
+            { label: 'Reply with Attachment', onClick: handleReplyWithAttachments },
+          ]}
+        />
+        <SplitRibbonButton
           icon={
             <span className="text-[var(--primary)]">
-              <ArrowBendDoubleUpLeft size={18} weight="bold" />
+              <ReplyAllIcon size={18} />
             </span>
           }
+          label="Reply all"
           disabled={!hasMessage}
-          onClick={handleReplyAll}
-        >
-          Reply all
-        </RibbonButton>
-        <RibbonButton
+          primary={handleReplyAll}
+          items={[
+            { label: 'Reply all', onClick: handleReplyAll },
+            { label: 'Reply all with Attachment', onClick: handleReplyAllWithAttachments },
+          ]}
+        />
+        <SplitRibbonButton
           icon={
             <span className="text-[var(--primary)]">
-              <ArrowBendUpRight size={18} weight="bold" />
+              <MailSendIcon size={18} />
             </span>
           }
+          label="Forward"
           disabled={!hasMessage}
-          onClick={handleForward}
-        >
-          Forward
-        </RibbonButton>
-        <RibbonButton icon={<PhosphorArchive size={18} />} disabled={!hasMessage} title="Archive" />
+          primary={handleForward}
+          items={[
+            { label: 'Forward', onClick: handleForward },
+            { label: 'Forward as Attachment', onClick: handleForwardAsAttachment },
+          ]}
+        />
+        <RibbonButton icon={<ArchiveIcon size={18} />} disabled={!hasMessage} title="Archive" />
         <RibbonButton
           icon={<DeleteIcon size={17} />}
           disabled={!hasThread}
@@ -248,11 +352,6 @@ export function ReadRibbon() {
         <RibbonButton icon={<PinIcon />} disabled={!hasThread}>
           Pin
         </RibbonButton>
-      </RibbonGroup>
-
-      <RibbonGroup>
-        <RibbonButton icon={<UndoIcon />} />
-        <RibbonButton icon={<RedoIcon />} />
       </RibbonGroup>
 
       {level && (
