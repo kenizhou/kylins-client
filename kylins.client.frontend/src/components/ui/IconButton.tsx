@@ -1,3 +1,4 @@
+import { Button } from 'react-aria-components';
 import { forwardRef, type ReactNode } from 'react';
 
 export interface IconButtonProps {
@@ -27,21 +28,18 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   const labelClass = label ? 'px-2 w-auto' : '';
 
   return (
-    <button
+    <Button
       ref={ref}
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title ?? label}
+      isDisabled={disabled}
+      onPress={onClick}
       aria-label={title ?? label}
-      className={`inline-flex items-center justify-center rounded text-[var(--muted-foreground)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 ${
-        active
-          ? 'bg-[var(--selected)] text-[var(--selected-text)]'
-          : 'hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
+      data-active={active || undefined}
+      className={`inline-flex items-center justify-center rounded text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
+        active ? 'bg-selected text-selected-text' : 'hover:bg-hover hover:text-foreground'
       } ${sizeClass} ${labelClass} ${className ?? ''}`}
     >
       {icon}
-      {label && <span className="whitespace-nowrap text-sm text-[var(--foreground)]">{label}</span>}
-    </button>
+      {label && <span className="whitespace-nowrap text-sm text-foreground">{label}</span>}
+    </Button>
   );
 });

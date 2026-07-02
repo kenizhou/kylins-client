@@ -186,8 +186,8 @@ describe('MessageList', () => {
       'Delete',
       'Archive',
     ]);
-    expect(items[0]).toBeDisabled(); // Copy placeholder
-    expect(items[items.length - 2]).not.toBeDisabled(); // Delete
+    expect(items[0]).toHaveAttribute('aria-disabled', 'true'); // Copy placeholder
+    expect(items[items.length - 2]).not.toHaveAttribute('aria-disabled', 'true'); // Delete
   });
 
   it('marks a thread as unread from the context menu', async () => {

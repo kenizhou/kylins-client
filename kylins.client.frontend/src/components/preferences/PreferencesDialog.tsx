@@ -7,6 +7,8 @@ import { AccountsPreferences } from './AccountsPreferences';
 import { ContactsPreferences } from './ContactsPreferences';
 import { SecurityPreferences } from './SecurityPreferences';
 import { Modal } from '../ui/Modal';
+import { Button } from 'react-aria-components';
+import { Tabs, TabList, Tab } from 'react-aria-components';
 import {
   PreferencesGeneralIcon,
   PreferencesAccountsIcon,
@@ -43,7 +45,7 @@ const TAB_COMPONENTS: Record<string, React.ComponentType> = {
 
 function ComingSoonTab({ tab }: { tab: string }) {
   return (
-    <div className="h-full flex flex-col items-center justify-center gap-3 text-[var(--muted-text)]">
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-text">
       <span className="text-4xl opacity-40">🚧</span>
       <p className="text-sm">{tab} preferences are coming soon.</p>
     </div>
@@ -69,49 +71,52 @@ export function PreferencesDialog() {
       disableBackdropClose
       footer={
         <>
-          <span className="text-xs text-[var(--muted-text)]">
-            Changes are applied automatically.
-          </span>
-          <button
-            type="button"
-            onClick={closePreferences}
-            className="px-5 py-2 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
+          <span className="text-xs text-muted-text">Changes are applied automatically.</span>
+          <Button
+            onPress={closePreferences}
+            className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-fg transition-opacity hover:opacity-90"
           >
             Done
-          </button>
+          </Button>
         </>
       }
       contentClassName="!overflow-hidden bg-[color-mix(in_oklab,var(--surface),black_2%)]"
     >
-      <div className="flex h-full">
-        {/* Tabs */}
-        <div className="flex w-52 shrink-0 flex-col gap-0.5 border-r border-[var(--border)] bg-[var(--chrome)] p-3 overflow-y-auto">
+      <Tabs
+        orientation="vertical"
+        selectedKey={activeTab}
+        onSelectionChange={(key) => setActiveTab(key as PreferenceTab)}
+        className="flex h-full"
+      >
+        <TabList
+          aria-label="Preferences sections"
+          className="flex w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-chrome p-3"
+        >
           {TABS.map((tab) => {
-            const active = activeTab === tab.id;
             const Icon = tab.icon;
             return (
-              <button
+              <Tab
                 key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors ${
-                  active
-                    ? 'bg-[var(--selected)] text-[var(--primary)]'
-                    : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
-                }`}
+                id={tab.id}
+                className={({ isSelected }) =>
+                  `flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    isSelected
+                      ? 'bg-selected text-primary'
+                      : 'text-muted-text hover:bg-hover hover:text-foreground'
+                  }`
+                }
               >
                 <Icon size={18} />
                 <span>{tab.id}</span>
-              </button>
+              </Tab>
             );
           })}
-        </div>
+        </TabList>
 
-        {/* Tab content */}
         <div className="flex-1 overflow-auto kylins-scrollbar">
           {TabComponent ? <TabComponent /> : <ComingSoonTab tab={activeTab} />}
         </div>
-      </div>
+      </Tabs>
     </Modal>
   );
 }

@@ -1,5 +1,6 @@
 import { CaretDown } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
+import { Button, Checkbox } from 'react-aria-components';
 
 export interface RibbonGroupProps {
   children: ReactNode;
@@ -7,7 +8,7 @@ export interface RibbonGroupProps {
 
 export function RibbonGroup({ children }: RibbonGroupProps) {
   return (
-    <div className="flex min-w-0 flex-wrap items-stretch px-1 border-r border-[var(--border)] last:border-r-0">
+    <div className="flex min-w-0 flex-wrap items-stretch border-r border-border px-1 last:border-r-0">
       {children}
     </div>
   );
@@ -35,21 +36,20 @@ export function RibbonButton({
   onClick,
 }: RibbonButtonProps) {
   return (
-    <button
-      className={`flex items-center gap-1.5 px-2.5 h-8 my-auto text-sm rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 ${
+    <Button
+      isDisabled={disabled}
+      onPress={onClick}
+      aria-label={title}
+      className={`my-auto flex h-8 items-center gap-1.5 rounded px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         primary
-          ? 'bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 disabled:hover:opacity-40'
-          : 'text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent'
+          ? 'bg-primary text-primary-fg hover:opacity-90 disabled:hover:opacity-40'
+          : 'text-text hover:bg-hover disabled:hover:bg-transparent'
       } ${className ?? ''}`}
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      type="button"
     >
       {icon}
       <span className="whitespace-nowrap">{children}</span>
       {split && <CaretDown size={10} className="ml-0.5 opacity-70" />}
-    </button>
+    </Button>
   );
 }
 
@@ -71,22 +71,41 @@ export function RibbonToggle({
   disabled,
 }: RibbonToggleProps) {
   return (
-    <label
-      title={title}
+    <Checkbox
+      isSelected={checked}
+      onChange={onChange}
+      isDisabled={disabled}
+      aria-label={title ?? label}
       className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs ${
-        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-[var(--hover)]'
+        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-hover'
       }`}
     >
-      {icon}
-      <span className="whitespace-nowrap text-[var(--foreground)]">{label}</span>
-      <input
-        type="checkbox"
-        className="ml-auto h-3.5 w-3.5 accent-[var(--primary)]"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-    </label>
+      {({ isSelected }) => (
+        <>
+          {icon}
+          <span className="flex-1 whitespace-nowrap text-foreground">{label}</span>
+          <div
+            className={`ml-auto flex h-3.5 w-3.5 items-center justify-center rounded border ${
+              isSelected
+                ? 'border-primary bg-primary text-primary-fg'
+                : 'border-border bg-background'
+            }`}
+          >
+            {isSelected && (
+              <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                <path
+                  d="M1.5 5.5L4 8l4-5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </div>
+        </>
+      )}
+    </Checkbox>
   );
 }
 
