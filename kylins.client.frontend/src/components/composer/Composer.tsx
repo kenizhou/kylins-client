@@ -628,22 +628,22 @@ export function Composer({ windowed = false }: ComposerProps) {
         </div>
       )}
 
-      <div className="shrink-0" style={noDragStyle}>
-        <CommandRibbon mode="compose" />
-      </div>
-
-      {requiresClassification && (
-        <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
-          <span className="inline-flex items-center gap-1.5">
-            <WarningIcon size={14} />
-            <span>Select a classification before sending.</span>
-          </span>
-        </div>
-      )}
-
-      {/* Address fields + subject (watermark overlays this area) */}
+      {/* Command ribbon + address fields + subject (watermark overlays this area) */}
       <div className="relative shrink-0">
         {prominent && <ClassificationWatermark level={currentLevel} />}
+
+        <div className="shrink-0" style={noDragStyle}>
+          <CommandRibbon mode="compose" />
+        </div>
+
+        {requiresClassification && (
+          <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
+            <span className="inline-flex items-center gap-1.5">
+              <WarningIcon size={14} />
+              <span>Select a classification before sending.</span>
+            </span>
+          </div>
+        )}
 
         {/* Address fields */}
         <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
