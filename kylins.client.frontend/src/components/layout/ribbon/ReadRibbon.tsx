@@ -26,9 +26,12 @@ import {
 import { useViewStore } from '../../../features/view/viewStore';
 import { useAccountStore } from '../../../stores/accountStore';
 import { useThreadStore } from '../../../stores/threadStore';
+import { useFolderStore } from '../../../stores/folderStore';
 import { useClassification } from '../../../features/classification/useClassification';
 import { useState, useRef, useEffect } from 'react';
 import type { ClassificationLevel } from '../../../features/classification/classificationTypes';
+import type { MailFolder } from '../../../services/mail/folders/folderModel';
+import { FolderPickerMenu } from './FolderPickerMenu';
 import { ClassificationBadge } from '../../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../../features/classification/components/SecurityChips';
 import { RibbonButton, RibbonGroup, RibbonStatusItem } from './RibbonPrimitives';
@@ -151,12 +154,18 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
   const deleteThread = useThreadStore((s) => s.deleteThread);
+  const moveThread = useThreadStore((s) => s.moveThread);
+  const selectedFolder = useFolderStore((s) => s.selected);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
   const { levels, getDefaultLevel, getLevelById } = useClassification();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const [moveAnchor, setMoveAnchor] = useState<DOMRect | null>(null);
+  const moveBtnRef = useRef<HTMLDivElement>(null);
+  const moveOpen = moveAnchor != null;
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -168,6 +177,29 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [menuOpen]);
+
+  const movePickerStyle: React.CSSProperties | undefined = moveAnchor
+    ? {
+        position: 'fixed',
+        top: moveAnchor.bottom + 4,
+        left: moveAnchor.left,
+        zIndex: 80,
+      }
+    : undefined;
+
+  const handleMoveToggle = () => {
+    if (moveOpen) {
+      setMoveAnchor(null);
+    } else {
+      setMoveAnchor(moveBtnRef.current?.getBoundingClientRect() ?? null);
+    }
+  };
+
+  const handleMoveSelect = (folder: MailFolder) => {
+    setMoveAnchor(null);
+    if (!selectedThread) return;
+    void moveThread(selectedThread, folder.id, folder.remoteId ?? folder.name);
+  };
 
   const openComposerForLevel = (level: ClassificationLevel) => {
     setMenuOpen(false);
@@ -314,9 +346,26 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
       </RibbonGroup>
 
       <RibbonGroup>
-        <RibbonButton icon={<MoveIcon />} split>
-          Move
-        </RibbonButton>
+        <div ref={moveBtnRef} className="relative inline-block">
+          <RibbonButton
+            icon={<MoveIcon size={18} />}
+            split
+            disabled={!hasThread}
+            title="Move to folder"
+            onClick={handleMoveToggle}
+          >
+            Move
+          </RibbonButton>
+          {moveOpen && selectedThread && (
+            <FolderPickerMenu
+              accountId={selectedThread.accountId}
+              excludeLabelId={selectedFolder?.labelId}
+              onSelect={handleMoveSelect}
+              onClose={() => setMoveAnchor(null)}
+              style={movePickerStyle}
+            />
+          )}
+        </div>
       </RibbonGroup>
 
       <RibbonGroup>

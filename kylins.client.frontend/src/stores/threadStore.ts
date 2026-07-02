@@ -57,6 +57,12 @@ interface ThreadState {
   markThreadRead: (thread: Thread, read: boolean, messages?: DbMessageRow[]) => Promise<void>;
   toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
   deleteThread: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
+  moveThread: (
+    thread: Thread,
+    dstLabel: string,
+    dstFolderPath: string,
+    messages?: DbMessageRow[],
+  ) => Promise<void>;
 }
 
 export const useThreadStore = create<ThreadState>((set, get) => ({
@@ -240,5 +246,14 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       const { emit } = await import('@tauri-apps/api/event');
       void emit('thread:deleted', { accountId: thread.accountId, threadId: thread.id });
     }
+  },
+
+  moveThread: async (thread, dstLabel, dstFolderPath, messages) => {
+    console.log('[threadStore] moveThread stub', {
+      threadId: thread.id,
+      dstLabel,
+      dstFolderPath,
+      messageCount: messages?.length,
+    });
   },
 }));
