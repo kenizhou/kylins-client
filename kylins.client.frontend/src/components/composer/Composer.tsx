@@ -61,7 +61,6 @@ import { IconButton } from '@/components/ui/IconButton';
 import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { MenuBar } from '@/components/ui/MenuBar';
 import { CommandRibbon } from '@/components/layout/CommandRibbon';
 import { ClassificationWatermark } from '@/features/classification/components/ClassificationWatermark';
 import { isProminent } from '@/features/classification/classificationStyle';
@@ -631,9 +630,6 @@ export function Composer({ windowed = false }: ComposerProps) {
         </div>
       )}
 
-      <div className="shrink-0" style={noDragStyle}>
-        <MenuBar variant="compose" />
-      </div>
       <div className="shrink-0" style={noDragStyle}>
         <CommandRibbon mode="compose" />
       </div>
