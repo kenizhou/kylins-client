@@ -132,6 +132,42 @@ describe('accountSetupFlows', () => {
     await expect(testImapConnection(account)).rejects.toThrow();
   });
 
+  it('testImapConnection throws when smtp_test_connection reports failure', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'imap_test_connection')
+        return Promise.resolve('Connected successfully. Found 3 folder(s).');
+      if (cmd === 'smtp_test_connection')
+        return Promise.resolve({ success: false, message: 'SMTP handshake failed' });
+      return Promise.reject(new Error(`unexpected ${cmd}`));
+    });
+    const account = {
+      ...buildImapAccount(getProvider('yahoo'), 'y@yahoo.com', 'apppass'),
+      id: 'acct-1',
+      isActive: true,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    await expect(testImapConnection(account)).rejects.toThrow('SMTP handshake failed');
+  });
+
+  it('testImapConnection resolves when both imap and smtp succeed', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'imap_test_connection')
+        return Promise.resolve('Connected successfully. Found 3 folder(s).');
+      if (cmd === 'smtp_test_connection')
+        return Promise.resolve({ success: true, message: 'Connection successful' });
+      return Promise.reject(new Error(`unexpected ${cmd}`));
+    });
+    const account = {
+      ...buildImapAccount(getProvider('yahoo'), 'y@yahoo.com', 'apppass'),
+      id: 'acct-1',
+      isActive: true,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    await expect(testImapConnection(account)).resolves.toBeUndefined();
+  });
+
   it('runOAuthFlow opens the browser BEFORE binding the loopback listener', async () => {
     // If the opener throws, no listener should be started (no leaked port).
     mockOAuthCommands();
