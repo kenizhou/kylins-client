@@ -19,7 +19,8 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
     // Reset local edit state when the selected group changes.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setName(group.name);
-  }, [group.name]);
+    setIsEditing(false);
+  }, [group.id, group.name]);
 
   async function handleRename() {
     const trimmed = name.trim();
@@ -61,6 +62,7 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
               type="text"
               aria-label="Group name"
               value={name}
+              disabled={isLoading}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -78,50 +80,52 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
               {group.name}
             </h2>
           )}
-          <div className="flex flex-wrap items-center gap-2 mt-3">
-            {isEditing ? (
-              <>
+          {!group.isReadonly && (
+            <div className="flex flex-wrap items-center gap-2 mt-3">
+              {isEditing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleRename()}
+                    disabled={isLoading}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                  >
+                    <CheckIcon size={13} />
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditing(false);
+                      setName(group.name);
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  >
+                    <CloseIcon size={13} />
+                    Cancel
+                  </button>
+                </>
+              ) : (
                 <button
                   type="button"
-                  onClick={() => void handleRename()}
-                  disabled={isLoading}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
-                >
-                  <CheckIcon size={13} />
-                  Save
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsEditing(false);
-                    setName(group.name);
-                  }}
+                  onClick={() => setIsEditing(true)}
                   className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
-                  <CloseIcon size={13} />
-                  Cancel
+                  <PencilIcon size={13} />
+                  Rename
                 </button>
-              </>
-            ) : (
+              )}
               <button
                 type="button"
-                onClick={() => setIsEditing(true)}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                onClick={() => void handleDelete()}
+                disabled={isLoading}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
               >
-                <PencilIcon size={13} />
-                Rename
+                <TrashIcon size={13} />
+                Delete
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => void handleDelete()}
-              disabled={isLoading}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
-            >
-              <TrashIcon size={13} />
-              Delete
-            </button>
-          </div>
+            </div>
+          )}
         </div>
       </div>
 
