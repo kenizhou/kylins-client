@@ -1,12 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
+import { Modal } from '@/components/ui/Modal';
 import type { Contact, ContactGroup } from '@/services/db/contacts';
 import {
   renameContactGroup,
   deleteContactGroup,
   getContactIdsForGroup,
+  addContactToGroup,
 } from '@/services/db/contacts';
-import { PencilIcon, TrashIcon, CheckIcon, CloseIcon, ContactsIcon } from '@/components/icons';
+import {
+  PencilIcon,
+  TrashIcon,
+  CheckIcon,
+  CloseIcon,
+  ContactsIcon,
+  PlusIcon,
+} from '@/components/icons';
 
 interface GroupDetailProps {
   group: ContactGroup;
@@ -19,6 +28,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
   const [name, setName] = useState(group.name);
   const [isLoading, setIsLoading] = useState(false);
   const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
+  const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
 
   useEffect(() => {
     // Reset local edit state when the selected group changes.
@@ -29,16 +39,33 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
 
   useEffect(() => {
     let cancelled = false;
-    getContactIdsForGroup(group.id).then((ids) => {
-      if (cancelled) return;
-      setMemberIds(new Set(ids));
-    });
+    getContactIdsForGroup(group.id)
+      .then((ids) => {
+        if (cancelled) return;
+        setMemberIds(new Set(ids));
+      })
+      .catch((error) => {
+        console.error('Failed to load group members', error);
+        if (!cancelled) {
+          setMemberIds(new Set());
+        }
+      });
     return () => {
       cancelled = true;
     };
   }, [group.id]);
 
   const members = contacts.filter((c) => memberIds.has(c.id));
+
+  const nonMembers = useMemo(() => {
+    return contacts
+      .filter((c) => !memberIds.has(c.id))
+      .sort((a, b) => {
+        const aKey = (a.displayName ?? a.email).trim().toLowerCase();
+        const bKey = (b.displayName ?? b.email).trim().toLowerCase();
+        return aKey.localeCompare(bKey);
+      });
+  }, [contacts, memberIds]);
 
   async function handleRename() {
     const trimmed = name.trim();
@@ -62,6 +89,18 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
     setIsLoading(true);
     try {
       await deleteContactGroup(group.id);
+      onUpdate();
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleAddContact(contactId: string) {
+    setIsLoading(true);
+    try {
+      await addContactToGroup(contactId, group.id);
+      setMemberIds((prev) => new Set([...prev, contactId]));
+      setIsAddMemberOpen(false);
       onUpdate();
     } finally {
       setIsLoading(false);
@@ -124,24 +163,35 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                   </button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setIsEditing(true)}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                >
-                  <PencilIcon size={13} />
-                  Rename
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditing(true)}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  >
+                    <PencilIcon size={13} />
+                    Rename
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDelete()}
+                    disabled={isLoading}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                  >
+                    <TrashIcon size={13} />
+                    Delete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddMemberOpen(true)}
+                    disabled={isLoading}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                  >
+                    <PlusIcon size={13} />
+                    Add member
+                  </button>
+                </>
               )}
-              <button
-                type="button"
-                onClick={() => void handleDelete()}
-                disabled={isLoading}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
-              >
-                <TrashIcon size={13} />
-                Delete
-              </button>
             </div>
           )}
         </div>
@@ -171,6 +221,53 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
           </ul>
         )}
       </div>
+
+      <Modal
+        isOpen={isAddMemberOpen}
+        onClose={() => setIsAddMemberOpen(false)}
+        title={`Add member to ${group.name}`}
+        size="md"
+        footer={
+          <button
+            type="button"
+            onClick={() => setIsAddMemberOpen(false)}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 min-h-11 min-w-11 text-sm font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          >
+            Cancel
+          </button>
+        }
+      >
+        <div className="p-4">
+          {nonMembers.length === 0 ? (
+            <p className="text-sm text-[var(--muted-text)]">All contacts are already members.</p>
+          ) : (
+            <ul className="max-h-[320px] overflow-y-auto kylins-scrollbar space-y-1">
+              {nonMembers.map((contact) => (
+                <li key={contact.id}>
+                  <button
+                    type="button"
+                    onClick={() => void handleAddContact(contact.id)}
+                    disabled={isLoading}
+                    className="w-full flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 min-h-11 text-left hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                  >
+                    <ContactAvatar contact={contact} size={32} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-[var(--foreground)] truncate">
+                        {contact.displayName || contact.email}
+                      </div>
+                      {contact.displayName && (
+                        <div className="text-xs text-[var(--muted-text)] truncate">
+                          {contact.email}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

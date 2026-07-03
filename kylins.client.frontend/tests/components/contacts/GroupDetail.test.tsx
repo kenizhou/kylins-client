@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/react';
+import { render, fireEvent, waitFor, within } from '@testing-library/react';
 import { GroupDetail } from '@/components/contacts/GroupDetail';
 import type { ContactGroup, Contact } from '@/services/db/contacts';
 
@@ -10,10 +10,11 @@ vi.mock('@/services/db/contacts', async () => {
     renameContactGroup: vi.fn(() => Promise.resolve()),
     deleteContactGroup: vi.fn(() => Promise.resolve()),
     getContactIdsForGroup: vi.fn(() => Promise.resolve(['c-1'])),
+    addContactToGroup: vi.fn(() => Promise.resolve()),
   };
 });
 
-import { renameContactGroup, deleteContactGroup } from '@/services/db/contacts';
+import { renameContactGroup, deleteContactGroup, addContactToGroup } from '@/services/db/contacts';
 
 function makeGroup(overrides: Partial<ContactGroup> = {}): ContactGroup {
   return {
@@ -107,6 +108,34 @@ describe('GroupDetail', () => {
     await waitFor(() => {
       expect(deleteContactGroup).toHaveBeenCalledWith('g-1');
       expect(onUpdate).toHaveBeenCalled();
+    });
+  });
+
+  it('opens Add member modal, selects a contact, and calls addContactToGroup and onUpdate', async () => {
+    const onUpdate = vi.fn();
+    const group = makeGroup();
+    const contacts = [
+      makeContact({ id: 'c-1', displayName: 'Ada Lovelace', email: 'ada@example.com' }),
+      makeContact({ id: 'c-2', displayName: 'Grace Hopper', email: 'grace@example.com' }),
+    ];
+    const { getByText, queryByText, getByRole } = render(
+      <GroupDetail group={group} contacts={contacts} onUpdate={onUpdate} />,
+    );
+
+    fireEvent.click(getByText('Add member'));
+    const dialog = await waitFor(() => getByRole('dialog'));
+    await waitFor(() => {
+      expect(getByText('Add member to Team Leads')).toBeInTheDocument();
+    });
+
+    expect(within(dialog).getByText('Grace Hopper')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Ada Lovelace')).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByText('Grace Hopper'));
+    await waitFor(() => {
+      expect(addContactToGroup).toHaveBeenCalledWith('c-2', 'g-1');
+      expect(onUpdate).toHaveBeenCalled();
+      expect(queryByText('Add member to Team Leads')).not.toBeInTheDocument();
     });
   });
 });

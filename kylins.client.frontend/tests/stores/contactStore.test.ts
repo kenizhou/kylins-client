@@ -1,6 +1,22 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useContactStore } from '../../src/stores/contactStore';
 
+function makeContact(
+  overrides: Partial<ReturnType<typeof useContactStore.getState>['contacts'][0]> = {},
+) {
+  return { id: 'c-1', email: 'a@example.com', accountId: 'acc-1', ...overrides } as ReturnType<
+    typeof useContactStore.getState
+  >['contacts'][0];
+}
+
+function makeGroup(
+  overrides: Partial<ReturnType<typeof useContactStore.getState>['groups'][0]> = {},
+) {
+  return { id: 'g-1', name: 'Alpha', accountId: 'acc-1', ...overrides } as ReturnType<
+    typeof useContactStore.getState
+  >['groups'][0];
+}
+
 describe('contactStore', () => {
   beforeEach(() => {
     useContactStore.setState({
@@ -134,5 +150,65 @@ describe('contactStore', () => {
     const state = useContactStore.getState();
     expect(state.selectedGroupId).toBe('g-1');
     expect(state.selectedContactId).toBeNull();
+  });
+
+  it('clears selected contact when account filter changes to a different account', () => {
+    useContactStore.setState({
+      contacts: [makeContact({ id: 'c-1', accountId: 'acc-1' })],
+      groups: [makeGroup({ id: 'g-1', accountId: 'acc-1' })],
+      selectedContactId: 'c-1',
+      selectedGroupId: 'g-1',
+      selectedAccountId: null,
+    });
+    useContactStore.getState().setSelectedAccountId('acc-2');
+    const state = useContactStore.getState();
+    expect(state.selectedAccountId).toBe('acc-2');
+    expect(state.selectedContactId).toBeNull();
+    expect(state.selectedGroupId).toBeNull();
+  });
+
+  it('keeps selection when account filter changes to all accounts', () => {
+    useContactStore.setState({
+      contacts: [makeContact({ id: 'c-1', accountId: 'acc-1' })],
+      groups: [makeGroup({ id: 'g-1', accountId: 'acc-1' })],
+      selectedContactId: 'c-1',
+      selectedGroupId: 'g-1',
+      selectedAccountId: 'acc-1',
+    });
+    useContactStore.getState().setSelectedAccountId(null);
+    const state = useContactStore.getState();
+    expect(state.selectedAccountId).toBeNull();
+    expect(state.selectedContactId).toBe('c-1');
+    expect(state.selectedGroupId).toBe('g-1');
+  });
+
+  it('keeps local selection when account filter changes to local', () => {
+    useContactStore.setState({
+      contacts: [makeContact({ id: 'c-1', accountId: null })],
+      groups: [makeGroup({ id: 'g-1', accountId: null })],
+      selectedContactId: 'c-1',
+      selectedGroupId: 'g-1',
+      selectedAccountId: null,
+    });
+    useContactStore.getState().setSelectedAccountId('local');
+    const state = useContactStore.getState();
+    expect(state.selectedAccountId).toBe('local');
+    expect(state.selectedContactId).toBe('c-1');
+    expect(state.selectedGroupId).toBe('g-1');
+  });
+
+  it('clears non-local selection when account filter changes to local', () => {
+    useContactStore.setState({
+      contacts: [makeContact({ id: 'c-1', accountId: 'acc-1' })],
+      groups: [makeGroup({ id: 'g-1', accountId: 'acc-1' })],
+      selectedContactId: 'c-1',
+      selectedGroupId: 'g-1',
+      selectedAccountId: null,
+    });
+    useContactStore.getState().setSelectedAccountId('local');
+    const state = useContactStore.getState();
+    expect(state.selectedAccountId).toBe('local');
+    expect(state.selectedContactId).toBeNull();
+    expect(state.selectedGroupId).toBeNull();
   });
 });

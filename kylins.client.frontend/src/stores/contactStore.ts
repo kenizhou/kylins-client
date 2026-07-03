@@ -71,7 +71,26 @@ export const useContactStore = create<ContactState>((set) => ({
     })),
   setSelectedContactId: (id) => set({ selectedContactId: id, selectedGroupId: null }),
   setSelectedGroupId: (id) => set({ selectedGroupId: id, selectedContactId: null }),
-  setSelectedAccountId: (id) => set({ selectedAccountId: id }),
+  setSelectedAccountId: (id) =>
+    set((state) => {
+      function matchesAccount(itemAccountId: string | null | undefined): boolean {
+        if (id === null) return true;
+        if (id === 'local') return itemAccountId == null;
+        return itemAccountId === id;
+      }
+
+      const selectedContact = state.contacts.find((c) => c.id === state.selectedContactId);
+      const selectedGroup = state.groups.find((g) => g.id === state.selectedGroupId);
+
+      const contactStillValid = !selectedContact || matchesAccount(selectedContact.accountId);
+      const groupStillValid = !selectedGroup || matchesAccount(selectedGroup.accountId);
+
+      return {
+        selectedAccountId: id,
+        selectedContactId: contactStillValid ? state.selectedContactId : null,
+        selectedGroupId: groupStillValid ? state.selectedGroupId : null,
+      };
+    }),
   setSearchQuery: (query) => set({ searchQuery: query }),
   setIsLoading: (isLoading) => set({ isLoading }),
 }));

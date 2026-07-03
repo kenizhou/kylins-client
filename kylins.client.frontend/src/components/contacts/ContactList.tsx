@@ -2,10 +2,9 @@ import { useMemo } from 'react';
 import { SearchField, Input, Button } from 'react-aria-components';
 import { useContactStore } from '@/stores/contactStore';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
+import { LOCAL_SENTINEL } from '@/components/contacts/constants';
 import type { Contact, ContactGroup } from '@/services/db/contacts';
 import { SearchIcon, CloseIcon, ContactsIcon } from '@/components/icons';
-
-const LOCAL_SENTINEL = 'local';
 
 type ListItem =
   | { kind: 'contact'; id: string; sortKey: string; data: Contact }
@@ -46,12 +45,14 @@ export function ContactList() {
 
   const items = useMemo<ListItem[]>(() => {
     const list: ListItem[] = [
-      ...contacts.map((c) => ({
-        kind: 'contact' as const,
-        id: c.id,
-        sortKey: (c.displayName ?? c.email).trim().toLowerCase(),
-        data: c,
-      })),
+      ...contacts
+        .filter((c) => !c.isHidden)
+        .map((c) => ({
+          kind: 'contact' as const,
+          id: c.id,
+          sortKey: (c.displayName ?? c.email).trim().toLowerCase(),
+          data: c,
+        })),
       ...groups.map((g) => ({
         kind: 'group' as const,
         id: g.id,
@@ -95,7 +96,7 @@ export function ContactList() {
           <div className="p-4 text-sm text-[var(--muted-text)]">Loading contacts…</div>
         ) : items.length === 0 ? (
           <div className="p-4 text-sm text-[var(--muted-text)]">
-            {searchQuery || selectedAccountId ? 'No matching contacts.' : 'No contacts yet.'}
+            {searchQuery || selectedAccountId ? 'No matching items.' : 'No contacts yet.'}
           </div>
         ) : (
           <ul className="space-y-1" role="listbox">

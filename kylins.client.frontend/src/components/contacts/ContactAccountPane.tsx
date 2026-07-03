@@ -1,7 +1,6 @@
 import type { Account } from '@/types';
+import { LOCAL_SENTINEL } from '@/components/contacts/constants';
 import { ContactsIcon, FolderIcon, UserIcon } from '@/components/icons';
-
-const LOCAL_SENTINEL = 'local';
 
 interface ContactAccountPaneProps {
   accounts: Account[];

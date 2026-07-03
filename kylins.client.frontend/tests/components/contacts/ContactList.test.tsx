@@ -85,6 +85,26 @@ describe('ContactList', () => {
     });
   });
 
+  it('excludes hidden contacts', async () => {
+    useContactStore.setState({
+      contacts: [
+        makeContact({ id: 'c-1', displayName: 'Ada Lovelace', email: 'ada@example.com' }),
+        makeContact({
+          id: 'c-hidden',
+          displayName: 'Hidden Person',
+          email: 'hidden@example.com',
+          isHidden: true,
+        }),
+      ],
+    });
+    const { getByText, queryByText } = render(<ContactList />);
+    await waitFor(() => {
+      expect(getByText('Ada Lovelace')).toBeInTheDocument();
+      expect(queryByText('Hidden Person')).not.toBeInTheDocument();
+      expect(queryByText('hidden@example.com')).not.toBeInTheDocument();
+    });
+  });
+
   it('selects a contact on click', async () => {
     const { getByText } = render(<ContactList />);
     fireEvent.click(getByText('Ada Lovelace'));
