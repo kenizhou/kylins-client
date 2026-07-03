@@ -32,6 +32,62 @@ export function emailValid(email: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
 }
 
+export function portValid(port: string): boolean {
+  return /^\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) <= 65535;
+}
+
+export interface CredentialsGateErrors {
+  email?: string;
+  password?: string;
+}
+
+export type ImapManualFormErrors = Partial<
+  Record<
+    'imapHost' | 'imapPort' | 'imapSecurity' | 'smtpHost' | 'smtpPort' | 'smtpSecurity',
+    string
+  >
+>;
+
+export interface EasManualFormErrors {
+  server?: string;
+  deviceId?: string;
+}
+
+export function getCredentialsGateErrors(
+  state: Pick<AccountSetupState, 'email' | 'password' | 'config'>,
+): CredentialsGateErrors {
+  const errors: CredentialsGateErrors = {};
+  if (!state.email.trim()) {
+    errors.email = 'Enter your email address.';
+  } else if (!emailValid(state.email)) {
+    errors.email = 'Enter a valid email address.';
+  }
+  if (state.config?.authType === 'password' && state.password.trim().length < 3) {
+    errors.password = 'Enter your password.';
+  }
+  return errors;
+}
+
+export function getImapManualErrors(
+  state: Pick<AccountSetupState, 'imapHost' | 'imapPort' | 'smtpHost' | 'smtpPort'>,
+): ImapManualFormErrors {
+  const errors: ImapManualFormErrors = {};
+  if (!state.imapHost.trim()) errors.imapHost = 'Enter the IMAP server.';
+  if (!portValid(state.imapPort)) errors.imapPort = 'Enter a valid port (1–65535).';
+  if (!state.smtpHost.trim()) errors.smtpHost = 'Enter the SMTP server.';
+  if (!portValid(state.smtpPort)) errors.smtpPort = 'Enter a valid port (1–65535).';
+  return errors;
+}
+
+export function getEasManualErrors(
+  state: Pick<AccountSetupState, 'easServer' | 'deviceId'>,
+): EasManualFormErrors {
+  const errors: EasManualFormErrors = {};
+  if (!state.easServer.trim()) errors.server = 'Enter the Exchange server URL.';
+  if (!state.deviceId.trim()) errors.deviceId = 'Enter a device ID.';
+  return errors;
+}
+
 function providerRequiredMask(config: ProviderConfig): RequiredField {
   return config.authType === 'oauth2'
     ? RequiredField.Email

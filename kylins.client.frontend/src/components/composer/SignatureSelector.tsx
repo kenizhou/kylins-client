@@ -63,7 +63,7 @@ export function SignatureSelector() {
         <ListBox className="py-1 outline-none">
           <ListBoxItem
             id=""
-            className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+            className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
           >
             No signature
           </ListBoxItem>
@@ -71,7 +71,7 @@ export function SignatureSelector() {
             <ListBoxItem
               key={sig.id}
               id={sig.id}
-              className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+              className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
             >
               {sig.name} ({CONTEXT_LABELS[sig.context]})
             </ListBoxItem>

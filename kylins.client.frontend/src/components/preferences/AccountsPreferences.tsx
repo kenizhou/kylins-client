@@ -135,7 +135,7 @@ export function AccountsPreferences() {
 
 function SetupOverlay({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 bg-[var(--background)]">
+    <div className="fixed inset-0 z-[var(--z-modal-backdrop)] bg-[var(--background)]">
       <Button
         onPress={onClose}
         className="absolute right-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"

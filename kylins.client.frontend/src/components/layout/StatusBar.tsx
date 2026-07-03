@@ -3,12 +3,26 @@ import { useEffect, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { useUIStore } from '../../stores/uiStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { useViewStore } from '../../features/view/viewStore';
+import type { MessageListDensity, ReadingPanePosition } from '../../features/view/types';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { IconButton } from '@/components/ui/IconButton';
 import { PlusIcon, MinimizeIcon } from '../icons';
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2;
+
+const DENSITY_LABEL: Record<MessageListDensity, string> = {
+  compact: 'Compact',
+  normal: 'Normal',
+  comfortable: 'Comfortable',
+};
+
+const POSITION_LABEL: Record<ReadingPanePosition, string> = {
+  right: 'Reading pane right',
+  bottom: 'Reading pane bottom',
+  off: 'Reading pane off',
+};
 
 function clampZoom(z: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
@@ -73,9 +87,11 @@ function SyncStatusIndicator() {
 export function StatusBar() {
   const readerZoom = useUIStore((s) => s.readerZoom);
   const setReaderZoom = useUIStore((s) => s.setReaderZoom);
+  const messageListDensity = useViewStore((s) => s.messageListDensity);
+  const readingPanePosition = useViewStore((s) => s.readingPanePosition);
 
   return (
-    <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-[11px] bg-[var(--chrome)] text-[var(--muted-text)] shrink-0">
+    <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-xs bg-[var(--chrome)] text-[var(--muted-text)] shrink-0">
       <div className="flex items-center gap-3">
         <SyncStatusIndicator />
         <span>1 selected</span>
@@ -91,7 +107,7 @@ export function StatusBar() {
           <Button
             onPress={() => setReaderZoom(1)}
             aria-label="Reset zoom"
-            className="min-w-[2.5rem] h-8 text-center tabular-nums rounded transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+            className="min-w-11 h-8 text-center tabular-nums rounded transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           >
             {Math.round(readerZoom * 100)}%
           </Button>
@@ -101,8 +117,9 @@ export function StatusBar() {
             onClick={() => setReaderZoom(clampZoom(+(readerZoom + 0.1).toFixed(1)))}
           />
         </div>
-        <span>Compact</span>
-        <span>Reading pane right</span>
+        <span>{DENSITY_LABEL[messageListDensity]}</span>
+        <span className="mx-1 h-3 w-px bg-[var(--border)]" />
+        <span>{POSITION_LABEL[readingPanePosition]}</span>
       </div>
     </footer>
   );

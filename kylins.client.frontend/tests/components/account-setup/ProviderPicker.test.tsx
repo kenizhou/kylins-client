@@ -15,4 +15,9 @@ describe('ProviderPicker', () => {
     fireEvent.click(getByText('Gmail'));
     expect(onPick).toHaveBeenCalledWith('gmail');
   });
+
+  it('does not show the diamond Kylins mark', () => {
+    const { queryByTestId } = render(<ProviderPicker onPick={vi.fn()} />);
+    expect(queryByTestId('kylins-mark')).not.toBeInTheDocument();
+  });
 });

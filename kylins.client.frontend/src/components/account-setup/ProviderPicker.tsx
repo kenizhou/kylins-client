@@ -20,6 +20,7 @@ export function ProviderPicker({ onPick }: ProviderPickerProps) {
       <SetupHeader
         title="Welcome to Kylins Mail"
         subtitle="Choose your email provider to get started. You can add more accounts later."
+        hideMark
       />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -34,8 +35,8 @@ export function ProviderPicker({ onPick }: ProviderPickerProps) {
         ))}
       </div>
 
-      <p className="mt-6 text-center text-xs text-[var(--muted-text)]">
-        Don't see your provider? Use Other (IMAP/SMTP) or Exchange.
+      <p className="mt-6 text-center text-xs text-muted-text">
+        Don’t see your provider? Use Other (IMAP/SMTP) or Exchange.
       </p>
     </SetupCard>
   );

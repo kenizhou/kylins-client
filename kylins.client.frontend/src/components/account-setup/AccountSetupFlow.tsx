@@ -1,6 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAccountSetupStore } from '../../stores/accountSetupStore';
+import {
+  getCredentialsGateErrors,
+  getImapManualErrors,
+  getEasManualErrors,
+  type ImapManualFormErrors,
+  type EasManualFormErrors,
+  type CredentialsGateErrors,
+} from '../../stores/accountSetupStore';
 import { ProviderPicker } from './ProviderPicker';
 import { CredentialsGate } from './CredentialsGate';
 import { OAuthPendingScreen } from './OAuthPendingScreen';
@@ -32,13 +40,18 @@ export interface AccountSetupFlowProps {
   onComplete: () => void;
 }
 
-/**
- * Temporary Account used only for the pre-save IMAP/EAS connectivity probe.
- * `testImapConnection`/`testEasConnection` require a full `Account`, but the
- * real row isn't created until the probe succeeds — so we synthesize a
- * throwaway id and zeroed timestamps. (Service-layer signature taking
- * `CreateAccountInput` directly is a future cleanup; see task-12 report.)
- */
+const STEP_ANNOUNCEMENTS: Record<ReturnType<typeof useAccountSetupStore.getState>['step'], string> =
+  {
+    pick: 'Choose your email provider.',
+    gateway: 'Add your account.',
+    'oauth-pending': 'Sign in with your browser.',
+    'imap-manual': 'Enter server settings.',
+    'eas-manual': 'Enter Exchange server settings.',
+    verifying: 'Connecting your account.',
+    welcome: 'Account connected.',
+    error: 'Could not connect.',
+  };
+
 function toTestAccount(input: CreateAccountInput, email: string): Account {
   return {
     ...input,
@@ -52,50 +65,57 @@ function toTestAccount(input: CreateAccountInput, email: string): Account {
   };
 }
 
-/**
- * Runs a setup step under the standard verifying → welcome/error transition.
- * Sets `verifying` + clears any prior error before the async work, moves to
- * `welcome` on success, or captures the message and shows `error` on failure.
- */
 async function runWithVerification(
   s: ReturnType<typeof useAccountSetupStore.getState>,
   work: () => Promise<void>,
 ): Promise<void> {
-  console.log('[runWithVerification] setting verifying');
   s.setStep('verifying');
   s.setError(null);
   try {
     await work();
-    console.log('[runWithVerification] work succeeded, setting welcome');
     s.setStep('welcome');
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    console.log('[runWithVerification] work failed', e);
     s.setError(message);
     s.setStep('error');
   }
 }
 
+function useStepAnnouncement(step: string, error: string | null): string {
+  const base = STEP_ANNOUNCEMENTS[step as keyof typeof STEP_ANNOUNCEMENTS] ?? '';
+  return step === 'error' && error ? `Could not connect: ${error}` : base;
+}
+
 export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps) {
   const s = useAccountSetupStore();
-  // Auth URL shown on the oauth-pending screen as a copyable fallback. Populated
-  // from runOAuthFlow's onStarted callback right after the browser opens.
+  const contentRef = useRef<HTMLElement>(null);
   const [oauthAuthUrl, setOauthAuthUrl] = useState<string>('');
-  // Stable fallback so we don't regenerate a device ID on every render.
   const [deviceIdFallback] = useState<string>(() => newDeviceId());
-  // Inline test-connection state for the manual IMAP form.
   const [testState, setTestState] = useState<{
     isTesting: boolean;
     result: { success: boolean; message: string } | null;
   }>({ isTesting: false, result: null });
+  const [showCredentialsErrors, setShowCredentialsErrors] = useState(false);
+  const [showImapErrors, setShowImapErrors] = useState(false);
+  const [showEasErrors, setShowEasErrors] = useState(false);
+
+  const announcement = useStepAnnouncement(s.step, s.error);
+
+  useEffect(() => {
+    const heading = contentRef.current?.querySelector<HTMLElement>('h1');
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+    }
+  }, [s.step]);
 
   async function handleOAuth(): Promise<void> {
     if (!s.config || s.config.authType !== 'oauth2') return;
     const config = s.config;
-    // OAuth has its own transition sequence (oauth-pending -> verifying ->
-    // welcome/error) because it must show a cancellable pending screen while
-    // the user completes sign-in in their browser. runWithVerification skips
-    // straight to `verifying`, which would render OAuthPendingScreen dead.
+    setShowCredentialsErrors(true);
+    const fieldErrors = getCredentialsGateErrors(s);
+    if (Object.keys(fieldErrors).length > 0) return;
+
     s.setError(null);
     s.setStep('oauth-pending');
     setOauthAuthUrl('');
@@ -124,11 +144,18 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
   async function handleImapPassword(useManual: boolean): Promise<void> {
     if (!s.config || s.config.authType !== 'password') return;
     const config = s.config;
+
+    if (useManual) {
+      setShowImapErrors(true);
+      const fieldErrors = getImapManualErrors(s);
+      if (Object.keys(fieldErrors).length > 0) return;
+    } else {
+      setShowCredentialsErrors(true);
+      const fieldErrors = getCredentialsGateErrors(s);
+      if (Object.keys(fieldErrors).length > 0) return;
+    }
+
     await runWithVerification(s, async () => {
-      console.log('[handleImapPassword] building account input', {
-        useManual,
-        provider: config.id,
-      });
       const input = buildImapAccount(config, s.email, s.password);
       input.acceptInvalidCerts = s.acceptInvalidCerts;
       if (useManual) {
@@ -139,24 +166,22 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         input.smtpPort = Number(s.smtpPort) || 587;
         input.smtpSecurity = s.smtpSecurity;
       }
-      console.log('[handleImapPassword] testing connection', {
-        imapHost: input.imapHost,
-        imapPort: input.imapPort,
-        imapSecurity: input.imapSecurity,
-        smtpHost: input.smtpHost,
-        smtpPort: input.smtpPort,
-        smtpSecurity: input.smtpSecurity,
-        acceptInvalidCerts: input.acceptInvalidCerts,
-      });
       await testImapConnection(toTestAccount(input, s.email));
-      console.log('[handleImapPassword] connection test passed, creating account');
-      const account = await createAccount(input);
-      console.log('[handleImapPassword] account created', account.id);
+      await createAccount(input);
     });
   }
 
   async function handleTestConnection(): Promise<void> {
     if (!s.config || s.config.authType !== 'password') return;
+    setShowImapErrors(true);
+    const fieldErrors = getImapManualErrors(s);
+    if (Object.keys(fieldErrors).length > 0) {
+      setTestState({
+        isTesting: false,
+        result: { success: false, message: 'Fill in all server fields first.' },
+      });
+      return;
+    }
     setTestState({ isTesting: true, result: null });
     try {
       const input = buildImapAccount(s.config, s.email, s.password);
@@ -179,11 +204,11 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
 
   async function handleEas(): Promise<void> {
     if (!s.config) return;
+    setShowEasErrors(true);
+    const fieldErrors = getEasManualErrors(s);
+    if (Object.keys(fieldErrors).length > 0) return;
+
     const deviceId = s.deviceId || deviceIdFallback;
-    // Derive the EAS server from the email domain unless the user overrode it.
-    // Guard against an email with no `@` — under noUncheckedIndexedAccess
-    // `split('@')[1]` is `string | undefined`, which would otherwise build
-    // `https://undefined/Microsoft-Server-ActiveSync`.
     let server = s.easServer;
     if (!server) {
       const domain = s.email.split('@')[1];
@@ -215,18 +240,21 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
 
   async function handleReplace(): Promise<void> {
     try {
-      console.log('[AccountSetupFlow] replacing existing account', s.email);
       await deleteAccountByEmail(s.email);
-      console.log('[AccountSetupFlow] existing account deleted');
       s.setStep('gateway');
     } catch (e) {
-      console.error('[AccountSetupFlow] replace failed', e);
       s.setError(e instanceof Error ? e.message : String(e));
     }
   }
 
+  const credentialsErrors: CredentialsGateErrors = showCredentialsErrors
+    ? getCredentialsGateErrors(s)
+    : {};
+  const imapErrors: ImapManualFormErrors = showImapErrors ? getImapManualErrors(s) : {};
+  const easErrors: EasManualFormErrors = showEasErrors ? getEasManualErrors(s) : {};
+
   return (
-    <SetupShell variant={variant}>
+    <SetupShell variant={variant} announcement={announcement} contentRef={contentRef}>
       {s.step === 'pick' && (
         <SetupStepTransition>
           <ProviderPicker onPick={(id) => s.selectProvider(id)} />
@@ -253,6 +281,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
             onManualSetup={onManualSetup}
             onBack={s.back}
             canSubmit={s.canSubmit()}
+            errors={credentialsErrors}
           />
         </SetupStepTransition>
       )}
@@ -279,6 +308,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
               smtpSecurity: s.smtpSecurity,
               acceptInvalidCerts: s.acceptInvalidCerts,
             }}
+            errors={imapErrors}
             onChange={(patch) => {
               if (patch.imapHost !== undefined) s.setImap({ imapHost: patch.imapHost });
               if (patch.imapPort !== undefined) s.setImap({ imapPort: patch.imapPort });
@@ -304,6 +334,7 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
           <EasManualForm
             server={s.easServer}
             deviceId={s.deviceId || deviceIdFallback}
+            errors={easErrors}
             onChange={(patch) => {
               if (patch.server !== undefined) s.setEasServer(patch.server);
               if (patch.deviceId !== undefined) s.setDeviceId(patch.deviceId);
@@ -330,9 +361,6 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         <SetupStepTransition>
           <WelcomeScreen
             onDone={async () => {
-              // Folder/message sync for the newly-created account is handled by the
-              // Rust sync engine. Here we refresh the account list, nudge the engine
-              // to spawn a worker + sync this account immediately, then hand off.
               const refreshed = await getAllAccounts();
               useAccountStore.getState().setAccounts(refreshed);
               const created = refreshed.find((a) => a.email === s.email);

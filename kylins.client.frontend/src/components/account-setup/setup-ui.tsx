@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import * as React from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Button,
@@ -8,21 +9,29 @@ import {
   Popover,
   ListBox,
   ListBoxItem,
+  Label,
 } from 'react-aria-components';
-import { CloseIcon, MinimizeIcon, MaximizeIcon, RestoreIcon } from '../icons';
+import {
+  CloseIcon,
+  MinimizeIcon,
+  MaximizeIcon,
+  RestoreIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
+} from '../icons';
 import type { SetupProviderId } from '../../services/auth/providers';
 
 // ---------------------------------------------------------------------------
 // Brand / provider accents
 // ---------------------------------------------------------------------------
 
-export const PROVIDER_ACCENTS: Record<SetupProviderId, string> = {
-  gmail: '#EA4335',
-  outlook: '#0078D4',
-  microsoft365: '#D83B01',
-  yahoo: '#6001D2',
-  imap: '#6B7280',
-  exchange: '#0078D4',
+export const PROVIDER_ACCENT_VARS: Record<SetupProviderId, string> = {
+  gmail: 'var(--provider-gmail)',
+  outlook: 'var(--provider-outlook)',
+  microsoft365: 'var(--provider-microsoft365)',
+  yahoo: 'var(--provider-yahoo)',
+  imap: 'var(--provider-imap)',
+  exchange: 'var(--provider-exchange)',
 };
 
 /**
@@ -153,6 +162,7 @@ export function KylinsMark({ className = 'h-10 w-10' }: { className?: string }) 
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       aria-hidden="true"
+      data-testid="kylins-mark"
     >
       <rect width="40" height="40" rx="10" className="fill-current opacity-10" />
       <path
@@ -220,14 +230,14 @@ function SetupTitleBar() {
 
   return (
     <div
-      className="relative z-50 flex h-10 shrink-0 items-center justify-end border-b border-[var(--border)] bg-[var(--surface)] px-2 select-none"
+      className="relative z-50 flex h-12 shrink-0 items-center justify-end border-b border-border bg-surface px-2 select-none"
       style={dragStyle}
     >
       <div className="flex items-center" style={noDragStyle}>
         <button
           type="button"
           onClick={handleMinimize}
-          className="inline-flex h-7 w-9 items-center justify-center text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+          className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
           aria-label="Minimize"
         >
           <MinimizeIcon size={14} />
@@ -235,7 +245,7 @@ function SetupTitleBar() {
         <button
           type="button"
           onClick={handleToggleMaximize}
-          className="inline-flex h-7 w-9 items-center justify-center text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+          className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
           aria-label={isMaximized ? 'Restore' : 'Maximize'}
         >
           {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
@@ -243,7 +253,7 @@ function SetupTitleBar() {
         <button
           type="button"
           onClick={handleClose}
-          className="inline-flex h-7 w-9 items-center justify-center text-[var(--muted-text)] transition-colors hover:bg-red-500 hover:text-white"
+          className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-destructive hover:text-destructive-foreground"
           aria-label="Close"
         >
           <CloseIcon size={14} />
@@ -260,16 +270,19 @@ function SetupTitleBar() {
 export interface SetupShellProps {
   variant: 'fullscreen' | 'modal';
   children: ReactNode;
+  announcement?: string;
+  contentRef?: React.RefObject<HTMLElement | null>;
 }
 
-export function SetupShell({ variant, children }: SetupShellProps) {
+export function SetupShell({ variant, children, announcement, contentRef }: SetupShellProps) {
   const isFullscreen = variant === 'fullscreen';
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--background)]">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {isFullscreen && <SetupTitleBar />}
-      <div
-        className="relative flex flex-1 items-center justify-center overflow-y-auto p-6"
+      <main
+        ref={contentRef}
+        className="relative flex flex-1 items-center justify-center overflow-y-auto p-6 pt-[calc(1.5rem+env(safe-area-inset-top))] pr-[calc(1.5rem+env(safe-area-inset-right))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] pl-[calc(1.5rem+env(safe-area-inset-left))]"
         style={isFullscreen ? dragStyle : undefined}
       >
         {/* Subtle ambient radial wash behind the card */}
@@ -283,7 +296,12 @@ export function SetupShell({ variant, children }: SetupShellProps) {
         <div className="relative w-full" style={noDragStyle}>
           {children}
         </div>
-      </div>
+        {announcement && (
+          <div className="sr-only" aria-live="polite" aria-atomic="true">
+            {announcement}
+          </div>
+        )}
+      </main>
     </div>
   );
 }
@@ -302,7 +320,7 @@ export function SetupCard({ children, className = '', width = 'md' }: SetupCardP
   const widthClass = width === 'lg' ? 'max-w-2xl' : 'max-w-md';
   return (
     <div
-      className={`setup-fade mx-auto w-full ${widthClass} rounded-xl border border-[var(--border)] bg-[var(--card)] p-8 shadow-lg shadow-black/5 ${className}`}
+      className={`setup-fade mx-auto w-full ${widthClass} rounded-xl border border-border bg-card p-6 sm:p-8 shadow-lg shadow-black/5 ${className}`}
     >
       {children}
     </div>
@@ -334,17 +352,17 @@ export function SetupHeader({
     <div className={`mb-8 flex flex-col ${alignClass}`}>
       {!hideMark && (
         <div className={`mb-4 flex ${align === 'center' ? 'justify-center' : 'justify-start'}`}>
-          <KylinsMark className="h-10 w-10 text-[var(--primary)]" />
+          <KylinsMark className="h-10 w-10 text-primary" />
         </div>
       )}
       {eyebrow && (
-        <span className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--primary)]">
+        <span className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">
           {eyebrow}
         </span>
       )}
-      <h1 className="text-2xl font-semibold text-[var(--foreground)] sm:text-3xl">{title}</h1>
+      <h1 className="text-balance text-2xl font-semibold text-foreground sm:text-3xl">{title}</h1>
       {subtitle && (
-        <p className="mt-2 text-sm leading-relaxed text-[var(--muted-text)]">{subtitle}</p>
+        <p className="mt-2 text-balance text-sm leading-relaxed text-muted-text">{subtitle}</p>
       )}
     </div>
   );
@@ -360,6 +378,7 @@ export interface SetupButtonProps {
   loading?: boolean;
   disabled?: boolean;
   className?: string;
+  type?: 'button' | 'submit' | 'reset';
   onPress?: () => void;
 }
 
@@ -369,20 +388,20 @@ export function SetupButton({
   loading = false,
   disabled,
   className = '',
+  type = 'button',
   onPress,
 }: SetupButtonProps) {
   const base =
-    'inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)] disabled:cursor-not-allowed disabled:opacity-50';
+    'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-[colors,transform,shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 motion-safe:active:scale-[0.98]';
   const variantMap = {
-    primary:
-      'bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 active:scale-[0.98]',
-    secondary:
-      'border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:bg-[var(--hover)]',
-    ghost: 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]',
+    primary: 'bg-primary text-primary-foreground hover:bg-primary/90',
+    secondary: 'border border-border bg-secondary text-secondary-foreground hover:bg-hover',
+    ghost: 'text-muted-text hover:bg-hover hover:text-foreground',
   };
 
   return (
     <Button
+      type={type}
       isDisabled={disabled || loading}
       isPending={loading}
       onPress={onPress}
@@ -401,10 +420,20 @@ export function SetupButton({
 // ---------------------------------------------------------------------------
 
 const inputBase =
-  'w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm text-[var(--foreground)] shadow-sm transition-colors placeholder:text-[var(--muted-text)] focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]';
+  'min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-text focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50';
 
-export const SetupInput = (props: React.InputHTMLAttributes<HTMLInputElement>) => (
-  <Input className={inputBase} {...props} />
+export interface SetupInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  error?: boolean;
+  describedBy?: string;
+}
+
+export const SetupInput = ({ error, describedBy, className = '', ...props }: SetupInputProps) => (
+  <Input
+    className={`${inputBase} ${error ? 'border-destructive focus:border-destructive focus:ring-destructive/30' : ''} ${className}`}
+    aria-invalid={error || undefined}
+    aria-describedby={describedBy}
+    {...props}
+  />
 );
 
 export interface SetupSelectOption {
@@ -413,28 +442,48 @@ export interface SetupSelectOption {
 }
 
 export interface SetupSelectProps {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   options: SetupSelectOption[];
+  label?: string;
+  error?: boolean;
+  describedBy?: string;
 }
 
-export function SetupSelect({ value, onChange, options }: SetupSelectProps) {
+export function SetupSelect({
+  id,
+  value,
+  onChange,
+  options,
+  label,
+  error,
+  describedBy,
+}: SetupSelectProps) {
   return (
-    <Select selectedKey={value} onSelectionChange={(key) => onChange(String(key))}>
+    <Select
+      selectedKey={value}
+      onSelectionChange={(key) => onChange(String(key))}
+      aria-label={label}
+      aria-invalid={error || undefined}
+      aria-describedby={describedBy}
+      className="flex flex-col gap-1.5"
+    >
+      {label && <Label className="text-sm font-medium text-foreground">{label}</Label>}
       <Button
-        className={`${inputBase} flex items-center justify-between text-left`}
-        aria-label="Select an option"
+        id={id}
+        className={`${inputBase} flex min-h-11 items-center justify-between text-left ${error ? 'border-destructive focus:border-destructive focus:ring-destructive/30' : ''}`}
       >
         <SelectValue />
-        <span aria-hidden="true">▾</span>
+        <ArrowRightIcon size={14} className="rotate-90 text-muted-text" aria-hidden="true" />
       </Button>
-      <Popover className="min-w-[--trigger-width] rounded-lg border border-[var(--border)] bg-[var(--background)] shadow-lg">
+      <Popover className="min-w-[--trigger-width] rounded-lg border border-border bg-background shadow-lg">
         <ListBox className="py-1 outline-none">
           {options.map((option) => (
             <ListBoxItem
               key={option.value}
               id={option.value}
-              className="cursor-pointer px-3 py-2 text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] selected:bg-[var(--selected)] selected:text-[var(--foreground)]"
+              className="flex min-h-11 cursor-pointer items-center px-3 py-2 text-sm text-foreground outline-none hover:bg-hover focus-visible:bg-hover focus-visible:ring-2 focus-visible:ring-ring selected:bg-selected selected:text-selected-text"
             >
               {option.label}
             </ListBoxItem>
@@ -449,18 +498,51 @@ export function SetupField({
   label,
   children,
   hint,
+  error,
+  id,
 }: {
   label: string;
   children: ReactNode;
   hint?: ReactNode;
+  error?: string;
+  id?: string;
 }) {
+  const generatedId = useId();
+  const fieldId = id ?? generatedId;
+  const errorId = `${fieldId}-error`;
+  const hintId = `${fieldId}-hint`;
+  const describedBy =
+    [hint ? hintId : '', error ? errorId : ''].filter(Boolean).join(' ') || undefined;
+
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="flex flex-col gap-1.5">
-        <span className="text-sm font-medium text-[var(--foreground)]">{label}</span>
-        {children}
+      <label htmlFor={fieldId} className="flex flex-col gap-1.5">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        {React.isValidElement(children)
+          ? React.cloneElement(
+              children as React.ReactElement<{
+                id?: string;
+                describedBy?: string;
+                error?: boolean;
+              }>,
+              {
+                id: fieldId,
+                describedBy,
+                error: Boolean(error),
+              },
+            )
+          : children}
       </label>
-      {hint && <span className="text-xs text-[var(--muted-text)]">{hint}</span>}
+      {hint && (
+        <span id={hintId} className="text-xs text-muted-text">
+          {hint}
+        </span>
+      )}
+      {error && (
+        <span id={errorId} className="text-xs text-destructive" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   );
 }
@@ -472,18 +554,11 @@ export function SetupField({
 export function SetupBackButton({ onPress }: { onPress: () => void }) {
   return (
     <Button
+      type="button"
       onPress={onPress}
-      className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--muted-text)] transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)]"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-muted-text transition-[colors,transform] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-safe:hover:-translate-x-0.5"
     >
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path
-          d="M10 12L6 8L10 4"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
+      <ArrowLeftIcon size={16} aria-hidden="true" />
       Back
     </Button>
   );
@@ -512,35 +587,25 @@ export function ProviderTile({ name, id, onClick, style }: ProviderTileProps) {
   return (
     <Button
       onPress={onClick}
-      className="setup-stagger-child group relative flex items-center gap-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--primary)] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)]"
+      className="setup-stagger-child group relative flex min-h-14 items-center gap-4 overflow-hidden rounded-xl border border-border bg-surface p-4 text-left transition-[colors,transform,shadow] hover:-translate-y-0.5 hover:border-primary hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       style={style}
     >
       <span
         className="absolute left-0 top-0 h-full w-1"
-        style={{ backgroundColor: PROVIDER_ACCENTS[id] }}
+        style={{ backgroundColor: PROVIDER_ACCENT_VARS[id] }}
       />
       <span
         className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-white"
-        style={{ backgroundColor: PROVIDER_ACCENTS[id] }}
+        style={{ backgroundColor: PROVIDER_ACCENT_VARS[id] }}
       >
         <ProviderGlyph id={id} className="h-5 w-5" />
       </span>
-      <span className="flex-1 text-sm font-semibold text-[var(--foreground)]">{name}</span>
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 16 16"
-        fill="none"
-        className="text-[var(--muted-text)] transition-transform group-hover:translate-x-0.5"
-      >
-        <path
-          d="M6 4L10 8L6 12"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
+      <span className="flex-1 text-sm font-semibold text-foreground">{name}</span>
+      <ArrowRightIcon
+        size={16}
+        className="text-muted-text transition-transform group-hover:translate-x-0.5"
+        aria-hidden="true"
+      />
     </Button>
   );
 }

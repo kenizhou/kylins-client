@@ -110,7 +110,7 @@ export function SignaturesPreferences() {
               <select
                 value={effectiveAccountId ?? ''}
                 onChange={(e) => setSelectedAccountId(e.target.value)}
-                className="h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+                className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
               >
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
@@ -152,7 +152,7 @@ export function SignaturesPreferences() {
                       <button
                         type="button"
                         onClick={() => setEditingId(sig.id)}
-                        className="rounded p-1.5 text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                        className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
                         title="Edit"
                         aria-label={`Edit ${sig.name}`}
                       >
@@ -161,7 +161,7 @@ export function SignaturesPreferences() {
                       <button
                         type="button"
                         onClick={() => void handleDelete(sig.id)}
-                        className="rounded p-1.5 text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors"
+                        className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors"
                         title="Delete"
                         aria-label={`Delete ${sig.name}`}
                       >
@@ -177,7 +177,7 @@ export function SignaturesPreferences() {
               <button
                 type="button"
                 onClick={() => setEditingId('new')}
-                className="mt-4 flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
+                className="mt-4 inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
               >
                 <PlusIcon size={14} />
                 Add signature

@@ -44,6 +44,9 @@ coverage/
 # Misc
 *.local
 
+# Claude brainstorming mockups
+.superpowers/
+
 # Large reference docs — Microsoft Open Specifications kept local, not tracked
 # (PDFs/zip are 100MB+ — over GitHub's limit and would bloat the repo).
 docs/Exchange/*.pdf

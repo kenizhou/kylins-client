@@ -64,7 +64,7 @@ function ToolbarButton({
       onChange={onClick}
       isDisabled={disabled}
       aria-label={title}
-      className="flex h-8 w-8 items-center justify-center rounded-md transition-colors data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-11 w-11 items-center justify-center rounded-md transition-colors data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Icon size={16} />
     </ToggleButton>
@@ -95,7 +95,7 @@ function FontFamilySelect({ editor, disabled }: { editor: Editor; disabled?: boo
       }}
       className="relative"
     >
-      <Button className="flex h-8 items-center gap-1 rounded-md px-1.5 text-xs transition-colors data-[pressed]:bg-[var(--selected)] data-[pressed]:text-[var(--selected-text)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <Button className="flex h-11 min-w-11 items-center gap-1 rounded-md px-1.5 text-xs transition-colors data-[pressed]:bg-[var(--selected)] data-[pressed]:text-[var(--selected-text)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <FontIcon size={15} />
         <SelectValue className="hidden sm:inline">
           {({ selectedText }) => <>{selectedText || 'Font'}</>}
@@ -108,7 +108,7 @@ function FontFamilySelect({ editor, disabled }: { editor: Editor; disabled?: boo
             <ListBoxItem
               id={option.value}
               textValue={option.label}
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)] data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)]"
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)] data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)] min-h-11"
               style={{ fontFamily: option.value }}
             >
               {option.label}
@@ -127,7 +127,7 @@ function ColorButton({ editor, disabled }: { editor: Editor; disabled?: boolean 
   return (
     <label
       title="Text color"
-      className={`relative flex h-8 w-8 cursor-pointer items-center justify-center rounded-md transition-colors ${
+      className={`relative flex h-11 w-11 cursor-pointer items-center justify-center rounded-md transition-colors ${
         color
           ? 'bg-[var(--selected)] text-[var(--selected-text)]'
           : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
@@ -175,7 +175,7 @@ export function EditorToolbar({
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-0.5 border-b border-[var(--border)] bg-[var(--surface)] px-2 py-1.5">
+    <div className="flex flex-wrap items-center gap-0.5 border-b border-[var(--border)] bg-[var(--surface)] px-2 py-1">
       <ToolbarButton
         icon={UndoIcon}
         disabled={!editor.can().undo()}
@@ -306,7 +306,7 @@ export function EditorToolbar({
           isSelected={aiAssistOpen}
           onChange={onToggleAiAssist}
           aria-label="AI Assist"
-          className="flex h-8 items-center gap-1 rounded-md px-2 text-xs transition-colors data-[selected]:bg-[var(--accent)] data-[selected]:font-medium data-[selected]:text-[var(--accent-foreground)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-11 min-w-11 items-center gap-1 rounded-md px-2 text-xs transition-colors data-[selected]:bg-[var(--accent)] data-[selected]:font-medium data-[selected]:text-[var(--accent-foreground)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span>AI</span>
         </ToggleButton>

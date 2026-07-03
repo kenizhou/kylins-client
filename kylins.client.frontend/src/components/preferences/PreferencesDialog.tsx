@@ -46,7 +46,21 @@ const TAB_COMPONENTS: Record<string, React.ComponentType> = {
 function ComingSoonTab({ tab }: { tab: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-text">
-      <span className="text-4xl opacity-40">🚧</span>
+      <svg
+        width="48"
+        height="48"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="opacity-40"
+        aria-hidden="true"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="2" strokeDasharray="4 3" />
+        <path d="M9 12h6M12 9v6" />
+      </svg>
       <p className="text-sm">{tab} preferences are coming soon.</p>
     </div>
   );

@@ -12,6 +12,7 @@ import {
   CaretDownIcon,
   MailOpenIcon,
   MailIcon,
+  CheckIcon,
 } from '../../icons';
 import { useComposerStore } from '../../../stores/composerStore';
 import type { Importance } from '../../../stores/composerStore';
@@ -68,7 +69,7 @@ export function ComposeRibbon() {
       <RibbonGroup>
         <MenuTrigger>
           <Button
-            className="flex items-center gap-1.5 rounded px-2.5 h-8 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Importance"
           >
             <span className="whitespace-nowrap">Importance: {importanceLabel}</span>
@@ -105,7 +106,7 @@ export function ComposeRibbon() {
       <RibbonGroup>
         <MenuTrigger>
           <Button
-            className="flex items-center gap-1.5 rounded px-2.5 h-8 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Tracking"
           >
             <span className="whitespace-nowrap">Tracking</span>
@@ -125,7 +126,7 @@ export function ComposeRibbon() {
                   <MailOpenIcon size={14} />
                 </span>
                 <span className="flex-1 whitespace-nowrap">Read Receipt</span>
-                {requestReadReceipt && <span className="text-[var(--primary)]">✓</span>}
+                {requestReadReceipt && <CheckIcon size={14} className="text-[var(--primary)]" />}
               </MenuItem>
               <MenuItem
                 id="delivery-receipt"
@@ -136,7 +137,9 @@ export function ComposeRibbon() {
                   <MailIcon size={14} />
                 </span>
                 <span className="flex-1 whitespace-nowrap">Delivery Receipt</span>
-                {requestDeliveryReceipt && <span className="text-[var(--primary)]">✓</span>}
+                {requestDeliveryReceipt && (
+                  <CheckIcon size={14} className="text-[var(--primary)]" />
+                )}
               </MenuItem>
             </Menu>
           </Popover>

@@ -117,7 +117,7 @@ function FolderRow({
       <Button
         onPress={onClick}
         className={`
-          group relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1 pr-2 w-full text-left
+          group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left
           ${active ? 'bg-selected text-selected-text' : 'text-foreground hover:bg-hover'}
         `}
       >
@@ -187,7 +187,7 @@ function FolderGroup({
     >
       <Button
         slot="trigger"
-        className="group flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex h-11 w-full items-center gap-1 px-3 text-left text-xs font-semibold uppercase tracking-wide text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {headerContent}
       </Button>
@@ -403,7 +403,7 @@ function AccountFolderTree({
             const unread = getUnread(folder.accountId, folder.id);
             return (
               <div
-                className="flex flex-1 items-center gap-2 py-1 pr-3"
+                className="flex flex-1 items-center gap-2 h-11 pr-3"
                 style={{ paddingLeft: `${8 + (level - 1) * 14}px` }}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -416,13 +416,13 @@ function AccountFolderTree({
                 {hasChildItems ? (
                   <Button
                     slot="chevron"
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+                    className="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
                   >
                     {isExpanded ? <ArrowDownIcon size={12} /> : <ArrowRightIcon size={12} />}
                   </Button>
                 ) : (
-                  <span className="w-5 shrink-0" />
+                  <span className="w-11 shrink-0" />
                 )}
                 {renaming ? (
                   <div
@@ -730,7 +730,7 @@ export function FolderPane() {
           <>
             <Button
               onPress={() => setDeleteTarget(null)}
-              className="h-8 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
+              className="h-11 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
             >
               Cancel
             </Button>
@@ -741,7 +741,7 @@ export function FolderPane() {
                 }
                 setDeleteTarget(null);
               }}
-              className="h-8 rounded-md bg-destructive px-3 text-sm text-white transition-colors hover:opacity-90"
+              className="h-11 rounded-md bg-destructive px-3 text-sm text-white transition-colors hover:opacity-90"
             >
               Delete
             </Button>

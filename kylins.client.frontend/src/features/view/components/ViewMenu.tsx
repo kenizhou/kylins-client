@@ -51,7 +51,7 @@ export function ViewMenu() {
   const setMessageListDensity = useViewStore((s) => s.setMessageListDensity);
 
   const optionClass =
-    'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-foreground outline-none hover:bg-hover [&[data-hovered]]:bg-hover [&[data-focused]]:bg-hover disabled:cursor-default disabled:text-muted-text disabled:opacity-50';
+    'flex w-full items-center gap-2 px-3 min-h-11 text-left text-[13px] text-foreground outline-none hover:bg-hover [&[data-hovered]]:bg-hover [&[data-focused]]:bg-hover disabled:cursor-default disabled:text-muted-text disabled:opacity-50';
 
   return (
     <>

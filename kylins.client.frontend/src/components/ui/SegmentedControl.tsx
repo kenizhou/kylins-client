@@ -30,7 +30,7 @@ export function SegmentedControl<T extends string>({
         <ToggleButton
           key={opt.value}
           id={`${baseId}-${opt.value}`}
-          className="px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-muted-text hover:bg-hover hover:text-foreground selected:bg-primary selected:text-primary-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="min-h-11 px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-muted-text hover:bg-hover hover:text-foreground selected:bg-primary selected:text-primary-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {opt.label}
         </ToggleButton>

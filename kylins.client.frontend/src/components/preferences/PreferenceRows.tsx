@@ -29,7 +29,7 @@ export function CheckboxRow({
     <Checkbox
       isSelected={checked}
       onChange={onChange}
-      className="group flex cursor-pointer items-start gap-3 rounded-md px-2 py-2 -mx-2 transition-colors hover:bg-[color-mix(in_oklab,var(--surface),black_4%)]"
+      className="group flex min-h-11 cursor-pointer items-start gap-3 rounded-md px-2 py-2 -mx-2 transition-colors hover:bg-[color-mix(in_oklab,var(--surface),black_4%)]"
     >
       {({ isSelected }) => (
         <>
@@ -80,7 +80,7 @@ export function SelectRow({
       className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:gap-3"
     >
       <Label className="text-sm text-foreground">{label}</Label>
-      <Button className="flex h-9 w-full items-center justify-between rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring sm:w-auto">
+      <Button className="flex h-11 w-full items-center justify-between rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring sm:w-auto">
         <SelectValue />
         <span aria-hidden="true" className="text-muted-text">
           ▾
@@ -92,7 +92,7 @@ export function SelectRow({
             <ListBoxItem
               key={opt.value}
               id={opt.value}
-              className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+              className="cursor-pointer flex items-center min-h-11 px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
             >
               {opt.label}
             </ListBoxItem>

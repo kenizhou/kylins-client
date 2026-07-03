@@ -12,12 +12,32 @@ describe('AccountSetupFlow', () => {
 
   it('renders the picker first and advances to gateway on pick', () => {
     const onComplete = vi.fn();
-    const { getByText, queryByText } = render(
+    const { getByText, getByRole } = render(
       <AccountSetupFlow variant="modal" onComplete={onComplete} />,
     );
     expect(getByText('Welcome to Kylins Mail')).toBeInTheDocument();
     fireEvent.click(getByText('Yahoo'));
-    // gateway visible (password field shown for yahoo)
-    expect(queryByText(/Add your account/i)).toBeInTheDocument();
+    expect(getByRole('heading', { name: /Add your account/i })).toBeInTheDocument();
+  });
+
+  it('announces the current step via a polite live region', () => {
+    const { getByText, container } = render(
+      <AccountSetupFlow variant="modal" onComplete={vi.fn()} />,
+    );
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(
+      'Choose your email provider.',
+    );
+    fireEvent.click(getByText('Yahoo'));
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent('Add your account.');
+  });
+
+  it('focuses the step heading after navigation', () => {
+    const { getByText, getByRole } = render(
+      <AccountSetupFlow variant="modal" onComplete={vi.fn()} />,
+    );
+    fireEvent.click(getByText('Yahoo'));
+    const heading = getByRole('heading', { name: /Add your account/i });
+    expect(heading).toHaveAttribute('tabIndex', '-1');
+    expect(heading).toHaveFocus();
   });
 });

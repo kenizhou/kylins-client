@@ -19,7 +19,7 @@ describe('ImapManualForm', () => {
   it('edits imap host and submits', () => {
     const onChange = vi.fn();
     const onSubmit = vi.fn();
-    const { getByDisplayValue, getByText } = render(
+    const { getByDisplayValue, getByText, queryByTestId } = render(
       <ImapManualForm
         values={values}
         onChange={onChange}
@@ -28,6 +28,7 @@ describe('ImapManualForm', () => {
         canSubmit
       />,
     );
+    expect(queryByTestId('kylins-mark')).not.toBeInTheDocument();
     fireEvent.change(getByDisplayValue('imap.x.com'), { target: { value: 'new.imap.com' } });
     expect(onChange).toHaveBeenCalledWith({ imapHost: 'new.imap.com' });
     fireEvent.click(getByText('Connect'));
@@ -78,5 +79,23 @@ describe('ImapManualForm', () => {
       />,
     );
     expect(getByText(/connections verified/i)).toBeInTheDocument();
+  });
+
+  it('displays field-level errors when provided', () => {
+    const { getByText } = render(
+      <ImapManualForm
+        values={values}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onTestConnection={vi.fn()}
+        canSubmit={false}
+        errors={{
+          imapHost: 'Enter the IMAP server.',
+          smtpPort: 'Enter a valid port (1–65535).',
+        }}
+      />,
+    );
+    expect(getByText('Enter the IMAP server.')).toBeInTheDocument();
+    expect(getByText('Enter a valid port (1–65535).')).toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { ReadingPanePosition, MessageListDensity, ViewState } from './types';
+import type { ReadingPanePosition, MessageListDensity, ViewState, PanelSizeMap } from './types';
 import { DEFAULT_VIEW_STATE } from './defaults';
+import { isPanelSizeMap } from './viewSettings';
 
 export interface MailMessage {
   id: string;
@@ -35,6 +36,8 @@ export interface MailMessage {
 
 export interface ViewStore extends ViewState {
   selectedMessage: MailMessage | null;
+  /** True once persisted settings have been loaded. */
+  isHydrated: boolean;
   setSelectedMessage: (message: MailMessage | null) => void;
   setReadingPanePosition: (position: ReadingPanePosition) => void;
   setFolderPaneVisible: (visible: boolean) => void;
@@ -43,6 +46,8 @@ export interface ViewStore extends ViewState {
   setConversationView: (enabled: boolean) => void;
   setMessageListDensity: (density: MessageListDensity) => void;
   setVisibleColumnIds: (ids: string[]) => void;
+  setPanelSizes: <P extends ReadingPanePosition>(position: P, sizes: PanelSizeMap[P]) => void;
+  setHydrated: (hydrated: boolean) => void;
   resetToDefaults: () => void;
   hydrate: (state: Partial<ViewState>) => void;
 }
@@ -50,6 +55,7 @@ export interface ViewStore extends ViewState {
 export const useViewStore = create<ViewStore>((set) => ({
   ...DEFAULT_VIEW_STATE,
   selectedMessage: null,
+  isHydrated: false,
 
   setSelectedMessage: (selectedMessage) => set({ selectedMessage }),
   setReadingPanePosition: (readingPanePosition) => set({ readingPanePosition }),
@@ -59,6 +65,11 @@ export const useViewStore = create<ViewStore>((set) => ({
   setConversationView: (conversationView) => set({ conversationView }),
   setMessageListDensity: (messageListDensity) => set({ messageListDensity }),
   setVisibleColumnIds: (visibleColumnIds) => set({ visibleColumnIds }),
+  setPanelSizes: (readingPanePosition, sizes) =>
+    set((state) => ({
+      panelSizes: { ...state.panelSizes, [readingPanePosition]: sizes },
+    })),
+  setHydrated: (isHydrated) => set({ isHydrated }),
 
   resetToDefaults: () => set({ ...DEFAULT_VIEW_STATE, selectedMessage: null }),
 
@@ -70,5 +81,10 @@ export const useViewStore = create<ViewStore>((set) => ({
       visibleColumnIds: Array.isArray(partial.visibleColumnIds)
         ? partial.visibleColumnIds
         : current.visibleColumnIds,
+      // Reject corrupted panel size maps so the layout never receives invalid percentages
+      panelSizes:
+        partial.panelSizes != null && isPanelSizeMap(partial.panelSizes)
+          ? (partial.panelSizes as PanelSizeMap)
+          : current.panelSizes,
     })),
 }));

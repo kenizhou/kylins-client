@@ -45,7 +45,7 @@ export function Modal({
       }}
       isDismissable={!disableBackdropClose}
       isKeyboardDismissDisabled={disableBackdropClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
     >
       <RACModal
         className={`relative flex flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl ${SIZE_CLASSES[size]} ${className}`}
@@ -69,7 +69,7 @@ export function Modal({
                   <button
                     type="button"
                     onClick={close}
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex h-11 w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Close"
                   >
                     <CloseIcon size={16} />
@@ -81,7 +81,7 @@ export function Modal({
                 <button
                   type="button"
                   onClick={close}
-                  className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="absolute right-3 top-3 z-10 flex h-11 w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close"
                 >
                   <CloseIcon size={16} />

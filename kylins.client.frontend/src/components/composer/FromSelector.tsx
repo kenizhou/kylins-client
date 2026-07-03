@@ -32,6 +32,7 @@ export function FromSelector({ aliases, selectedEmail, onChange }: FromSelectorP
         const alias = aliases.find((a) => a.email === String(key));
         if (alias) onChange(alias);
       }}
+      aria-label="From address"
       className="flex items-center gap-2"
     >
       <Label className="w-8 shrink-0 pt-1.5 text-xs font-medium text-muted-text">From</Label>
@@ -44,7 +45,7 @@ export function FromSelector({ aliases, selectedEmail, onChange }: FromSelectorP
             <ListBoxItem
               key={alias.id}
               id={alias.email}
-              className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+              className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
             >
               {alias.displayName ? `${alias.displayName} <${alias.email}>` : alias.email}
             </ListBoxItem>

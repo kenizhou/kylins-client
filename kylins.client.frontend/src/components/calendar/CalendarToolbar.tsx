@@ -41,25 +41,25 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
   });
 
   return (
-    <div className="flex items-center gap-2 border-b border-border bg-surface px-4 py-2">
+    <div className="flex items-center gap-2 border-b border-border bg-surface px-4 py-1.5">
       <Button
         onPress={() => setCurrentDate(new Date())}
-        className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-hover"
+        className="h-11 min-w-11 rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-hover"
       >
         Today
       </Button>
       <div className="flex items-center overflow-hidden rounded-md border border-border">
         <Button
           onPress={() => shift(-1)}
-          aria-label="Previous"
-          className="flex h-7 w-7 items-center justify-center border-r border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+          aria-label="Previous period"
+          className="relative flex h-11 w-11 items-center justify-center border-r border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowLeftIcon size={14} />
         </Button>
         <Button
           onPress={() => shift(1)}
-          aria-label="Next"
-          className="flex h-7 w-7 items-center justify-center text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+          aria-label="Next period"
+          className="relative flex h-11 w-11 items-center justify-center text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowRightIcon size={14} />
         </Button>
@@ -80,7 +80,7 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
             <ToggleButton
               key={v.key}
               id={v.key}
-              className="px-2.5 py-1.5 text-xs transition-colors selected:bg-primary selected:text-primary-fg text-foreground hover:bg-hover"
+              className="h-11 min-w-11 px-2.5 text-xs transition-colors selected:bg-primary selected:text-primary-fg text-foreground hover:bg-hover"
             >
               {v.label}
             </ToggleButton>
@@ -88,7 +88,7 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
         </ToggleButtonGroup>
         <Button
           onPress={onNewEvent}
-          className="flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-fg transition-colors hover:opacity-90"
+          className="flex h-11 min-w-11 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-fg transition-colors hover:opacity-90"
         >
           <PlusIcon size={13} />
           New event

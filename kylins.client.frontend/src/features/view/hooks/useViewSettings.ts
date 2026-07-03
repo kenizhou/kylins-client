@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useViewStore } from '../viewStore';
 import { loadViewSettings, saveViewSettings } from '../viewSettings';
 
@@ -10,22 +10,24 @@ export function useViewSettings() {
   const conversationView = useViewStore((s) => s.conversationView);
   const messageListDensity = useViewStore((s) => s.messageListDensity);
   const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
-  const isHydrated = useRef(false);
+  const panelSizes = useViewStore((s) => s.panelSizes);
+  const setHydrated = useViewStore((s) => s.setHydrated);
+  const isHydrated = useViewStore((s) => s.isHydrated);
 
   // Hydrate from persisted settings on mount only
   useEffect(() => {
     async function hydrate() {
       const persisted = await loadViewSettings();
       useViewStore.getState().hydrate(persisted);
-      isHydrated.current = true;
+      setHydrated(true);
     }
 
     hydrate();
-  }, []);
+  }, [setHydrated]);
 
   // Persist on every change after hydration
   useEffect(() => {
-    if (!isHydrated.current) return;
+    if (!isHydrated) return;
 
     saveViewSettings({
       readingPanePosition,
@@ -35,6 +37,7 @@ export function useViewSettings() {
       conversationView,
       messageListDensity,
       visibleColumnIds,
+      panelSizes,
     });
   }, [
     readingPanePosition,
@@ -44,5 +47,7 @@ export function useViewSettings() {
     conversationView,
     messageListDensity,
     visibleColumnIds,
+    panelSizes,
+    isHydrated,
   ]);
 }

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
-import { ArrowBendDoubleUpLeft, ArrowBendUpLeft, ArrowBendUpRight } from '@phosphor-icons/react';
-import { MailIcon } from '../icons';
+import { MailIcon, ReplyFilledIcon, ReplyAllFilledIcon, ForwardFilledIcon } from '../icons';
 import { IconButton } from '../ui/IconButton';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -55,9 +54,10 @@ function avatarTextColor(name: string): string {
   return luminance(r, g, b) > 0.55 ? '#0f172a' : '#ffffff';
 }
 
-function recipientList(recipients: { name: string; address: string }[]): string {
-  if (recipients.length === 0) return '';
-  const first = recipients[0]!;
+function recipientList(recipients: { name: string; address: string }[] | undefined): string {
+  if (!recipients || recipients.length === 0) return '';
+  const first = recipients[0];
+  if (!first) return '';
   if (recipients.length === 1) return `${first.name} <${first.address}>`;
   return `${first.name} <${first.address}> +${recipients.length - 1} more`;
 }
@@ -141,7 +141,7 @@ export function ReadingPane() {
   const handleReplyAll = () => setComposeMode('replyAll');
   const handleForward = () => setComposeMode('forward');
 
-  const isSuspicious = message.subject.toLowerCase().includes('verify your account');
+  const isSuspicious = message.subject?.toLowerCase().includes('verify your account') ?? false;
 
   const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
   const prominent = level ? isProminent(level) : false;
@@ -211,7 +211,7 @@ export function ReadingPane() {
               onClick={handleReply}
               icon={
                 <span className="text-[var(--primary)]">
-                  <ArrowBendUpLeft size={18} weight="bold" />
+                  <ReplyFilledIcon size={18} />
                 </span>
               }
             />
@@ -222,7 +222,7 @@ export function ReadingPane() {
               onClick={handleReplyAll}
               icon={
                 <span className="text-[var(--primary)]">
-                  <ArrowBendDoubleUpLeft size={18} weight="bold" />
+                  <ReplyAllFilledIcon size={18} />
                 </span>
               }
             />
@@ -233,7 +233,7 @@ export function ReadingPane() {
               onClick={handleForward}
               icon={
                 <span className="text-[var(--primary)]">
-                  <ArrowBendUpRight size={18} weight="bold" />
+                  <ForwardFilledIcon size={18} />
                 </span>
               }
             />

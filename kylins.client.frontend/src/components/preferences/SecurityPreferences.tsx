@@ -52,7 +52,7 @@ function IconPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex h-8 w-8 items-center justify-center rounded border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--hover)]"
+        className="flex h-11 w-11 items-center justify-center rounded border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--hover)]"
         title={value ? `Icon: ${value}` : 'No icon'}
       >
         {value ? (
@@ -71,7 +71,7 @@ function IconPicker({
                 onChange(null);
                 setOpen(false);
               }}
-              className={`flex h-9 w-9 items-center justify-center rounded hover:bg-[var(--hover)] ${value === null ? 'bg-[var(--selected)]' : ''}`}
+              className={`flex h-11 w-11 items-center justify-center rounded hover:bg-[var(--hover)] ${value === null ? 'bg-[var(--selected)]' : ''}`}
               title="No icon"
             >
               <span className="text-xs text-[var(--muted-text)]">—</span>
@@ -84,7 +84,7 @@ function IconPicker({
                   onChange(id);
                   setOpen(false);
                 }}
-                className={`flex h-9 w-9 items-center justify-center rounded hover:bg-[var(--hover)] ${value === id ? 'bg-[var(--selected)]' : ''}`}
+                className={`flex h-11 w-11 items-center justify-center rounded hover:bg-[var(--hover)] ${value === id ? 'bg-[var(--selected)]' : ''}`}
                 title={id}
               >
                 <ClassificationIcon icon={id} size={18} />
@@ -105,7 +105,7 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (color: str
           key={c}
           type="button"
           onClick={() => onChange(c)}
-          className={`h-6 w-6 rounded-full border-2 ${value === c ? 'border-[var(--foreground)]' : 'border-transparent'}`}
+          className={`h-11 w-11 rounded-full border-2 ${value === c ? 'border-[var(--foreground)]' : 'border-transparent'}`}
           style={{ backgroundColor: c }}
           title={c}
         />
@@ -114,7 +114,7 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (color: str
         type="color"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-7 w-10 cursor-pointer rounded border border-[var(--border)] bg-transparent p-0"
+        className="h-11 min-w-11 cursor-pointer rounded border border-[var(--border)] bg-transparent p-0"
         title="Custom color"
       />
     </div>
@@ -177,7 +177,7 @@ export function SecurityPreferences() {
           <button
             type="button"
             onClick={addLevel}
-            className="rounded bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-[var(--primary-fg)] hover:opacity-90"
+            className="inline-flex items-center justify-center h-11 rounded bg-[var(--primary)] px-3 text-xs font-medium text-[var(--primary-fg)] hover:opacity-90"
           >
             Add level
           </button>
@@ -198,7 +198,7 @@ export function SecurityPreferences() {
                   type="button"
                   disabled={index === 0}
                   onClick={() => moveLevel(index, -1)}
-                  className="rounded p-0.5 text-[var(--muted-text)] hover:bg-[var(--hover)] disabled:opacity-30"
+                  className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] disabled:opacity-30"
                   title="Move up"
                 >
                   ▲
@@ -207,7 +207,7 @@ export function SecurityPreferences() {
                   type="button"
                   disabled={index === levels.length - 1}
                   onClick={() => moveLevel(index, 1)}
-                  className="rounded p-0.5 text-[var(--muted-text)] hover:bg-[var(--hover)] disabled:opacity-30"
+                  className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] disabled:opacity-30"
                   title="Move down"
                 >
                   ▼
@@ -228,14 +228,14 @@ export function SecurityPreferences() {
                 type="text"
                 value={level.name}
                 onChange={(e) => updateLevel(level.id, { name: e.target.value })}
-                className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] h-11 px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
               />
 
               <button
                 type="button"
                 onClick={() => removeLevel(level.id)}
                 disabled={levels.length <= 2}
-                className="rounded px-2 py-1 text-xs text-[var(--destructive)] hover:bg-[var(--hover)] disabled:opacity-40"
+                className="inline-flex items-center justify-center h-11 rounded px-2 text-xs text-[var(--destructive)] hover:bg-[var(--hover)] disabled:opacity-40"
               >
                 Remove
               </button>

@@ -93,7 +93,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
         if (!open) onClose();
       }}
       isDismissable
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
     >
       <RACModal className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-xl outline-none">
         <Dialog aria-label="New event" className="outline-none">
@@ -101,7 +101,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
             <h3 className="text-base font-semibold text-foreground">New event</h3>
             <Button
               slot="close"
-              className="rounded p-1 text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
               aria-label="Close"
             >
               <CloseIcon size={16} />
@@ -113,7 +113,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
               <Input
                 type="text"
                 placeholder="Title"
-                className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                className="h-11 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
               />
             </TextField>
 
@@ -121,14 +121,14 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
               <Input
                 type="text"
                 placeholder="Location"
-                className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                className="h-11 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
               />
             </TextField>
 
             <Switch
               isSelected={allDay}
               onChange={setAllDay}
-              className="flex items-center gap-2 text-sm text-foreground"
+              className="flex min-h-11 items-center gap-2 text-sm text-foreground"
             >
               {({ isSelected }) => (
                 <>
@@ -155,7 +155,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                   type="datetime-local"
                   value={start}
                   onChange={(e) => setStart(e.target.value)}
-                  className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                  className="mt-1 h-11 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
                 />
               </Label>
               <Label className="flex-1 text-xs text-muted-text">
@@ -164,7 +164,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                   type="datetime-local"
                   value={end}
                   onChange={(e) => setEnd(e.target.value)}
-                  className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                  className="mt-1 h-11 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
                 />
               </Label>
             </div>
@@ -188,14 +188,14 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
           <div className="mt-5 flex justify-end gap-2">
             <Button
               slot="close"
-              className="h-9 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-hover"
+              className="h-11 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-hover"
             >
               Cancel
             </Button>
             <Button
               isDisabled={!summary.trim() || saving}
               onPress={handleSave}
-              className="flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-fg transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-11 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-fg transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving && (
                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />

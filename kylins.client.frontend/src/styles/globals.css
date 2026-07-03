@@ -19,6 +19,15 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-bg: var(--success-bg);
+  --color-success-border: var(--success-border);
+  --color-error: var(--error);
+  --color-error-foreground: var(--error-foreground);
+  --color-error-bg: var(--error-bg);
+  --color-error-border: var(--error-border);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -72,6 +81,10 @@
     background: transparent;
     color: inherit;
   }
+}
+
+@utility setup-focus-ring {
+  @apply outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
 }
 
 /* ---- Account setup animations ---- */
@@ -148,18 +161,54 @@
   background: transparent;
 }
 
+/* ---- Folder pane drawer for compact widths ---- */
+.folder-pane-drawer {
+  position: absolute;
+  inset: var(--header-h) auto var(--status-h) var(--tool-w);
+  width: var(--drawer-w);
+  transform: translateX(-100%);
+  transition: transform 200ms ease-out;
+  z-index: var(--z-sticky);
+}
+.folder-pane-drawer.open {
+  transform: translateX(0);
+}
+
+/* ---- Message list columns: hide lower-priority columns when narrow ---- */
+.message-list {
+  container-type: inline-size;
+  container-name: message-list;
+}
+@container message-list (max-width: 420px) {
+  .message-list-col-category,
+  .message-list-col-size,
+  .message-list-col-importance,
+  .message-list-col-read {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .setup-fade,
   .setup-stagger-child,
   .success-pop,
   .composer-panel,
-  .composer-toast {
+  .composer-toast,
+  .folder-pane-drawer {
     animation: none;
     opacity: 1;
     transform: none;
   }
+  .setup-stagger-child {
+    animation-delay: 0ms !important;
+    transition: none !important;
+  }
+
   .composer-countdown {
     animation-duration: 0.01ms;
+  }
+  .folder-pane-drawer {
+    transition: none;
   }
 }
 

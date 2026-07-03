@@ -38,6 +38,7 @@
 .dark[data-skin='indigo'] {
   --series-accent: #818cf8;
   --series-accent-hover: #6366f1;
+  --primary-foreground: var(--series-50);
 }
 
 /* ---------- Rose ---------- */
@@ -61,12 +62,14 @@
 .dark[data-skin='emerald'] {
   --series-accent: #34d399;
   --series-accent-hover: #10b981;
+  --primary-foreground: var(--series-50);
 }
 
 /* ---------- Amber ---------- */
 [data-skin='amber'] {
   --series-accent: #d97706;
   --series-accent-hover: #b45309;
+  --primary-foreground: var(--series-950);
 }
 
 .dark[data-skin='amber'] {
@@ -84,12 +87,14 @@
 .dark[data-skin='violet'] {
   --series-accent: #a78bfa;
   --series-accent-hover: #8b5cf6;
+  --primary-foreground: var(--series-50);
 }
 
 /* ---------- Orange ---------- */
 [data-skin='orange'] {
   --series-accent: #ea580c;
   --series-accent-hover: #c2410c;
+  --primary-foreground: var(--series-950);
 }
 
 .dark[data-skin='orange'] {

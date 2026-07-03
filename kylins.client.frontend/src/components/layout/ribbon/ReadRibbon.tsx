@@ -73,7 +73,7 @@ function SplitRibbonButton({
         isDisabled={disabled}
         onPress={primary}
         aria-label={title ?? label}
-        className="flex items-center gap-1.5 rounded-l px-2.5 h-8 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent"
+        className="flex items-center gap-1.5 rounded-l px-2.5 h-11 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent"
       >
         {icon}
         <span className="whitespace-nowrap">{label}</span>
@@ -81,7 +81,7 @@ function SplitRibbonButton({
       <MenuTrigger>
         <Button
           isDisabled={disabled}
-          className="my-auto flex h-8 items-center rounded-r border-r border-[var(--border)] px-1.5 text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+          className="my-auto flex h-11 items-center rounded-r border-r border-[var(--border)] px-1.5 text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
           aria-label={`${label} options`}
         >
           <CaretDownIcon size={10} className="opacity-70" />
@@ -218,7 +218,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             </RibbonButton>
             <MenuTrigger>
               <Button
-                className="my-auto flex h-8 items-center rounded-r px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+                className="my-auto flex h-11 items-center rounded-r px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
                 aria-label="Choose classification"
               >
                 <CaretDownIcon size={10} />

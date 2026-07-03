@@ -1,5 +1,5 @@
 import { getSetting, setSetting } from '../../services/settings';
-import type { ViewState } from './types';
+import type { PanelSizeMap, ReadingPanePosition, ViewState } from './types';
 import { COLUMN_REGISTRY } from './defaults';
 
 const STORAGE_KEY = 'view.state';
@@ -18,6 +18,31 @@ function isBoolean(value: unknown): value is boolean {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === 'string');
+}
+
+const PANEL_SIZE_POSITIONS: ReadingPanePosition[] = ['right', 'bottom', 'off'];
+
+export function isPanelSizeMap(value: unknown): value is PanelSizeMap {
+  if (typeof value !== 'object' || value === null) return false;
+  const map = value as Partial<PanelSizeMap>;
+
+  for (const pos of PANEL_SIZE_POSITIONS) {
+    const entry = map[pos];
+    if (typeof entry !== 'object' || entry === null) return false;
+
+    const keys =
+      pos === 'off' ? (['folder', 'list'] as const) : (['folder', 'list', 'reader'] as const);
+    let sum = 0;
+    for (const key of keys) {
+      const n = (entry as Record<string, unknown>)[key];
+      if (typeof n !== 'number' || n < 0 || n > 100) return false;
+      sum += n;
+    }
+    // Each position's sizes must fit within 100% so the layout never over-allocates.
+    if (sum > 100.001) return false;
+  }
+
+  return true;
 }
 
 export function sanitizeViewState(partial: Record<string, unknown>): Partial<ViewState> {
@@ -45,6 +70,9 @@ export function sanitizeViewState(partial: Record<string, unknown>): Partial<Vie
     // Drop unknown column IDs and preserve order
     sanitized.visibleColumnIds = partial.visibleColumnIds.filter((id) => COLUMN_REGISTRY.has(id));
   }
+  if (isPanelSizeMap(partial.panelSizes)) {
+    sanitized.panelSizes = partial.panelSizes;
+  }
 
   return sanitized;
 }
@@ -63,5 +91,17 @@ export async function loadViewSettings(): Promise<Partial<ViewState>> {
 }
 
 export async function saveViewSettings(state: ViewState): Promise<void> {
-  await setSetting(STORAGE_KEY, JSON.stringify(state));
+  await setSetting(
+    STORAGE_KEY,
+    JSON.stringify({
+      readingPanePosition: state.readingPanePosition,
+      folderPaneVisible: state.folderPaneVisible,
+      commandRibbonVisible: state.commandRibbonVisible,
+      statusBarVisible: state.statusBarVisible,
+      conversationView: state.conversationView,
+      messageListDensity: state.messageListDensity,
+      visibleColumnIds: state.visibleColumnIds,
+      panelSizes: state.panelSizes,
+    }),
+  );
 }

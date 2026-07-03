@@ -10,7 +10,7 @@ export function Toaster() {
 
   return (
     <div
-      className="pointer-events-none fixed bottom-4 left-1/2 z-[80] flex -translate-x-1/2 flex-col items-center gap-2"
+      className="pointer-events-none fixed bottom-4 left-1/2 z-[var(--z-toast)] flex -translate-x-1/2 flex-col items-center gap-2"
       aria-live="polite"
       aria-atomic="true"
     >

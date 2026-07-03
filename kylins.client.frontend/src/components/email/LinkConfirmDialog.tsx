@@ -42,7 +42,7 @@ export function LinkConfirmDialog({
         if (!open) onCancel();
       }}
       isDismissable
-      className="fixed inset-0 z-[75] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
     >
       <RACModal className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-xl outline-none">
         <Dialog
@@ -94,13 +94,13 @@ export function LinkConfirmDialog({
           <div className="flex justify-end gap-2">
             <Button
               slot="close"
-              className="h-8 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
+              className="h-11 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
             >
               Cancel
             </Button>
             <Button
               onPress={onConfirm}
-              className={`h-8 rounded-md px-3 text-sm text-primary-fg transition-colors hover:opacity-90 ${
+              className={`h-11 rounded-md px-3 text-sm text-primary-fg transition-colors hover:opacity-90 ${
                 suspicious ? 'bg-destructive' : 'bg-primary'
               }`}
             >
