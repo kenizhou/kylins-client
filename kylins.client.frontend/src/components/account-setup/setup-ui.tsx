@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import {
+  Button,
+  Input,
+  Select,
+  SelectValue,
+  Popover,
+  ListBox,
+  ListBoxItem,
+} from 'react-aria-components';
 import { CloseIcon, MinimizeIcon, MaximizeIcon, RestoreIcon } from '../icons';
 import type { SetupProviderId } from '../../services/auth/providers';
 
@@ -345,9 +354,13 @@ export function SetupHeader({
 // Buttons
 // ---------------------------------------------------------------------------
 
-export interface SetupButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface SetupButtonProps {
+  children?: ReactNode;
   variant?: 'primary' | 'secondary' | 'ghost';
   loading?: boolean;
+  disabled?: boolean;
+  className?: string;
+  onPress?: () => void;
 }
 
 export function SetupButton({
@@ -356,7 +369,7 @@ export function SetupButton({
   loading = false,
   disabled,
   className = '',
-  ...rest
+  onPress,
 }: SetupButtonProps) {
   const base =
     'inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)] disabled:cursor-not-allowed disabled:opacity-50';
@@ -369,17 +382,17 @@ export function SetupButton({
   };
 
   return (
-    <button
-      type="button"
-      disabled={disabled || loading}
+    <Button
+      isDisabled={disabled || loading}
+      isPending={loading}
+      onPress={onPress}
       className={`${base} ${variantMap[variant]} ${className}`}
-      {...rest}
     >
       {loading && (
         <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
       )}
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -391,12 +404,46 @@ const inputBase =
   'w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm text-[var(--foreground)] shadow-sm transition-colors placeholder:text-[var(--muted-text)] focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]';
 
 export const SetupInput = (props: React.InputHTMLAttributes<HTMLInputElement>) => (
-  <input className={inputBase} {...props} />
+  <Input className={inputBase} {...props} />
 );
 
-export const SetupSelect = (props: React.SelectHTMLAttributes<HTMLSelectElement>) => (
-  <select className={`${inputBase} appearance-none bg-[var(--background)]`} {...props} />
-);
+export interface SetupSelectOption {
+  value: string;
+  label: string;
+}
+
+export interface SetupSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+  options: SetupSelectOption[];
+}
+
+export function SetupSelect({ value, onChange, options }: SetupSelectProps) {
+  return (
+    <Select selectedKey={value} onSelectionChange={(key) => onChange(String(key))}>
+      <Button
+        className={`${inputBase} flex items-center justify-between text-left`}
+        aria-label="Select an option"
+      >
+        <SelectValue />
+        <span aria-hidden="true">▾</span>
+      </Button>
+      <Popover className="min-w-[--trigger-width] rounded-lg border border-[var(--border)] bg-[var(--background)] shadow-lg">
+        <ListBox className="py-1 outline-none">
+          {options.map((option) => (
+            <ListBoxItem
+              key={option.value}
+              id={option.value}
+              className="cursor-pointer px-3 py-2 text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] selected:bg-[var(--selected)] selected:text-[var(--foreground)]"
+            >
+              {option.label}
+            </ListBoxItem>
+          ))}
+        </ListBox>
+      </Popover>
+    </Select>
+  );
+}
 
 export function SetupField({
   label,
@@ -422,12 +469,11 @@ export function SetupField({
 // Back button
 // ---------------------------------------------------------------------------
 
-export function SetupBackButton({ onClick }: { onClick: () => void }) {
+export function SetupBackButton({ onPress }: { onPress: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--muted-text)] transition-colors hover:text-[var(--foreground)]"
+    <Button
+      onPress={onPress}
+      className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--muted-text)] transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)]"
     >
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path
@@ -439,7 +485,7 @@ export function SetupBackButton({ onClick }: { onClick: () => void }) {
         />
       </svg>
       Back
-    </button>
+    </Button>
   );
 }
 
@@ -464,9 +510,8 @@ export interface ProviderTileProps {
 
 export function ProviderTile({ name, id, onClick, style }: ProviderTileProps) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <Button
+      onPress={onClick}
       className="setup-stagger-child group relative flex items-center gap-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--primary)] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)]"
       style={style}
     >
@@ -496,6 +541,6 @@ export function ProviderTile({ name, id, onClick, style }: ProviderTileProps) {
           strokeLinejoin="round"
         />
       </svg>
-    </button>
+    </Button>
   );
 }

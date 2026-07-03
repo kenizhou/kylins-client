@@ -14,6 +14,7 @@ export interface FolderPickerMenuProps {
   onClose: () => void;
   className?: string;
   style?: React.CSSProperties;
+  portal?: boolean;
 }
 
 interface TreeItemData {
@@ -75,12 +76,14 @@ export function FolderPickerMenu({
   onClose,
   className = '',
   style,
+  portal = true,
 }: FolderPickerMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const folders = useFolderStore((s) => s.byAccount[accountId] ?? []);
   const getUnread = useFolderStore((s) => s.getUnread);
 
   useEffect(() => {
+    if (!portal) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
     }
@@ -95,7 +98,7 @@ export function FolderPickerMenu({
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onPointer);
     };
-  }, [onClose]);
+  }, [onClose, portal]);
 
   const tree = useMemo(() => {
     const visible = folders.filter((f) => f.id !== excludeLabelId);
@@ -150,7 +153,7 @@ export function FolderPickerMenu({
     );
   };
 
-  return createPortal(
+  const content = (
     <div
       ref={ref}
       className={`min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-border bg-background py-1 shadow-lg ${className}`}
@@ -177,7 +180,8 @@ export function FolderPickerMenu({
           {renderItem}
         </Tree>
       )}
-    </div>,
-    document.body,
+    </div>
   );
+
+  return portal ? createPortal(content, document.body) : content;
 }

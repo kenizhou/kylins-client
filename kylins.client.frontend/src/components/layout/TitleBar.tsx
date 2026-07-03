@@ -1,3 +1,4 @@
+import { TextField, Input, Label } from 'react-aria-components';
 import { useUIStore } from '../../stores/uiStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { MenuBar } from '../ui/MenuBar';
@@ -43,12 +44,15 @@ export function TitleBar() {
           width: 'var(--message-list-width, 20rem)',
         }}
       >
-        <input
-          type="text"
-          placeholder="Search mail…"
-          style={noDragStyle}
-          className="w-full h-8 px-3 text-sm rounded border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none transition-colors"
-        />
+        <TextField className="w-full" aria-label="Search mail">
+          <Label className="sr-only">Search mail</Label>
+          <Input
+            type="text"
+            placeholder="Search mail…"
+            style={noDragStyle}
+            className="w-full h-8 px-3 text-sm rounded border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none transition-colors"
+          />
+        </TextField>
       </div>
 
       {/* Right: app icons + window controls */}

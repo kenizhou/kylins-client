@@ -1,38 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { Select, SelectValue, Button, Popover, ListBox, ListBoxItem } from 'react-aria-components';
 import { useComposerStore } from '@/stores/composerStore';
 import { useClassification } from '@/features/classification/useClassification';
 import { ClassificationIcon } from '@/components/icons';
 import type { ClassificationLevel } from '@/features/classification/classificationTypes';
-
-function MenuItem({
-  level,
-  selected,
-  onClick,
-}: {
-  level: ClassificationLevel;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
-        selected
-          ? 'bg-[var(--selected)] text-[var(--foreground)]'
-          : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
-      }`}
-    >
-      <span
-        className="inline-block h-2.5 w-2.5 rounded-full"
-        style={{ backgroundColor: level.color }}
-      />
-      <ClassificationIcon icon={level.icon} size={14} className="text-[var(--muted-text)]" />
-      <span className="flex-1 whitespace-nowrap">{level.name}</span>
-      {selected && <span className="text-[var(--primary)]">✓</span>}
-    </button>
-  );
-}
 
 export function ClassificationSelector() {
   const classificationId = useComposerStore((s) => s.classificationId);
@@ -42,73 +12,65 @@ export function ClassificationSelector() {
 
   const { levels, getLevelById, getDefaultLevel } = useClassification();
   const currentLevel = getLevelById(classificationId) ?? getDefaultLevel();
-  const isConfidential = currentLevel.id === 'confidential';
-
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isConfidential) return;
-    setIsEncrypted(true);
-    setIsSigned(true);
-  }, [isConfidential, setIsEncrypted, setIsSigned]);
-
-  useEffect(() => {
-    if (!open) return;
-    function handleClick(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [open]);
 
   const handleSelect = (level: ClassificationLevel) => {
     setClassificationId(level.id);
-    if (level.id === 'confidential') {
-      setIsEncrypted(true);
-      setIsSigned(true);
-    } else if (level.id === 'restricted') {
+    if (level.id === 'confidential' || level.id === 'restricted') {
       setIsEncrypted(true);
       setIsSigned(true);
     } else {
       setIsEncrypted(false);
       setIsSigned(false);
     }
-    setOpen(false);
   };
 
   return (
-    <div ref={ref} className="relative flex items-center gap-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-90"
+    <Select
+      aria-label="Classification"
+      selectedKey={currentLevel.id}
+      onSelectionChange={(key) => {
+        const level = levels.find((l) => l.id === key);
+        if (level) handleSelect(level);
+      }}
+      className="relative flex items-center gap-2"
+    >
+      <Button
+        className="flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         style={{
           borderColor: currentLevel.color,
           color: currentLevel.color,
           backgroundColor: `${currentLevel.color}15`,
         }}
-        title="Classification"
+        aria-label="Classification"
       >
         <ClassificationIcon icon={currentLevel.icon} size={13} />
-        <span className="whitespace-nowrap">{currentLevel.name}</span>
+        <SelectValue>
+          {() => <span className="whitespace-nowrap">{currentLevel.name}</span>}
+        </SelectValue>
         <span className="text-[10px] opacity-70">▼</span>
-      </button>
-
-      {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
-          {levels.map((level) => (
-            <MenuItem
-              key={level.id}
-              level={level}
-              selected={level.id === currentLevel.id}
-              onClick={() => handleSelect(level)}
-            />
-          ))}
-        </div>
-      )}
-    </div>
+      </Button>
+      <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+        <ListBox items={levels} className="outline-none" aria-label="Classification">
+          {(level) => (
+            <ListBoxItem
+              id={level.id}
+              textValue={level.name}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)] data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--foreground)]"
+            >
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: level.color }}
+              />
+              <ClassificationIcon
+                icon={level.icon}
+                size={14}
+                className="text-[var(--muted-text)]"
+              />
+              <span className="flex-1 whitespace-nowrap">{level.name}</span>
+            </ListBoxItem>
+          )}
+        </ListBox>
+      </Popover>
+    </Select>
   );
 }

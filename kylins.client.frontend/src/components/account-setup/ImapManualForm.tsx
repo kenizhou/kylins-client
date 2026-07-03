@@ -1,3 +1,4 @@
+import { Checkbox } from 'react-aria-components';
 import type { SecurityMode } from '../../types';
 import {
   SetupCard,
@@ -8,6 +9,12 @@ import {
   SetupBackButton,
   SetupField,
 } from './setup-ui';
+
+const SECURITY_OPTIONS: { value: SecurityMode; label: string }[] = [
+  { value: 'tls', label: 'SSL/TLS' },
+  { value: 'starttls', label: 'STARTTLS' },
+  { value: 'none', label: 'None' },
+];
 
 export interface ImapManualValues {
   imapHost: string;
@@ -75,12 +82,9 @@ export function ImapManualForm({
             <SetupField label="Security">
               <SetupSelect
                 value={values.imapSecurity}
-                onChange={(e) => onChange({ imapSecurity: e.target.value as SecurityMode })}
-              >
-                <option value="tls">SSL/TLS</option>
-                <option value="starttls">STARTTLS</option>
-                <option value="none">None</option>
-              </SetupSelect>
+                onChange={(value) => onChange({ imapSecurity: value as SecurityMode })}
+                options={SECURITY_OPTIONS}
+              />
             </SetupField>
           </div>
         </fieldset>
@@ -111,12 +115,9 @@ export function ImapManualForm({
             <SetupField label="Security">
               <SetupSelect
                 value={values.smtpSecurity}
-                onChange={(e) => onChange({ smtpSecurity: e.target.value as SecurityMode })}
-              >
-                <option value="tls">SSL/TLS</option>
-                <option value="starttls">STARTTLS</option>
-                <option value="none">None</option>
-              </SetupSelect>
+                onChange={(value) => onChange({ smtpSecurity: value as SecurityMode })}
+                options={SECURITY_OPTIONS}
+              />
             </SetupField>
           </div>
         </fieldset>
@@ -136,19 +137,19 @@ export function ImapManualForm({
           </div>
         )}
         <div className="flex items-center justify-between">
-          <SetupBackButton onClick={onBack} />
+          <SetupBackButton onPress={onBack} />
           <div className="flex items-center gap-2">
             {onTestConnection && (
               <SetupButton
                 variant="secondary"
-                onClick={onTestConnection}
+                onPress={onTestConnection}
                 disabled={!canSubmit || isTesting}
                 loading={isTesting}
               >
                 Test connection
               </SetupButton>
             )}
-            <SetupButton onClick={onSubmit} disabled={!canSubmit || isTesting}>
+            <SetupButton onPress={onSubmit} disabled={!canSubmit || isTesting}>
               Connect
             </SetupButton>
           </div>
@@ -156,20 +157,43 @@ export function ImapManualForm({
 
         <div className="h-px bg-[var(--border)]" />
 
-        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-3 text-sm">
-          <input
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
-            checked={values.acceptInvalidCerts}
-            onChange={(e) => onChange({ acceptInvalidCerts: e.target.checked })}
-          />
-          <span className="flex flex-col">
-            <span className="font-medium text-[var(--foreground)]">Allow invalid certificates</span>
-            <span className="text-[var(--muted-text)]">
-              Accept self-signed or mismatched TLS certificates for this server.
-            </span>
-          </span>
-        </label>
+        <Checkbox
+          isSelected={values.acceptInvalidCerts}
+          onChange={(checked) => onChange({ acceptInvalidCerts: checked })}
+          className="group flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-3 text-sm transition-colors hover:bg-[var(--hover)]"
+        >
+          {({ isSelected }) => (
+            <>
+              <div
+                className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                  isSelected
+                    ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]'
+                    : 'border-[var(--border)] bg-[var(--background)]'
+                }`}
+              >
+                {isSelected && (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                    <path
+                      d="M1.5 5.5L4 8l4-5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
+              </div>
+              <span className="flex flex-col">
+                <span className="font-medium text-[var(--foreground)]">
+                  Allow invalid certificates
+                </span>
+                <span className="text-[var(--muted-text)]">
+                  Accept self-signed or mismatched TLS certificates for this server.
+                </span>
+              </span>
+            </>
+          )}
+        </Checkbox>
       </div>
     </SetupCard>
   );

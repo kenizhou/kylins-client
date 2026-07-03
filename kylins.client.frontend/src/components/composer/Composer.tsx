@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Button, Input, TextField } from 'react-aria-components';
 
 import { RecipientField } from '@/features/composer/RecipientField';
 import type { MoveTarget } from '@/features/composer/RecipientField';
@@ -796,9 +797,12 @@ export function Composer({ windowed = false }: ComposerProps) {
                 />
               </>
             ) : (
-              <button onClick={() => setShowCcBcc(true)} className="kylins-link ml-10 text-xs">
+              <Button
+                onPress={() => setShowCcBcc(true)}
+                className="kylins-link ml-10 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
                 Cc / Bcc
-              </button>
+              </Button>
             )}
           </div>
 
@@ -806,13 +810,15 @@ export function Composer({ windowed = false }: ComposerProps) {
           <div className="border-b border-[var(--border)] px-3 py-1.5">
             <div className="flex items-center gap-2">
               <ClassificationSelector />
-              <input
-                type="text"
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                placeholder="Subject"
-                className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
-              />
+              <TextField className="flex-1" aria-label="Subject">
+                <Input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder="Subject"
+                  className="w-full flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+                />
+              </TextField>
             </div>
           </div>
         </div>
@@ -852,21 +858,23 @@ export function Composer({ windowed = false }: ComposerProps) {
           <TemplatePicker editor={editor} />
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleDiscard}
-            className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+          <Button
+            onPress={handleDiscard}
+            className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             Discard
-          </button>
-          <button
-            onClick={windowed ? handleSendAndCloseWindow : handleSend}
-            disabled={to.length === 0 || requiresClassification}
-            title={requiresClassification ? 'Select a classification before sending' : undefined}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          </Button>
+          <Button
+            onPress={windowed ? handleSendAndCloseWindow : handleSend}
+            isDisabled={to.length === 0 || requiresClassification}
+            aria-label={
+              requiresClassification ? 'Select a classification before sending' : undefined
+            }
+            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             <SendIcon size={14} />
             Send
-          </button>
+          </Button>
         </div>
       </div>
 

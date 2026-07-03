@@ -29,7 +29,7 @@ export function WelcomeScreen({ onDone }: WelcomeScreenProps) {
           <p className="text-sm text-[var(--muted-text)]">You’re all set. Welcome to your inbox.</p>
         </div>
 
-        <SetupButton onClick={onDone}>Open inbox</SetupButton>
+        <SetupButton onPress={onDone}>Open inbox</SetupButton>
       </div>
     </SetupCard>
   );

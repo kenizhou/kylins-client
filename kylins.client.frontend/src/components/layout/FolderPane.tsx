@@ -15,7 +15,17 @@ import { getFolderIcon } from '../../utils/folderIcons';
 import { buildFolderTree, type FolderTreeNode } from '../../utils/folderTree';
 import { ContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { Modal } from '../ui/Modal';
-import { Button, Collection, Tree, TreeItem, TreeItemContent } from 'react-aria-components';
+import {
+  Button,
+  Collection,
+  Disclosure,
+  DisclosurePanel,
+  Input,
+  TextField,
+  Tree,
+  TreeItem,
+  TreeItemContent,
+} from 'react-aria-components';
 
 // ---- Inline create/rename input (Mailspring-style: in-place, not a modal) ----
 
@@ -55,23 +65,25 @@ function InlineFolderInput({
       onClick={(e) => e.stopPropagation()}
     >
       <FolderIcon size={18} className="shrink-0" />
-      <input
-        ref={ref}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            onSubmit(value.trim());
-          } else if (e.key === 'Escape') {
-            e.preventDefault();
-            onCancel();
-          }
-        }}
-        onBlur={() => onCancel()}
-        className="h-5 flex-1 rounded border border-primary bg-background px-1.5 text-[13px] text-foreground outline-none"
-      />
+      <TextField className="flex-1" aria-label={placeholder}>
+        <Input
+          ref={ref}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onSubmit(value.trim());
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          onBlur={() => onCancel()}
+          className="h-5 w-full rounded border border-primary bg-background px-1.5 text-[13px] text-foreground outline-none"
+        />
+      </TextField>
     </div>
   );
 }
@@ -97,38 +109,33 @@ function FolderRow({
 }: FolderRowProps) {
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
       onContextMenu={(e) => {
         e.preventDefault();
         onContextMenu?.(e);
       }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onClick?.();
-        }
-      }}
-      className={`
-        group relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1 pr-2
-        ${active ? 'bg-selected text-selected-text' : 'text-foreground hover:bg-hover'}
-      `}
     >
-      {active && <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />}
-      <span className="shrink-0">{icon}</span>
-      <span className="flex-1 truncate text-[13px]">{name}</span>
-      {unread > 0 && (
-        <span
-          className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
-            active
-              ? 'bg-primary text-primary-fg'
-              : 'border border-border bg-surface text-foreground'
-          }`}
-        >
-          {unread}
-        </span>
-      )}
+      <Button
+        onPress={onClick}
+        className={`
+          group relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1 pr-2 w-full text-left
+          ${active ? 'bg-selected text-selected-text' : 'text-foreground hover:bg-hover'}
+        `}
+      >
+        {active && <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />}
+        <span className="shrink-0">{icon}</span>
+        <span className="flex-1 truncate text-[13px]">{name}</span>
+        {unread > 0 && (
+          <span
+            className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
+              active
+                ? 'bg-primary text-primary-fg'
+                : 'border border-border bg-surface text-foreground'
+            }`}
+          >
+            {unread}
+          </span>
+        )}
+      </Button>
     </div>
   );
 }
@@ -142,33 +149,50 @@ function FolderGroup({
   children: React.ReactNode;
   collapsible?: { expanded: boolean; onToggle: () => void };
 }) {
+  const headerContent = (
+    <>
+      {collapsible && (
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="size-3 shrink-0 transition-transform group-data-[expanded=true]:rotate-90"
+        >
+          <path d="M9 6l6 6-6 6" />
+        </svg>
+      )}
+      <span className="truncate">{title}</span>
+    </>
+  );
+
+  if (!collapsible) {
+    return (
+      <div className="pb-2 pt-2 first:pt-3 last:pb-0">
+        <div className="flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-foreground">
+          {headerContent}
+        </div>
+        <div className="space-y-0.5 px-0">{children}</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="pb-2 pt-2 first:pt-3 last:pb-0">
-      <button
-        type="button"
-        onClick={collapsible ? collapsible.onToggle : undefined}
-        className={`flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-foreground ${
-          collapsible ? 'cursor-pointer hover:text-primary' : 'cursor-default'
-        }`}
-        aria-expanded={collapsible ? collapsible.expanded : undefined}
+    <Disclosure
+      isExpanded={collapsible.expanded}
+      onExpandedChange={collapsible.onToggle}
+      className="pb-2 pt-2 first:pt-3 last:pb-0"
+    >
+      <Button
+        slot="trigger"
+        className="group flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        {collapsible && (
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={`size-3 shrink-0 transition-transform ${collapsible.expanded ? 'rotate-90' : ''}`}
-          >
-            <path d="M9 6l6 6-6 6" />
-          </svg>
-        )}
-        <span className="truncate">{title}</span>
-      </button>
-      {(!collapsible || collapsible.expanded) && <div className="space-y-0.5 px-0">{children}</div>}
-    </div>
+        {headerContent}
+      </Button>
+      <DisclosurePanel className="space-y-0.5 px-0">{children}</DisclosurePanel>
+    </Disclosure>
   );
 }
 
