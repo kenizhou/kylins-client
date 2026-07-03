@@ -11,9 +11,10 @@ import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
-import { useSecurityIndicatorIcons } from '../../features/classification/useSecurityIndicatorIcons';
+import { levelStyle, isProminent } from '../../features/classification/classificationStyle';
+import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
+import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import {
-  ClassificationIcon,
   MailIcon,
   FlagIcon,
   TrashIcon,
@@ -31,6 +32,8 @@ import {
 } from '../icons';
 import { ContextMenu } from '../ui/ContextMenu';
 import { openComposerForThread } from '../../utils/composerActions';
+import { FolderPickerMenu } from './ribbon/FolderPickerMenu';
+import type { MailFolder } from '../../services/mail/folders/folderModel';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -51,7 +54,7 @@ const RIBBON_COLOR: Record<MessageState, string> = {
 };
 
 const DENSITY_ROW_CLASSES = {
-  compact: 'min-h-[32px] py-1',
+  compact: 'min-h-[36px] py-1',
   normal: 'min-h-[40px] py-2',
   comfortable: 'min-h-[52px] py-3',
 };
@@ -86,9 +89,9 @@ function MessageRow({
         : 'read';
   const unread = state === 'unread';
   const { getLevelById } = useClassification();
-  const { encryptedIcon, signedIcon } = useSecurityIndicatorIcons();
   const level = getLevelById(classificationId);
-  const showSecurity = isEncrypted || isSigned;
+  const prominent = level ? isProminent(level) : false;
+  const style = level ? levelStyle(level) : null;
   const preview = snippet ?? '';
   const showPreview = density !== 'compact' && preview.length > 0;
   const sender = fromName ?? fromAddress ?? 'Unknown';
@@ -97,7 +100,8 @@ function MessageRow({
     lastMessageAt != null ? formatMessageTime(new Date(lastMessageAt * 1000).toISOString()) : '';
   return (
     <div
-      role="button"
+      role="listitem"
+      aria-selected={selected}
       tabIndex={0}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
@@ -111,10 +115,14 @@ function MessageRow({
       className={`
         flex items-stretch gap-2.5 pr-3 pl-0 cursor-pointer
         ${DENSITY_ROW_CLASSES[density]}
-        ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}
+        ${selected ? 'bg-[var(--selected)]' : prominent ? '' : 'hover:bg-[var(--hover)]'}
       `}
+      style={prominent && !selected && style ? { backgroundColor: style.tint } : undefined}
     >
-      <div className={`w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] ${RIBBON_COLOR[state]}`} />
+      <div
+        className={`w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[state]}`}
+        style={prominent && style ? { backgroundColor: style.border } : undefined}
+      />
       <div className="w-7 h-7 rounded-full bg-[var(--border)] grid place-items-center text-[10px] font-bold text-[var(--muted-text)] shrink-0">
         {initials}
       </div>
@@ -124,38 +132,19 @@ function MessageRow({
             className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
           >
             {level && (
-              <span className="inline-flex items-center gap-1 mr-1.5 align-[-2px]">
-                <ClassificationIcon
-                  icon={level.icon}
-                  size={12}
-                  className="shrink-0"
-                  style={{ color: level.color }}
-                />
-                {!level.icon && (
-                  <span
-                    className="inline-block h-2 w-2 rounded-full shrink-0"
-                    style={{ backgroundColor: level.color }}
-                  />
-                )}
+              <span className="inline-flex items-center gap-1.5 mr-1.5 align-[-2px]">
+                <ClassificationBadge level={level} size={density === 'compact' ? 'xs' : 'sm'} />
               </span>
             )}
             {sender}
           </span>
           <span className="flex items-center gap-1.5 shrink-0">
-            {showSecurity && (
-              <span className="inline-flex items-center gap-0.5 text-[var(--muted-text)]">
-                {isEncrypted && (
-                  <span title="Encrypted" aria-label="Encrypted">
-                    <ClassificationIcon icon={encryptedIcon} size={12} />
-                  </span>
-                )}
-                {isSigned && (
-                  <span title="Signed" aria-label="Signed">
-                    <ClassificationIcon icon={signedIcon} size={12} />
-                  </span>
-                )}
-              </span>
-            )}
+            <SecurityChips
+              isEncrypted={isEncrypted}
+              isSigned={isSigned}
+              variant="icon"
+              size={density === 'compact' ? 10 : 12}
+            />
             {isStarred && (
               <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
                 <FlagIcon size={14} />
@@ -224,6 +213,7 @@ export function MessageList() {
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
   const deleteThread = useThreadStore((s) => s.deleteThread);
+  const moveThread = useThreadStore((s) => s.moveThread);
 
   const visibleColumns = visibleColumnIds
     .map((id) => COLUMN_REGISTRY.get(id))
@@ -277,6 +267,7 @@ export function MessageList() {
   };
 
   const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+  const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
 
   const showEmpty = !isLoading && items.length === 0;
 
@@ -322,7 +313,11 @@ export function MessageList() {
       { label: 'Find Related', icon: SearchIcon, disabled: true },
       { label: 'Rules', icon: PreferencesMailRulesIcon, disabled: true },
       { separator: true },
-      { label: 'Move', icon: MoveIcon, disabled: true },
+      {
+        label: 'Move',
+        icon: MoveIcon,
+        onSelect: () => setMoveMenu({ thread: menu.thread, x: menu.x, y: menu.y }),
+      },
       { label: 'Junk', icon: BellIcon, disabled: true },
       {
         label: 'Delete',
@@ -352,15 +347,51 @@ export function MessageList() {
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 overflow-auto">
+      <div
+        ref={scrollRef}
+        tabIndex={0}
+        className="flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+          e.preventDefault();
+          const direction = e.key === 'ArrowDown' ? 1 : -1;
+          const currentIndex = items.findIndex(
+            (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+          );
+          function nextThreadIndex(start: number, dir: 1 | -1): number | null {
+            let i = start + dir;
+            while (i >= 0 && i < items.length) {
+              if (items[i]?.kind === 'thread') return i;
+              i += dir;
+            }
+            return null;
+          }
+          const nextIndex =
+            currentIndex === -1
+              ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
+              : nextThreadIndex(currentIndex, direction);
+          if (nextIndex == null) return;
+          const nextItem = items[nextIndex];
+          if (!nextItem || nextItem.kind !== 'thread') return;
+          void selectThread(nextItem.thread);
+          virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+        }}
+      >
         {isLoading && items.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-[var(--muted-text)]">Loading…</div>
+          <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
+            <MailIcon size={24} className="opacity-50" />
+            <span>Loading messages…</span>
+          </div>
         ) : showEmpty ? (
-          <div className="px-3 py-6 text-center text-xs text-[var(--muted-text)]">
-            No messages in this folder.
+          <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
+            <MailIcon size={24} className="opacity-50" />
+            <span>No messages in this folder.</span>
+            <span className="text-[10px] opacity-70">
+              Select a different folder or check back later.
+            </span>
           </div>
         ) : (
-          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          <div role="list" style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualItems.map((vi) => {
               const item = items[vi.index];
               if (!item) return null;
@@ -378,7 +409,7 @@ export function MessageList() {
                   }}
                 >
                   {item.kind === 'group' ? (
-                    <div className="py-1.5 px-3 border-b border-[var(--border)] font-[var(--text-overline)] uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]">
+                    <div className="py-1.5 px-3 border-b border-[var(--border)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]">
                       {item.label}
                     </div>
                   ) : (
@@ -400,6 +431,18 @@ export function MessageList() {
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
+      {moveMenu && (
+        <FolderPickerMenu
+          accountId={moveMenu.thread.accountId}
+          excludeLabelId={selectedFolder?.labelId}
+          style={{ position: 'fixed', left: moveMenu.x, top: moveMenu.y, zIndex: 80 }}
+          onSelect={(folder: MailFolder) => {
+            void moveThread(moveMenu.thread, folder.id, folder.remoteId ?? folder.name);
+            setMoveMenu(null);
+          }}
+          onClose={() => setMoveMenu(null)}
+        />
       )}
     </div>
   );

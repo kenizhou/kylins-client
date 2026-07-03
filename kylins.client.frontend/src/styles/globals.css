@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@plugin "tailwindcss-react-aria-components";
 @import './theme.css';
 @import './skins.css';
 
@@ -150,10 +151,15 @@
 @media (prefers-reduced-motion: reduce) {
   .setup-fade,
   .setup-stagger-child,
-  .success-pop {
+  .success-pop,
+  .composer-panel,
+  .composer-toast {
     animation: none;
     opacity: 1;
     transform: none;
+  }
+  .composer-countdown {
+    animation-duration: 0.01ms;
   }
 }
 

@@ -9,6 +9,7 @@ import {
 } from '../icons';
 import { useUIStore } from '../../stores/uiStore';
 import { useViewStore } from '../../features/view/viewStore';
+import { Button, ToggleButton, ToggleButtonGroup } from 'react-aria-components';
 
 interface ToolWindowItem {
   id: string;
@@ -16,13 +17,19 @@ interface ToolWindowItem {
   icon: React.ReactNode;
 }
 
-const TOOLS: ToolWindowItem[] = [
+const APP_TOOLS: ToolWindowItem[] = [
   { id: 'mail', label: 'Mail', icon: <MailIcon size={22} /> },
   { id: 'calendar', label: 'Calendar', icon: <CalendarIcon size={22} /> },
   { id: 'contacts', label: 'Contacts', icon: <ContactsIcon size={22} /> },
+];
+
+const AUX_TOOLS: ToolWindowItem[] = [
   { id: 'tasks', label: 'Tasks', icon: <TasksIcon size={22} /> },
   { id: 'ai', label: 'AI Assistant', icon: <AiIcon size={22} /> },
 ];
+
+const TOOL_BUTTON_CLASS =
+  'relative grid place-items-center w-11 h-11 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 export function ToolWindowBar() {
   const activeToolWindow = useUIStore((s) => s.activeToolWindow);
@@ -32,59 +39,91 @@ export function ToolWindowBar() {
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
   const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
 
-  const isAppSwitcher = (id: string): id is 'mail' | 'calendar' | 'contacts' =>
-    id === 'mail' || id === 'calendar' || id === 'contacts';
-
   return (
     <nav
       aria-label="Activity bar"
-      className="flex flex-col justify-between items-center w-12 shrink-0 bg-[var(--chrome)] py-2"
+      className="flex w-12 shrink-0 flex-col items-center justify-between bg-chrome py-2"
     >
-      <div className="flex flex-col items-center gap-2">
-        {TOOLS.map((tool) => {
-          const active = isAppSwitcher(tool.id)
-            ? activeApp === tool.id
-            : activeToolWindow === tool.id;
-          return (
-            <button
-              key={tool.id}
-              aria-label={tool.label}
-              title={tool.label}
-              onClick={() => {
-                if (isAppSwitcher(tool.id)) {
-                  setActiveApp(tool.id);
-                  setActiveToolWindow(null);
-                } else {
-                  setActiveToolWindow(active ? null : tool.id);
-                }
-              }}
-              className={`
-                relative grid place-items-center w-10 h-10 rounded-md transition-colors
-                ${
-                  active
-                    ? 'text-[var(--primary)] bg-[var(--selected)]'
-                    : 'text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)]'
-                }
-              `}
-            >
-              {active && (
-                <span className="absolute left-0 top-2 bottom-2 w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] bg-[var(--primary)]" />
-              )}
-              {tool.icon}
-            </button>
-          );
-        })}
-      </div>
-
-      <button
-        type="button"
-        aria-label={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
-        title={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
-        onClick={() => setFolderPaneVisible(!folderPaneVisible)}
-        className="grid place-items-center w-10 h-10 rounded-md text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+      <ToggleButtonGroup
+        selectionMode="single"
+        selectedKeys={[activeApp]}
+        onSelectionChange={(keys) => {
+          const next = Array.from(keys)[0];
+          if (next) {
+            setActiveApp(next as typeof activeApp);
+            setActiveToolWindow(null);
+          }
+        }}
+        className="flex flex-col items-center gap-2"
       >
-        {folderPaneVisible ? <PanelLeftCloseIcon size={20} /> : <PanelLeftOpenIcon size={20} />}
-      </button>
+        {APP_TOOLS.map((tool) => (
+          <ToggleButton
+            key={tool.id}
+            id={tool.id}
+            aria-label={tool.label}
+            className={({ isSelected }) =>
+              `${TOOL_BUTTON_CLASS} ${
+                isSelected
+                  ? 'bg-selected text-primary'
+                  : 'text-muted-text hover:bg-hover hover:text-foreground'
+              }`
+            }
+          >
+            {({ isSelected }) => (
+              <>
+                {isSelected && (
+                  <span className="absolute bottom-2 left-0 top-2 w-1 rounded-r bg-primary" />
+                )}
+                {tool.icon}
+              </>
+            )}
+          </ToggleButton>
+        ))}
+      </ToggleButtonGroup>
+
+      <div className="flex flex-col items-center gap-2">
+        <ToggleButtonGroup
+          selectionMode="single"
+          selectedKeys={activeToolWindow ? [activeToolWindow] : []}
+          onSelectionChange={(keys) => {
+            const next = Array.from(keys)[0];
+            setActiveToolWindow(next ? (next as typeof activeToolWindow) : null);
+          }}
+          className="flex flex-col items-center gap-2"
+        >
+          {AUX_TOOLS.map((tool) => (
+            <ToggleButton
+              key={tool.id}
+              id={tool.id}
+              aria-label={tool.label}
+              className={({ isSelected }) =>
+                `${TOOL_BUTTON_CLASS} ${
+                  isSelected
+                    ? 'bg-selected text-primary'
+                    : 'text-muted-text hover:bg-hover hover:text-foreground'
+                }`
+              }
+            >
+              {({ isSelected }) => (
+                <>
+                  {isSelected && (
+                    <span className="absolute bottom-2 left-0 top-2 w-1 rounded-r bg-primary" />
+                  )}
+                  {tool.icon}
+                </>
+              )}
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+
+        <Button
+          aria-label={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
+          onPress={() => setFolderPaneVisible(!folderPaneVisible)}
+          className={`${TOOL_BUTTON_CLASS} text-muted-text hover:bg-hover hover:text-foreground`}
+        >
+          {folderPaneVisible ? <PanelLeftCloseIcon size={22} /> : <PanelLeftOpenIcon size={22} />}
+        </Button>
+      </div>
     </nav>
   );
 }

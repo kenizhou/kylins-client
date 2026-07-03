@@ -7,7 +7,12 @@
 import { useState, useEffect } from 'react';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
-import { getSignaturesForAccount, type DbSignature, CONTEXT_LABELS } from '@/services/db/signatures';
+import {
+  getSignaturesForAccount,
+  type DbSignature,
+  CONTEXT_LABELS,
+} from '@/services/db/signatures';
+import { Select, Button, Popover, ListBox, ListBoxItem, SelectValue } from 'react-aria-components';
 
 export function SignatureSelector() {
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
@@ -44,18 +49,35 @@ export function SignatureSelector() {
   };
 
   return (
-    <select
-      value={signatureId ?? ''}
-      onChange={(e) => handleChange(e.target.value)}
-      className="rounded border border-[var(--border)] bg-[var(--secondary)] px-1.5 py-0.5 text-[0.625rem] text-[var(--muted-text)]"
+    <Select
+      selectedKey={signatureId ?? ''}
+      onSelectionChange={(key) => handleChange(String(key))}
       aria-label="Signature"
+      className="cursor-pointer rounded border border-border bg-secondary px-1.5 py-0.5 text-[0.625rem] text-muted-text"
     >
-      <option value="">No signature</option>
-      {signatures.map((sig) => (
-        <option key={sig.id} value={sig.id}>
-          {sig.name} ({CONTEXT_LABELS[sig.context]})
-        </option>
-      ))}
-    </select>
+      <Button className="flex items-center gap-1 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <SelectValue />
+        <span aria-hidden="true">▾</span>
+      </Button>
+      <Popover className="min-w-[--trigger-width] rounded border border-border bg-popover shadow-lg">
+        <ListBox className="py-1 outline-none">
+          <ListBoxItem
+            id=""
+            className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+          >
+            No signature
+          </ListBoxItem>
+          {signatures.map((sig) => (
+            <ListBoxItem
+              key={sig.id}
+              id={sig.id}
+              className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+            >
+              {sig.name} ({CONTEXT_LABELS[sig.context]})
+            </ListBoxItem>
+          ))}
+        </ListBox>
+      </Popover>
+    </Select>
   );
 }

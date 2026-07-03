@@ -1,6 +1,6 @@
 import { type Recipient } from '@/features/composer/contacts';
 import { formatRecipients } from '@/features/composer/contacts';
-import type { ComposerMode } from '@/stores/composerStore';
+import type { ComposerMode, Importance } from '@/stores/composerStore';
 
 export interface ComposeWindowOptions {
   mode?: ComposerMode;
@@ -17,6 +17,17 @@ export interface ComposeWindowOptions {
   classificationId?: string | null;
   isEncrypted?: boolean;
   isSigned?: boolean;
+  importance?: Importance;
+  requestReadReceipt?: boolean;
+  requestDeliveryReceipt?: boolean;
+  deliverAt?: number | null;
+  preventCopy?: boolean;
+  originalMessageId?: string | null;
+  includeOriginalAttachments?: boolean;
+  forwardAsAttachment?: boolean;
+  originalMessageSubject?: string;
+  originalMessageHtml?: string | null;
+  originalMessageText?: string | null;
 }
 
 /**
@@ -44,6 +55,17 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
       classificationId: opts.classificationId,
       isEncrypted: opts.isEncrypted,
       isSigned: opts.isSigned,
+      importance: opts.importance,
+      requestReadReceipt: opts.requestReadReceipt,
+      requestDeliveryReceipt: opts.requestDeliveryReceipt,
+      deliverAt: opts.deliverAt,
+      preventCopy: opts.preventCopy,
+      originalMessageId: opts.originalMessageId,
+      includeOriginalAttachments: opts.includeOriginalAttachments,
+      forwardAsAttachment: opts.forwardAsAttachment,
+      originalMessageSubject: opts.originalMessageSubject,
+      originalMessageHtml: opts.originalMessageHtml,
+      originalMessageText: opts.originalMessageText,
     });
     return;
   }
@@ -66,6 +88,26 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
     if (opts.classificationId) params.set('classificationId', opts.classificationId);
     params.set('isEncrypted', opts.isEncrypted ? '1' : '0');
     params.set('isSigned', opts.isSigned ? '1' : '0');
+    params.set('importance', opts.importance ?? 'normal');
+    params.set('requestReadReceipt', opts.requestReadReceipt ? '1' : '0');
+    params.set('requestDeliveryReceipt', opts.requestDeliveryReceipt ? '1' : '0');
+    if (opts.deliverAt != null) params.set('deliverAt', opts.deliverAt.toString());
+    params.set('preventCopy', opts.preventCopy ? '1' : '0');
+    if (opts.originalMessageId) params.set('originalMessageId', opts.originalMessageId);
+    params.set('includeOriginalAttachments', opts.includeOriginalAttachments ? '1' : '0');
+    params.set('forwardAsAttachment', opts.forwardAsAttachment ? '1' : '0');
+    if (opts.originalMessageSubject)
+      params.set('originalMessageSubject', opts.originalMessageSubject);
+    if (opts.originalMessageHtml)
+      params.set(
+        'originalMessageHtml',
+        btoa(unescape(encodeURIComponent(opts.originalMessageHtml))),
+      );
+    if (opts.originalMessageText)
+      params.set(
+        'originalMessageText',
+        btoa(unescape(encodeURIComponent(opts.originalMessageText))),
+      );
 
     const label = `compose-${Date.now()}`;
     const webview = new WebviewWindow(label, {
@@ -108,6 +150,17 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
   const bodyParam = params.get('body');
   const bodyHtml = bodyParam ? decodeURIComponent(escape(atob(bodyParam))) : undefined;
 
+  const importance = (params.get('importance') ?? 'normal') as Importance;
+
+  const originalMessageHtmlParam = params.get('originalMessageHtml');
+  const originalMessageHtml = originalMessageHtmlParam
+    ? decodeURIComponent(escape(atob(originalMessageHtmlParam)))
+    : undefined;
+  const originalMessageTextParam = params.get('originalMessageText');
+  const originalMessageText = originalMessageTextParam
+    ? decodeURIComponent(escape(atob(originalMessageTextParam)))
+    : undefined;
+
   return {
     mode: (params.get('mode') as ComposerMode) ?? 'new',
     to: decodeRecipients('to'),
@@ -123,5 +176,16 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     classificationId: params.get('classificationId') ?? undefined,
     isEncrypted: params.get('isEncrypted') === '1',
     isSigned: params.get('isSigned') === '1',
+    importance,
+    requestReadReceipt: params.get('requestReadReceipt') === '1',
+    requestDeliveryReceipt: params.get('requestDeliveryReceipt') === '1',
+    deliverAt: params.get('deliverAt') ? Number(params.get('deliverAt')) : null,
+    preventCopy: params.get('preventCopy') === '1',
+    originalMessageId: params.get('originalMessageId'),
+    includeOriginalAttachments: params.get('includeOriginalAttachments') === '1',
+    forwardAsAttachment: params.get('forwardAsAttachment') === '1',
+    originalMessageSubject: params.get('originalMessageSubject') ?? undefined,
+    originalMessageHtml,
+    originalMessageText,
   };
 }

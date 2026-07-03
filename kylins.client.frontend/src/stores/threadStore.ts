@@ -57,6 +57,12 @@ interface ThreadState {
   markThreadRead: (thread: Thread, read: boolean, messages?: DbMessageRow[]) => Promise<void>;
   toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
   deleteThread: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
+  moveThread: (
+    thread: Thread,
+    dstLabel: string,
+    dstFolderPath: string,
+    messages?: DbMessageRow[],
+  ) => Promise<void>;
 }
 
 export const useThreadStore = create<ThreadState>((set, get) => ({
@@ -195,11 +201,35 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   deleteThread: async (thread, messages) => {
+    const state = get();
+    const wasSelected = state.selectedThreadId === thread.id;
+    const idx = state.threads.findIndex((t) => t.id === thread.id);
+    const nextThread =
+      wasSelected && idx !== -1 ? (state.threads[idx + 1] ?? state.threads[idx - 1] ?? null) : null;
+
+    set({
+      threads: state.threads.filter((t) => t.id !== thread.id),
+      selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+    });
+
+    // If the deleted thread was being read, clear it and move the view to the
+    // next thread. Otherwise, ensure the view store never points at a deleted
+    // thread as a safety net.
+    if (wasSelected) {
+      useViewStore.getState().setSelectedMessage(null);
+      if (nextThread) {
+        await get().selectThread(nextThread);
+      }
+    } else if (useViewStore.getState().selectedMessage?.threadId === thread.id) {
+      useViewStore.getState().setSelectedMessage(null);
+    }
+
+    const labelId = state.currentQuery?.labelId;
+    if (labelId && !thread.isRead) {
+      useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+    }
+
     const msgs = await getThreadMessages(thread, messages);
-    set((s) => ({
-      threads: s.threads.filter((t) => t.id !== thread.id),
-      selectedThreadId: s.selectedThreadId === thread.id ? null : s.selectedThreadId,
-    }));
     void invoke('sync_apply_mutation', {
       accountId: thread.accountId,
       op: {
@@ -209,9 +239,21 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         uids: msgs.map((m) => m.imap_uid ?? 0),
       },
     }).catch((e) => console.error('sync_apply_mutation delete failed', e));
-    const labelId = get().currentQuery?.labelId;
-    if (labelId && !thread.isRead) {
-      useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+
+    // Notify other windows (e.g., standalone message viewers) that this thread
+    // is gone so they can close instead of showing stale content.
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+      const { emit } = await import('@tauri-apps/api/event');
+      void emit('thread:deleted', { accountId: thread.accountId, threadId: thread.id });
     }
+  },
+
+  moveThread: async (thread, dstLabel, dstFolderPath, messages) => {
+    console.log('[threadStore] moveThread stub', {
+      threadId: thread.id,
+      dstLabel,
+      dstFolderPath,
+      messageCount: messages?.length,
+    });
   },
 }));

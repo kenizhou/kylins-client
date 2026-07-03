@@ -82,6 +82,20 @@
   --pane-header-h: 32px;
   --row-h: 28px;
 
+  /* Motion tokens */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-out: ease-out;
+
+  /* Z-index scale */
+  --z-dropdown: 50;
+  --z-sticky: 60;
+  --z-modal-backdrop: 70;
+  --z-modal: 80;
+  --z-popover: 90;
+  --z-tooltip: 100;
+  --z-toast: 110;
+
   /* Chrome surface — sits visually above cards. */
   --chrome: var(--series-200);
   --chrome-foreground: var(--foreground);

@@ -4,8 +4,9 @@ import { useShortcutStore } from '../../stores/shortcutStore';
 import { executeCommand } from '../../hooks/useKeyboardShortcuts';
 import { formatBindingForDisplay } from '../../services/shortcuts/shortcutEngine';
 import { isMac } from '../../utils/platform';
-import { MenuItem } from './MenuItem';
 import { ViewMenu } from '../../features/view/components/ViewMenu';
+import { useComposerStore } from '../../stores/composerStore';
+import { Button, Menu, MenuItem, Popover, Separator, SubmenuTrigger } from 'react-aria-components';
 
 // ---------- Shared hover-timeout hook ----------
 
@@ -53,6 +54,8 @@ type MenuActionItem = {
   commandId?: string;
   shortcut?: string;
   disabled?: boolean;
+  checked?: boolean;
+  danger?: boolean;
   onClick?: () => void;
 };
 
@@ -109,7 +112,7 @@ const EDIT_ITEMS: MenuItemData[] = [
   },
 ];
 
-const MENU_CATEGORIES: MenuCategoryData[] = [
+const MAIN_CATEGORIES: MenuCategoryData[] = [
   {
     label: 'File',
     items: [
@@ -187,6 +190,159 @@ const MENU_CATEGORIES: MenuCategoryData[] = [
   },
 ];
 
+const VIEWER_CATEGORIES: MenuCategoryData[] = [
+  {
+    label: 'Message',
+    items: [
+      { label: 'Reply', commandId: 'mail:reply' },
+      { label: 'Reply All', commandId: 'mail:reply-all' },
+      { label: 'Forward', commandId: 'mail:forward' },
+      { type: 'separator' },
+      { label: 'Mark as Read', commandId: 'mail:toggle-read' },
+      { label: 'Archive', commandId: 'mail:archive' },
+      { type: 'separator' },
+      { label: 'Close Window', commandId: 'app:close-window' },
+    ],
+  },
+  {
+    label: 'View',
+    items: [],
+    customContent: true,
+  },
+  {
+    label: 'Help',
+    items: [
+      { label: 'Documentation', commandId: 'app:show-shortcuts-help', disabled: true },
+      { type: 'separator' },
+      { label: 'About', disabled: true },
+    ],
+  },
+];
+
+function runDocCommand(command: string): void {
+  try {
+    document.execCommand(command, false);
+  } catch {
+    /* ignore */
+  }
+}
+
+function getComposeCategories(): MenuCategoryData[] {
+  const store = useComposerStore.getState();
+  return [
+    {
+      label: 'Message',
+      items: [
+        {
+          label: 'Send',
+          onClick: () => {
+            useUIStore.getState().setActiveMenuCategory(null);
+            // Composer window sends via its own Send button; this is a fallback.
+            window.dispatchEvent(new Event('composer:send-requested'));
+          },
+        },
+        { type: 'separator' },
+        { label: 'Attach File…', disabled: true },
+        { type: 'separator' },
+        { label: 'Close Window', commandId: 'app:close-window' },
+      ],
+    },
+    {
+      label: 'Insert',
+      items: [
+        { label: 'Attachment…', disabled: true },
+        { label: 'Link…', onClick: () => window.dispatchEvent(new Event('composer:insert-link')) },
+        { type: 'separator' },
+        { label: 'Signature', disabled: true },
+      ],
+    },
+    {
+      label: 'Options',
+      items: [
+        {
+          label: 'High Importance',
+          checked: store.importance === 'high',
+          onClick: () => useComposerStore.getState().setImportance('high'),
+        },
+        {
+          label: 'Low Importance',
+          checked: store.importance === 'low',
+          onClick: () => useComposerStore.getState().setImportance('low'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Request Read Receipt',
+          checked: store.requestReadReceipt,
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setRequestReadReceipt(!s.requestReadReceipt);
+          },
+        },
+        {
+          label: 'Delay Delivery…',
+          onClick: () => window.dispatchEvent(new Event('composer:schedule-requested')),
+        },
+        { type: 'separator' },
+        {
+          label: 'Encrypt',
+          checked: store.isEncrypted,
+          disabled:
+            store.classificationId === 'confidential' || store.classificationId === 'restricted',
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setIsEncrypted(!s.isEncrypted);
+          },
+        },
+        {
+          label: 'Sign',
+          checked: store.isSigned,
+          disabled:
+            store.classificationId === 'confidential' || store.classificationId === 'restricted',
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setIsSigned(!s.isSigned);
+          },
+        },
+        {
+          label: 'Prevent Copy',
+          checked: store.preventCopy,
+          onClick: () => {
+            const s = useComposerStore.getState();
+            s.setPreventCopy(!s.preventCopy);
+          },
+        },
+      ],
+    },
+    {
+      label: 'Format',
+      items: [
+        { label: 'Bold', onClick: () => runDocCommand('bold') },
+        { label: 'Italic', onClick: () => runDocCommand('italic') },
+        { label: 'Underline', onClick: () => runDocCommand('underline') },
+        { type: 'separator' },
+        { label: 'Bulleted List', onClick: () => runDocCommand('insertUnorderedList') },
+        { label: 'Numbered List', onClick: () => runDocCommand('insertOrderedList') },
+      ],
+    },
+    {
+      label: 'Review',
+      items: [
+        { label: 'Spelling', disabled: true },
+        { type: 'separator' },
+        { label: 'Check Accessibility', disabled: true },
+      ],
+    },
+    {
+      label: 'Help',
+      items: [
+        { label: 'Documentation', commandId: 'app:show-shortcuts-help', disabled: true },
+        { type: 'separator' },
+        { label: 'About', disabled: true },
+      ],
+    },
+  ];
+}
+
 function isSeparator(item: MenuItemData): item is MenuSeparatorItem {
   return 'type' in item && item.type === 'separator';
 }
@@ -195,72 +351,93 @@ function isSubmenu(item: MenuItemData): item is MenuSubmenuItem {
   return 'type' in item && item.type === 'submenu';
 }
 
-interface MenuDropdownProps {
-  items: MenuItemData[];
-  onClose: () => void;
-  className?: string;
+function handleActionItem(item: MenuActionItem, onClose: () => void) {
+  if (item.onClick) {
+    item.onClick();
+  } else if (item.commandId) {
+    executeCommand(item.commandId);
+  }
+  onClose();
 }
 
-function MenuDropdown({ items, onClose, className = '' }: MenuDropdownProps) {
-  const { active, scheduleClose, cancelClose, open } = useMenuHoverState<string>();
+interface CategoryMenuProps {
+  items: MenuItemData[];
+  onClose: () => void;
+  label: string;
+}
+
+function CategoryMenu({ items, onClose, label }: CategoryMenuProps) {
   const keyMap = useShortcutStore((s) => s.keyMap);
   const mac = isMac();
 
-  return (
-    <div
-      className={`bg-[var(--surface)] border border-[var(--border)] shadow-lg rounded py-1 ${className}`}
-      onMouseLeave={scheduleClose}
-    >
-      {items.map((item, index) => {
-        if (isSeparator(item)) {
-          return <div key={`sep-${index}`} className="my-1 border-t border-[var(--border)]" />;
-        }
+  const renderItems = (menuItems: MenuItemData[]) =>
+    menuItems.map((item, i) => {
+      if (isSeparator(item)) {
+        return <Separator key={`sep-${i}`} className="my-1 border-t border-border" />;
+      }
 
-        if (isSubmenu(item)) {
-          const isActive = active === item.label;
-          return (
-            <div key={item.label} className="relative" onMouseEnter={() => open(item.label)}>
-              <MenuItem label={item.label} disabled={item.items.length === 0} hasSubmenu />
-              {isActive && (
-                <div
-                  className="absolute top-0 left-full ml-0.5 w-56 z-50"
-                  onMouseEnter={cancelClose}
-                  onMouseLeave={scheduleClose}
-                >
-                  <MenuDropdown items={item.items} onClose={onClose} />
-                </div>
-              )}
-            </div>
-          );
-        }
-
+      if (isSubmenu(item)) {
         return (
-          <MenuItem
-            key={item.label}
-            label={item.label}
-            shortcut={
-              item.shortcut ??
-              (item.commandId && keyMap[item.commandId]
-                ? formatBindingForDisplay(keyMap[item.commandId]!, mac)
-                : undefined)
-            }
-            disabled={item.disabled}
-            onClick={() => {
-              if (item.onClick) {
-                item.onClick();
-              } else if (item.commandId) {
-                executeCommand(item.commandId);
-              }
-              onClose();
-            }}
-          />
+          <SubmenuTrigger key={item.label}>
+            <MenuItem
+              id={item.label}
+              textValue={item.label}
+              isDisabled={item.items.length === 0}
+              className="flex w-full items-center justify-between px-3 py-1.5 text-left text-[13px] text-foreground outline-none hover:bg-hover [&[data-hovered]]:bg-hover [&[data-focused]]:bg-hover disabled:cursor-default disabled:text-muted-text disabled:opacity-50"
+            >
+              <span>{item.label}</span>
+              <span className="text-xs text-muted-text">▶</span>
+            </MenuItem>
+            <Popover className="rounded-md border border-border bg-surface py-1 shadow-lg">
+              <Menu aria-label={item.label} className="outline-none">
+                {renderItems(item.items)}
+              </Menu>
+            </Popover>
+          </SubmenuTrigger>
         );
-      })}
-    </div>
+      }
+
+      const shortcut =
+        item.shortcut ??
+        (item.commandId && keyMap[item.commandId]
+          ? formatBindingForDisplay(keyMap[item.commandId]!, mac)
+          : undefined);
+
+      return (
+        <MenuItem
+          key={item.label}
+          id={item.label}
+          isDisabled={item.disabled}
+          textValue={item.label}
+          onAction={() => handleActionItem(item, onClose)}
+          data-danger={item.danger || undefined}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-foreground outline-none hover:bg-hover [&[data-hovered]]:bg-hover [&[data-focused]]:bg-hover disabled:cursor-default disabled:text-muted-text disabled:opacity-50 [&[data-danger]]:text-red-600"
+        >
+          <span className="inline-flex w-4 justify-center">{item.checked ? '✓' : ''}</span>
+          <span className="flex-1 truncate">{item.label}</span>
+          {shortcut && <span className="text-xs text-muted-text">{shortcut}</span>}
+        </MenuItem>
+      );
+    });
+
+  return (
+    <Menu aria-label={label} className="outline-none">
+      {renderItems(items)}
+    </Menu>
   );
 }
 
-export function MenuBar() {
+export interface MenuBarProps {
+  variant?: 'main' | 'viewer' | 'compose';
+}
+
+export function MenuBar({ variant = 'main' }: MenuBarProps) {
+  const categories =
+    variant === 'compose'
+      ? getComposeCategories()
+      : variant === 'viewer'
+        ? VIEWER_CATEGORIES
+        : MAIN_CATEGORIES;
   const activeCategory = useUIStore((s) => s.activeMenuCategory);
   const setActiveCategory = useUIStore((s) => s.setActiveMenuCategory);
   const ref = useRef<HTMLDivElement>(null);
@@ -290,8 +467,8 @@ export function MenuBar() {
   const closeMenu = useCallback(() => setActiveCategory(null), [setActiveCategory]);
 
   return (
-    <div ref={ref} className="flex items-center ml-1">
-      {MENU_CATEGORIES.map((category) => {
+    <div ref={ref} className="ml-1 flex items-center">
+      {categories.map((category) => {
         const isActive = active === category.label;
         return (
           <div
@@ -300,30 +477,33 @@ export function MenuBar() {
             onMouseEnter={() => open(category.label)}
             onMouseLeave={scheduleClose}
           >
-            <button
-              type="button"
-              onClick={() => setActiveCategory(isActive ? null : category.label)}
-              className={`px-3 py-1 text-sm rounded transition-colors ${
-                isActive
-                  ? 'bg-[var(--selected)] text-[var(--primary)]'
-                  : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
+            <Button
+              onPress={() => setActiveCategory(isActive ? null : category.label)}
+              className={`rounded px-3 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                isActive ? 'bg-selected text-primary' : 'text-foreground hover:bg-hover'
               }`}
             >
               {category.label}
-            </button>
+            </Button>
 
             {isActive && (
               <div
-                className="absolute top-full left-0 w-56 z-50"
+                className="absolute top-full left-0 z-50 w-56"
                 onMouseEnter={cancelClose}
                 onMouseLeave={scheduleClose}
               >
                 {category.customContent && category.label === 'View' ? (
-                  <div className="bg-[var(--surface)] border border-[var(--border)] shadow-lg rounded py-1">
+                  <div className="rounded border border-border bg-surface py-1 shadow-lg">
                     <ViewMenu />
                   </div>
                 ) : (
-                  <MenuDropdown items={category.items as MenuItemData[]} onClose={closeMenu} />
+                  <div className="rounded border border-border bg-surface py-1 shadow-lg">
+                    <CategoryMenu
+                      items={category.items as MenuItemData[]}
+                      onClose={closeMenu}
+                      label={category.label}
+                    />
+                  </div>
                 )}
               </div>
             )}

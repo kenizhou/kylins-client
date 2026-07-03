@@ -4,6 +4,7 @@ import type { CalendarView } from '@/stores/calendarStore';
 import { useCalendarStore } from '@/stores/calendarStore';
 import { PlusIcon, ArrowLeftIcon, ArrowRightIcon } from '../icons';
 import { addDays } from './range';
+import { Button, ToggleButton, ToggleButtonGroup } from 'react-aria-components';
 
 const VIEWS: { key: CalendarView; label: string }[] = [
   { key: 'month', label: 'Month' },
@@ -40,54 +41,58 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
   });
 
   return (
-    <div className="flex items-center gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2">
-      <button
-        onClick={() => setCurrentDate(new Date())}
-        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+    <div className="flex items-center gap-2 border-b border-border bg-surface px-4 py-2">
+      <Button
+        onPress={() => setCurrentDate(new Date())}
+        className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-hover"
       >
         Today
-      </button>
-      <div className="flex items-center rounded-md border border-[var(--border)] overflow-hidden">
-        <button
-          onClick={() => shift(-1)}
-          className="flex h-7 w-7 items-center justify-center border-r border-[var(--border)] text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+      </Button>
+      <div className="flex items-center overflow-hidden rounded-md border border-border">
+        <Button
+          onPress={() => shift(-1)}
           aria-label="Previous"
+          className="flex h-7 w-7 items-center justify-center border-r border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground"
         >
           <ArrowLeftIcon size={14} />
-        </button>
-        <button
-          onClick={() => shift(1)}
-          className="flex h-7 w-7 items-center justify-center text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+        </Button>
+        <Button
+          onPress={() => shift(1)}
           aria-label="Next"
+          className="flex h-7 w-7 items-center justify-center text-muted-text transition-colors hover:bg-hover hover:text-foreground"
         >
           <ArrowRightIcon size={14} />
-        </button>
+        </Button>
       </div>
-      <h2 className="ml-1 text-base font-semibold text-[var(--foreground)]">{title}</h2>
+      <h2 className="ml-1 text-base font-semibold text-foreground">{title}</h2>
 
       <div className="ml-auto flex items-center gap-2">
-        <div className="flex overflow-hidden rounded-md border border-[var(--border)] divide-x divide-[var(--border)]">
+        <ToggleButtonGroup
+          selectionMode="single"
+          selectedKeys={[view]}
+          onSelectionChange={(keys) => {
+            const next = Array.from(keys)[0];
+            if (next) setView(next as CalendarView);
+          }}
+          className="flex overflow-hidden rounded-md border border-border divide-x divide-border"
+        >
           {VIEWS.map((v) => (
-            <button
+            <ToggleButton
               key={v.key}
-              onClick={() => setView(v.key)}
-              className={`px-2.5 py-1.5 text-xs transition-colors ${
-                view === v.key
-                  ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
-                  : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
-              }`}
+              id={v.key}
+              className="px-2.5 py-1.5 text-xs transition-colors selected:bg-primary selected:text-primary-fg text-foreground hover:bg-hover"
             >
               {v.label}
-            </button>
+            </ToggleButton>
           ))}
-        </div>
-        <button
-          onClick={onNewEvent}
-          className="flex items-center gap-1 rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90"
+        </ToggleButtonGroup>
+        <Button
+          onPress={onNewEvent}
+          className="flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-fg transition-colors hover:opacity-90"
         >
           <PlusIcon size={13} />
           New event
-        </button>
+        </Button>
       </div>
     </div>
   );

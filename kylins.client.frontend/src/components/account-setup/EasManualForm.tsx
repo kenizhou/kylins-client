@@ -49,8 +49,8 @@ export function EasManualForm({
       </div>
 
       <div className="mt-8 flex items-center justify-between">
-        <SetupBackButton onClick={onBack} />
-        <SetupButton onClick={onSubmit} disabled={!canSubmit}>
+        <SetupBackButton onPress={onBack} />
+        <SetupButton onPress={onSubmit} disabled={!canSubmit}>
           Connect
         </SetupButton>
       </div>

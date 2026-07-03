@@ -2,6 +2,15 @@
 // See ATTRIBUTIONS.md. Adapted for Kylins Client.
 
 import type { SendAsAlias } from '@/services/db/sendAsAliases';
+import {
+  Select,
+  Label,
+  Button,
+  Popover,
+  ListBox,
+  ListBoxItem,
+  SelectValue,
+} from 'react-aria-components';
 
 interface FromSelectorProps {
   aliases: SendAsAlias[];
@@ -17,22 +26,31 @@ export function FromSelector({ aliases, selectedEmail, onChange }: FromSelectorP
   if (aliases.length <= 1) return null;
 
   return (
-    <div className="flex items-center gap-2">
-      <span className="w-8 shrink-0 text-xs text-[var(--muted-foreground)]">From</span>
-      <select
-        value={selectedEmail}
-        onChange={(e) => {
-          const alias = aliases.find((a) => a.email === e.target.value);
-          if (alias) onChange(alias);
-        }}
-        className="-ml-1 flex-1 cursor-pointer rounded border-none bg-transparent px-1 py-0.5 text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)]"
-      >
-        {aliases.map((alias) => (
-          <option key={alias.id} value={alias.email}>
-            {alias.displayName ? `${alias.displayName} <${alias.email}>` : alias.email}
-          </option>
-        ))}
-      </select>
-    </div>
+    <Select
+      selectedKey={selectedEmail}
+      onSelectionChange={(key) => {
+        const alias = aliases.find((a) => a.email === String(key));
+        if (alias) onChange(alias);
+      }}
+      className="flex items-center gap-2"
+    >
+      <Label className="w-8 shrink-0 pt-1.5 text-xs font-medium text-muted-text">From</Label>
+      <Button className="-ml-1 flex-1 cursor-pointer rounded border-none bg-transparent px-1 py-0.5 text-left text-sm text-foreground outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
+        <SelectValue />
+      </Button>
+      <Popover className="min-w-[--trigger-width] rounded border border-border bg-popover shadow-lg">
+        <ListBox className="py-1 outline-none">
+          {aliases.map((alias) => (
+            <ListBoxItem
+              key={alias.id}
+              id={alias.email}
+              className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+            >
+              {alias.displayName ? `${alias.displayName} <${alias.email}>` : alias.email}
+            </ListBoxItem>
+          ))}
+        </ListBox>
+      </Popover>
+    </Select>
   );
 }

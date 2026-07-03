@@ -59,6 +59,8 @@ import {
   Heading03Icon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
+  ArrowUp01Icon,
+  ArrowDown01Icon,
   ArrowUpRight01Icon,
   Folder01Icon,
   UserAccountIcon,
@@ -70,11 +72,13 @@ import {
   SignatureIcon,
   GlobeIcon,
   MailSend01Icon,
+  MailAdd02Icon,
   MailOpen01Icon,
   PencilEdit01Icon,
   Database01Icon,
   Shield01Icon,
-  LockIcon,
+  ShieldCheck as ShieldCheckIconData,
+  LockIcon as LockIconData,
   EyeIcon,
   Flag01Icon,
   SquareLock02Icon,
@@ -83,6 +87,7 @@ import {
   FingerPrintIcon,
   SecurityIcon,
   Certificate02Icon,
+  CopySlashIcon as CopySlashIconData,
 } from '@hugeicons/core-free-icons';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
@@ -233,6 +238,7 @@ export const MoveIcon = makeIcon(Move02Icon);
 export const TagIcon = makeIcon(Tag01Icon);
 export const LightningIcon = makeIcon(FlashIcon);
 export const MailIcon = makeIcon(Mail01Icon);
+export const MailOpenIcon = makeIcon(MailOpen01Icon);
 export const FolderIcon = makeIcon(Folder01Icon);
 export const SearchIcon = makeIcon(Search01Icon);
 export const FlagIcon = makeIcon(Flag02Icon);
@@ -259,12 +265,22 @@ export const AiIcon = makeIcon(AiChat02Icon);
 export const BellIcon = makeIcon(Alert01Icon);
 export const TrashIcon = makeIcon(Delete02Icon);
 export const CopyIcon = makeIcon(Copy01Icon);
+export const CopySlashIcon = makeIcon(CopySlashIconData);
 export const MinimizeIcon = makeIcon(MinusSignIcon);
+export const ArrowUpIcon = makeIcon(ArrowUp01Icon);
+export const ArrowDownIcon = makeIcon(ArrowDown01Icon);
+export const MinusIcon = makeIcon(MinusSignIcon);
+export const ShieldCheckIcon = makeIcon(ShieldCheckIconData);
+export const LockIcon = makeIcon(LockIconData);
+export const CaretDownIcon = makeIcon(ArrowDown01Icon);
 export const MaximizeIcon = makeIcon(ArrowExpand01Icon);
 export const RestoreIcon = makeIcon(ArrowShrink01Icon);
 export const CloseIcon = makeIcon(Cancel01Icon);
+export const WarningIcon = makeIcon(Alert01Icon);
 export const ClockIcon = makeIcon(Clock01Icon);
 export const AttachmentIcon = makeIcon(Attachment01Icon);
+export const MailAddIcon = makeIcon(MailAdd02Icon);
+export const MailSendIcon = makeIcon(MailSend01Icon);
 
 export const BoldIcon = makeIcon(TextBoldIcon);
 export const ItalicIcon = makeIcon(TextItalicIcon);
@@ -325,7 +341,7 @@ const CLASSIFICATION_ICON_MAP: Record<
   Parameters<typeof HugeiconsIcon>[0]['icon']
 > = {
   shield: Shield01Icon,
-  lock: LockIcon,
+  lock: LockIconData,
   eye: EyeIcon,
   flag: Flag01Icon,
   star: StarIconData,

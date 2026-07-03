@@ -27,6 +27,10 @@ export interface MailMessage {
   classificationId: string | null;
   isEncrypted: boolean;
   isSigned: boolean;
+  /** Best-effort classification flag; deep enforcement is backend-side. */
+  preventCopy?: boolean;
+  /** Whether the sender requested a read receipt. */
+  readReceiptRequested?: boolean;
 }
 
 export interface ViewStore extends ViewState {

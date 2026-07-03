@@ -23,6 +23,7 @@ export interface EmailDraft {
   references?: string;
   threadId?: string;
   attachments?: EmailAttachment[];
+  extraHeaders?: Record<string, string>;
 }
 
 function base64UrlEncode(str: string): string {
@@ -116,6 +117,9 @@ export function buildRawEmail(draft: EmailDraft): string {
   lines.push(`Date: ${new Date().toUTCString()}`);
   lines.push(`Message-ID: ${messageId}`);
   lines.push(`Subject: ${draft.subject}`);
+  for (const [key, value] of Object.entries(draft.extraHeaders ?? {})) {
+    lines.push(`${key}: ${value}`);
+  }
   lines.push(`MIME-Version: 1.0`);
 
   if (draft.inReplyTo) {

@@ -7,6 +7,8 @@
 // unix seconds (matching the `scheduled_emails.scheduled_at` column).
 
 import { useState } from 'react';
+import { CloseIcon } from '../icons';
+import { Button, Dialog, Modal as RACModal, ModalOverlay } from 'react-aria-components';
 
 interface SchedulePreset {
   label: string;
@@ -74,55 +76,66 @@ export function ScheduleSendDialog({ onSchedule, onClose }: ScheduleSendDialogPr
   const customTs = datetimeLocalToUnix(custom);
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30"
-      onClick={onClose}
+    <ModalOverlay
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      isDismissable
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-80 rounded-md border border-[var(--border)] bg-[var(--background)] p-4 shadow-xl"
-      >
-        <h3 className="mb-3 text-sm font-medium text-[var(--foreground)]">Schedule send</h3>
+      <RACModal className="relative w-80 rounded-lg border border-border bg-background p-4 shadow-xl outline-none">
+        <Dialog aria-label="Schedule send" className="outline-none">
+          <Button
+            slot="close"
+            className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-hover hover:text-foreground"
+            aria-label="Close"
+          >
+            <CloseIcon size={14} />
+          </Button>
 
-        <div className="space-y-1">
-          {presets.map((p) => (
-            <button
-              key={p.label}
-              onClick={() => onSchedule(p.timestamp)}
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-[var(--hover)]"
+          <h3 className="mb-3 pr-6 text-sm font-medium text-foreground">Schedule send</h3>
+
+          <div className="space-y-1">
+            {presets.map((p) => (
+              <Button
+                key={p.label}
+                onPress={() => onSchedule(p.timestamp)}
+                className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span>{p.label}</span>
+                <span className="text-xs text-muted-foreground">{p.detail}</span>
+              </Button>
+            ))}
+          </div>
+
+          <div className="mt-3 border-t border-border pt-3">
+            <label className="mb-1 block text-xs text-muted-text">Pick a date & time</label>
+            <input
+              type="datetime-local"
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              className="h-8 w-full rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+            />
+          </div>
+
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              slot="close"
+              className="h-8 rounded px-3 text-sm text-foreground transition-colors hover:bg-hover"
             >
-              <span className="text-[var(--foreground)]">{p.label}</span>
-              <span className="text-xs text-[var(--muted-foreground)]">{p.detail}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-3 border-t border-[var(--border)] pt-3">
-          <label className="mb-1 block text-xs text-[var(--muted-text)]">Pick a date & time</label>
-          <input
-            type="datetime-local"
-            value={custom}
-            onChange={(e) => setCustom(e.target.value)}
-            className="h-7 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
-          />
-        </div>
-
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="h-7 rounded px-3 text-sm text-[var(--foreground)] hover:bg-[var(--hover)]"
-          >
-            Cancel
-          </button>
-          <button
-            disabled={customTs === null}
-            onClick={() => customTs !== null && onSchedule(customTs)}
-            className="h-7 rounded bg-[var(--primary)] px-3 text-sm text-[var(--primary-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Schedule
-          </button>
-        </div>
-      </div>
-    </div>
+              Cancel
+            </Button>
+            <Button
+              isDisabled={customTs === null}
+              onPress={() => customTs !== null && onSchedule(customTs)}
+              className="h-8 rounded bg-primary px-3 text-sm text-primary-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Schedule
+            </Button>
+          </div>
+        </Dialog>
+      </RACModal>
+    </ModalOverlay>
   );
 }

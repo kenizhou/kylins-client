@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import { parseRecipients, type Recipient } from '@/features/composer/contacts';
 
+export type Importance = 'low' | 'normal' | 'high';
 export type ComposerMode = 'new' | 'reply' | 'replyAll' | 'forward';
 export type ComposerViewMode = 'modal' | 'fullpage';
 
@@ -58,6 +59,27 @@ export interface ComposerState {
   classificationId: string | null;
   isEncrypted: boolean;
   isSigned: boolean;
+  /** Message importance. Default: normal. */
+  importance: Importance;
+  /** Request a read receipt from each recipient. */
+  requestReadReceipt: boolean;
+  /** Request a delivery receipt from each recipient. */
+  requestDeliveryReceipt: boolean;
+  /** Unix timestamp (ms) when the message should be delivered (delay delivery). */
+  deliverAt: number | null;
+  /** Best-effort flag; deep IRM/DRM enforcement is backend-side. */
+  preventCopy: boolean;
+  /** Original message id for reply/forward attachment seeding. */
+  originalMessageId: string | null;
+  /** When true, seed the composer with the original message's attachments. */
+  includeOriginalAttachments: boolean;
+  /** When true, attach the original message as a .eml file. */
+  forwardAsAttachment: boolean;
+  /** Cached original message subject for forward-as-attachment synthesis. */
+  originalMessageSubject?: string;
+  /** Cached original message body for forward-as-attachment synthesis. */
+  originalMessageHtml?: string | null;
+  originalMessageText?: string | null;
 
   openComposer: (opts?: {
     mode?: ComposerMode;
@@ -75,6 +97,17 @@ export interface ComposerState {
     classificationId?: string | null;
     isEncrypted?: boolean;
     isSigned?: boolean;
+    importance?: Importance;
+    requestReadReceipt?: boolean;
+    requestDeliveryReceipt?: boolean;
+    deliverAt?: number | null;
+    preventCopy?: boolean;
+    originalMessageId?: string | null;
+    includeOriginalAttachments?: boolean;
+    forwardAsAttachment?: boolean;
+    originalMessageSubject?: string;
+    originalMessageHtml?: string | null;
+    originalMessageText?: string | null;
   }) => void;
   closeComposer: () => void;
   setTo: (to: RecipientInput) => void;
@@ -99,6 +132,17 @@ export interface ComposerState {
   setClassificationId: (id: string | null) => void;
   setIsEncrypted: (value: boolean) => void;
   setIsSigned: (value: boolean) => void;
+  setImportance: (value: Importance) => void;
+  setRequestReadReceipt: (value: boolean) => void;
+  setRequestDeliveryReceipt: (value: boolean) => void;
+  setDeliverAt: (value: number | null) => void;
+  setPreventCopy: (value: boolean) => void;
+  setOriginalMessageId: (id: string | null) => void;
+  setIncludeOriginalAttachments: (value: boolean) => void;
+  setForwardAsAttachment: (value: boolean) => void;
+  setOriginalMessageSubject: (value: string) => void;
+  setOriginalMessageHtml: (value: string | null) => void;
+  setOriginalMessageText: (value: string | null) => void;
 }
 
 export const useComposerStore = create<ComposerState>((set) => ({
@@ -126,6 +170,17 @@ export const useComposerStore = create<ComposerState>((set) => ({
   classificationId: null,
   isEncrypted: false,
   isSigned: false,
+  importance: 'normal',
+  requestReadReceipt: false,
+  requestDeliveryReceipt: false,
+  deliverAt: null,
+  preventCopy: false,
+  originalMessageId: null,
+  includeOriginalAttachments: false,
+  forwardAsAttachment: false,
+  originalMessageSubject: '',
+  originalMessageHtml: null,
+  originalMessageText: null,
 
   openComposer: (opts) =>
     set({
@@ -151,6 +206,17 @@ export const useComposerStore = create<ComposerState>((set) => ({
       classificationId: opts?.classificationId ?? null,
       isEncrypted: opts?.isEncrypted ?? false,
       isSigned: opts?.isSigned ?? false,
+      importance: opts?.importance ?? 'normal',
+      requestReadReceipt: opts?.requestReadReceipt ?? false,
+      requestDeliveryReceipt: opts?.requestDeliveryReceipt ?? false,
+      deliverAt: opts?.deliverAt ?? null,
+      preventCopy: opts?.preventCopy ?? false,
+      originalMessageId: opts?.originalMessageId ?? null,
+      includeOriginalAttachments: opts?.includeOriginalAttachments ?? false,
+      forwardAsAttachment: opts?.forwardAsAttachment ?? false,
+      originalMessageSubject: opts?.originalMessageSubject ?? '',
+      originalMessageHtml: opts?.originalMessageHtml ?? null,
+      originalMessageText: opts?.originalMessageText ?? null,
     }),
   closeComposer: () =>
     set({
@@ -176,6 +242,17 @@ export const useComposerStore = create<ComposerState>((set) => ({
       classificationId: null,
       isEncrypted: false,
       isSigned: false,
+      importance: 'normal',
+      requestReadReceipt: false,
+      requestDeliveryReceipt: false,
+      deliverAt: null,
+      preventCopy: false,
+      originalMessageId: null,
+      includeOriginalAttachments: false,
+      forwardAsAttachment: false,
+      originalMessageSubject: '',
+      originalMessageHtml: null,
+      originalMessageText: null,
     }),
   setTo: (to) => set({ to: normalizeRecipients(to) }),
   setCc: (cc) => set({ cc: normalizeRecipients(cc) }),
@@ -201,4 +278,15 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setClassificationId: (classificationId) => set({ classificationId }),
   setIsEncrypted: (isEncrypted) => set({ isEncrypted }),
   setIsSigned: (isSigned) => set({ isSigned }),
+  setImportance: (importance) => set({ importance }),
+  setRequestReadReceipt: (requestReadReceipt) => set({ requestReadReceipt }),
+  setRequestDeliveryReceipt: (requestDeliveryReceipt) => set({ requestDeliveryReceipt }),
+  setDeliverAt: (deliverAt) => set({ deliverAt }),
+  setPreventCopy: (preventCopy) => set({ preventCopy }),
+  setOriginalMessageId: (id) => set({ originalMessageId: id }),
+  setIncludeOriginalAttachments: (value) => set({ includeOriginalAttachments: value }),
+  setForwardAsAttachment: (value) => set({ forwardAsAttachment: value }),
+  setOriginalMessageSubject: (value) => set({ originalMessageSubject: value }),
+  setOriginalMessageHtml: (value) => set({ originalMessageHtml: value }),
+  setOriginalMessageText: (value) => set({ originalMessageText: value }),
 }));

@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { CloseIcon } from '../icons';
+import { Dialog, Modal as RACModal, ModalOverlay } from 'react-aria-components';
 
 export interface ModalProps {
   isOpen: boolean;
@@ -34,81 +35,72 @@ export function Modal({
   contentClassName = '',
   disableBackdropClose = false,
 }: ModalProps) {
-  useEffect(() => {
-    if (!isOpen) return;
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !disableBackdropClose) {
-        onClose();
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
-
   const hasHeader = Boolean(title || subtitle || Icon);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={(e) => {
-        if (!disableBackdropClose && e.target === e.currentTarget) {
-          onClose();
-        }
+    <ModalOverlay
+      isOpen={isOpen}
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
-      role="dialog"
-      aria-modal="true"
-      aria-label={title || 'Dialog'}
+      isDismissable={!disableBackdropClose}
+      isKeyboardDismissDisabled={disableBackdropClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
     >
-      <div
-        className={`relative flex flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl ${SIZE_CLASSES[size]} ${className}`}
+      <RACModal
+        className={`relative flex flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl ${SIZE_CLASSES[size]} ${className}`}
       >
-        {hasHeader && (
-          <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] shrink-0">
-            <div className="flex items-center gap-3">
-              {Icon && (
-                <span className="inline-flex items-center justify-center h-9 w-9 rounded-lg bg-[var(--primary)] text-[var(--primary-fg)]">
-                  <Icon size={20} />
-                </span>
+        <Dialog aria-label={title || 'Dialog'} className="flex h-full flex-col outline-none">
+          {({ close }) => (
+            <>
+              {hasHeader && (
+                <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-4">
+                  <div className="flex items-center gap-3">
+                    {Icon && (
+                      <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-fg">
+                        <Icon size={20} />
+                      </span>
+                    )}
+                    <div>
+                      {title && <h2 className="text-lg font-semibold text-foreground">{title}</h2>}
+                      {subtitle && <p className="text-xs text-muted-text">{subtitle}</p>}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={close}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Close"
+                  >
+                    <CloseIcon size={16} />
+                  </button>
+                </div>
               )}
-              <div>
-                {title && <h2 className="text-lg font-semibold text-[var(--foreground)]">{title}</h2>}
-                {subtitle && <p className="text-xs text-[var(--muted-text)]">{subtitle}</p>}
+
+              {!hasHeader && (
+                <button
+                  type="button"
+                  onClick={close}
+                  className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close"
+                >
+                  <CloseIcon size={16} />
+                </button>
+              )}
+
+              <div className={`flex-1 overflow-auto kylins-scrollbar ${contentClassName}`}>
+                {children}
               </div>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
-              aria-label="Close"
-            >
-              ✕
-            </button>
-          </div>
-        )}
 
-        {!hasHeader && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
-            aria-label="Close"
-          >
-            ✕
-          </button>
-        )}
-
-        <div className={`flex-1 overflow-auto kylins-scrollbar ${contentClassName}`}>{children}</div>
-
-        {footer && (
-          <div className="flex items-center justify-between px-6 py-3 border-t border-[var(--border)] bg-[color-mix(in_oklab,var(--surface),black_4%)] shrink-0">
-            {footer}
-          </div>
-        )}
-      </div>
-    </div>
+              {footer && (
+                <div className="flex shrink-0 items-center justify-between border-t border-border bg-[color-mix(in_oklab,var(--surface),black_4%)] px-6 py-3">
+                  {footer}
+                </div>
+              )}
+            </>
+          )}
+        </Dialog>
+      </RACModal>
+    </ModalOverlay>
   );
 }

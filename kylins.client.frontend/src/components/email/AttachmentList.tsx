@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react';
 import { Paperclip } from '@phosphor-icons/react';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
+import { Button } from 'react-aria-components';
 import {
   type AttachmentRow,
   fetchAttachment,
@@ -82,13 +83,12 @@ export function AttachmentList({ accountId, messageId, bodyHtml }: AttachmentLis
   return (
     <div className="mb-3 flex flex-wrap gap-1.5">
       {visible.map((att) => (
-        <button
+        <Button
           key={att.id}
-          type="button"
-          onClick={() => void handleDownload(att)}
-          disabled={busy !== null}
-          title={att.filename ?? 'attachment'}
-          className="group flex max-w-full items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs transition-colors hover:bg-[var(--hover)] disabled:opacity-60"
+          onPress={() => void handleDownload(att)}
+          isDisabled={busy !== null}
+          aria-label={att.filename ?? 'attachment'}
+          className="group flex max-w-full items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs transition-colors hover:bg-[var(--hover)] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Paperclip size={13} className="shrink-0 text-[var(--muted-text)]" />
           <span className="max-w-[180px] truncate text-[var(--foreground)]">
@@ -98,7 +98,7 @@ export function AttachmentList({ accountId, messageId, bodyHtml }: AttachmentLis
             <span className="shrink-0 text-[var(--muted-text)]">{formatFileSize(att.size)}</span>
           )}
           {busy === att.id && <span className="shrink-0 text-[var(--muted-text)]">…</span>}
-        </button>
+        </Button>
       ))}
     </div>
   );

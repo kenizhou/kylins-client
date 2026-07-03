@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Button, Input, TextField } from 'react-aria-components';
 
 import { RecipientField } from '@/features/composer/RecipientField';
 import type { MoveTarget } from '@/features/composer/RecipientField';
@@ -48,24 +49,51 @@ import { formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
 import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { readFileAsBase64 } from '@/utils/fileUtils';
+import { getAttachments, fetchAttachment } from '@/services/db/attachments';
 import {
   MaximizeIcon,
   RestoreIcon,
-  MinimizeIcon,
-  ClockIcon,
-  CloseIcon,
   PopOutIcon,
   PlusIcon,
+  WarningIcon,
+  CloseIcon,
+  SendIcon,
 } from '../icons';
+import { IconButton } from '@/components/ui/IconButton';
+import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { CommandRibbon } from '@/components/layout/CommandRibbon';
+import { ClassificationWatermark } from '@/features/classification/components/ClassificationWatermark';
+import { isProminent } from '@/features/classification/classificationStyle';
+import { WindowErrorBoundary } from '@/components/ui/WindowErrorBoundary';
 
-const dragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
-  WebkitAppRegion: 'drag',
-};
 const noDragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
   WebkitAppRegion: 'no-drag',
 };
+
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+}
+
+function buildMinimalEml(subject: string, body: string): string {
+  return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
+}
+
+function newAttachmentId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 interface ComposerProps {
   windowed?: boolean;
@@ -97,6 +125,12 @@ export function Composer({ windowed = false }: ComposerProps) {
   const setFromEmail = useComposerStore((s) => s.setFromEmail);
   const setViewMode = useComposerStore((s) => s.setViewMode);
   const addAttachment = useComposerStore((s) => s.addAttachment);
+  const originalMessageId = useComposerStore((s) => s.originalMessageId);
+  const includeOriginalAttachments = useComposerStore((s) => s.includeOriginalAttachments);
+  const forwardAsAttachment = useComposerStore((s) => s.forwardAsAttachment);
+  const originalMessageSubject = useComposerStore((s) => s.originalMessageSubject);
+  const originalMessageHtml = useComposerStore((s) => s.originalMessageHtml);
+  const originalMessageText = useComposerStore((s) => s.originalMessageText);
 
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
@@ -104,7 +138,6 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const { getLevelById, getDefaultLevel } = useClassification();
   const currentLevel = getLevelById(classificationId) ?? getDefaultLevel();
-  const isConfidential = currentLevel.id === 'confidential';
 
   const enableRichText = usePreferencesStore((s) => s.enableRichText);
   const checkSpelling = usePreferencesStore((s) => s.checkSpelling);
@@ -112,13 +145,84 @@ export function Composer({ windowed = false }: ComposerProps) {
   const messageSentSound = usePreferencesStore((s) => s.messageSentSound);
 
   const sendingRef = useRef(false);
+  const attachmentSeededRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [isMaximized, setIsMaximized] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
   const dragCounterRef = useRef(0);
+
+  // Seed reply/forward attachments from the original message when requested.
+  useEffect(() => {
+    if (!isOpen) {
+      attachmentSeededRef.current = false;
+      return;
+    }
+    if (!originalMessageId || (!includeOriginalAttachments && !forwardAsAttachment)) return;
+    if (attachmentSeededRef.current) return;
+
+    const messageId = originalMessageId;
+    let cancelled = false;
+    async function seed() {
+      attachmentSeededRef.current = true;
+
+      if (includeOriginalAttachments && activeAccountId) {
+        try {
+          const rows = await getAttachments(activeAccountId, messageId);
+          for (const row of rows) {
+            if (cancelled) break;
+            const partId = row.imapPartId || row.id;
+            const bytes = await fetchAttachment(activeAccountId, messageId, partId);
+            if (cancelled) break;
+            addAttachment({
+              id: newAttachmentId(),
+              file: new File([], row.filename || 'attachment'),
+              filename: row.filename || 'attachment',
+              mimeType: bytes.mimeType || row.mimeType || 'application/octet-stream',
+              size: row.size,
+              content: bytes.base64,
+            });
+          }
+        } catch (err) {
+          console.error('[Composer] failed to seed original attachments', err);
+        }
+      }
+
+      if (forwardAsAttachment && !cancelled) {
+        try {
+          const body = originalMessageText ?? htmlToPlainText(originalMessageHtml ?? '');
+          const eml = buildMinimalEml(originalMessageSubject ?? 'Forwarded message', body);
+          const content = btoa(unescape(encodeURIComponent(eml)));
+          const filename = `${(originalMessageSubject ?? 'message').replace(/[^a-z0-9]/gi, '_')}.eml`;
+          addAttachment({
+            id: newAttachmentId(),
+            file: new File([], filename),
+            filename,
+            mimeType: 'message/rfc822',
+            size: content.length,
+            content,
+          });
+        } catch (err) {
+          console.error('[Composer] failed to build forward-as-attachment', err);
+        }
+      }
+    }
+    seed();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isOpen,
+    includeOriginalAttachments,
+    forwardAsAttachment,
+    originalMessageId,
+    activeAccountId,
+    addAttachment,
+    originalMessageSubject,
+    originalMessageHtml,
+    originalMessageText,
+  ]);
 
   const editor = useEditor({
     extensions: buildComposerExtensions('Write your message...'),
@@ -201,26 +305,6 @@ export function Composer({ windowed = false }: ComposerProps) {
       emitUpdate: false,
     });
   }, [editor, signatureId, signatureHtml]);
-
-  // Track maximize state for windowed composer so the restore/maximize icon
-  // matches the actual window state.
-  useEffect(() => {
-    if (!windowed) return;
-    const appWindow = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
-
-    async function init() {
-      setIsMaximized(await appWindow.isMaximized());
-      unlisten = await appWindow.onResized(async () => {
-        setIsMaximized(await appWindow.isMaximized());
-      });
-    }
-    init();
-
-    return () => {
-      unlisten?.();
-    };
-  }, [windowed]);
 
   // Load signature, aliases, and templates when the composer opens.
   useEffect(() => {
@@ -315,6 +399,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     if (!activeAccountId || !activeAccount || sendingRef.current) return;
     const state = useComposerStore.getState();
     if (state.to.length === 0) return;
+    if (!state.classificationId) return;
 
     sendingRef.current = true;
     stopAutoSave();
@@ -345,6 +430,11 @@ export function Composer({ windowed = false }: ComposerProps) {
       classificationId: state.classificationId,
       isEncrypted: state.isEncrypted,
       isSigned: state.isSigned,
+      importance: state.importance,
+      requestReadReceipt: state.requestReadReceipt,
+      requestDeliveryReceipt: state.requestDeliveryReceipt,
+      deliverAt: state.deliverAt,
+      preventCopy: state.preventCopy,
     };
 
     const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
@@ -435,7 +525,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       setShowSchedule(false);
       closeComposer();
     },
-    [activeAccountId, closeComposer, getFullHtml],
+    [activeAccountId, closeComposer, getFullHtml, setShowSchedule],
   );
 
   const closeWindowIfWindowed = useCallback(async () => {
@@ -467,28 +557,38 @@ export function Composer({ windowed = false }: ComposerProps) {
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
 
-  const handleMinimize = useCallback(async () => {
-    if (!windowed) return;
-    try {
-      await getCurrentWindow().minimize();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  }, [windowed]);
-
-  const handleToggleMaximize = useCallback(async () => {
-    if (!windowed) return;
-    try {
-      await getCurrentWindow().toggleMaximize();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  }, [windowed]);
-
   const handleSendAndCloseWindow = useCallback(async () => {
     await handleSend();
     await closeWindowIfWindowed();
   }, [handleSend, closeWindowIfWindowed]);
+
+  // Listen for menubar/ribbon action requests so the same handlers work whether
+  // the user clicks the panel footer, the compose ribbon, or the menu bar.
+  useEffect(() => {
+    function handleSendRequested() {
+      if (windowed) {
+        void handleSendAndCloseWindow();
+      } else {
+        void handleSend();
+      }
+    }
+    function handleScheduleRequested() {
+      setShowSchedule(true);
+    }
+    function handleInsertLink() {
+      setShowLinkDialog(true);
+    }
+
+    window.addEventListener('composer:send-requested', handleSendRequested);
+    window.addEventListener('composer:schedule-requested', handleScheduleRequested);
+    window.addEventListener('composer:insert-link', handleInsertLink);
+
+    return () => {
+      window.removeEventListener('composer:send-requested', handleSendRequested);
+      window.removeEventListener('composer:schedule-requested', handleScheduleRequested);
+      window.removeEventListener('composer:insert-link', handleInsertLink);
+    };
+  }, [handleSend, handleSendAndCloseWindow, windowed]);
 
   const handleMoveRecipient = useCallback(
     (recipient: Recipient, from: 'to' | 'cc' | 'bcc', toField: MoveTarget) => {
@@ -522,6 +622,11 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.classificationId) params.set('classificationId', state.classificationId);
       params.set('isEncrypted', state.isEncrypted ? '1' : '0');
       params.set('isSigned', state.isSigned ? '1' : '0');
+      params.set('importance', state.importance);
+      params.set('requestReadReceipt', state.requestReadReceipt ? '1' : '0');
+      params.set('requestDeliveryReceipt', state.requestDeliveryReceipt ? '1' : '0');
+      if (state.deliverAt != null) params.set('deliverAt', state.deliverAt.toString());
+      params.set('preventCopy', state.preventCopy ? '1' : '0');
       const bodyHtml = editor?.getHTML() ?? '';
       if (bodyHtml) params.set('body', btoa(unescape(encodeURIComponent(bodyHtml))));
 
@@ -568,6 +673,9 @@ export function Composer({ windowed = false }: ComposerProps) {
           : 'New Message';
   const savedLabel = isSaving ? 'Saving...' : lastSavedAt ? 'Draft saved' : null;
 
+  const requiresClassification = !classificationId;
+  const prominent = isProminent(currentLevel);
+
   const composerPanel = (
     <div
       className={`composer-panel pointer-events-auto relative flex flex-col rounded-xl border bg-[var(--background)] shadow-2xl ${
@@ -578,9 +686,7 @@ export function Composer({ windowed = false }: ComposerProps) {
             : 'h-[min(760px,85vh)] w-[min(900px,92vw)]'
       } ${isDragging ? 'border-2 border-[var(--primary)]' : 'border-[var(--border)]'}`}
       style={{
-        borderTopWidth: '3px',
-        borderTopColor: currentLevel.color,
-        backgroundColor: isConfidential ? `${currentLevel.color}10` : undefined,
+        ...(windowed ? {} : { borderTopWidth: '3px', borderTopColor: currentLevel.color }),
       }}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -599,121 +705,122 @@ export function Composer({ windowed = false }: ComposerProps) {
       )}
 
       {/* Header */}
-      <div
-        className={`flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 ${windowed ? 'select-none' : ''}`}
-        style={windowed ? dragStyle : undefined}
-      >
-        <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
-        <div className="flex items-center gap-1" style={noDragStyle}>
-          {!windowed && (
-            <button
-              onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
-              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+      {windowed ? (
+        <WindowTitleBar title={modeLabel} />
+      ) : (
+        <div className="flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+          <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
+          <div className="flex items-center gap-0.5">
+            <IconButton
+              size="sm"
+              icon={isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
               title={isFullpage ? 'Collapse' : 'Expand'}
-            >
-              {isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-            </button>
-          )}
-          {!windowed && (
-            <button
-              onClick={handlePopOutComposer}
-              className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+              onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
+            />
+            <IconButton
+              size="sm"
+              icon={<PopOutIcon size={14} />}
               title="Open in new window"
-            >
-              <PopOutIcon size={14} />
-            </button>
-          )}
-          {windowed && (
-            <>
-              <button
-                onClick={handleMinimize}
-                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                title="Minimize"
-                aria-label="Minimize"
-              >
-                <MinimizeIcon size={14} />
-              </button>
-              <button
-                onClick={handleToggleMaximize}
-                className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-                title={isMaximized ? 'Restore' : 'Maximize'}
-                aria-label={isMaximized ? 'Restore' : 'Maximize'}
-              >
-                {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-              </button>
-            </>
-          )}
-          <button
-            onClick={handleClose}
-            className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-            aria-label="Close composer"
-          >
-            <CloseIcon size={14} />
-          </button>
+              onClick={handlePopOutComposer}
+            />
+            <IconButton
+              size="sm"
+              icon={<CloseIcon size={14} />}
+              title="Close composer"
+              onClick={handleClose}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Address fields */}
-      <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
-        <FromSelector
-          aliases={aliases}
-          selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
-          onChange={(alias) => setFromEmail(alias.email)}
-        />
-        <RecipientField
-          label="To"
-          recipients={to}
-          onChange={setTo}
-          placeholder="Recipients"
-          moveTargets={[
-            { label: 'Cc', target: 'cc' },
-            { label: 'Bcc', target: 'bcc' },
-          ]}
-          onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
-        />
-        {showCcBcc ? (
-          <>
+      {/* Command ribbon + address fields + subject (watermark overlays this area) */}
+      <div
+        className="relative shrink-0"
+        style={{ backgroundColor: prominent ? `${currentLevel.color}08` : undefined }}
+      >
+        {prominent && <ClassificationWatermark level={currentLevel} />}
+        <div className="relative z-20">
+          <div className="shrink-0" style={noDragStyle}>
+            <CommandRibbon mode="compose" />
+          </div>
+
+          {requiresClassification && (
+            <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
+              <span className="inline-flex items-center gap-1.5">
+                <WarningIcon size={14} />
+                <span>Select a classification before sending.</span>
+              </span>
+            </div>
+          )}
+
+          {/* Address fields */}
+          <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
+            <FromSelector
+              aliases={aliases}
+              selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
+              onChange={(alias) => setFromEmail(alias.email)}
+            />
             <RecipientField
-              label="Cc"
-              recipients={cc}
-              onChange={setCc}
-              placeholder="Cc recipients"
+              label="To"
+              recipients={to}
+              onChange={setTo}
+              placeholder="Recipients"
               moveTargets={[
-                { label: 'To', target: 'to' },
+                { label: 'Cc', target: 'cc' },
                 { label: 'Bcc', target: 'bcc' },
               ]}
-              onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+              onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
             />
-            <RecipientField
-              label="Bcc"
-              recipients={bcc}
-              onChange={setBcc}
-              placeholder="Bcc recipients"
-              moveTargets={[
-                { label: 'To', target: 'to' },
-                { label: 'Cc', target: 'cc' },
-              ]}
-              onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-            />
-          </>
-        ) : (
-          <button onClick={() => setShowCcBcc(true)} className="kylins-link ml-10 text-xs">
-            Cc / Bcc
-          </button>
-        )}
-      </div>
+            {showCcBcc ? (
+              <>
+                <RecipientField
+                  label="Cc"
+                  recipients={cc}
+                  onChange={setCc}
+                  placeholder="Cc recipients"
+                  moveTargets={[
+                    { label: 'To', target: 'to' },
+                    { label: 'Bcc', target: 'bcc' },
+                  ]}
+                  onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+                />
+                <RecipientField
+                  label="Bcc"
+                  recipients={bcc}
+                  onChange={setBcc}
+                  placeholder="Bcc recipients"
+                  moveTargets={[
+                    { label: 'To', target: 'to' },
+                    { label: 'Cc', target: 'cc' },
+                  ]}
+                  onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
+                />
+              </>
+            ) : (
+              <Button
+                onPress={() => setShowCcBcc(true)}
+                className="kylins-link ml-10 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Cc / Bcc
+              </Button>
+            )}
+          </div>
 
-      {/* Subject */}
-      <div className="border-b border-[var(--border)] px-3 py-1.5">
-        <div className="flex items-center gap-2">
-          <ClassificationSelector />
-          <input
-            type="text"
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            placeholder="Subject"
-            className="flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
-          />
+          {/* Subject */}
+          <div className="border-b border-[var(--border)] px-3 py-1.5">
+            <div className="flex items-center gap-2">
+              <ClassificationSelector />
+              <TextField className="flex-1" aria-label="Subject">
+                <Input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder="Subject"
+                  className="w-full flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+                />
+              </TextField>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -723,7 +830,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       )}
 
       {/* Editor */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="relative flex-1 overflow-y-auto">
         <EditorContent editor={editor} />
       </div>
 
@@ -751,29 +858,23 @@ export function Composer({ windowed = false }: ComposerProps) {
           <TemplatePicker editor={editor} />
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleDiscard}
-            className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+          <Button
+            onPress={handleDiscard}
+            className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             Discard
-          </button>
-          <div className="flex items-center">
-            <button
-              onClick={windowed ? handleSendAndCloseWindow : handleSend}
-              disabled={to.length === 0}
-              className="rounded-l-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Send
-            </button>
-            <button
-              onClick={() => setShowSchedule(true)}
-              disabled={to.length === 0}
-              className="rounded-r-md border-l border-white/20 bg-[var(--primary)] py-1.5 px-2 text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              title="Schedule send"
-            >
-              <ClockIcon size={12} />
-            </button>
-          </div>
+          </Button>
+          <Button
+            onPress={windowed ? handleSendAndCloseWindow : handleSend}
+            isDisabled={to.length === 0 || requiresClassification}
+            aria-label={
+              requiresClassification ? 'Select a classification before sending' : undefined
+            }
+            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <SendIcon size={14} />
+            Send
+          </Button>
         </div>
       </div>
 
@@ -796,9 +897,11 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   if (windowed) {
     return (
-      <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
-        {composerPanel}
-      </div>
+      <WindowErrorBoundary>
+        <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
+          {composerPanel}
+        </div>
+      </WindowErrorBoundary>
     );
   }
 

@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Button, Input, TextField } from 'react-aria-components';
 import { EditorToolbar } from '@/components/composer/EditorToolbar';
 import { buildComposerExtensions } from '@/features/composer/editorExtensions';
 import { RecipientField } from '@/features/composer/RecipientField';
@@ -278,22 +279,24 @@ export function InlineReply({
             />
           </div>
         ) : (
-          <button
+          <Button
             type="button"
-            onClick={() => setShowCcBcc(true)}
-            className="kylins-link ml-10 mt-0.5"
+            onPress={() => setShowCcBcc(true)}
+            className="kylins-link ml-10 mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Cc / Bcc
-          </button>
+          </Button>
         )}
         <div className="mt-1 flex items-center gap-2">
           <span className="w-8 shrink-0 text-[var(--muted-text)]">Sub</span>
-          <input
-            type="text"
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            className="min-w-0 flex-1 bg-transparent text-[var(--foreground)] outline-none"
-          />
+          <TextField className="min-w-0 flex-1" aria-label="Subject">
+            <Input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              className="w-full bg-transparent text-[var(--foreground)] outline-none"
+            />
+          </TextField>
         </div>
       </div>
 
@@ -306,15 +309,14 @@ export function InlineReply({
       {/* Send bar */}
       <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] bg-[var(--surface)] px-4 py-2">
         <div className="flex items-center gap-2">
-          <button
+          <Button
             type="button"
-            onClick={handlePopOut}
-            title="Pop out to window"
+            onPress={handlePopOut}
             aria-label="Pop out to window"
-            className="rounded p-1 text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+            className="rounded p-1 text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             <PopOutIcon size={14} />
-          </button>
+          </Button>
           <div className="min-h-4 text-xs">
             {status === 'error' && errorMsg && (
               <span className="text-[var(--destructive)]">{errorMsg}</span>
@@ -323,22 +325,22 @@ export function InlineReply({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Button
             type="button"
-            onClick={onClose}
-            className="rounded px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+            onPress={onClose}
+            className="rounded px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             Discard
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            onClick={handleSend}
-            disabled={status === 'sending'}
-            className="flex items-center gap-1.5 rounded bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            onPress={handleSend}
+            isDisabled={status === 'sending'}
+            className="flex items-center gap-1.5 rounded bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             <SendIcon size={12} />
             {status === 'sending' ? 'Sending…' : 'Send'}
-          </button>
+          </Button>
         </div>
       </div>
 

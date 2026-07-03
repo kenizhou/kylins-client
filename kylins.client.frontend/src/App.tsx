@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { I18nProvider } from 'react-aria-components';
 import { AppShell } from './components/layout/AppShell';
 import { AccountSetupFlow } from './components/account-setup/AccountSetupFlow';
 import { PreferencesDialog } from './components/preferences/PreferencesDialog';
@@ -84,6 +85,7 @@ export default function App() {
   const accountSetupOpen = useUIStore((s) => s.accountSetupOpen);
   const setAccountSetupOpen = useUIStore((s) => s.setAccountSetupOpen);
   const accounts = useAccountStore((s) => s.accounts);
+  const interfaceLanguage = usePreferencesStore((s) => s.interfaceLanguage);
   useViewSettings();
   useKeyboardShortcuts();
   useSyncEvents();
@@ -131,6 +133,17 @@ export default function App() {
                 classificationId: composeParams.classificationId,
                 isEncrypted: composeParams.isEncrypted,
                 isSigned: composeParams.isSigned,
+                importance: composeParams.importance,
+                requestReadReceipt: composeParams.requestReadReceipt,
+                requestDeliveryReceipt: composeParams.requestDeliveryReceipt,
+                deliverAt: composeParams.deliverAt,
+                preventCopy: composeParams.preventCopy,
+                originalMessageId: composeParams.originalMessageId,
+                includeOriginalAttachments: composeParams.includeOriginalAttachments,
+                forwardAsAttachment: composeParams.forwardAsAttachment,
+                originalMessageSubject: composeParams.originalMessageSubject,
+                originalMessageHtml: composeParams.originalMessageHtml,
+                originalMessageText: composeParams.originalMessageText,
               });
             }
 
@@ -233,7 +246,7 @@ export default function App() {
   }
 
   return (
-    <>
+    <I18nProvider locale={interfaceLanguage === 'automatic' ? undefined : interfaceLanguage}>
       {isComposeWindow ? (
         <Composer windowed />
       ) : isViewerWindow ? (
@@ -254,6 +267,6 @@ export default function App() {
           <Toaster />
         </>
       )}
-    </>
+    </I18nProvider>
   );
 }

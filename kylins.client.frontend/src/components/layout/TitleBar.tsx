@@ -1,18 +1,10 @@
-import { useEffect, useState } from 'react';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { SearchField, Input, Label, Button } from 'react-aria-components';
 import { useUIStore } from '../../stores/uiStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { MenuBar } from '../ui/MenuBar';
-import {
-  MenuIcon,
-  MinimizeIcon,
-  MaximizeIcon,
-  RestoreIcon,
-  CloseIcon,
-  NotificationIcon,
-  SettingsIcon,
-  UserIcon,
-} from '../icons';
+import { IconButton } from '../ui/IconButton';
+import { WindowControls } from '../ui/WindowTitleBar';
+import { MenuIcon, NotificationIcon, SettingsIcon, UserIcon, CloseIcon } from '../icons';
 
 const dragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
   WebkitAppRegion: 'drag',
@@ -22,33 +14,10 @@ const noDragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' 
 };
 
 export function TitleBar() {
-  const [isMaximized, setIsMaximized] = useState(false);
   const activeCategory = useUIStore((s) => s.activeMenuCategory);
   const setActiveCategory = useUIStore((s) => s.setActiveMenuCategory);
-
-  useEffect(() => {
-    const appWindow = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
-
-    async function init() {
-      setIsMaximized(await appWindow.isMaximized());
-      unlisten = await appWindow.onResized(async () => {
-        setIsMaximized(await appWindow.isMaximized());
-      });
-    }
-
-    init();
-
-    return () => {
-      unlisten?.();
-    };
-  }, []);
-
-  const handleMinimize = () => getCurrentWindow().minimize();
-  const handleToggleMaximize = () => getCurrentWindow().toggleMaximize();
-  const handleClose = () => getCurrentWindow().close();
-  const handleSettings = () => usePreferencesStore.getState().openPreferences('General');
-  const handleAccount = () => useUIStore.getState().setAccountSetupOpen(true);
+  const openPreferences = () => usePreferencesStore.getState().openPreferences('General');
+  const openAccountSetup = () => useUIStore.getState().setAccountSetupOpen(true);
 
   return (
     <div
@@ -57,16 +26,13 @@ export function TitleBar() {
     >
       {/* Left: hamburger + menu bar */}
       <div className="flex items-center" style={noDragStyle}>
-        <button
-          type="button"
+        <IconButton
+          icon={<MenuIcon size={18} />}
+          title="Menu"
+          active={activeCategory === 'File'}
           onClick={() => setActiveCategory(activeCategory === 'File' ? null : 'File')}
-          className={`p-1.5 rounded hover:bg-[var(--hover)] text-[var(--foreground)] ${activeCategory === 'File' ? 'bg-[var(--hover)]' : ''}`}
-          aria-label="Menu"
-          aria-expanded={activeCategory === 'File'}
-        >
-          <MenuIcon />
-        </button>
-
+          className="mr-1"
+        />
         <MenuBar />
       </div>
 
@@ -78,64 +44,37 @@ export function TitleBar() {
           width: 'var(--message-list-width, 20rem)',
         }}
       >
-        <input
-          type="text"
-          placeholder="Search mail…"
-          style={noDragStyle}
-          className="w-full h-7 px-3 text-sm rounded border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
-        />
+        <SearchField className="relative w-full" aria-label="Search mail">
+          {({ isEmpty }) => (
+            <>
+              <Label className="sr-only">Search mail</Label>
+              <Input
+                type="text"
+                placeholder="Search mail…"
+                style={noDragStyle}
+                className="w-full h-8 px-3 pr-8 text-sm rounded border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none transition-colors"
+              />
+              {!isEmpty && (
+                <Button
+                  style={noDragStyle}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-1 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                  <CloseIcon size={14} />
+                </Button>
+              )}
+            </>
+          )}
+        </SearchField>
       </div>
 
       {/* Right: app icons + window controls */}
-      <div className="flex items-center" style={noDragStyle}>
-        <button
-          type="button"
-          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
-          aria-label="Notifications"
-        >
-          <NotificationIcon size={16} />
-        </button>
-        <button
-          type="button"
-          onClick={handleSettings}
-          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
-          aria-label="Settings"
-        >
-          <SettingsIcon size={16} />
-        </button>
-        <button
-          type="button"
-          onClick={handleAccount}
-          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
-          aria-label="Account"
-        >
-          <UserIcon size={16} />
-        </button>
+      <div className="flex items-center gap-0.5" style={noDragStyle}>
+        <IconButton icon={<NotificationIcon size={16} />} title="Notifications" />
+        <IconButton icon={<SettingsIcon size={16} />} title="Settings" onClick={openPreferences} />
+        <IconButton icon={<UserIcon size={16} />} title="Account" onClick={openAccountSetup} />
 
-        <button
-          type="button"
-          onClick={handleMinimize}
-          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
-          aria-label="Minimize"
-        >
-          <MinimizeIcon size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={handleToggleMaximize}
-          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] transition-colors"
-          aria-label={isMaximized ? 'Restore' : 'Maximize'}
-        >
-          {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-        </button>
-        <button
-          type="button"
-          onClick={handleClose}
-          className="h-7 w-9 inline-flex items-center justify-center text-[var(--muted-text)] hover:bg-[var(--destructive)] hover:text-[var(--primary-fg)] transition-colors"
-          aria-label="Close"
-        >
-          <CloseIcon size={14} />
-        </button>
+        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+        <WindowControls />
       </div>
     </div>
   );
