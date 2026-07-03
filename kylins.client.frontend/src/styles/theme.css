@@ -45,11 +45,30 @@
   --accent: var(--series-50);
   --accent-foreground: var(--series-900);
   --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
   --border: var(--series-200);
   --input: var(--series-200);
   --ring: color-mix(in oklab, var(--series-accent), transparent 75%);
   --radius: 0.375rem;
   --radius-xs: 2px;
+
+  /* Provider accent colors (used by account-setup tiles) */
+  --provider-gmail: #ea4335;
+  --provider-outlook: #0078d4;
+  --provider-microsoft365: #d83b01;
+  --provider-yahoo: #6001d2;
+  --provider-imap: #6b7280;
+  --provider-exchange: #0078d4;
+
+  /* Status colors */
+  --success: #10b981;
+  --success-foreground: var(--series-900);
+  --success-bg: color-mix(in srgb, var(--success) 10%, transparent);
+  --success-border: color-mix(in srgb, var(--success) 20%, transparent);
+  --error: var(--destructive);
+  --error-foreground: var(--destructive-foreground);
+  --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
+  --error-border: color-mix(in srgb, var(--error) 20%, transparent);
 
   /* Semantic desktop tokens */
   --surface: var(--series-100);
@@ -136,7 +155,7 @@
   --popover: var(--series-200);
   --popover-foreground: var(--series-900);
   --primary: var(--series-accent);
-  --primary-foreground: var(--series-950);
+  --primary-foreground: var(--series-50);
   --secondary: var(--series-200);
   --secondary-foreground: var(--series-900);
   --muted: var(--series-200);
@@ -144,11 +163,30 @@
   --accent: var(--series-300);
   --accent-foreground: var(--series-900);
   --destructive: #f87171;
+  --destructive-foreground: var(--series-950);
   --border: var(--series-300);
   --input: var(--series-300);
   --ring: color-mix(in oklab, var(--series-accent), transparent 75%);
   --radius: 0.375rem;
   --radius-xs: 2px;
+
+  /* Provider accent colors (used by account-setup tiles) */
+  --provider-gmail: #ea4335;
+  --provider-outlook: #0078d4;
+  --provider-microsoft365: #d83b01;
+  --provider-yahoo: #6001d2;
+  --provider-imap: #6b7280;
+  --provider-exchange: #0078d4;
+
+  /* Status colors */
+  --success: #34d399;
+  --success-foreground: var(--series-950);
+  --success-bg: color-mix(in srgb, var(--success) 10%, transparent);
+  --success-border: color-mix(in srgb, var(--success) 20%, transparent);
+  --error: var(--destructive);
+  --error-foreground: var(--destructive-foreground);
+  --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
+  --error-border: color-mix(in srgb, var(--error) 20%, transparent);
 
   --surface: var(--series-200);
   --text: var(--series-900);

@@ -19,6 +19,15 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-bg: var(--success-bg);
+  --color-success-border: var(--success-border);
+  --color-error: var(--error);
+  --color-error-foreground: var(--error-foreground);
+  --color-error-bg: var(--error-bg);
+  --color-error-border: var(--error-border);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -72,6 +81,10 @@
     background: transparent;
     color: inherit;
   }
+}
+
+@utility setup-focus-ring {
+  @apply outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
 }
 
 /* ---- Account setup animations ---- */
@@ -186,6 +199,11 @@
     opacity: 1;
     transform: none;
   }
+  .setup-stagger-child {
+    animation-delay: 0ms !important;
+    transition: none !important;
+  }
+
   .composer-countdown {
     animation-duration: 0.01ms;
   }

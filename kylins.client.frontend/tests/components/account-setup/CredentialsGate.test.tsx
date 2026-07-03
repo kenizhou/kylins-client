@@ -5,7 +5,7 @@ import { getProvider } from '../../../src/services/auth/providers';
 
 describe('CredentialsGate', () => {
   it('hides the password field for oauth providers', () => {
-    const { queryByLabelText, getByPlaceholderText } = render(
+    const { queryByLabelText, getByPlaceholderText, queryByTestId } = render(
       <CredentialsGate
         config={getProvider('gmail')}
         email=""
@@ -20,11 +20,12 @@ describe('CredentialsGate', () => {
     );
     expect(queryByLabelText(/password/i)).not.toBeInTheDocument();
     expect(getByPlaceholderText(/email/i)).toBeInTheDocument();
+    expect(queryByTestId('kylins-mark')).not.toBeInTheDocument();
   });
 
   it('shows the password field for password providers and emits sign-in', () => {
     const onSignIn = vi.fn();
-    const { getByLabelText, getByText } = render(
+    const { getByLabelText, getByText, queryByTestId } = render(
       <CredentialsGate
         config={getProvider('yahoo')}
         email=""
@@ -38,7 +39,46 @@ describe('CredentialsGate', () => {
       />,
     );
     expect(getByLabelText(/password/i)).toBeInTheDocument();
+    expect(queryByTestId('kylins-mark')).not.toBeInTheDocument();
     fireEvent.click(getByText(/sign in/i));
     expect(onSignIn).toHaveBeenCalled();
+  });
+
+  it('submits the form when Enter is pressed in an input', () => {
+    const onSignIn = vi.fn();
+    const { container } = render(
+      <CredentialsGate
+        config={getProvider('yahoo')}
+        email=""
+        password=""
+        advancedClientId=""
+        advancedClientSecret=""
+        onChange={() => {}}
+        onSignIn={onSignIn}
+        onManualSetup={() => {}}
+        canSubmit
+      />,
+    );
+    fireEvent.submit(container.querySelector('form')!);
+    expect(onSignIn).toHaveBeenCalled();
+  });
+
+  it('displays field-level errors when errors are provided', () => {
+    const { getByText } = render(
+      <CredentialsGate
+        config={getProvider('yahoo')}
+        email=""
+        password=""
+        advancedClientId=""
+        advancedClientSecret=""
+        onChange={() => {}}
+        onSignIn={() => {}}
+        onManualSetup={() => {}}
+        canSubmit={false}
+        errors={{ email: 'Enter your email address.', password: 'Enter your password.' }}
+      />,
+    );
+    expect(getByText('Enter your email address.')).toBeInTheDocument();
+    expect(getByText('Enter your password.')).toBeInTheDocument();
   });
 });

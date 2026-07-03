@@ -39,24 +39,29 @@ export function OAuthPendingScreen({
         eyebrow={providerName}
         title="Sign in with your browser"
         subtitle="A browser window should have opened. Finish signing in there and we’ll connect your account automatically."
+        hideMark
       />
 
       <div className="flex flex-col items-center gap-6">
-        <div className="flex items-center gap-3 text-sm text-[var(--muted-text)]">
-          <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[var(--primary)] border-t-transparent" />
+        <div className="flex items-center gap-3 text-sm text-muted-text">
+          <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           Waiting for sign-in…
         </div>
 
         {fallbackUrl && (
           <div className="w-full">
-            <p className="mb-1.5 text-xs font-medium text-[var(--muted-text)]">
+            <label
+              className="mb-1.5 block text-xs font-medium text-muted-text"
+              htmlFor="oauth-fallback-url"
+            >
               Didn’t open? Paste this URL into your browser:
-            </p>
+            </label>
             <div className="flex items-center gap-2">
               <Input
+                id="oauth-fallback-url"
                 readOnly
                 value={fallbackUrl}
-                className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-xs text-[var(--foreground)]"
+                className="min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground"
               />
               <SetupButton variant="secondary" onPress={copy}>
                 {copied ? 'Copied' : 'Copy'}

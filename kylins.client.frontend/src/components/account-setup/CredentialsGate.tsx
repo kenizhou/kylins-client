@@ -1,5 +1,6 @@
 import { Button } from 'react-aria-components';
-import { useState } from 'react';
+import { useId, useState } from 'react';
+import { PopOutIcon } from '../icons';
 import type { ProviderConfig } from '../../services/auth/providers';
 import {
   SetupCard,
@@ -9,6 +10,11 @@ import {
   SetupBackButton,
   SetupField,
 } from './setup-ui';
+
+export interface CredentialsGateErrors {
+  email?: string;
+  password?: string;
+}
 
 export interface CredentialsGateProps {
   config: ProviderConfig;
@@ -28,6 +34,7 @@ export interface CredentialsGateProps {
   onManualSetup: () => void;
   onBack: () => void;
   canSubmit: boolean;
+  errors?: CredentialsGateErrors;
 }
 
 export function CredentialsGate({
@@ -41,8 +48,10 @@ export function CredentialsGate({
   onManualSetup,
   onBack,
   canSubmit,
+  errors = {},
 }: CredentialsGateProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const advancedPanelId = useId();
   const isOAuth = config.authType === 'oauth2';
 
   const appPasswordHint = config.authType === 'password' && config.appPasswordNote && (
@@ -50,16 +59,22 @@ export function CredentialsGate({
       {config.appPasswordNote}{' '}
       {config.appPasswordUrl && (
         <a
-          className="underline hover:text-[var(--foreground)]"
+          className="inline-flex items-center gap-0.5 rounded underline hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           href={config.appPasswordUrl}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
         >
           Create one
+          <PopOutIcon size={12} aria-hidden="true" />
         </a>
       )}
     </>
   );
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    onSignIn();
+  }
 
   return (
     <SetupCard>
@@ -72,26 +87,30 @@ export function CredentialsGate({
             : 'Enter your email address and password to connect.'
         }
         align="left"
+        hideMark
       />
 
-      <div className="flex flex-col gap-4">
-        <SetupField label="Email address" hint={appPasswordHint || undefined}>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <SetupField label="Email address" hint={appPasswordHint || undefined} error={errors.email}>
           <SetupInput
             type="email"
             placeholder="your.email@example.com"
             value={email}
             onChange={(e) => onChange({ email: e.target.value })}
+            autoComplete="email"
+            spellCheck={false}
             autoFocus
           />
         </SetupField>
 
         {!isOAuth && (
-          <SetupField label="Password">
+          <SetupField label="Password" error={errors.password}>
             <SetupInput
               type="password"
               placeholder="••••••••"
               value={password}
               onChange={(e) => onChange({ password: e.target.value })}
+              autoComplete="current-password"
             />
           </SetupField>
         )}
@@ -99,19 +118,27 @@ export function CredentialsGate({
         {isOAuth && (
           <div className="flex flex-col gap-3">
             <Button
-              className="self-start text-xs font-medium text-[var(--muted-text)] underline transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)]"
+              type="button"
+              className="setup-focus-ring min-h-11 self-start px-2 text-xs font-medium text-muted-text underline transition-colors hover:text-foreground"
               onPress={() => setShowAdvanced((v) => !v)}
+              aria-expanded={showAdvanced}
+              aria-controls={advancedPanelId}
             >
               {showAdvanced ? 'Hide' : 'Show'} advanced OAuth credentials
             </Button>
 
             {showAdvanced && (
-              <div className="flex flex-col gap-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-3">
+              <div
+                id={advancedPanelId}
+                className="flex flex-col gap-3 rounded-lg border border-border bg-secondary p-3"
+              >
                 <SetupField label="Client ID (optional override)">
                   <SetupInput
                     placeholder="Client ID"
                     value={advancedClientId}
                     onChange={(e) => onChange({ advancedClientId: e.target.value })}
+                    autoComplete="off"
+                    spellCheck={false}
                   />
                 </SetupField>
                 <SetupField label="Client secret (optional)">
@@ -120,27 +147,29 @@ export function CredentialsGate({
                     placeholder="Client secret"
                     value={advancedClientSecret}
                     onChange={(e) => onChange({ advancedClientSecret: e.target.value })}
+                    autoComplete="off"
+                    spellCheck={false}
                   />
                 </SetupField>
               </div>
             )}
           </div>
         )}
-      </div>
 
-      <div className="mt-8 flex items-center justify-between">
-        <SetupBackButton onPress={onBack} />
-        <div className="flex items-center gap-2">
-          {config.authType === 'password' && !config.presets && (
-            <SetupButton variant="secondary" onPress={onManualSetup}>
-              Manual setup
+        <div className="mt-8 flex items-center justify-between">
+          <SetupBackButton onPress={onBack} />
+          <div className="flex items-center gap-2">
+            {config.authType === 'password' && !config.presets && (
+              <SetupButton variant="secondary" type="button" onPress={onManualSetup}>
+                Manual setup
+              </SetupButton>
+            )}
+            <SetupButton type="submit" disabled={!canSubmit}>
+              {isOAuth ? 'Continue with provider' : 'Sign in'}
             </SetupButton>
-          )}
-          <SetupButton onPress={onSignIn} disabled={!canSubmit}>
-            {isOAuth ? 'Continue with provider' : 'Sign in'}
-          </SetupButton>
+          </div>
         </div>
-      </div>
+      </form>
     </SetupCard>
   );
 }

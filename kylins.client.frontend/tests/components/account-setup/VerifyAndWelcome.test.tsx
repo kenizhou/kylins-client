@@ -6,12 +6,46 @@ import { WelcomeScreen } from '../../../src/components/account-setup/WelcomeScre
 describe('VerifyStep', () => {
   it('shows the error and retry', () => {
     const onRetry = vi.fn();
-    const { getByText } = render(
+    const { getByText, getByRole } = render(
       <VerifyStep error="bad creds" onRetry={onRetry} onBack={() => {}} />,
     );
-    expect(getByText(/bad creds/)).toBeInTheDocument();
+    expect(getByRole('alert')).toHaveTextContent(/bad creds/);
     fireEvent.click(getByText(/retry/i));
     expect(onRetry).toHaveBeenCalled();
+  });
+
+  it('opens a confirmation dialog before replacing an existing account', () => {
+    const onReplace = vi.fn();
+    const { getByText, queryByText } = render(
+      <VerifyStep
+        error="An account for user@example.com already exists"
+        onRetry={() => {}}
+        onBack={() => {}}
+        onReplace={onReplace}
+      />,
+    );
+    fireEvent.click(getByText(/replace existing account/i));
+    expect(getByText('Replace account?')).toBeInTheDocument();
+    fireEvent.click(getByText('Cancel'));
+    expect(queryByText('Replace account?')).not.toBeInTheDocument();
+    expect(onReplace).not.toHaveBeenCalled();
+  });
+
+  it('confirms replacement and calls onReplace', () => {
+    const onReplace = vi.fn();
+    const { getByText, queryByText } = render(
+      <VerifyStep
+        error="An account for user@example.com already exists"
+        onRetry={() => {}}
+        onBack={() => {}}
+        onReplace={onReplace}
+      />,
+    );
+    fireEvent.click(getByText(/replace existing account/i));
+    expect(getByText('Replace account?')).toBeInTheDocument();
+    fireEvent.click(getByText('Replace account'));
+    expect(queryByText('Replace account?')).not.toBeInTheDocument();
+    expect(onReplace).toHaveBeenCalled();
   });
 });
 

@@ -1,6 +1,6 @@
 import type { MailProvider } from '../../types';
 import type { SetupProviderId } from '../../services/auth/providers';
-import { ProviderGlyph, PROVIDER_ACCENTS } from '../account-setup/setup-ui';
+import { ProviderGlyph, PROVIDER_ACCENT_VARS } from '../account-setup/setup-ui';
 
 const PROVIDER_LABELS: Record<SetupProviderId, string> = {
   gmail: 'Gmail',
@@ -11,10 +11,7 @@ const PROVIDER_LABELS: Record<SetupProviderId, string> = {
   exchange: 'Exchange',
 };
 
-function resolveSetupProviderId(
-  provider: MailProvider,
-  setupProviderId?: string,
-): SetupProviderId {
+function resolveSetupProviderId(provider: MailProvider, setupProviderId?: string): SetupProviderId {
   if (setupProviderId && setupProviderId in PROVIDER_LABELS) {
     return setupProviderId as SetupProviderId;
   }
@@ -32,22 +29,18 @@ interface ProviderBadgeProps {
 export function ProviderBadge({ provider, setupProviderId, size = 'sm' }: ProviderBadgeProps) {
   const id = resolveSetupProviderId(provider, setupProviderId);
   const label = PROVIDER_LABELS[id];
-  const accent = PROVIDER_ACCENTS[id];
-  const badgeClass =
-    size === 'md'
-      ? 'h-9 w-9 rounded-lg'
-      : 'h-7 w-7 rounded-md';
+  const badgeClass = size === 'md' ? 'h-9 w-9 rounded-lg' : 'h-7 w-7 rounded-md';
 
   return (
     <span className="inline-flex items-center gap-2">
       <span
         className={`inline-flex items-center justify-center ${badgeClass} text-white`}
-        style={{ backgroundColor: accent }}
+        style={{ backgroundColor: PROVIDER_ACCENT_VARS[id] }}
         title={label}
       >
         <ProviderGlyph id={id} className="h-4 w-4" />
       </span>
-      <span className="text-xs font-medium text-[var(--foreground)]">{label}</span>
+      <span className="text-xs font-medium text-foreground">{label}</span>
     </span>
   );
 }

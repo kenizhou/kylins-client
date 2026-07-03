@@ -4,7 +4,7 @@ import { OAuthPendingScreen } from '../../../src/components/account-setup/OAuthP
 
 describe('OAuthPendingScreen', () => {
   it('renders the provider name and a copyable fallback url', () => {
-    const { getByText, getByDisplayValue } = render(
+    const { getByText, getByDisplayValue, queryByTestId } = render(
       <OAuthPendingScreen
         providerName="Google"
         fallbackUrl="https://accounts.google.com/x?client_id=CID"
@@ -12,6 +12,7 @@ describe('OAuthPendingScreen', () => {
       />,
     );
     expect(getByText('Sign in with your browser')).toBeInTheDocument();
+    expect(queryByTestId('kylins-mark')).not.toBeInTheDocument();
     expect(getByText('Google')).toBeInTheDocument();
     expect(getByDisplayValue(/client_id=CID/)).toBeInTheDocument();
   });
