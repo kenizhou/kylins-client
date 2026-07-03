@@ -139,7 +139,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
               value={accountLabel}
               onChange={(e) => setAccountLabel(e.target.value)}
               placeholder="Work Gmail"
-              className="h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+              className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -149,7 +149,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder="Your Name"
-              className="h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+              className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
             />
           </label>
           <div className="flex flex-col gap-1">
@@ -160,7 +160,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
             <button
               type="submit"
               disabled={isSavingIdentity}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               {isSavingIdentity ? 'Saving…' : 'Save identity'}
             </button>
@@ -169,7 +169,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
       </PreferencesSectionCard>
 
       <PreferencesSectionCard title="Status & Default">
-        <label className="flex items-center gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors">
+        <label className="flex min-h-11 items-center gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors">
           <input
             type="checkbox"
             checked={account.isActive}
@@ -182,7 +182,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
           type="button"
           disabled={account.isDefault}
           onClick={() => void handleSetDefault()}
-          className="mt-2 px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+          className="mt-2 inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
         >
           {account.isDefault ? 'Default account' : 'Set as default account'}
         </button>
@@ -241,7 +241,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
               type="button"
               onClick={() => void handleReauthorize()}
               disabled={reauthStatus.type === 'loading'}
-              className="px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
             >
               {reauthStatus.type === 'loading' ? 'Re-authorizing…' : 'Re-authorize'}
             </button>
@@ -250,14 +250,14 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
             type="button"
             onClick={() => void handleTestConnection()}
             disabled={testStatus.type === 'loading'}
-            className="px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+            className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
           >
             {testStatus.type === 'loading' ? 'Testing…' : 'Test connection'}
           </button>
           <button
             type="button"
             onClick={() => void handleRemove()}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg border border-[color-mix(in_oklab,var(--destructive),transparent_80%)] bg-[color-mix(in_oklab,var(--destructive),transparent_92%)] text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_88%)] transition-colors"
+            className="inline-flex items-center gap-1.5 h-11 px-4 text-sm font-medium rounded-lg border border-[color-mix(in_oklab,var(--destructive),transparent_80%)] bg-[color-mix(in_oklab,var(--destructive),transparent_92%)] text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_88%)] transition-colors"
           >
             <TrashIcon size={14} />
             Remove account

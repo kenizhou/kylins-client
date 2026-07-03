@@ -1,7 +1,6 @@
 :root {
-  /* Typography — Plus Jakarta Sans is self-hosted via @fontsource so the app stays offline-capable. */
-  --font-ui:
-    'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  /* Typography — system stacks only; app must run fully offline */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-serif: Georgia, Cambria, 'Times New Roman', serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Courier New', monospace;
 
@@ -13,17 +12,17 @@
    * accent skin. Skins should only override --series-accent and
    * --series-accent-hover, not the full gray scale.
    */
-  --series-50: #f8fafc;
-  --series-100: #f1f5f9;
-  --series-200: #e2e8f0;
-  --series-300: #cbd5e1;
-  --series-400: #94a3b8;
-  --series-500: #64748b;
-  --series-600: #475569;
-  --series-700: #334155;
-  --series-800: #1e293b;
-  --series-900: #0f172a;
-  --series-950: #020617;
+  --series-50: #fafafa;
+  --series-100: #f4f4f5;
+  --series-200: #e4e4e7;
+  --series-300: #d4d4d8;
+  --series-400: #a1a1aa;
+  --series-500: #71717a;
+  --series-600: #52525b;
+  --series-700: #3f3f46;
+  --series-800: #27272a;
+  --series-900: #18181b;
+  --series-950: #09090b;
 
   /* Brand / accent — the only part of the palette a skin should change. */
   --series-accent: #2563eb;
@@ -42,7 +41,7 @@
   --secondary: var(--series-100);
   --secondary-foreground: var(--series-900);
   --muted: var(--series-100);
-  --muted-foreground: var(--series-500);
+  --muted-foreground: var(--series-600);
   --accent: var(--series-50);
   --accent-foreground: var(--series-900);
   --destructive: #dc2626;
@@ -55,7 +54,7 @@
   /* Semantic desktop tokens */
   --surface: var(--series-100);
   --text: var(--series-900);
-  --muted-text: var(--series-500);
+  --muted-text: var(--series-600);
   --hover: var(--series-200);
   --selected: var(--series-200);
   --selected-text: var(--text);
@@ -74,12 +73,12 @@
   --green: #10b981;
 
   /* Layout sizing */
-  --header-h: 40px;
-  --ribbon-h: 44px;
+  --header-h: 48px;
+  --ribbon-h: 52px;
   --tool-w: 44px;
   --folder-w: 240px;
   --list-w: 360px;
-  --status-h: 24px;
+  --status-h: 44px;
   --pane-header-h: 32px;
   --row-h: 28px;
 
@@ -107,17 +106,17 @@
 
 .dark {
   /* Neutral gray series, reversed for dark mode. */
-  --series-50: #020617;
-  --series-100: #0f172a;
-  --series-200: #1e293b;
-  --series-300: #334155;
-  --series-400: #475569;
-  --series-500: #64748b;
-  --series-600: #94a3b8;
-  --series-700: #cbd5e1;
-  --series-800: #e2e8f0;
-  --series-900: #f1f5f9;
-  --series-950: #f8fafc;
+  --series-50: #09090b;
+  --series-100: #18181b;
+  --series-200: #27272a;
+  --series-300: #3f3f46;
+  --series-400: #52525b;
+  --series-500: #71717a;
+  --series-600: #a1a1aa;
+  --series-700: #d4d4d8;
+  --series-800: #e4e4e7;
+  --series-900: #f4f4f5;
+  --series-950: #fafafa;
 
   --series-accent: #60a5fa;
   --series-accent-hover: #3b82f6;
@@ -134,7 +133,7 @@
   --secondary: var(--series-200);
   --secondary-foreground: var(--series-900);
   --muted: var(--series-200);
-  --muted-foreground: var(--series-500);
+  --muted-foreground: var(--series-600);
   --accent: var(--series-300);
   --accent-foreground: var(--series-900);
   --destructive: #f87171;
@@ -146,7 +145,7 @@
 
   --surface: var(--series-200);
   --text: var(--series-900);
-  --muted-text: var(--series-500);
+  --muted-text: var(--series-600);
   --hover: var(--series-300);
   --selected: var(--series-300);
   --selected-text: var(--text);

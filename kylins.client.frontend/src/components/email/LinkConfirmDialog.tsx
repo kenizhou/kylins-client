@@ -94,13 +94,13 @@ export function LinkConfirmDialog({
           <div className="flex justify-end gap-2">
             <Button
               slot="close"
-              className="h-8 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
+              className="h-11 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
             >
               Cancel
             </Button>
             <Button
               onPress={onConfirm}
-              className={`h-8 rounded-md px-3 text-sm text-primary-fg transition-colors hover:opacity-90 ${
+              className={`h-11 rounded-md px-3 text-sm text-primary-fg transition-colors hover:opacity-90 ${
                 suspicious ? 'bg-destructive' : 'bg-primary'
               }`}
             >

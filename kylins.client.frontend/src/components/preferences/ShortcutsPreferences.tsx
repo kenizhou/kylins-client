@@ -88,14 +88,14 @@ function ShortcutRow({
         {isRecording ? (
           <Button
             onPress={() => onStartRecording('')}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] animate-pulse focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="inline-flex items-center justify-center h-11 px-3 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] animate-pulse focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             Press keys…
           </Button>
         ) : (
           <Button
             onPress={() => onStartRecording(commandId)}
-            className="flex items-center gap-2 px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex items-center gap-2 h-11 px-2 rounded-md border border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label={`Change shortcut for ${command?.label ?? commandId}`}
           >
             <Kbd>{formatBindingForDisplay(binding || '—', mac)}</Kbd>
@@ -105,7 +105,7 @@ function ShortcutRow({
         {!isDefault && !isRecording && (
           <Button
             onPress={() => onReset(commandId)}
-            className="p-1 rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Reset to default"
           >
             <CloseIcon size={12} />
@@ -219,10 +219,10 @@ export function ShortcutsPreferences() {
                 <Input
                   type="text"
                   placeholder="Search shortcuts…"
-                  className="flex-1 h-9 px-3 pr-8 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+                  className="flex-1 h-11 px-3 pr-8 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
                 />
                 {search !== '' && (
-                  <Button className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-0.5 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+                  <Button className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
                     <CloseIcon size={14} />
                   </Button>
                 )}
@@ -230,7 +230,7 @@ export function ShortcutsPreferences() {
               {hasCustomizations && (
                 <Button
                   onPress={() => void resetAll()}
-                  className="px-4 py-2 text-xs font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  className="inline-flex items-center justify-center h-11 px-4 text-xs font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
                   Reset all
                 </Button>

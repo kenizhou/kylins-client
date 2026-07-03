@@ -40,7 +40,7 @@ function ToolbarButton({
       type="button"
       onClick={onClick}
       title={title}
-      className={`rounded p-1.5 transition-colors ${
+      className={`flex h-11 w-11 items-center justify-center rounded transition-colors ${
         active
           ? 'bg-[var(--selected)] text-[var(--selected-text)]'
           : 'text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)]'
@@ -126,7 +126,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Work signature"
-              className="h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+              className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
             />
           </div>
 
@@ -135,7 +135,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
             <SegmentedControl options={CONTEXT_OPTIONS} value={context} onChange={setContext} />
           </div>
 
-          <label className="flex items-start gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors">
+          <label className="flex min-h-11 items-start gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors">
             <input
               type="checkbox"
               checked={isDefault}
@@ -243,7 +243,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
             <button
               type="button"
               onClick={onCancel}
-              className="px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
             >
               Cancel
             </button>
@@ -251,7 +251,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
               type="button"
               onClick={() => void handleSave()}
               disabled={!name.trim() || isSaving}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
             >
               {isSaving ? 'Saving…' : 'Save signature'}
             </button>

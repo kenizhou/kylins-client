@@ -48,7 +48,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const style: React.CSSProperties = {
     position: 'fixed',
     left: Math.min(x, window.innerWidth - 200),
-    top: Math.min(y, window.innerHeight - items.length * 32 - 16),
+    top: Math.min(y, window.innerHeight - items.length * 44 - 16),
     zIndex: 80,
   };
 
@@ -77,7 +77,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                 onClose();
               }}
               className={({ isFocused, isHovered, isDisabled }) =>
-                `flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] focus-visible:outline-none ${
+                `flex w-full items-center gap-2 px-3 min-h-11 text-left text-[13px] focus-visible:outline-none ${
                   isDisabled
                     ? 'cursor-default text-muted-text opacity-50'
                     : item.danger

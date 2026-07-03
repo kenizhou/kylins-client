@@ -40,7 +40,7 @@ export function RibbonButton({
       isDisabled={disabled}
       onPress={onClick}
       aria-label={title}
-      className={`my-auto flex h-8 items-center gap-1.5 rounded px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`my-auto flex h-11 min-w-11 items-center gap-1.5 rounded px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         primary
           ? 'bg-primary text-primary-fg hover:opacity-90 disabled:hover:opacity-40'
           : 'text-text hover:bg-hover disabled:hover:bg-transparent'
@@ -76,7 +76,7 @@ export function RibbonToggle({
       onChange={onChange}
       isDisabled={disabled}
       aria-label={title ?? label}
-      className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs ${
+      className={`flex h-11 items-center gap-1.5 rounded px-2 text-xs ${
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-hover'
       }`}
     >

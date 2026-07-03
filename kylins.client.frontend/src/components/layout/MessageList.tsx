@@ -54,8 +54,8 @@ const RIBBON_COLOR: Record<MessageState, string> = {
 };
 
 const DENSITY_ROW_CLASSES = {
-  compact: 'min-h-[36px] py-1',
-  normal: 'min-h-[40px] py-2',
+  compact: 'min-h-11 py-1',
+  normal: 'min-h-11 py-1.5',
   comfortable: 'min-h-[52px] py-3',
 };
 

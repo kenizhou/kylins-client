@@ -69,7 +69,7 @@ export function ComposeRibbon() {
       <RibbonGroup>
         <MenuTrigger>
           <Button
-            className="flex items-center gap-1.5 rounded px-2.5 h-8 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Importance"
           >
             <span className="whitespace-nowrap">Importance: {importanceLabel}</span>
@@ -106,7 +106,7 @@ export function ComposeRibbon() {
       <RibbonGroup>
         <MenuTrigger>
           <Button
-            className="flex items-center gap-1.5 rounded px-2.5 h-8 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Tracking"
           >
             <span className="whitespace-nowrap">Tracking</span>

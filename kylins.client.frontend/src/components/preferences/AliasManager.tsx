@@ -54,7 +54,7 @@ function AliasRow({
             <button
               type="button"
               onClick={onEdit}
-              className="rounded p-1.5 text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+              className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
               title="Edit"
               aria-label={`Edit ${alias.email}`}
             >
@@ -63,7 +63,7 @@ function AliasRow({
             <button
               type="button"
               onClick={onDelete}
-              className="rounded p-1.5 text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors"
+              className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors"
               title="Delete"
               aria-label={`Delete ${alias.email}`}
             >
@@ -196,7 +196,7 @@ export function AliasManager({ account }: AliasManagerProps) {
               placeholder="alias@example.com"
               disabled={!!editingAlias}
               required
-              className="h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none disabled:opacity-60"
+              className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none disabled:opacity-60"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -206,7 +206,7 @@ export function AliasManager({ account }: AliasManagerProps) {
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder="Alias Name"
-              className="h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+              className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
             />
           </label>
           <label className="flex flex-col gap-1 sm:col-span-2">
@@ -216,12 +216,12 @@ export function AliasManager({ account }: AliasManagerProps) {
               value={replyTo}
               onChange={(e) => setReplyTo(e.target.value)}
               placeholder="replies@example.com"
-              className="h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+              className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
             />
           </label>
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+          <label className="flex min-h-11 items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
             <input
               type="checkbox"
               checked={isDefault}
@@ -230,7 +230,7 @@ export function AliasManager({ account }: AliasManagerProps) {
             />
             Default alias
           </label>
-          <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+          <label className="flex min-h-11 items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
             <input
               type="checkbox"
               checked={treatAsAlias}
@@ -243,7 +243,7 @@ export function AliasManager({ account }: AliasManagerProps) {
         <div className="flex items-center gap-2">
           <button
             type="submit"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
+            className="inline-flex items-center justify-center h-11 px-3 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
           >
             <PlusIcon size={14} />
             {editingAlias ? 'Save changes' : 'Add alias'}
@@ -252,7 +252,7 @@ export function AliasManager({ account }: AliasManagerProps) {
             <button
               type="button"
               onClick={resetForm}
-              className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+              className="inline-flex items-center justify-center h-11 px-3 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
             >
               Cancel
             </button>

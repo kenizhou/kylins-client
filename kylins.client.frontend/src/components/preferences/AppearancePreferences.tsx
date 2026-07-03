@@ -118,7 +118,7 @@ export function AppearancePreferences() {
                       }`}
                     >
                       <span
-                        className="h-8 w-8 rounded-full shadow-sm ring-2 ring-white/20"
+                        className="h-11 w-11 rounded-full shadow-sm ring-2 ring-white/20"
                         style={{ background: s.swatch }}
                       />
                       <span className="text-[10px] font-medium text-[var(--muted-text)]">
@@ -190,7 +190,7 @@ export function AppearancePreferences() {
               <button
                 type="button"
                 onClick={handleReset}
-                className="px-4 py-2 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
               >
                 Reset appearance and layout
               </button>

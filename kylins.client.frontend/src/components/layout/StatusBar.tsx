@@ -91,7 +91,7 @@ export function StatusBar() {
           <Button
             onPress={() => setReaderZoom(1)}
             aria-label="Reset zoom"
-            className="min-w-[2.5rem] h-8 text-center tabular-nums rounded transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+            className="min-w-11 h-11 text-center tabular-nums rounded transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           >
             {Math.round(readerZoom * 100)}%
           </Button>
