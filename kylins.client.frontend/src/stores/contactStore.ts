@@ -6,6 +6,7 @@ export interface ContactState {
   groups: ContactGroup[];
   selectedContactId: string | null;
   selectedGroupId: string | null;
+  selectedAccountId: string | null;
   searchQuery: string;
   isLoading: boolean;
 
@@ -19,6 +20,7 @@ export interface ContactState {
   removeGroup: (id: string) => void;
   setSelectedContactId: (id: string | null) => void;
   setSelectedGroupId: (id: string | null) => void;
+  setSelectedAccountId: (id: string | null) => void;
   setSearchQuery: (query: string) => void;
   setIsLoading: (loading: boolean) => void;
 }
@@ -28,6 +30,7 @@ export const useContactStore = create<ContactState>((set) => ({
   groups: [],
   selectedContactId: null,
   selectedGroupId: null,
+  selectedAccountId: null,
   searchQuery: '',
   isLoading: false,
 
@@ -47,7 +50,7 @@ export const useContactStore = create<ContactState>((set) => ({
       return {
         contacts: next,
         selectedContactId:
-          state.selectedContactId === id ? next[0]?.id ?? null : state.selectedContactId,
+          state.selectedContactId === id ? (next[0]?.id ?? null) : state.selectedContactId,
       };
     }),
   setGroups: (groups) => set({ groups }),
@@ -66,8 +69,9 @@ export const useContactStore = create<ContactState>((set) => ({
       groups: state.groups.filter((g) => g.id !== id),
       selectedGroupId: state.selectedGroupId === id ? null : state.selectedGroupId,
     })),
-  setSelectedContactId: (id) => set({ selectedContactId: id }),
-  setSelectedGroupId: (id) => set({ selectedGroupId: id }),
+  setSelectedContactId: (id) => set({ selectedContactId: id, selectedGroupId: null }),
+  setSelectedGroupId: (id) => set({ selectedGroupId: id, selectedContactId: null }),
+  setSelectedAccountId: (id) => set({ selectedAccountId: id }),
   setSearchQuery: (query) => set({ searchQuery: query }),
   setIsLoading: (isLoading) => set({ isLoading }),
 }));
