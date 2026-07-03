@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/react';
 import { GroupDetail } from '@/components/contacts/GroupDetail';
 import type { ContactGroup, Contact } from '@/services/db/contacts';
@@ -9,7 +9,6 @@ vi.mock('@/services/db/contacts', async () => {
     ...(actual as object),
     renameContactGroup: vi.fn(() => Promise.resolve()),
     deleteContactGroup: vi.fn(() => Promise.resolve()),
-    getContacts: vi.fn(() => Promise.resolve([])),
   };
 });
 
@@ -63,6 +62,10 @@ describe('GroupDetail', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('renders group name and members', () => {
     const { getByText } = render(
       <GroupDetail group={makeGroup()} members={[makeContact()]} onUpdate={vi.fn()} />,
@@ -104,6 +107,5 @@ describe('GroupDetail', () => {
       expect(deleteContactGroup).toHaveBeenCalledWith('g-1');
       expect(onUpdate).toHaveBeenCalled();
     });
-    vi.unstubAllGlobals();
   });
 });

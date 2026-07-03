@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ContactAvatar } from './ContactAvatar';
+import { useEffect, useState } from 'react';
+import { ContactAvatar } from '@/components/contacts/ContactAvatar';
 import type { Contact, ContactGroup } from '@/services/db/contacts';
 import { renameContactGroup, deleteContactGroup } from '@/services/db/contacts';
 import { PencilIcon, TrashIcon, CheckIcon, CloseIcon, ContactsIcon } from '@/components/icons';
@@ -14,6 +14,12 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(group.name);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    // Reset local edit state when the selected group changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setName(group.name);
+  }, [group.name]);
 
   async function handleRename() {
     const trimmed = name.trim();
@@ -53,6 +59,7 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
           {isEditing ? (
             <input
               type="text"
+              aria-label="Group name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
@@ -78,7 +85,7 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
                   type="button"
                   onClick={() => void handleRename()}
                   disabled={isLoading}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
                 >
                   <CheckIcon size={13} />
                   Save
@@ -89,7 +96,7 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
                     setIsEditing(false);
                     setName(group.name);
                   }}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
                   <CloseIcon size={13} />
                   Cancel
@@ -99,7 +106,7 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
               <button
                 type="button"
                 onClick={() => setIsEditing(true)}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               >
                 <PencilIcon size={13} />
                 Rename
@@ -109,7 +116,7 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
               type="button"
               onClick={() => void handleDelete()}
               disabled={isLoading}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
             >
               <TrashIcon size={13} />
               Delete
