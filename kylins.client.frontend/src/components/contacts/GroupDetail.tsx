@@ -1,19 +1,24 @@
 import { useEffect, useState } from 'react';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
 import type { Contact, ContactGroup } from '@/services/db/contacts';
-import { renameContactGroup, deleteContactGroup } from '@/services/db/contacts';
+import {
+  renameContactGroup,
+  deleteContactGroup,
+  getContactIdsForGroup,
+} from '@/services/db/contacts';
 import { PencilIcon, TrashIcon, CheckIcon, CloseIcon, ContactsIcon } from '@/components/icons';
 
 interface GroupDetailProps {
   group: ContactGroup;
-  members: Contact[];
+  contacts: Contact[];
   onUpdate: () => void;
 }
 
-export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
+export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(group.name);
   const [isLoading, setIsLoading] = useState(false);
+  const [memberIds, setMemberIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     // Reset local edit state when the selected group changes.
@@ -21,6 +26,19 @@ export function GroupDetail({ group, members, onUpdate }: GroupDetailProps) {
     setName(group.name);
     setIsEditing(false);
   }, [group.id, group.name]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getContactIdsForGroup(group.id).then((ids) => {
+      if (cancelled) return;
+      setMemberIds(new Set(ids));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [group.id]);
+
+  const members = contacts.filter((c) => memberIds.has(c.id));
 
   async function handleRename() {
     const trimmed = name.trim();

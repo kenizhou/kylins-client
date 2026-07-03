@@ -9,6 +9,7 @@ vi.mock('@/services/db/contacts', async () => {
     ...(actual as object),
     renameContactGroup: vi.fn(() => Promise.resolve()),
     deleteContactGroup: vi.fn(() => Promise.resolve()),
+    getContactIdsForGroup: vi.fn(() => Promise.resolve(['c-1'])),
   };
 });
 
@@ -66,17 +67,17 @@ describe('GroupDetail', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders group name and members', () => {
-    const { getByText } = render(
-      <GroupDetail group={makeGroup()} members={[makeContact()]} onUpdate={vi.fn()} />,
+  it('renders group name and members', async () => {
+    const { getByText, findByText } = render(
+      <GroupDetail group={makeGroup()} contacts={[makeContact()]} onUpdate={vi.fn()} />,
     );
     expect(getByText('Team Leads')).toBeInTheDocument();
-    expect(getByText('Ada Lovelace')).toBeInTheDocument();
+    expect(await findByText('Ada Lovelace')).toBeInTheDocument();
   });
 
   it('shows empty state when no members', () => {
     const { getByText } = render(
-      <GroupDetail group={makeGroup()} members={[]} onUpdate={vi.fn()} />,
+      <GroupDetail group={makeGroup()} contacts={[]} onUpdate={vi.fn()} />,
     );
     expect(getByText('No members yet')).toBeInTheDocument();
   });
@@ -84,7 +85,7 @@ describe('GroupDetail', () => {
   it('renames group and calls onUpdate', async () => {
     const onUpdate = vi.fn();
     const { getByText, getByDisplayValue } = render(
-      <GroupDetail group={makeGroup()} members={[]} onUpdate={onUpdate} />,
+      <GroupDetail group={makeGroup()} contacts={[]} onUpdate={onUpdate} />,
     );
     fireEvent.click(getByText('Rename'));
     const input = getByDisplayValue('Team Leads');
@@ -100,7 +101,7 @@ describe('GroupDetail', () => {
     vi.stubGlobal('confirm', () => true);
     const onUpdate = vi.fn();
     const { getByText } = render(
-      <GroupDetail group={makeGroup()} members={[]} onUpdate={onUpdate} />,
+      <GroupDetail group={makeGroup()} contacts={[]} onUpdate={onUpdate} />,
     );
     fireEvent.click(getByText('Delete'));
     await waitFor(() => {

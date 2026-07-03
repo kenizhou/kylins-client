@@ -156,11 +156,7 @@ export function ContactsPage() {
             <GroupDetail
               key={selectedGroup.id}
               group={selectedGroup}
-              members={contacts.filter(
-                (_c) =>
-                  // TODO: load members via getContactIdsForGroup + getContacts, or load inside GroupDetail.
-                  false,
-              )}
+              contacts={contacts}
               onUpdate={() => void refresh()}
             />
           ) : (
