@@ -416,14 +416,15 @@ export interface SetupSelectProps {
   value: string;
   onChange: (value: string) => void;
   options: SetupSelectOption[];
+  label?: string;
 }
 
-export function SetupSelect({ value, onChange, options }: SetupSelectProps) {
+export function SetupSelect({ value, onChange, options, label }: SetupSelectProps) {
   return (
     <Select selectedKey={value} onSelectionChange={(key) => onChange(String(key))}>
       <Button
         className={`${inputBase} flex items-center justify-between text-left`}
-        aria-label="Select an option"
+        aria-label={label ?? 'Select an option'}
       >
         <SelectValue />
         <span aria-hidden="true">▾</span>

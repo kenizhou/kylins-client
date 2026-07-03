@@ -7,8 +7,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { searchContacts, type DbContact } from '@/services/db/contacts';
 import { parseRecipients, isValidEmail, type Recipient } from '@/features/composer/contacts';
-import { CopyIcon, MoveIcon, TrashIcon } from '@/components/icons';
-import { CaretDown } from '@phosphor-icons/react';
+import { CopyIcon, MoveIcon, TrashIcon, CaretDownIcon } from '@/components/icons';
 
 export type MoveTarget = 'to' | 'cc' | 'bcc';
 
@@ -190,12 +189,13 @@ export function RecipientField({
                   e.stopPropagation();
                   setMenuIndex(menuOpen ? null : i);
                 }}
-                className="flex h-4 w-4 items-center justify-center rounded text-[0.625rem] leading-none opacity-60 hover:bg-black/10 hover:opacity-100 transition-opacity"
+                className="relative flex h-6 w-6 items-center justify-center rounded text-[0.625rem] leading-none opacity-60 hover:bg-black/10 hover:opacity-100 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label={`Actions for ${r.email}`}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
               >
-                <CaretDown size={10} weight="bold" />
+                <span className="absolute -inset-1" aria-hidden="true" />
+                <CaretDownIcon size={10} />
               </button>
               {menuOpen && (
                 <>

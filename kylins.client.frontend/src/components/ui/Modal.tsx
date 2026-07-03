@@ -45,7 +45,7 @@ export function Modal({
       }}
       isDismissable={!disableBackdropClose}
       isKeyboardDismissDisabled={disableBackdropClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
     >
       <RACModal
         className={`relative flex flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl ${SIZE_CLASSES[size]} ${className}`}

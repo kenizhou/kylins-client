@@ -1,5 +1,6 @@
 import { Checkbox } from 'react-aria-components';
 import type { SecurityMode } from '../../types';
+import { CheckIcon, CloseIcon } from '../icons';
 import {
   SetupCard,
   SetupHeader,
@@ -84,6 +85,7 @@ export function ImapManualForm({
                 value={values.imapSecurity}
                 onChange={(value) => onChange({ imapSecurity: value as SecurityMode })}
                 options={SECURITY_OPTIONS}
+                label="Incoming security"
               />
             </SetupField>
           </div>
@@ -117,6 +119,7 @@ export function ImapManualForm({
                 value={values.smtpSecurity}
                 onChange={(value) => onChange({ smtpSecurity: value as SecurityMode })}
                 options={SECURITY_OPTIONS}
+                label="Outgoing security"
               />
             </SetupField>
           </div>
@@ -126,14 +129,21 @@ export function ImapManualForm({
       <div className="mt-8 flex flex-col gap-3">
         {testResult && (
           <div
-            className={`rounded-lg border px-3 py-2 text-sm ${
+            role="status"
+            aria-live="polite"
+            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
               testResult.success
                 ? 'border-green-500/20 bg-green-500/10 text-green-700 dark:text-green-400'
                 : 'border-red-500/20 bg-red-500/10 text-[var(--destructive)]'
             }`}
           >
-            {testResult.success ? '✓ ' : '✗ '}
-            {testResult.message}
+            <span
+              aria-hidden="true"
+              className={testResult.success ? 'text-green-600' : 'text-[var(--destructive)]'}
+            >
+              {testResult.success ? <CheckIcon size={14} /> : <CloseIcon size={14} />}
+            </span>
+            <span>{testResult.message}</span>
           </div>
         )}
         <div className="flex items-center justify-between">

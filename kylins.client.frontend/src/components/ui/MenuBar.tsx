@@ -6,6 +6,7 @@ import { formatBindingForDisplay } from '../../services/shortcuts/shortcutEngine
 import { isMac } from '../../utils/platform';
 import { ViewMenu } from '../../features/view/components/ViewMenu';
 import { useComposerStore } from '../../stores/composerStore';
+import { CheckIcon } from '../icons';
 import { Button, Menu, MenuItem, Popover, Separator, SubmenuTrigger } from 'react-aria-components';
 
 // ---------- Shared hover-timeout hook ----------
@@ -413,7 +414,9 @@ function CategoryMenu({ items, onClose, label }: CategoryMenuProps) {
           data-danger={item.danger || undefined}
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-foreground outline-none hover:bg-hover [&[data-hovered]]:bg-hover [&[data-focused]]:bg-hover disabled:cursor-default disabled:text-muted-text disabled:opacity-50 [&[data-danger]]:text-red-600"
         >
-          <span className="inline-flex w-4 justify-center">{item.checked ? '✓' : ''}</span>
+          <span className="inline-flex w-4 justify-center">
+            {item.checked ? <CheckIcon size={14} /> : ''}
+          </span>
           <span className="flex-1 truncate">{item.label}</span>
           {shortcut && <span className="text-xs text-muted-text">{shortcut}</span>}
         </MenuItem>

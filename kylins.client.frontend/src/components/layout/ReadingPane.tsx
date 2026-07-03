@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
-import { ArrowBendDoubleUpLeft, ArrowBendUpLeft, ArrowBendUpRight } from '@phosphor-icons/react';
-import { MailIcon } from '../icons';
+import { MailIcon, ReplyFilledIcon, ReplyAllFilledIcon, ForwardFilledIcon } from '../icons';
 import { IconButton } from '../ui/IconButton';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -211,7 +210,7 @@ export function ReadingPane() {
               onClick={handleReply}
               icon={
                 <span className="text-[var(--primary)]">
-                  <ArrowBendUpLeft size={18} weight="bold" />
+                  <ReplyFilledIcon size={18} />
                 </span>
               }
             />
@@ -222,7 +221,7 @@ export function ReadingPane() {
               onClick={handleReplyAll}
               icon={
                 <span className="text-[var(--primary)]">
-                  <ArrowBendDoubleUpLeft size={18} weight="bold" />
+                  <ReplyAllFilledIcon size={18} />
                 </span>
               }
             />
@@ -233,7 +232,7 @@ export function ReadingPane() {
               onClick={handleForward}
               icon={
                 <span className="text-[var(--primary)]">
-                  <ArrowBendUpRight size={18} weight="bold" />
+                  <ForwardFilledIcon size={18} />
                 </span>
               }
             />

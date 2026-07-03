@@ -12,6 +12,7 @@ import {
   CaretDownIcon,
   MailOpenIcon,
   MailIcon,
+  CheckIcon,
 } from '../../icons';
 import { useComposerStore } from '../../../stores/composerStore';
 import type { Importance } from '../../../stores/composerStore';
@@ -125,7 +126,7 @@ export function ComposeRibbon() {
                   <MailOpenIcon size={14} />
                 </span>
                 <span className="flex-1 whitespace-nowrap">Read Receipt</span>
-                {requestReadReceipt && <span className="text-[var(--primary)]">✓</span>}
+                {requestReadReceipt && <CheckIcon size={14} className="text-[var(--primary)]" />}
               </MenuItem>
               <MenuItem
                 id="delivery-receipt"
@@ -136,7 +137,9 @@ export function ComposeRibbon() {
                   <MailIcon size={14} />
                 </span>
                 <span className="flex-1 whitespace-nowrap">Delivery Receipt</span>
-                {requestDeliveryReceipt && <span className="text-[var(--primary)]">✓</span>}
+                {requestDeliveryReceipt && (
+                  <CheckIcon size={14} className="text-[var(--primary)]" />
+                )}
               </MenuItem>
             </Menu>
           </Popover>

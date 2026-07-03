@@ -416,13 +416,14 @@ function AccountFolderTree({
                 {hasChildItems ? (
                   <Button
                     slot="chevron"
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+                    className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
                   >
+                    <span className="absolute -inset-1" aria-hidden="true" />
                     {isExpanded ? <ArrowDownIcon size={12} /> : <ArrowRightIcon size={12} />}
                   </Button>
                 ) : (
-                  <span className="w-5 shrink-0" />
+                  <span className="w-8 shrink-0" />
                 )}
                 {renaming ? (
                   <div

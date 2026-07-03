@@ -84,7 +84,10 @@ export function ContactList() {
           />
           <Input className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-8 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/60 focus:border-[var(--primary)]" />
           {searchQuery !== '' && (
-            <Button className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-0.5 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+            <Button
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-0.5 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            >
               <CloseIcon size={14} />
             </Button>
           )}
@@ -145,6 +148,7 @@ export function ContactList() {
                       key={contact.id}
                       role="button"
                       tabIndex={0}
+                      aria-selected={active}
                       onClick={() => setSelectedContactId(contact.id)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -152,7 +156,7 @@ export function ContactList() {
                           setSelectedContactId(contact.id);
                         }
                       }}
-                      className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
+                      className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                         active
                           ? 'border-[var(--primary)] bg-[var(--selected)]'
                           : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)]'

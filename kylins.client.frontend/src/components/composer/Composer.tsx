@@ -906,7 +906,7 @@ export function Composer({ windowed = false }: ComposerProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+    <div className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center p-4 pointer-events-none">
       <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={closeComposer} />
       {composerPanel}
     </div>

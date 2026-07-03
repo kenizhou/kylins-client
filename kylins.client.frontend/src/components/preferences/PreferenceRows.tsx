@@ -92,7 +92,7 @@ export function SelectRow({
             <ListBoxItem
               key={opt.value}
               id={opt.value}
-              className="cursor-pointer px-3 py-2 text-sm text-foreground hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:outline-none"
+              className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
             >
               {opt.label}
             </ListBoxItem>

@@ -93,7 +93,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
         if (!open) onClose();
       }}
       isDismissable
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
     >
       <RACModal className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-xl outline-none">
         <Dialog aria-label="New event" className="outline-none">

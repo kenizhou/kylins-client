@@ -61,7 +61,7 @@ export function InputDialog({
         if (!open) onClose();
       }}
       isDismissable
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/30 p-4"
     >
       <RACModal className="relative w-80 rounded-lg border border-border bg-background p-4 shadow-xl outline-none">
         <Dialog aria-label={title} className="outline-none">

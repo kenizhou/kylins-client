@@ -51,16 +51,18 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
       <div className="flex items-center overflow-hidden rounded-md border border-border">
         <Button
           onPress={() => shift(-1)}
-          aria-label="Previous"
-          className="flex h-7 w-7 items-center justify-center border-r border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+          aria-label="Previous period"
+          className="relative flex h-9 w-9 items-center justify-center border-r border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
+          <span className="absolute -inset-1" aria-hidden="true" />
           <ArrowLeftIcon size={14} />
         </Button>
         <Button
           onPress={() => shift(1)}
-          aria-label="Next"
-          className="flex h-7 w-7 items-center justify-center text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+          aria-label="Next period"
+          className="relative flex h-9 w-9 items-center justify-center text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
+          <span className="absolute -inset-1" aria-hidden="true" />
           <ArrowRightIcon size={14} />
         </Button>
       </div>

@@ -15,8 +15,8 @@ export interface IconButtonProps {
 /**
  * Consistent icon-only or icon+label button with accessible touch targets.
  *
- * - `sm` = 32×32 (minimum comfortable desktop hit area)
- * - `md` = 36×36 (ribbon/toolbar buttons)
+ * - `sm` = 36×36 visible button with a 44×44 hit slop
+ * - `md` = 36×36 visible button (icon + label) with a 44×44 hit slop
  *
  * Always renders a visible focus ring and clearly disabled state.
  */
@@ -24,7 +24,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   { icon, label, title, size = 'sm', disabled = false, active = false, className, onClick },
   ref,
 ) {
-  const sizeClass = size === 'md' ? 'h-9 px-2 gap-1.5' : 'h-8 w-8';
+  const sizeClass = size === 'md' ? 'h-9 px-2 gap-1.5' : 'h-9 w-9';
   const labelClass = label ? 'px-2 w-auto' : '';
 
   return (
@@ -34,10 +34,11 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       onPress={onClick}
       aria-label={title ?? label}
       data-active={active || undefined}
-      className={`inline-flex items-center justify-center rounded text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`relative inline-flex items-center justify-center rounded text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         active ? 'bg-selected text-selected-text' : 'hover:bg-hover hover:text-foreground'
       } ${sizeClass} ${labelClass} ${className ?? ''}`}
     >
+      <span className="absolute -inset-1" aria-hidden="true" />
       {icon}
       {label && <span className="whitespace-nowrap text-sm text-foreground">{label}</span>}
     </Button>
