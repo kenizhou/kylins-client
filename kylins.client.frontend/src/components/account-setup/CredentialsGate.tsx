@@ -1,3 +1,4 @@
+import { Button } from 'react-aria-components';
 import { useState } from 'react';
 import type { ProviderConfig } from '../../services/auth/providers';
 import {
@@ -97,13 +98,12 @@ export function CredentialsGate({
 
         {isOAuth && (
           <div className="flex flex-col gap-3">
-            <button
-              type="button"
-              className="self-start text-xs font-medium text-[var(--muted-text)] underline transition-colors hover:text-[var(--foreground)]"
-              onClick={() => setShowAdvanced((v) => !v)}
+            <Button
+              className="self-start text-xs font-medium text-[var(--muted-text)] underline transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--series-accent)]"
+              onPress={() => setShowAdvanced((v) => !v)}
             >
               {showAdvanced ? 'Hide' : 'Show'} advanced OAuth credentials
-            </button>
+            </Button>
 
             {showAdvanced && (
               <div className="flex flex-col gap-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-3">
@@ -129,14 +129,14 @@ export function CredentialsGate({
       </div>
 
       <div className="mt-8 flex items-center justify-between">
-        <SetupBackButton onClick={onBack} />
+        <SetupBackButton onPress={onBack} />
         <div className="flex items-center gap-2">
           {config.authType === 'password' && !config.presets && (
-            <SetupButton variant="secondary" onClick={onManualSetup}>
+            <SetupButton variant="secondary" onPress={onManualSetup}>
               Manual setup
             </SetupButton>
           )}
-          <SetupButton onClick={onSignIn} disabled={!canSubmit}>
+          <SetupButton onPress={onSignIn} disabled={!canSubmit}>
             {isOAuth ? 'Continue with provider' : 'Sign in'}
           </SetupButton>
         </div>

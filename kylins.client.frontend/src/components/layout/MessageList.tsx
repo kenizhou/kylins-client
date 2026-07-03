@@ -32,6 +32,8 @@ import {
 } from '../icons';
 import { ContextMenu } from '../ui/ContextMenu';
 import { openComposerForThread } from '../../utils/composerActions';
+import { FolderPickerMenu } from './ribbon/FolderPickerMenu';
+import type { MailFolder } from '../../services/mail/folders/folderModel';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -211,6 +213,7 @@ export function MessageList() {
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
   const deleteThread = useThreadStore((s) => s.deleteThread);
+  const moveThread = useThreadStore((s) => s.moveThread);
 
   const visibleColumns = visibleColumnIds
     .map((id) => COLUMN_REGISTRY.get(id))
@@ -264,6 +267,7 @@ export function MessageList() {
   };
 
   const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+  const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
 
   const showEmpty = !isLoading && items.length === 0;
 
@@ -309,7 +313,11 @@ export function MessageList() {
       { label: 'Find Related', icon: SearchIcon, disabled: true },
       { label: 'Rules', icon: PreferencesMailRulesIcon, disabled: true },
       { separator: true },
-      { label: 'Move', icon: MoveIcon, disabled: true },
+      {
+        label: 'Move',
+        icon: MoveIcon,
+        onSelect: () => setMoveMenu({ thread: menu.thread, x: menu.x, y: menu.y }),
+      },
       { label: 'Junk', icon: BellIcon, disabled: true },
       {
         label: 'Delete',
@@ -339,7 +347,36 @@ export function MessageList() {
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 overflow-auto">
+      <div
+        ref={scrollRef}
+        tabIndex={0}
+        className="flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+          e.preventDefault();
+          const direction = e.key === 'ArrowDown' ? 1 : -1;
+          const currentIndex = items.findIndex(
+            (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+          );
+          function nextThreadIndex(start: number, dir: 1 | -1): number | null {
+            let i = start + dir;
+            while (i >= 0 && i < items.length) {
+              if (items[i]?.kind === 'thread') return i;
+              i += dir;
+            }
+            return null;
+          }
+          const nextIndex =
+            currentIndex === -1
+              ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
+              : nextThreadIndex(currentIndex, direction);
+          if (nextIndex == null) return;
+          const nextItem = items[nextIndex];
+          if (!nextItem || nextItem.kind !== 'thread') return;
+          void selectThread(nextItem.thread);
+          virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+        }}
+      >
         {isLoading && items.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
             <MailIcon size={24} className="opacity-50" />
@@ -394,6 +431,18 @@ export function MessageList() {
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
+      {moveMenu && (
+        <FolderPickerMenu
+          accountId={moveMenu.thread.accountId}
+          excludeLabelId={selectedFolder?.labelId}
+          style={{ position: 'fixed', left: moveMenu.x, top: moveMenu.y, zIndex: 80 }}
+          onSelect={(folder: MailFolder) => {
+            void moveThread(moveMenu.thread, folder.id, folder.remoteId ?? folder.name);
+            setMoveMenu(null);
+          }}
+          onClose={() => setMoveMenu(null)}
+        />
       )}
     </div>
   );

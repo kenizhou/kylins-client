@@ -47,6 +47,7 @@ export interface DraftInput {
   isSigned?: boolean;
   importance?: Importance;
   requestReadReceipt?: boolean;
+  requestDeliveryReceipt?: boolean;
   deliverAt?: number | null;
   preventCopy?: boolean;
   /**

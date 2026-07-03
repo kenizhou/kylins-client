@@ -1,3 +1,4 @@
+import { Button } from 'react-aria-components';
 import { useEffect, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { useUIStore } from '../../stores/uiStore';
@@ -87,14 +88,13 @@ export function StatusBar() {
             title="Zoom out"
             onClick={() => setReaderZoom(clampZoom(+(readerZoom - 0.1).toFixed(1)))}
           />
-          <button
-            type="button"
-            onClick={() => setReaderZoom(1)}
-            className="min-w-[2.5rem] h-8 text-center tabular-nums rounded transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-            title="Reset zoom"
+          <Button
+            onPress={() => setReaderZoom(1)}
+            aria-label="Reset zoom"
+            className="min-w-[2.5rem] h-8 text-center tabular-nums rounded transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           >
             {Math.round(readerZoom * 100)}%
-          </button>
+          </Button>
           <IconButton
             icon={<PlusIcon size={11} />}
             title="Zoom in"

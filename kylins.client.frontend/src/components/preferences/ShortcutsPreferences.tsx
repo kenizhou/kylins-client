@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SearchField, Input, Button } from 'react-aria-components';
 import { useShortcutStore } from '../../stores/shortcutStore';
 import type { ShortcutSet } from '../../services/shortcuts/shortcutDefaults';
 import {
@@ -85,33 +86,30 @@ function ShortcutRow({
 
       <div className="flex items-center gap-2 shrink-0">
         {isRecording ? (
-          <button
-            type="button"
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] animate-pulse"
-            onClick={() => onStartRecording('')}
+          <Button
+            onPress={() => onStartRecording('')}
+            className="px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] animate-pulse focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             Press keys…
-          </button>
+          </Button>
         ) : (
-          <button
-            type="button"
-            onClick={() => onStartRecording(commandId)}
-            className="flex items-center gap-2 px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)] transition-colors"
-            title="Click to change"
+          <Button
+            onPress={() => onStartRecording(commandId)}
+            className="flex items-center gap-2 px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            aria-label={`Change shortcut for ${command?.label ?? commandId}`}
           >
             <Kbd>{formatBindingForDisplay(binding || '—', mac)}</Kbd>
-          </button>
+          </Button>
         )}
 
         {!isDefault && !isRecording && (
-          <button
-            type="button"
-            onClick={() => onReset(commandId)}
-            className="p-1 rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors"
-            title="Reset to default"
+          <Button
+            onPress={() => onReset(commandId)}
+            className="p-1 rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            aria-label="Reset to default"
           >
             <CloseIcon size={12} />
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -135,7 +133,7 @@ export function ShortcutsPreferences() {
   const hasCustomizations = useMemo(() => {
     const overrides = shortcutManager.getOverrides()[activeSet];
     return overrides ? Object.keys(overrides).length > 0 : false;
-  }, [activeSet, keyMap]);
+  }, [activeSet]);
 
   useEffect(() => {
     if (!recordingId) return;
@@ -212,21 +210,30 @@ export function ShortcutsPreferences() {
             </div>
 
             <div className="flex items-center justify-between gap-4">
-              <input
-                type="text"
+              <SearchField
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search shortcuts…"
-                className="flex-1 h-9 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
-              />
+                onChange={setSearch}
+                className="relative flex-1"
+                aria-label="Search shortcuts"
+              >
+                <Input
+                  type="text"
+                  placeholder="Search shortcuts…"
+                  className="flex-1 h-9 px-3 pr-8 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+                />
+                {search !== '' && (
+                  <Button className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-0.5 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+                    <CloseIcon size={14} />
+                  </Button>
+                )}
+              </SearchField>
               {hasCustomizations && (
-                <button
-                  type="button"
-                  onClick={() => void resetAll()}
-                  className="px-4 py-2 text-xs font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                <Button
+                  onPress={() => void resetAll()}
+                  className="px-4 py-2 text-xs font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                 >
                   Reset all
-                </button>
+                </Button>
               )}
             </div>
           </div>

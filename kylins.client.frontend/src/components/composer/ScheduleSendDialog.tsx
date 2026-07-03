@@ -6,8 +6,9 @@
 // AM) plus a native datetime-local picker for a custom time. Timestamps are
 // unix seconds (matching the `scheduled_emails.scheduled_at` column).
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { CloseIcon } from '../icons';
+import { Button, Dialog, Modal as RACModal, ModalOverlay } from 'react-aria-components';
 
 interface SchedulePreset {
   label: string;
@@ -73,99 +74,68 @@ export function ScheduleSendDialog({ onSchedule, onClose }: ScheduleSendDialogPr
   const presets = getSchedulePresets();
   const [custom, setCustom] = useState('');
   const customTs = datetimeLocalToUnix(custom);
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-      if (e.key !== 'Tab' || !panelRef.current) return;
-      const focusable = Array.from(
-        panelRef.current.querySelectorAll(
-          'button, input, [href], select, textarea, [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((el) => !el.hasAttribute('disabled')) as HTMLElement[];
-      if (focusable.length === 0) return;
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
-
-    document.addEventListener('keydown', onKey);
-    // Focus the first preset button when the dialog opens.
-    const firstButton = panelRef.current?.querySelector('button');
-    firstButton?.focus();
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30"
-      onClick={onClose}
+    <ModalOverlay
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      isDismissable
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
     >
-      <div
-        ref={panelRef}
-        onClick={(e) => e.stopPropagation()}
-        className="relative w-80 rounded-lg border border-[var(--border)] bg-[var(--background)] p-4 shadow-xl"
-      >
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
-          aria-label="Close"
-        >
-          <CloseIcon size={14} />
-        </button>
+      <RACModal className="relative w-80 rounded-lg border border-border bg-background p-4 shadow-xl outline-none">
+        <Dialog aria-label="Schedule send" className="outline-none">
+          <Button
+            slot="close"
+            className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-hover hover:text-foreground"
+            aria-label="Close"
+          >
+            <CloseIcon size={14} />
+          </Button>
 
-        <h3 className="mb-3 pr-6 text-sm font-medium text-[var(--foreground)]">Schedule send</h3>
+          <h3 className="mb-3 pr-6 text-sm font-medium text-foreground">Schedule send</h3>
 
-        <div className="space-y-1">
-          {presets.map((p) => (
-            <button
-              key={p.label}
-              onClick={() => onSchedule(p.timestamp)}
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-[var(--hover)]"
+          <div className="space-y-1">
+            {presets.map((p) => (
+              <Button
+                key={p.label}
+                onPress={() => onSchedule(p.timestamp)}
+                className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span>{p.label}</span>
+                <span className="text-xs text-muted-foreground">{p.detail}</span>
+              </Button>
+            ))}
+          </div>
+
+          <div className="mt-3 border-t border-border pt-3">
+            <label className="mb-1 block text-xs text-muted-text">Pick a date & time</label>
+            <input
+              type="datetime-local"
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              className="h-8 w-full rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+            />
+          </div>
+
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              slot="close"
+              className="h-8 rounded px-3 text-sm text-foreground transition-colors hover:bg-hover"
             >
-              <span className="text-[var(--foreground)]">{p.label}</span>
-              <span className="text-xs text-[var(--muted-foreground)]">{p.detail}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-3 border-t border-[var(--border)] pt-3">
-          <label className="mb-1 block text-xs text-[var(--muted-text)]">Pick a date & time</label>
-          <input
-            type="datetime-local"
-            value={custom}
-            onChange={(e) => setCustom(e.target.value)}
-            className="h-8 w-full rounded border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
-          />
-        </div>
-
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="h-8 rounded px-3 text-sm text-[var(--foreground)] hover:bg-[var(--hover)]"
-          >
-            Cancel
-          </button>
-          <button
-            disabled={customTs === null}
-            onClick={() => customTs !== null && onSchedule(customTs)}
-            className="h-8 rounded bg-[var(--primary)] px-3 text-sm text-[var(--primary-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Schedule
-          </button>
-        </div>
-      </div>
-    </div>
+              Cancel
+            </Button>
+            <Button
+              isDisabled={customTs === null}
+              onPress={() => customTs !== null && onSchedule(customTs)}
+              className="h-8 rounded bg-primary px-3 text-sm text-primary-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Schedule
+            </Button>
+          </div>
+        </Dialog>
+      </RACModal>
+    </ModalOverlay>
   );
 }

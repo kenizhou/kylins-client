@@ -1,3 +1,4 @@
+import { Input } from 'react-aria-components';
 import { useState, useEffect, useRef } from 'react';
 import { SetupCard, SetupHeader, SetupButton, SetupBackButton } from './setup-ui';
 
@@ -52,12 +53,12 @@ export function OAuthPendingScreen({
               Didn’t open? Paste this URL into your browser:
             </p>
             <div className="flex items-center gap-2">
-              <input
+              <Input
                 readOnly
                 value={fallbackUrl}
                 className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-xs text-[var(--foreground)]"
               />
-              <SetupButton variant="secondary" onClick={copy}>
+              <SetupButton variant="secondary" onPress={copy}>
                 {copied ? 'Copied' : 'Copy'}
               </SetupButton>
             </div>
@@ -66,7 +67,7 @@ export function OAuthPendingScreen({
       </div>
 
       <div className="mt-8 flex justify-center">
-        <SetupBackButton onClick={onCancel} />
+        <SetupBackButton onPress={onCancel} />
       </div>
     </SetupCard>
   );

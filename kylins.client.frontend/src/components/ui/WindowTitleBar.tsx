@@ -1,3 +1,4 @@
+import { Button } from 'react-aria-components';
 import { useEffect, useState, type ReactNode } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { MinimizeIcon, MaximizeIcon, RestoreIcon, CloseIcon } from '@/components/icons';
@@ -69,32 +70,27 @@ export function WindowControls({ className }: WindowControlsProps) {
 
   return (
     <div className={`flex items-center ${className ?? ''}`}>
-      <button
-        type="button"
-        onClick={handleMinimize}
-        className="inline-flex h-8 w-9 items-center justify-center rounded text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        title="Minimize"
+      <Button
+        onPress={handleMinimize}
+        className="inline-flex h-8 w-9 items-center justify-center rounded text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
         aria-label="Minimize"
       >
         <MinimizeIcon size={14} />
-      </button>
-      <button
-        type="button"
-        onClick={handleToggleMaximize}
-        className="inline-flex h-8 w-9 items-center justify-center rounded text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        title={isMaximized ? 'Restore' : 'Maximize'}
+      </Button>
+      <Button
+        onPress={handleToggleMaximize}
+        className="inline-flex h-8 w-9 items-center justify-center rounded text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
         aria-label={isMaximized ? 'Restore' : 'Maximize'}
       >
         {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-      </button>
-      <button
-        type="button"
-        onClick={handleClose}
-        className="inline-flex h-8 w-9 items-center justify-center rounded text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)] hover:text-[var(--primary-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      </Button>
+      <Button
+        onPress={handleClose}
+        className="inline-flex h-8 w-9 items-center justify-center rounded text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)] hover:text-[var(--primary-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
         aria-label="Close window"
       >
         <CloseIcon size={14} />
-      </button>
+      </Button>
     </div>
   );
 }
