@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
 import { SearchField, Input, Button } from 'react-aria-components';
-import { useContactStore } from '../../stores/contactStore';
-import { ContactAvatar } from './ContactAvatar';
-import type { Contact, ContactGroup } from '../../services/db/contacts';
-import { SearchIcon, CloseIcon, ContactsIcon } from '../icons';
+import { useContactStore } from '@/stores/contactStore';
+import { ContactAvatar } from '@/components/contacts/ContactAvatar';
+import type { Contact, ContactGroup } from '@/services/db/contacts';
+import { SearchIcon, CloseIcon, ContactsIcon } from '@/components/icons';
 
 const LOCAL_SENTINEL = 'local';
 
@@ -78,11 +78,11 @@ export function ContactList() {
             size={14}
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-text)]"
           />
-          <Input className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-8 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/60 focus:border-[var(--primary)]" />
+          <Input className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-14 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/60 focus:border-[var(--primary)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] min-h-11" />
           {searchQuery !== '' && (
             <Button
               aria-label="Clear search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-0.5 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-0.5 min-h-11 min-w-11 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               <CloseIcon size={14} />
             </Button>
@@ -98,14 +98,14 @@ export function ContactList() {
             {searchQuery || selectedAccountId ? 'No matching contacts.' : 'No contacts yet.'}
           </div>
         ) : (
-          <ul className="space-y-1" role="list">
+          <ul className="space-y-1" role="listbox">
             {items.map((item) => {
               if (item.kind === 'group') {
                 const active = item.id === selectedGroupId;
                 return (
                   <li
-                    key={item.id}
-                    role="listitem"
+                    key={`group-${item.id}`}
+                    role="option"
                     tabIndex={0}
                     aria-selected={active}
                     onClick={() => setSelectedGroupId(item.id)}
@@ -115,7 +115,7 @@ export function ContactList() {
                         setSelectedGroupId(item.id);
                       }
                     }}
-                    className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+                    className={`flex items-center gap-3 rounded-lg border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                       active
                         ? 'border-[var(--primary)] bg-[var(--selected)]'
                         : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)]'
@@ -138,8 +138,8 @@ export function ContactList() {
               const active = contact.id === selectedContactId;
               return (
                 <li
-                  key={contact.id}
-                  role="listitem"
+                  key={`contact-${contact.id}`}
+                  role="option"
                   tabIndex={0}
                   aria-selected={active}
                   onClick={() => setSelectedContactId(contact.id)}
@@ -149,7 +149,7 @@ export function ContactList() {
                       setSelectedContactId(contact.id);
                     }
                   }}
-                  className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+                  className={`flex items-center gap-3 rounded-lg border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                     active
                       ? 'border-[var(--primary)] bg-[var(--selected)]'
                       : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)]'

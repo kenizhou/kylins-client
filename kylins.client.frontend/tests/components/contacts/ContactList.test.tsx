@@ -1,16 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/react';
-import { ContactList } from '../../../src/components/contacts/ContactList';
-import { useContactStore } from '../../../src/stores/contactStore';
-import type { Contact, ContactGroup } from '../../../src/services/db/contacts';
-
-vi.mock('../../../src/services/db/contacts', async () => {
-  const actual = await vi.importActual('../../../src/services/db/contacts');
-  return {
-    ...(actual as object),
-    getContactIdsForGroup: vi.fn(() => Promise.resolve([])),
-  };
-});
+import { ContactList } from '@/components/contacts/ContactList';
+import { useContactStore } from '@/stores/contactStore';
+import type { Contact, ContactGroup } from '@/services/db/contacts';
 
 function makeContact(overrides: Partial<Contact> = {}): Contact {
   return {
