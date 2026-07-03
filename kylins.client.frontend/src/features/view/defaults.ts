@@ -1,4 +1,4 @@
-import type { ColumnDef, ViewState } from './types';
+import type { ColumnDef, PanelSizeMap, ViewState } from './types';
 
 export const DEFAULT_MESSAGE_LIST_COLUMNS: ColumnDef[] = [
   {
@@ -72,6 +72,14 @@ export const DEFAULT_MESSAGE_LIST_COLUMNS: ColumnDef[] = [
   },
 ];
 
+export const DEFAULT_PANEL_SIZES: PanelSizeMap = {
+  // Outlook-like proportions: folder ~200-260 px at common widths, generous
+  // message list, reading pane getting the remaining space.
+  right: { folder: 18, list: 38, reader: 44 },
+  bottom: { folder: 20, list: 48, reader: 32 },
+  off: { folder: 22, list: 78 },
+};
+
 export const DEFAULT_VIEW_STATE: ViewState = {
   readingPanePosition: 'right',
   folderPaneVisible: true,
@@ -80,6 +88,7 @@ export const DEFAULT_VIEW_STATE: ViewState = {
   conversationView: false,
   messageListDensity: 'normal',
   visibleColumnIds: DEFAULT_MESSAGE_LIST_COLUMNS.filter((c) => c.defaultVisible).map((c) => c.id),
+  panelSizes: DEFAULT_PANEL_SIZES,
 };
 
 export const COLUMN_REGISTRY = new Map(DEFAULT_MESSAGE_LIST_COLUMNS.map((c) => [c.id, c]));

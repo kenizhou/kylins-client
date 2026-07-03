@@ -54,9 +54,10 @@ function avatarTextColor(name: string): string {
   return luminance(r, g, b) > 0.55 ? '#0f172a' : '#ffffff';
 }
 
-function recipientList(recipients: { name: string; address: string }[]): string {
-  if (recipients.length === 0) return '';
-  const first = recipients[0]!;
+function recipientList(recipients: { name: string; address: string }[] | undefined): string {
+  if (!recipients || recipients.length === 0) return '';
+  const first = recipients[0];
+  if (!first) return '';
   if (recipients.length === 1) return `${first.name} <${first.address}>`;
   return `${first.name} <${first.address}> +${recipients.length - 1} more`;
 }
@@ -140,7 +141,7 @@ export function ReadingPane() {
   const handleReplyAll = () => setComposeMode('replyAll');
   const handleForward = () => setComposeMode('forward');
 
-  const isSuspicious = message.subject.toLowerCase().includes('verify your account');
+  const isSuspicious = message.subject?.toLowerCase().includes('verify your account') ?? false;
 
   const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
   const prominent = level ? isProminent(level) : false;

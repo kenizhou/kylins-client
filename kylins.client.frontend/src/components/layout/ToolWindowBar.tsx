@@ -42,11 +42,11 @@ export function ToolWindowBar() {
   return (
     <nav
       aria-label="Activity bar"
-      className="flex w-12 shrink-0 flex-col items-center justify-between bg-chrome py-2"
+      className="flex w-[var(--tool-w)] shrink-0 flex-col items-center justify-between bg-chrome py-2"
     >
       <ToggleButtonGroup
         selectionMode="single"
-        selectedKeys={[activeApp]}
+        selectedKeys={activeApp ? [activeApp] : []}
         onSelectionChange={(keys) => {
           const next = Array.from(keys)[0];
           if (next) {

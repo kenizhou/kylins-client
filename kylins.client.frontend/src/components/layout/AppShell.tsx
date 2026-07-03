@@ -13,11 +13,18 @@ import { UndoSendToast } from '../composer/UndoSendToast';
 import { CalendarPage } from '../calendar/CalendarPage';
 import { ContactsPage } from '../contacts/ContactsPage';
 
+function MainContent({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-1 flex-col min-w-0 overflow-hidden rounded-lg bg-[var(--surface)] p-2">
+      {children}
+    </div>
+  );
+}
+
 export function AppShell() {
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
   const commandRibbonVisible = useViewStore((s) => s.commandRibbonVisible);
   const statusBarVisible = useViewStore((s) => s.statusBarVisible);
-  const readingPanePosition = useViewStore((s) => s.readingPanePosition);
   const activeApp = useUIStore((s) => s.activeApp);
 
   return (
@@ -25,7 +32,7 @@ export function AppShell() {
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
-        <div className="flex flex-1 flex-col min-w-0 overflow-hidden rounded-lg bg-[var(--surface)]">
+        <MainContent>
           {commandRibbonVisible && <CommandRibbon />}
           <div className="flex flex-1 overflow-hidden">
             {activeApp === 'calendar' ? (
@@ -34,7 +41,6 @@ export function AppShell() {
               <ContactsPage />
             ) : (
               <ReadingPaneLayout
-                position={readingPanePosition}
                 folderPaneVisible={folderPaneVisible}
                 folderPane={<FolderPane />}
                 messageList={<MessageList />}
@@ -42,7 +48,7 @@ export function AppShell() {
               />
             )}
           </div>
-        </div>
+        </MainContent>
       </div>
       {statusBarVisible && <StatusBar />}
       <Composer />

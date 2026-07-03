@@ -48,7 +48,7 @@ export function CalendarPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
       <CalendarToolbar onNewEvent={() => setShowCreate(true)} />
       {error && (
         <div className="flex items-center gap-1.5 border-b border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-4 py-1.5 text-xs text-[var(--destructive)]">

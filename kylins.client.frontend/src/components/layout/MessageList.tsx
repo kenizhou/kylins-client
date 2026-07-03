@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
@@ -59,7 +59,7 @@ const DENSITY_ROW_CLASSES = {
   comfortable: 'min-h-[52px] py-3',
 };
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   thread,
   selected,
   density,
@@ -164,7 +164,7 @@ function MessageRow({
       </div>
     </div>
   );
-}
+});
 
 type ListItem = { kind: 'group'; label: string } | { kind: 'thread'; thread: Thread };
 
@@ -231,10 +231,14 @@ export function MessageList() {
   const items = useMemo(() => buildItems(threads), [threads]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // TanStack Virtual returns mutable function references that React Compiler
+  // cannot safely memoize. Suppress the compiler warning here; the virtualizer
+  // is used locally and its outputs are not memoized downstream.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 44,
+    estimateSize: () => (density === 'comfortable' ? 52 : 44),
     overscan: 12,
   });
 
@@ -253,7 +257,7 @@ export function MessageList() {
   // (a new array reference on every measure pass), so the effect doesn't
   // re-run on every scroll tick.
   const virtualItems = virtualizer.getVirtualItems();
-  const nearEnd = (virtualItems.at(-1)?.index ?? -1) >= items.length - 6;
+  const nearEnd = items.length > 0 && (virtualItems.at(-1)?.index ?? -1) >= items.length - 6;
   useEffect(() => {
     if (nearEnd && cursor && !isLoading) {
       void loadMore();
@@ -330,11 +334,15 @@ export function MessageList() {
   }, [menu, accounts, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
-    <div className="flex flex-col h-full bg-[var(--card)]">
+    <div className="message-list flex flex-col h-full bg-[var(--card)]">
       {visibleColumns.length > 0 && (
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
           {visibleColumns.map((col) => (
-            <span key={col.id} className="truncate" style={{ width: col.width }}>
+            <span
+              key={col.id}
+              className={`message-list-col-${col.id} truncate`}
+              style={{ width: col.width }}
+            >
               {col.label}
             </span>
           ))}

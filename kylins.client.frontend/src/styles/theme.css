@@ -75,12 +75,19 @@
   /* Layout sizing */
   --header-h: 48px;
   --ribbon-h: 52px;
-  --tool-w: 44px;
-  --folder-w: 240px;
-  --list-w: 360px;
+  --tool-w: 44px; /* actively used by ToolWindowBar */
   --status-h: 44px;
+  --drawer-w: 260px;
   --pane-header-h: 32px;
   --row-h: 28px;
+
+  /*
+   * Title-bar search fallback. MeasuredPanelCard overwrites these once the
+   * message list is mounted; these defaults keep the search reasonably placed
+   * on initial render and when no message list is visible.
+   */
+  --message-list-left: 16rem;
+  --message-list-width: 24rem;
 
   /* Motion tokens */
   --duration-fast: 120ms;

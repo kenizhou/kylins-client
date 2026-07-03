@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { useViewStore } from '../../../src/features/view/viewStore';
-import { DEFAULT_VIEW_STATE } from '../../../src/features/view/defaults';
+import { DEFAULT_VIEW_STATE, DEFAULT_PANEL_SIZES } from '../../../src/features/view/defaults';
 
 describe('viewStore', () => {
   beforeEach(() => {
@@ -55,5 +55,18 @@ describe('viewStore', () => {
     useViewStore.getState().resetToDefaults();
 
     expect(useViewStore.getState()).toEqual(expect.objectContaining(DEFAULT_VIEW_STATE));
+  });
+
+  it('updates panel sizes for a single layout', () => {
+    useViewStore.getState().setPanelSizes('right', { folder: 15, list: 35, reader: 50 });
+    expect(useViewStore.getState().panelSizes.right).toEqual({ folder: 15, list: 35, reader: 50 });
+    expect(useViewStore.getState().panelSizes.bottom).toEqual(DEFAULT_PANEL_SIZES.bottom);
+    expect(useViewStore.getState().panelSizes.off).toEqual(DEFAULT_PANEL_SIZES.off);
+  });
+
+  it('tracks hydration state', () => {
+    expect(useViewStore.getState().isHydrated).toBe(false);
+    useViewStore.getState().setHydrated(true);
+    expect(useViewStore.getState().isHydrated).toBe(true);
   });
 });
