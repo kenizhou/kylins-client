@@ -580,7 +580,22 @@ async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn 
                 continue;
             }
         };
-        match mop.exec_via_source(src).await {
+        // Send is intercepted here (not dispatched via `exec_via_source`) so the
+        // worker can build RFC5322 MIME bytes from the structured `SendDraft`
+        // before calling `MailSource::send(&[u8])`. T8 will widen `send_op` to
+        // also best-effort IMAP-APPEND a Sent copy and clean up staged
+        // attachment files on success; the signature already threads `engine`
+        // + `account_id` so T8 drops in without reshuffling the call site.
+        let result = match &mop {
+            crate::db::mutations::MutationOp::Send { draft } => {
+                // `draft` is `&Box<SendDraft>`; `send_op` takes `&SendDraft`.
+                // `Box` derefs to its contents, so `.as_ref()` recovers the
+                // borrowed inner reference without cloning.
+                send_op(engine, account_id, src, draft.as_ref()).await
+            }
+            _ => mop.exec_via_source(src).await,
+        };
+        match result {
             Ok(()) => {
                 if let Err(e) = crate::db::queue::mark_completed(pool, &op.id).await {
                     log::warn!("[sync] mark_completed {} failed: {e}", op.id);
@@ -598,6 +613,47 @@ async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn 
         .await
         .unwrap_or(0);
     engine.emit_queue(account_id, pending);
+}
+
+/// Build RFC5322 MIME bytes from `draft` (via `mail_builder::build_mime`) and
+/// transmit them via `MailSource::send(&[u8])`.
+///
+/// **T6 scope:** build + send only. **T8 extends this** to also best-effort
+/// IMAP-APPEND a Sent copy when `!src.capabilities().saves_sent_automatically`
+/// (gated by the per-account `save_sent_copy` setting), and to clean up the
+/// staged attachment directory on success. The `engine` + `account_id`
+/// parameters are threaded now so T8 can reach the pool + resolve the Sent
+/// folder without reshuffling this call site — they are intentionally unused
+/// in T6 (guarded by `let _ = ...` to avoid dead-code warnings).
+///
+/// Build failures are surfaced as `SourceError::Other(...)` so the replay
+/// worker's standard Ok→mark_completed / Err→mark_failed handling applies and
+/// the op retries with backoff like any other failed mutation.
+async fn send_op(
+    engine: &Arc<SyncEngine>,
+    account_id: &str,
+    src: &dyn MailSource,
+    draft: &crate::mail::builder::SendDraft,
+) -> Result<(), crate::sync_engine::SourceError> {
+    // T8 will use these; T6 only needs `src` + `draft`.
+    let _ = engine;
+    let _ = account_id;
+    build_and_send(src, draft).await
+}
+
+/// Core build-and-send logic, split out from `send_op` so unit tests can reach
+/// it without constructing a full `SyncEngine`. The worker-path test
+/// (`send_op_builds_mime_and_calls_send`) drives this directly with a
+/// `MockSource`. T8's `send_op` will keep calling this for the build+send
+/// portion and layer append + cleanup around it.
+pub(crate) async fn build_and_send(
+    src: &dyn MailSource,
+    draft: &crate::mail::builder::SendDraft,
+) -> Result<(), crate::sync_engine::SourceError> {
+    let mime = crate::mail::builder::build_mime(draft)
+        .await
+        .map_err(|e| crate::sync_engine::SourceError::Other(format!("build_mime: {e}")))?;
+    src.send(&mime).await
 }
 
 // ---- Phase 3f Task 3: circuit-breaker helpers ----
@@ -1419,7 +1475,7 @@ mod tests {
         ) -> Result<(), crate::sync_engine::SourceError> {
             Err(crate::sync_engine::SourceError::Unsupported)
         }
-        async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+        async fn send(&self, _r: &[u8]) -> Result<(), crate::sync_engine::SourceError> {
             Err(crate::sync_engine::SourceError::Unsupported)
         }
     }
@@ -1655,7 +1711,7 @@ mod tests {
         ) -> Result<(), crate::sync_engine::SourceError> {
             Err(crate::sync_engine::SourceError::Unsupported)
         }
-        async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+        async fn send(&self, _r: &[u8]) -> Result<(), crate::sync_engine::SourceError> {
             Err(crate::sync_engine::SourceError::Unsupported)
         }
     }
@@ -1997,7 +2053,7 @@ mod tests {
             ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+            async fn send(&self, _r: &[u8]) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
         }
@@ -2097,5 +2153,67 @@ mod tests {
         assert_eq!(evts[0].account_id, "a");
         assert_eq!(evts[0].updates[0].thread_id, "t1");
         let _ = engine; // keep engine alive (unused otherwise)
+    }
+
+    // ---- Send-flow T6: send_op worker-path test ----
+    //
+    // Send no longer flows through `exec_via_source` (the T3 base64url bridge
+    // is gone; the variant now carries a structured `SendDraft`). The replay
+    // worker intercepts `MutationOp::Send` and routes it through `send_op` →
+    // `build_and_send`, which builds RFC5322 bytes via `mail_builder::build_mime`
+    // and hands them to `MailSource::send(&[u8])`. This test drives the core
+    // directly with a `MockSource` (avoiding a full `SyncEngine` construction)
+    // and asserts the recorded `Send` call's bytes contain the draft's subject
+    // and body, proving the build-and-send path works end-to-end at the unit
+    // level. The exec_via_source fallback arm is covered by
+    // `exec_via_source_send_returns_unreachable_fallback` in `db::mutations`.
+
+    #[tokio::test]
+    async fn send_op_builds_mime_and_calls_send() {
+        use crate::mail::builder::{AddressSpec, SendDraft};
+        use crate::sync_engine::mock_source::RecordedCall;
+
+        let src = MockSource::new(vec![], vec![]);
+        let draft = SendDraft {
+            draft_id: "e1".into(),
+            from: AddressSpec {
+                name: None,
+                email: "alice@kylins.local".into(),
+            },
+            to: vec![AddressSpec {
+                name: None,
+                email: "bob@kylins.local".into(),
+            }],
+            subject: "Hello from T6".into(),
+            text_body: Some("the quick brown fox".into()),
+            ..Default::default()
+        };
+
+        // Drive the core build-and-send logic directly. `send_op` wraps this
+        // with engine + account_id params threaded for T8; those are unused in
+        // T6 (`let _ = ...`), so testing the core avoids spinning up a full
+        // SyncEngine + pool just to exercise the build+send path.
+        build_and_send(&src, &draft).await.unwrap();
+
+        // Exactly one send call recorded, with the MIME bytes that contain the
+        // draft's subject + body. This proves: (a) Send reached `src.send`
+        // (not `exec_via_source`'s fallback arm), and (b) `build_mime`
+        // produced bytes carrying the draft's content.
+        let calls = src.recorded_calls();
+        assert_eq!(calls.len(), 1, "exactly one send call expected");
+        match &calls[0] {
+            RecordedCall::Send { raw_bytes } => {
+                let s = String::from_utf8_lossy(raw_bytes);
+                assert!(
+                    s.contains("Subject:") && s.contains("Hello from T6"),
+                    "MIME bytes must contain the draft's Subject header; got:\n{s}"
+                );
+                assert!(
+                    s.contains("the quick brown fox"),
+                    "MIME bytes must contain the draft's text body; got:\n{s}"
+                );
+            }
+            other => panic!("expected RecordedCall::Send, got {other:?}"),
+        }
     }
 }

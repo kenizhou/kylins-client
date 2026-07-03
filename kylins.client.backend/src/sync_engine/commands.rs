@@ -598,7 +598,20 @@ mod tests {
         let engine = SyncEngine::new(pool.clone(), Arc::new(NullSink));
 
         let op = MutationOp::Send {
-            raw_base64url: "YWJj".into(),
+            draft: Box::new(crate::mail::builder::SendDraft {
+                draft_id: "d1".into(),
+                from: crate::mail::builder::AddressSpec {
+                    name: None,
+                    email: "a@b".into(),
+                },
+                to: vec![crate::mail::builder::AddressSpec {
+                    name: None,
+                    email: "c@d".into(),
+                }],
+                subject: "s".into(),
+                text_body: Some("body".into()),
+                ..Default::default()
+            }),
         };
         apply_mutation_inner(engine, &pool, "acct".into(), op)
             .await

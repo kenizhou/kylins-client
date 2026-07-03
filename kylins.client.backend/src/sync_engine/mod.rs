@@ -24,6 +24,11 @@ pub struct Capabilities {
     pub qresync: bool,
     pub ping: bool,
     pub vanishearch: bool,
+    /// True when the server stores a Sent copy as part of send (EAS
+    /// SaveInSentItems, Gmail/Graph auto-save). False when the client must
+    /// IMAP-APPEND to Sent (IMAP/SMTP). The engine uses this to gate the
+    /// best-effort Sent-append in `send_op`.
+    pub saves_sent_automatically: bool,
 }
 
 /// Opaque per-folder delta cursor. Each source defines its own payload; the engine
@@ -197,7 +202,7 @@ pub trait MailSource: Send + Sync {
         raw: &[u8],
         flags: &[&str],
     ) -> Result<(), SourceError>;
-    async fn send(&self, raw_base64url: &str) -> Result<(), SourceError>;
+    async fn send(&self, raw_mime: &[u8]) -> Result<(), SourceError>;
 
     /// Load this source's persisted per-folder cursor. Each source owns its cursor
     /// payload and its own persistence table (IMAP: `folder_sync_state`; EAS:

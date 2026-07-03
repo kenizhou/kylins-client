@@ -29,7 +29,7 @@ pub enum RecordedCall {
         uids: Vec<u32>,
     },
     Send {
-        raw_base64url: String,
+        raw_bytes: Vec<u8>,
     },
 }
 
@@ -169,9 +169,9 @@ impl MailSource for MockSource {
     ) -> Result<(), SourceError> {
         Ok(())
     }
-    async fn send(&self, raw_base64url: &str) -> Result<(), SourceError> {
+    async fn send(&self, raw_mime: &[u8]) -> Result<(), SourceError> {
         self.calls.lock().unwrap().push(RecordedCall::Send {
-            raw_base64url: raw_base64url.to_string(),
+            raw_bytes: raw_mime.to_vec(),
         });
         Ok(())
     }

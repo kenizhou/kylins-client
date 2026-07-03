@@ -320,6 +320,8 @@ impl MailSource for ImapSource {
                 qresync,
                 ping: false,
                 vanishearch: vanished,
+                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
+                saves_sent_automatically: false,
             });
         }
         Ok(folders.into_iter().map(imap_folder_to_remote).collect())
@@ -922,6 +924,8 @@ impl MailSource for ImapSource {
                 qresync,
                 ping: false,
                 vanishearch: vanished,
+                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
+                saves_sent_automatically: false,
             });
         }
         Ok(delta)
@@ -1130,8 +1134,8 @@ impl MailSource for ImapSource {
         Ok(())
     }
 
-    async fn send(&self, raw_base64url: &str) -> Result<(), SourceError> {
-        smtp_client::send_raw_email(&self.smtp_config(), raw_base64url)
+    async fn send(&self, raw_mime: &[u8]) -> Result<(), SourceError> {
+        smtp_client::send_raw_email(&self.smtp_config(), raw_mime)
             .await
             .map(|_| ())
             .map_err(other)
@@ -1171,6 +1175,8 @@ impl MailSource for ImapSource {
                 qresync,
                 ping: false,
                 vanishearch: vanished,
+                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
+                saves_sent_automatically: false,
             });
         }
         if !idle_cap {

@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use crate::eas::types::*;
-use crate::eas::wbxml::tags::{self, pages};
+use crate::eas::wbxml::tags::{self, compose, pages};
 use crate::eas::wbxml::types::{WbxmlElement, WbxmlValue};
 use crate::eas::wbxml::WbxmlError;
 
@@ -94,17 +94,16 @@ const IO_DATA: u8 = 0x10;
 const IO_CONTENT_TYPE: u8 = 0x12;
 
 // ---------- ComposeMail (page 21) tag ids ----------
-
-const CM_SEND_MAIL: u8 = 0x05;
-const CM_SMART_FORWARD: u8 = 0x06;
-const CM_SMART_REPLY: u8 = 0x07;
-const CM_SAVE_IN_SENT: u8 = 0x08;
-const CM_MIME: u8 = 0x09;
-const CM_SOURCE: u8 = 0x0B;
-const CM_FOLDER_ID: u8 = 0x0C;
-const CM_ITEM_ID: u8 = 0x0D;
-const CM_REPLACE_MIME: u8 = 0x0E;
-const CM_STATUS: u8 = 0x18;
+//
+// NOTE: ComposeMail tag constants now live in `crate::eas::wbxml::tags::compose`
+// (SEND_MAIL, SMART_FORWARD, SMART_REPLY, SAVE_IN_SENT_ITEMS, REPLACE_MIME,
+// SOURCE, FOLDER_ID, ITEM_ID, LONG_ID, MIME, CLIENT_ID, STATUS). The local
+// `CM_*` aliases that used to live here were WRONG:
+//   - CM_MIME        = 0x09  // 0x09 is actually ReplaceMime; correct MIME = 0x10
+//   - CM_REPLACE_MIME = 0x0E // 0x0E is actually LongId; correct ReplaceMime = 0x09
+//   - CM_STATUS      = 0x18  // 0x18 is not in the page; correct Status = 0x12
+// They have been deleted. All builders/parsers in this file now reach for the
+// `tags::compose::*` constants directly so the wire bytes match [MS-ASCMD].
 
 // ============================================================================
 // FolderSync
@@ -550,62 +549,111 @@ fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
 // ============================================================================
 
 /// Build a SendMail request.
+///
+/// WBXML shape (page 21 / ComposeMail):
+/// ```xml
+/// <SendMail>
+///   <ClientId>{req.client_id}</ClientId>            <!-- STR_I, optional -->
+///   <SaveInSentItems/>                              <!-- empty, optional -->
+///   <Mime>{req.mime as raw RFC5322 bytes}</Mime>    <!-- OPAQUE (0xC3), NOT base64 -->
+/// </SendMail>
+/// ```
+///
+/// The `<Mime>` element MUST be emitted as WBXML OPAQUE (`0xC3` + mb_u_int32
+/// length + raw bytes) per [MS-ASCMD] 2.2.3.11 — a STR_I `<Mime>` (inline
+/// string) is misinterpreted by Exchange as a truncated text body and silently
+/// corrupts the message. Token order (ClientId, SaveInSentItems, Mime) matches
+/// the AOSP/mailkit reference and what Exchange expects.
 pub fn build_send_mail_request(req: &SendMailRequest) -> WbxmlElement {
-    WbxmlElement::container(
-        PAGE_COMPOSE,
-        CM_SEND_MAIL,
-        vec![
-            WbxmlElement::empty(PAGE_COMPOSE, CM_SAVE_IN_SENT).with_flag(req.save_to_sent),
-            WbxmlElement::text(PAGE_COMPOSE, CM_MIME, req.mime_base64.clone()),
-        ],
-    )
+    let mut children = Vec::with_capacity(3);
+    if let Some(cid) = &req.client_id {
+        children.push(WbxmlElement::text(PAGE_COMPOSE, compose::CLIENT_ID, cid.clone()));
+    }
+    if req.save_to_sent {
+        children.push(WbxmlElement::empty(PAGE_COMPOSE, compose::SAVE_IN_SENT_ITEMS));
+    }
+    children.push(WbxmlElement::opaque(PAGE_COMPOSE, compose::MIME, req.mime.clone()));
+    WbxmlElement::container(PAGE_COMPOSE, compose::SEND_MAIL, children)
 }
 
 /// Build a SmartForward request.
 pub fn build_smart_forward_request(req: &SmartForwardRequest) -> WbxmlElement {
     let mut children = vec![
-        WbxmlElement::empty(PAGE_COMPOSE, CM_SAVE_IN_SENT).with_flag(req.save_to_sent),
-        WbxmlElement::text(PAGE_COMPOSE, CM_MIME, req.mime_base64.clone()),
+        WbxmlElement::empty(PAGE_COMPOSE, compose::SAVE_IN_SENT_ITEMS),
+        WbxmlElement::opaque(
+            PAGE_COMPOSE,
+            compose::MIME,
+            // SmartForward still carries base64-encoded MIME in its
+            // request struct (unchanged in T4); we keep that text form here
+            // pending a structured-draft migration for SmartForward/SmartReply.
+            // The token, however, is now the correct `compose::MIME` (0x10)
+            // rather than the old buggy CM_MIME (0x09).
+            req.mime_base64.clone().into_bytes(),
+        ),
         WbxmlElement::container(
             PAGE_COMPOSE,
-            CM_SOURCE,
+            compose::SOURCE,
             vec![
-                WbxmlElement::text(PAGE_COMPOSE, CM_FOLDER_ID, req.source_collection_id.clone()),
-                WbxmlElement::text(PAGE_COMPOSE, CM_ITEM_ID, req.source_server_id.clone()),
+                WbxmlElement::text(
+                    PAGE_COMPOSE,
+                    compose::FOLDER_ID,
+                    req.source_collection_id.clone(),
+                ),
+                WbxmlElement::text(
+                    PAGE_COMPOSE,
+                    compose::ITEM_ID,
+                    req.source_server_id.clone(),
+                ),
             ],
         ),
     ];
     if req.replace_mime {
-        children.push(WbxmlElement::empty(PAGE_COMPOSE, CM_REPLACE_MIME));
+        children.push(WbxmlElement::empty(PAGE_COMPOSE, compose::REPLACE_MIME));
     }
-    WbxmlElement::container(PAGE_COMPOSE, CM_SMART_FORWARD, children)
+    WbxmlElement::container(PAGE_COMPOSE, compose::SMART_FORWARD, children)
 }
 
 /// Build a SmartReply request.
 pub fn build_smart_reply_request(req: &SmartReplyRequest) -> WbxmlElement {
     let mut children = vec![
-        WbxmlElement::empty(PAGE_COMPOSE, CM_SAVE_IN_SENT).with_flag(req.save_to_sent),
-        WbxmlElement::text(PAGE_COMPOSE, CM_MIME, req.mime_base64.clone()),
+        WbxmlElement::empty(PAGE_COMPOSE, compose::SAVE_IN_SENT_ITEMS),
+        WbxmlElement::opaque(
+            PAGE_COMPOSE,
+            compose::MIME,
+            // See `build_smart_forward_request` for the rationale on keeping
+            // the base64-as-bytes form for SmartReply/SmartForward. The MIME
+            // token is now the correct 0x10 (not the old buggy 0x09).
+            req.mime_base64.clone().into_bytes(),
+        ),
         WbxmlElement::container(
             PAGE_COMPOSE,
-            CM_SOURCE,
+            compose::SOURCE,
             vec![
-                WbxmlElement::text(PAGE_COMPOSE, CM_FOLDER_ID, req.source_collection_id.clone()),
-                WbxmlElement::text(PAGE_COMPOSE, CM_ITEM_ID, req.source_server_id.clone()),
+                WbxmlElement::text(
+                    PAGE_COMPOSE,
+                    compose::FOLDER_ID,
+                    req.source_collection_id.clone(),
+                ),
+                WbxmlElement::text(
+                    PAGE_COMPOSE,
+                    compose::ITEM_ID,
+                    req.source_server_id.clone(),
+                ),
             ],
         ),
     ];
     if req.replace_mime {
-        children.push(WbxmlElement::empty(PAGE_COMPOSE, CM_REPLACE_MIME));
+        children.push(WbxmlElement::empty(PAGE_COMPOSE, compose::REPLACE_MIME));
     }
-    WbxmlElement::container(PAGE_COMPOSE, CM_SMART_REPLY, children)
+    WbxmlElement::container(PAGE_COMPOSE, compose::SMART_REPLY, children)
 }
 
 /// Parse a SendMail/SmartForward/SmartReply response. They share the same
-/// structure: optional status + optional collision info.
+/// structure: an optional `<Status>` (token 0x12) child. An absent or empty
+/// body is treated as success (status 1) per [MS-ASCMD] 2.2.3.162.6.
 pub fn parse_send_mail_response(root: &WbxmlElement) -> Result<u32, WbxmlError> {
     for child in &root.children {
-        if child.page == PAGE_COMPOSE && child.token == CM_STATUS {
+        if child.page == PAGE_COMPOSE && child.token == compose::STATUS {
             let status_str = text_value(child)?;
             return status_str.parse::<u32>().map_err(|_| {
                 WbxmlError::InvalidContent(format!("non-numeric status: {status_str}"))
@@ -937,28 +985,6 @@ fn text_value(el: &WbxmlElement) -> Result<String, WbxmlError> {
     }
 }
 
-/// Extension trait for the `with_flag` helper on WbxmlElement. The same empty
-/// element is used to represent a boolean: present=true, absent=false. We
-/// can't differentiate true/false on the wire without a different element
-/// (e.g. `<SaveInSent/>` vs `<SaveInSent>1</SaveInSent>`), so the convention
-/// is: present + empty = true, present with text = literal value.
-trait WbxmlElementExt {
-    fn with_flag(self, flag: bool) -> Self;
-}
-
-impl WbxmlElementExt for WbxmlElement {
-    fn with_flag(self, flag: bool) -> Self {
-        if flag {
-            self
-        } else {
-            // Mark as skipped by setting page to 0xFF — caller's serializer
-            // should skip these. Simpler: keep the element but the parser
-            // treats empty as false on read.
-            self
-        }
-    }
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1053,25 +1079,154 @@ mod tests {
     #[test]
     fn send_mail_request_minimal() {
         let req = SendMailRequest {
-            mime_base64: "U0VGIE1JSUU=".to_string(),
+            mime: b"From: a@b\r\nSubject: t\r\n\r\nbody\r\n".to_vec(),
             save_to_sent: true,
+            client_id: None,
         };
         let tree = build_send_mail_request(&req);
         assert_eq!(tree.page, PAGE_COMPOSE);
-        assert_eq!(tree.token, CM_SEND_MAIL);
-        // 2 children: SaveInSent + Mime
+        assert_eq!(tree.token, compose::SEND_MAIL);
+        // 2 children: SaveInSentItems + Mime (ClientId omitted).
         assert_eq!(tree.children.len(), 2);
+        // First child must be SaveInSentItems (0x08), second must be Mime
+        // (0x10) as OPAQUE. This is the regression guard for the old bug
+        // where SaveInSent (0x08) was correct but Mime (0x10) was emitted
+        // with the wrong token (0x09 = ReplaceMime).
+        assert_eq!(tree.children[0].token, compose::SAVE_IN_SENT_ITEMS);
+        assert_eq!(tree.children[1].token, compose::MIME);
+        match &tree.children[1].value {
+            WbxmlValue::Opaque(_) => {}
+            other => panic!("expected Opaque Mime, got {:?}", other),
+        }
     }
 
     #[test]
     fn send_mail_request_round_trips() {
         let req = SendMailRequest {
-            mime_base64: "U0VGIE1JSUU=".to_string(),
+            mime: b"From: a@b\r\nTo: c@d\r\nSubject: round trip\r\n\r\nbody\r\n".to_vec(),
             save_to_sent: true,
+            client_id: Some("SendMail-rt-1".into()),
         };
         let tree = build_send_mail_request(&req);
         let back = round_trip(&tree);
         assert_eq!(tree, back);
+    }
+
+    /// Regression guard for the WBXML tag-constant bug + the OPAQUE `<Mime>`
+    /// requirement. The serialized bytes MUST:
+    ///   1. Contain the raw RFC5322 bytes verbatim (inside the OPAQUE block),
+    ///      NOT base64-encoded — this is the silent-corruption fix.
+    ///   2. Use the correct ComposeMail tokens: 0x05 (SendMail root via page
+    ///      switch), 0x08 (SaveInSentItems), 0x11 (ClientId), 0x10 (Mime), and
+    ///      the OPAQUE marker 0xC3 immediately preceding the length + bytes.
+    ///      The old code emitted 0x09 for Mime (== ReplaceMime) and read Status
+    ///      as 0x18 (unregistered) — both broken.
+    ///   3. NOT emit `<Mime>` as a STR_I (0x03 inline string token) — that was
+    ///      the previous shape (`text(...)`), which Exchange misreads.
+    #[test]
+    fn send_mail_request_emits_opaque_mime_with_correct_tokens() {
+        // WBXML header is 4 bytes: version(0x03) + publicid(0x01) +
+        // charset(0x6A=UTF-8) + strtable(0x00). When searching for STR_I
+        // (0x03) we must skip these, otherwise the version byte is a false
+        // positive.
+        const HEADER_LEN: usize = 4;
+        let raw_mime = b"From: a@b\r\nTo: c@d\r\nSubject: golden\r\n\r\nbody bytes\r\n";
+        let req = SendMailRequest {
+            mime: raw_mime.to_vec(),
+            save_to_sent: true,
+            client_id: Some("SendMail-1234".into()),
+        };
+        let el = build_send_mail_request(&req);
+        let wbxml = crate::eas::wbxml::serialize_tree(&el).expect("serialize_tree");
+
+        // 1. Raw MIME bytes appear verbatim inside the OPAQUE block, NOT base64.
+        //    base64 of `raw_mime` would not contain any of the literal "From:"
+        //    substring — this substring presence proves the bytes are raw.
+        assert!(
+            wbxml
+                .windows(raw_mime.len())
+                .any(|w| w == raw_mime),
+            "raw MIME bytes must appear verbatim in WBXML (OPAQUE), not base64-encoded"
+        );
+
+        // 2a. The OPAQUE marker 0xC3 is present and immediately precedes the
+        //     length-prefixed raw bytes. We find the marker and confirm the
+        //     raw bytes start shortly after the mb_u_int32 length encoding.
+        let opaque_idx = wbxml
+            .iter()
+            .position(|&b| b == 0xC3)
+            .expect("OPAQUE marker 0xC3 must be present");
+        // After 0xC3 comes a mb_u_int32 length, then the bytes. For a short
+        // (<128B) payload the length is a single byte equal to raw_mime.len().
+        assert_eq!(
+            wbxml[opaque_idx + 1] as usize, raw_mime.len(),
+            "single-byte mb_u_int32 length must equal raw MIME length for short payloads"
+        );
+        assert_eq!(
+            &wbxml[opaque_idx + 2..opaque_idx + 2 + raw_mime.len()],
+            raw_mime as &[u8],
+            "raw MIME bytes must immediately follow the OPAQUE marker + length"
+        );
+
+        // 2b. The ComposeMail tokens are present. The serializer ORs the
+        //     WITH_CONTENT bit (0x40) into any tag that has a child (STR_I,
+        //     OPAQUE, or nested element) — so ClientId (0x11) and Mime (0x10)
+        //     appear as 0x51 / 0x50, while the empty SaveInSentItems (0x08)
+        //     appears bare. Accept either form when checking presence.
+        assert!(
+            wbxml
+                .windows(3)
+                .any(|w| w[0] == 0x00 && w[1] == PAGE_COMPOSE && w[2] == (compose::SEND_MAIL | 0x40)),
+            "expected SWITCH_PAGE(0x00 {:#04x}) followed by SendMail-with-content ({:#04x})",
+            PAGE_COMPOSE,
+            compose::SEND_MAIL | 0x40,
+        );
+        // ClientId (0x11 / 0x51) — present because we set client_id=Some.
+        assert!(
+            wbxml.contains(&compose::CLIENT_ID)
+                || wbxml.contains(&(compose::CLIENT_ID | 0x40)),
+            "ClientId token 0x11/0x51 missing"
+        );
+        // SaveInSentItems (0x08) — present because save_to_sent=true. Empty
+        // tags are emitted bare (no WITH_CONTENT bit).
+        assert!(
+            wbxml.contains(&compose::SAVE_IN_SENT_ITEMS),
+            "SaveInSentItems token 0x08 missing"
+        );
+        // Mime (0x10 / 0x50) — the corrected token. The old buggy value was
+        // 0x09 (== ReplaceMime); this assertion locks the fix.
+        assert!(
+            wbxml.contains(&compose::MIME) || wbxml.contains(&(compose::MIME | 0x40)),
+            "Mime token 0x10/0x50 missing (regression: was 0x09 in the buggy build)"
+        );
+
+        // 3. The byte immediately before the OPAQUE marker must be the
+        //    `<Mime>` tag token (0x10 | WITH_CONTENT 0x40 = 0x50), proving
+        //    `<Mime>` is the element carrying the opaque payload. A STR_I
+        //    `<Mime>` would instead show STR_I (0x03) here with no OPAQUE.
+        assert_eq!(
+            wbxml[opaque_idx - 1],
+            compose::MIME | 0x40,
+            "byte before OPAQUE must be <Mime> token ({:#04x}), got {:#04x} — \
+             STR_I <Mime> regression?",
+            compose::MIME | 0x40,
+            wbxml[opaque_idx - 1],
+        );
+        // Sanity: the STR_I inline-string token (0x03) is NOT used to carry
+        // the MIME payload. Search only in the body (after the 4-byte WBXML
+        // header) so the version byte (which happens to be 0x03) is excluded.
+        // The only STR_I in a correct request is the ClientId value, which
+        // holds the literal "SendMail-1234" — NOT a base64/inline MIME.
+        let body = &wbxml[HEADER_LEN..];
+        let str_i_idx = body.iter().position(|&b| b == 0x03);
+        if let Some(i) = str_i_idx {
+            let cid = b"SendMail-1234";
+            assert_eq!(
+                &body[i + 1..i + 1 + cid.len()],
+                cid as &[u8],
+                "the only STR_I in the body must be the ClientId, not an inline <Mime>"
+            );
+        }
     }
 
     #[test]

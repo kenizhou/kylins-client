@@ -298,8 +298,11 @@ impl MailSource for EasSource {
     fn capabilities(&self) -> Capabilities {
         // EAS supports Ping (long-poll heartbeats) but not IMAP IDLE/CONDSTORE/
         // QRESYNC. The scheduler reads this to pick a RealtimeStrategy.
+        // `saves_sent_automatically = true`: SendMail with SaveInSentItems
+        // (T5) means the server stores the Sent copy — no client APPEND needed.
         Capabilities {
             ping: true,
+            saves_sent_automatically: true,
             ..Capabilities::default()
         }
     }
@@ -496,8 +499,37 @@ impl MailSource for EasSource {
     ) -> Result<(), SourceError> {
         Err(nyi())
     }
-    async fn send(&self, _raw_base64url: &str) -> Result<(), SourceError> {
-        Err(nyi())
+    async fn send(&self, raw_mime: &[u8]) -> Result<(), SourceError> {
+        // EAS SendMail. Builds a `SendMailRequest` with the raw RFC5322 bytes
+        // (emitted as a WBXML OPAQUE `<Mime>` per T4) and `save_to_sent = true`
+        // (the server stores the Sent copy via `<SaveInSentItems/>`; see
+        // `Capabilities::saves_sent_automatically`). `client_id` is a
+        // correlation id (`SendMail-{uuid}`) the server ignores but aids
+        // client-side tracing.
+        //
+        // The 3b retry layer inside `send_command` (called by `send_mail`)
+        // already handles HTTP 449 (Provision handshake), 401-on-OAuth (token
+        // refresh), and 451 (redirect). SendMail success is an empty body;
+        // errors come back as `EasError` variants and are mapped via
+        // `map_eas_error` (429/503 → `SourceError::RateLimited`, anything else
+        // → `SourceError::Other`). If a SendMail `<Status>` error surfaces as
+        // `EasError::CommandStatus`, the SendMail-specific classifier
+        // `crate::eas::status::recovery_action_for_send_mail` is the single
+        // source of truth for its recovery semantics — note this is not wired
+        // here because `send_command` does not currently surface CommandStatus
+        // for SendMail; it would be applied at that layer when it does.
+        use crate::eas::types::SendMailRequest;
+        let mut client = EasClient::new(self.eas_config());
+        let req = SendMailRequest {
+            mime: raw_mime.to_vec(),
+            save_to_sent: true,
+            client_id: Some(format!("SendMail-{}", uuid::Uuid::new_v4())),
+        };
+        client
+            .send_mail(&req)
+            .await
+            .map(|_| ())
+            .map_err(map_eas_error)
     }
 
     /// Long-poll the server for changes on the monitored collections. EAS Ping

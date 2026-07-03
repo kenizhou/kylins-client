@@ -495,7 +495,15 @@ pub async fn smtp_send_email(
     config: SmtpConfig,
     raw_email: String,
 ) -> Result<SmtpSendResult, String> {
-    smtp_client::send_raw_email(&config, &raw_email).await
+    // Frontend (smtpSender.ts) still sends base64url; decode here so the SMTP
+    // client can take raw bytes. This is a separate path from the
+    // `sync_apply_mutation` send (which decodes in db::mutations). T7 may
+    // revisit this when the frontend send path is reworked.
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let raw_bytes = URL_SAFE_NO_PAD
+        .decode(&raw_email)
+        .map_err(|e| format!("base64url decode error: {e}"))?;
+    smtp_client::send_raw_email(&config, &raw_bytes).await
 }
 
 #[tauri::command]

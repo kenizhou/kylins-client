@@ -1,7 +1,6 @@
 // Ported from velo (https://github.com/avihaymenahem/velo)
 // Licensed under Apache-2.0. See ATTRIBUTIONS.md.
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use lettre::{
     transport::smtp::{
         authentication::{Credentials, Mechanism},
@@ -11,12 +10,6 @@ use lettre::{
 };
 
 use super::types::{SmtpConfig, SmtpSendResult};
-
-fn decode_base64url(input: &str) -> Result<Vec<u8>, String> {
-    URL_SAFE_NO_PAD
-        .decode(input)
-        .map_err(|e| format!("Base64 decode error: {}", e))
-}
 
 fn build_transport(config: &SmtpConfig) -> Result<AsyncSmtpTransport<Tokio1Executor>, String> {
     let credentials = Credentials::new(config.username.clone(), config.password.clone());
@@ -131,14 +124,13 @@ fn extract_envelope(raw: &[u8]) -> Result<lettre::address::Envelope, String> {
 
 pub async fn send_raw_email(
     config: &SmtpConfig,
-    raw_email_base64url: &str,
+    raw_email: &[u8],
 ) -> Result<SmtpSendResult, String> {
-    let raw_bytes = decode_base64url(raw_email_base64url)?;
-    let envelope = extract_envelope(&raw_bytes)?;
+    let envelope = extract_envelope(raw_email)?;
     let transport = build_transport(config)?;
 
     transport
-        .send_raw(&envelope, &raw_bytes)
+        .send_raw(&envelope, raw_email)
         .await
         .map(|_response| SmtpSendResult {
             success: true,
@@ -167,20 +159,6 @@ pub async fn test_connection(config: &SmtpConfig) -> Result<SmtpSendResult, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_decode_base64url_valid() {
-        let encoded = "SGVsbG8";
-        let decoded = decode_base64url(encoded).unwrap();
-        assert_eq!(decoded, b"Hello");
-    }
-
-    #[test]
-    fn test_decode_base64url_invalid() {
-        let result = decode_base64url("!!!invalid!!!");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Base64 decode error"));
-    }
 
     #[test]
     fn test_extract_envelope_valid() {

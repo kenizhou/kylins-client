@@ -297,11 +297,21 @@ pub struct PingResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMailRequest {
-    /// Base64-encoded RFC 2822 MIME message.
-    pub mime_base64: String,
-    /// If true, save a copy to the Sent folder.
+    /// Raw RFC 5322 message bytes. Emitted on the wire as a WBXML OPAQUE
+    /// `<Mime>` element (token 0x10, page 21) — NOT a base64 string. EAS
+    /// mandates OPAQUE for `<Mime>`: the server treats STR_I `<Mime>` as
+    /// truncated/inline-text, which silently corrupts binary MIME.
+    pub mime: Vec<u8>,
+    /// If true, emit `<SaveInSentItems/>` so the server stores a Sent copy.
+    /// EAS servers save automatically when this is present; the client must
+    /// NOT also IMAP-APPEND (see `Capabilities::saves_sent_automatically`).
     #[serde(default = "default_true")]
     pub save_to_sent: bool,
+    /// Optional client-generated correlation id (e.g. `"SendMail-{uuid}"`).
+    /// Emitted as `<ClientId>` (STR_I) when `Some`. Per [MS-ASCMD] the server
+    /// ignores this for SendMail but it aids client-side tracing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

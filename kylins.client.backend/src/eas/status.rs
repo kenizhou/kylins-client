@@ -80,6 +80,41 @@ pub fn recovery_action_for_provision(status: u32) -> RecoveryAction {
     }
 }
 
+/// Recovery decision for a ComposeMail / SendMail status
+/// (MS-ASCMD §2.2.3.90 SendMail, §2.2.3.162 Status codes).
+///
+/// NOTE: the SendMail-specific status code mapping is PROVISIONAL pending
+/// validation against a real Exchange server at Task 9 manual e2e. The
+/// structure + recovery semantics are what matter now; refine the match
+/// arms once we see real `<Status>` values from SendMail responses.
+///
+/// The classifier is defined so the 3b retry layer / ComposeMail status
+/// handling can call it for SendMail responses later. For T5 it is not
+/// wired into `send_command` — SendMail success is an empty body, errors
+/// come back as `EasError` variants which `map_eas_error` translates. If a
+/// SendMail `<Status>` error surfaces as `EasError::CommandStatus`, that is
+/// where this classifier would map it.
+///
+/// Mapping (provisional, modeled on the Common family):
+///   * 140/141/142/143/144 — Provisioning family → `RetryProvision` (same
+///     recovery as Common 142-144 / FolderSync 126/142). The retry layer in
+///     `send_command` already runs Provision on HTTP 449; these status codes
+///     are the in-body equivalent for SendMail.
+///   * 111 / 132 — transient (server temporarily unavailable / retry) →
+///     `RetryTransient` (engine's 60s poll loop is the retry).
+///   * 130 / 131 — fatal-auth (authentication required / credentials
+///     rejected) → `SurfaceAuth`.
+///   * anything else — `SurfacePermanent` (do NOT retry unknown codes
+///     blindly; surface to the user / breaker).
+pub fn recovery_action_for_send_mail(status: u32) -> RecoveryAction {
+    match status {
+        140..=144 => RecoveryAction::RetryProvision,
+        111 | 132 => RecoveryAction::RetryTransient,
+        130 | 131 => RecoveryAction::SurfaceAuth,
+        _ => RecoveryAction::SurfacePermanent,
+    }
+}
+
 /// Recovery decision for an HTTP status. The OAuth-vs-Basic distinction
 /// matters for 401: OAuth → try refresh; Basic → surface immediately.
 pub fn recovery_action_for_http(status: u16, is_oauth: bool) -> RecoveryAction {
@@ -181,5 +216,29 @@ mod tests {
         assert_eq!(recovery_action_for_http(451, true), RecoveryAction::FollowRedirect);
         assert_eq!(recovery_action_for_http(503, true), RecoveryAction::RetryTransient);
         assert_eq!(recovery_action_for_http(200, true), RecoveryAction::Ok);
+    }
+
+    /// Task 5 (send-flow hardening) — SendMail status classifier. The mapping
+    /// is PROVISIONAL pending real-Exchange validation at T9 manual e2e; these
+    /// assertions pin the recovery semantics so a future refinement of the
+    /// match arms can't silently regress them. Variant names aligned to the
+    /// real `RecoveryAction` enum (NOT the plan's pseudocode aliases).
+    #[test]
+    fn send_mail_status_maps_provisioning_retry_auth_fatal() {
+        // Provisioning family (140/141/142/143/144) → RetryProvision.
+        assert_eq!(recovery_action_for_send_mail(140), RecoveryAction::RetryProvision);
+        assert_eq!(recovery_action_for_send_mail(141), RecoveryAction::RetryProvision);
+        assert_eq!(recovery_action_for_send_mail(142), RecoveryAction::RetryProvision);
+        assert_eq!(recovery_action_for_send_mail(143), RecoveryAction::RetryProvision);
+        assert_eq!(recovery_action_for_send_mail(144), RecoveryAction::RetryProvision);
+        // Transient (111/132) → RetryTransient.
+        assert_eq!(recovery_action_for_send_mail(111), RecoveryAction::RetryTransient);
+        assert_eq!(recovery_action_for_send_mail(132), RecoveryAction::RetryTransient);
+        // Fatal auth (130/131) → SurfaceAuth.
+        assert_eq!(recovery_action_for_send_mail(130), RecoveryAction::SurfaceAuth);
+        assert_eq!(recovery_action_for_send_mail(131), RecoveryAction::SurfaceAuth);
+        // Unknown codes must NOT retry blindly → SurfacePermanent.
+        assert_eq!(recovery_action_for_send_mail(1), RecoveryAction::SurfacePermanent);
+        assert_eq!(recovery_action_for_send_mail(999), RecoveryAction::SurfacePermanent);
     }
 }

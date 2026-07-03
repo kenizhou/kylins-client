@@ -80,9 +80,19 @@ pub enum MutationOp {
         uids: Vec<u32>,
     },
     /// Send a new message. Local-apply is a no-op (the message has no row yet);
-    /// the encoded `rawBase64url` is what the SMTP worker transmits.
+    /// the replay worker builds RFC5322 MIME bytes from `draft` via
+    /// `mail_builder::build_mime`, then calls `MailSource::send(&[u8])`.
+    /// (T3 carried a base64url string; T6 swapped to the structured draft.)
+    ///
+    /// `draft` is boxed because `SendDraft` is ~384 bytes (many `String` +
+    /// `Vec` fields), which would otherwise balloon every `MutationOp` value
+    /// to the size of the largest variant (clippy::large_enum_variant).
+    /// `Box` puts it on the heap; the wire format is unchanged (serde
+    /// transparently unboxes during (de)serialization).
     #[serde(rename_all = "camelCase")]
-    Send { raw_base64url: String },
+    Send {
+        draft: Box<crate::mail::builder::SendDraft>,
+    },
 }
 
 impl MutationOp {
@@ -154,13 +164,20 @@ impl MutationOp {
                 folder_path: folder,
                 uids: vec![uid],
             },
-            "send" => MutationOp::Send {
-                raw_base64url: v
-                    .get("rawBase64url")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            },
+            "send" => {
+                // The pending row's params JSON is the serialized `SendDraft`
+                // (see `encode_params`), wrapped under the "draft" key so the
+                // shape mirrors the IPC variant `{"type":"send","draft":{...}}`.
+                let draft = v
+                    .get("draft")
+                    .cloned()
+                    .ok_or_else(|| "send op missing 'draft' field".to_string())?;
+                let draft: crate::mail::builder::SendDraft =
+                    serde_json::from_value(draft).map_err(|e| format!("decode draft: {e}"))?;
+                MutationOp::Send {
+                    draft: Box::new(draft),
+                }
+            }
             other => return Err(format!("unknown op type {other}")),
         })
     }
@@ -230,8 +247,8 @@ impl MutationOp {
                 "uids": uids,
             })
             .to_string(),
-            MutationOp::Send { raw_base64url } => {
-                serde_json::json!({ "rawBase64url": raw_base64url }).to_string()
+            MutationOp::Send { draft } => {
+                serde_json::json!({ "draft": draft.as_ref() }).to_string()
             }
         }
     }
@@ -240,15 +257,18 @@ impl MutationOp {
     /// command to fan out one `pending_operations` row per affected message
     /// (`resource_id = message_id`) so per-message locking and compact_queue
     /// cancellation work correctly. For `Send`, there is no message id yet —
-    /// return empty (the command enqueues a single row keyed by a generated
-    /// draft id instead).
+    /// derive a stable key from the draft id (`"send:{draft_id}"`). (The
+    /// `apply_mutation_inner` enqueue path actually generates its own
+    /// `"send:{uuid}"` for the queue row since `local_writes` returns an empty
+    /// `affected` vec for Send; `resource_id()` is kept consistent with that
+    /// scheme for any future caller that wants to dedupe by draft.)
     pub fn resource_id(&self) -> String {
         match self {
             MutationOp::MarkRead { thread_id, .. } => thread_id.clone(),
             MutationOp::SetFlag { message_ids, .. }
             | MutationOp::Move { message_ids, .. }
             | MutationOp::Delete { message_ids, .. } => message_ids.join(","),
-            MutationOp::Send { .. } => String::new(),
+            MutationOp::Send { draft } => format!("send:{}", draft.draft_id),
         }
     }
 
@@ -393,7 +413,11 @@ impl MutationOp {
     /// - `SetFlag`      → `set_flags(flag=<op.flag>, add=add)`
     /// - `Move`         → `move_messages(src, uids, dst)`
     /// - `Delete`       → `delete_messages(folder, uids)`
-    /// - `Send`         → `send(raw_base64url)`
+    /// - `Send`         → NOT handled here. Send is intercepted by the replay
+    ///   worker (`run_replay_round`), which builds MIME bytes from `draft` via
+    ///   `mail_builder::build_mime` and calls `MailSource::send(&[u8])`. This
+    ///   arm is an unreachable fallback so the match stays exhaustive; if it is
+    ///   ever hit it indicates the replay worker was bypassed.
     ///
     /// Folder paths from the op are wrapped into [`RemoteFolder`] values via
     /// [`folder_remote`]; the adapter only reads `remote_id` for IMAP, so the
@@ -435,7 +459,9 @@ impl MutationOp {
             MutationOp::Delete {
                 folder_path, uids, ..
             } => src.delete_messages(&folder_remote(folder_path), uids).await,
-            MutationOp::Send { raw_base64url } => src.send(raw_base64url).await,
+            MutationOp::Send { .. } => Err(SourceError::Other(
+                "Send is handled by run_replay_round, not exec_via_source".into(),
+            )),
         }
     }
 }
@@ -457,6 +483,28 @@ fn folder_remote(path: &str) -> RemoteFolder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal text-only `SendDraft` for tests, keyed by `id` (used as the
+    /// `draft_id`). T6's Send tests don't exercise MIME building here (that
+    /// lives in `engine.rs` `send_op_builds_mime_and_calls_send`), so a static
+    /// text-only draft is sufficient.
+    fn test_draft(id: &str) -> crate::mail::builder::SendDraft {
+        use crate::mail::builder::{AddressSpec, SendDraft};
+        SendDraft {
+            draft_id: id.into(),
+            from: AddressSpec {
+                name: None,
+                email: "a@b.local".into(),
+            },
+            to: vec![AddressSpec {
+                name: None,
+                email: "c@d.local".into(),
+            }],
+            subject: "test subject".into(),
+            text_body: Some("test body".into()),
+            ..Default::default()
+        }
+    }
 
     /// Insert a bare account row directly (no crypto), so messages/threads
     /// have a parent account_id without depending on the keyring. Matches the
@@ -563,7 +611,7 @@ mod tests {
         );
         assert_eq!(
             MutationOp::Send {
-                raw_base64url: "x".into()
+                draft: Box::new(test_draft("x"))
             }
             .op_type(),
             "send"
@@ -646,14 +694,17 @@ mod tests {
         assert_eq!(del_json["uids"][0], 5);
 
         let send = MutationOp::Send {
-            raw_base64url: "abc".into(),
+            draft: Box::new(test_draft("abc")),
         };
         let send_json: serde_json::Value = serde_json::from_str(&send.encode_params("m")).unwrap();
-        assert_eq!(send_json["rawBase64url"], "abc");
+        // The draft is serialized whole under the "draft" key (the same shape
+        // the frontend sends over IPC and the queue stores for replay).
+        assert_eq!(send_json["draft"]["draftId"], "abc");
+        assert_eq!(send_json["draft"]["subject"], "test subject");
     }
 
     #[test]
-    fn resource_id_returns_thread_for_markread_empty_for_send() {
+    fn resource_id_returns_thread_for_markread_send_prefixed_draft_id() {
         let mr = MutationOp::MarkRead {
             thread_id: "thr-1".into(),
             message_ids: vec![],
@@ -664,9 +715,9 @@ mod tests {
         assert_eq!(mr.resource_id(), "thr-1");
 
         let send = MutationOp::Send {
-            raw_base64url: "x".into(),
+            draft: Box::new(test_draft("x")),
         };
-        assert_eq!(send.resource_id(), "");
+        assert_eq!(send.resource_id(), "send:x");
 
         // setFlag/move/delete join message_ids.
         let sf = MutationOp::SetFlag {
@@ -951,7 +1002,7 @@ mod tests {
         seed_account(&pool, "acct").await;
 
         let op = MutationOp::Send {
-            raw_base64url: "abc".into(),
+            draft: Box::new(test_draft("abc")),
         };
         let affected = op.local_writes(&pool, "acct").await.unwrap();
         assert!(affected.is_empty(), "Send affects no messages locally");
@@ -1101,18 +1152,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exec_via_source_send_dispatches_send_with_raw() {
+    async fn exec_via_source_send_returns_unreachable_fallback() {
+        // T6: Send is no longer dispatched through exec_via_source. The replay
+        // worker (`run_replay_round`) intercepts it and calls `send_op`, which
+        // builds MIME from `draft` then calls `MailSource::send(&[u8])`. The
+        // exec_via_source Send arm is an unreachable fallback that returns an
+        // `Other` error so the match stays exhaustive. The worker-path test
+        // (`send_op_builds_mime_and_calls_send`) lives in `engine.rs`.
         let src = recorder_src();
         let op = MutationOp::Send {
-            raw_base64url: "Zm9vYmFy".into(),
+            draft: Box::new(test_draft("d1")),
         };
-        op.exec_via_source(&src).await.unwrap();
-        assert_eq!(
-            src.recorded_calls(),
-            vec![RecordedCall::Send {
-                raw_base64url: "Zm9vYmFy".into(),
-            }]
-        );
+        let err = op.exec_via_source(&src).await.unwrap_err();
+        assert!(matches!(err, SourceError::Other(_)));
+        // No mutation method was recorded — Send did not reach the source.
+        assert!(src.recorded_calls().is_empty());
     }
 
     #[tokio::test]
@@ -1180,7 +1234,7 @@ mod tests {
             ) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
-            async fn send(&self, _r: &str) -> Result<(), crate::sync_engine::SourceError> {
+            async fn send(&self, _r: &[u8]) -> Result<(), crate::sync_engine::SourceError> {
                 Err(crate::sync_engine::SourceError::Unsupported)
             }
         }
