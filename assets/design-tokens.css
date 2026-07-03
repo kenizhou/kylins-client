@@ -1,0 +1,122 @@
+/* Design Tokens - Auto-generated */
+/* Do not edit directly - modify tokens.json instead */
+
+/* === PRIMITIVES === */
+:root {
+  --primitive-color-primary-blue-50: #eff6ff;
+  --primitive-color-primary-blue-100: #dbeafe;
+  --primitive-color-primary-blue-200: #bfdbfe;
+  --primitive-color-primary-blue-300: #93c5fd;
+  --primitive-color-primary-blue-400: #60a5fa;
+  --primitive-color-primary-blue-500: #2563eb;
+  --primitive-color-primary-blue-600: #1d4ed8;
+  --primitive-color-primary-blue-700: #1e40af;
+  --primitive-color-primary-blue-800: #1e3a8a;
+  --primitive-color-primary-blue-900: #172554;
+  --primitive-color-bright-blue-50: #eff6ff;
+  --primitive-color-bright-blue-100: #dbeafe;
+  --primitive-color-bright-blue-200: #bfdbfe;
+  --primitive-color-bright-blue-300: #93c5fd;
+  --primitive-color-bright-blue-400: #60a5fa;
+  --primitive-color-bright-blue-500: #3b82f6;
+  --primitive-color-bright-blue-600: #2563eb;
+  --primitive-color-bright-blue-700: #1d4ed8;
+  --primitive-color-bright-blue-800: #1e40af;
+  --primitive-color-bright-blue-900: #1e3a8a;
+  --primitive-color-priority-red-50: #fef2f2;
+  --primitive-color-priority-red-100: #fee2e2;
+  --primitive-color-priority-red-200: #fecaca;
+  --primitive-color-priority-red-300: #fca5a5;
+  --primitive-color-priority-red-400: #f87171;
+  --primitive-color-priority-red-500: #dc2626;
+  --primitive-color-priority-red-600: #b91c1c;
+  --primitive-color-priority-red-700: #991b1b;
+  --primitive-color-priority-red-800: #7f1d1d;
+  --primitive-color-priority-red-900: #450a0a;
+  --primitive-color-slate-50: #f8fafc;
+  --primitive-color-slate-100: #f1f5f9;
+  --primitive-color-slate-200: #e2e8f0;
+  --primitive-color-slate-300: #cbd5e1;
+  --primitive-color-slate-400: #94a3b8;
+  --primitive-color-slate-500: #64748b;
+  --primitive-color-slate-600: #475569;
+  --primitive-color-slate-700: #334155;
+  --primitive-color-slate-800: #1e293b;
+  --primitive-color-slate-900: #0f172a;
+  --primitive-color-slate-950: #020617;
+  --primitive-color-green-500: #22c55e;
+  --primitive-color-green-600: #16a34a;
+  --primitive-color-amber-500: #f59e0b;
+  --primitive-color-amber-600: #d97706;
+}
+
+/* === SEMANTIC === */
+:root {
+  --color-background: #ffffff;
+  --color-foreground: #0f172a;
+  --color-muted: #f1f5f9;
+  --color-muted-foreground: #64748b;
+  --color-border: #e2e8f0;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-active: #1e40af;
+  --color-primary-light: #60a5fa;
+  --color-primary-lighter: #dbeafe;
+  --color-primary-dark: #1d4ed8;
+  --color-secondary: #3b82f6;
+  --color-secondary-hover: #2563eb;
+  --color-secondary-light: #93c5fd;
+  --color-secondary-dark: #2563eb;
+  --color-accent: #dc2626;
+  --color-accent-hover: #b91c1c;
+  --color-accent-light: #fca5a5;
+  --color-success: #22c55e;
+  --color-success-light: #86efac;
+  --color-warning: #f59e0b;
+  --color-warning-light: #fcd34d;
+  --color-error: #dc2626;
+  --color-error-light: #fca5a5;
+  --color-info: #3b82f6;
+  --color-info-light: #93c5fd;
+  --font-ui:
+    "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    system-ui, sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+}
+
+/* === COMPONENTS === */
+:root {
+  --button-secondary-bg-hover: #2563eb1a;
+}
+
+/* === DARK MODE === */
+.dark {
+  --color-background: #020617;
+  --color-foreground: #f1f5f9;
+  --color-muted: #0f172a;
+  --color-muted-foreground: #94a3b8;
+  --color-border: #1e293b;
+  --color-primary: #60a5fa;
+  --color-primary-hover: #93c5fd;
+  --color-primary-active: #bfdbfe;
+  --color-primary-light: #93c5fd;
+  --color-primary-lighter: #172554;
+  --color-primary-dark: #2563eb;
+  --color-secondary: #60a5fa;
+  --color-secondary-hover: #93c5fd;
+  --color-secondary-light: #2563eb;
+  --color-secondary-dark: #3b82f6;
+  --color-accent: #f87171;
+  --color-accent-hover: #fca5a5;
+  --color-accent-light: #b91c1c;
+  --color-success: #34d399;
+  --color-success-light: #059669;
+  --color-warning: #fbbf24;
+  --color-warning-light: #b45309;
+  --color-error: #f87171;
+  --color-error-light: #b91c1c;
+  --color-info: #60a5fa;
+  --color-info-light: #2563eb;
+}
