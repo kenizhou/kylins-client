@@ -1,5 +1,5 @@
 import type { Account } from '@/types';
-import { ContactsIcon, FolderIcon, UserIcon } from '../icons';
+import { ContactsIcon, FolderIcon, UserIcon } from '@/components/icons';
 
 const LOCAL_SENTINEL = 'local';
 
@@ -25,7 +25,7 @@ function AccountRow({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+      className={`flex w-full min-h-11 items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
         active
           ? 'bg-[var(--selected)] text-[var(--selected-text)]'
           : 'text-[var(--foreground)] hover:bg-[var(--hover)]'

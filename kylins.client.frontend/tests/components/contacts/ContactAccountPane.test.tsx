@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/react';
-import { ContactAccountPane } from '../../../src/components/contacts/ContactAccountPane';
-import type { Account } from '../../../src/types';
+import { ContactAccountPane } from '@/components/contacts/ContactAccountPane';
+import type { Account } from '@/types';
 
 function makeAccount(overrides: Partial<Account> = {}): Account {
   return {
@@ -9,8 +9,13 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
     email: 'work@corp.com',
     accountLabel: 'Work',
     provider: 'imap',
+    isActive: true,
+    isDefault: false,
+    sortOrder: 0,
+    createdAt: 0,
+    updatedAt: 0,
     ...overrides,
-  } as Account;
+  };
 }
 
 describe('ContactAccountPane', () => {
@@ -40,7 +45,7 @@ describe('ContactAccountPane', () => {
     const onSelect = vi.fn();
     const { getByText } = render(
       <ContactAccountPane
-        accounts={[makeAccount({ id: 'acc-1', selectedAccountId: 'acc-1' })]}
+        accounts={[makeAccount({ id: 'acc-1' })]}
         selectedAccountId="acc-1"
         onSelect={onSelect}
       />,
