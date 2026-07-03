@@ -1,9 +1,9 @@
 // Lightweight, reusable right-click context menu rendered in a portal at the
-// cursor position. Mirrors the pattern Velo uses (ContextMenuPortal). Dismisses
-// on outside click, Escape, or item selection.
+// cursor position. Uses react-aria-components for keyboard navigation and ARIA.
 
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { Menu, MenuItem, Separator } from 'react-aria-components';
 
 export interface ContextMenuItem {
   label?: string;
@@ -58,38 +58,40 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       style={style}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
-      className="min-w-[180px] py-1 rounded-md border border-[var(--border)] bg-[var(--surface)] shadow-lg"
-      role="menu"
+      className="min-w-[180px] rounded-md border border-border bg-surface py-1 shadow-lg"
     >
-      {items.map((item, i) => {
-        if (item.separator) {
-          return <div key={i} className="my-1 border-t border-[var(--border)]" />;
-        }
-        const Icon = item.icon;
-        return (
-          <button
-            key={i}
-            type="button"
-            disabled={item.disabled}
-            onClick={() => {
-              if (item.disabled) return;
-              item.onSelect?.();
-              onClose();
-            }}
-            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] transition-colors ${
-              item.disabled
-                ? 'cursor-default text-[var(--muted-text)] opacity-50'
-                : item.danger
-                  ? 'text-red-600 hover:bg-[var(--hover)]'
-                  : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
-            }`}
-            role="menuitem"
-          >
-            {Icon && <Icon size={14} />}
-            <span className="flex-1 truncate">{item.label}</span>
-          </button>
-        );
-      })}
+      <Menu aria-label="Context menu" className="outline-none">
+        {items.map((item, i) => {
+          if (item.separator) {
+            return <Separator key={`sep-${i}`} className="my-1 border-t border-border" />;
+          }
+          const Icon = item.icon;
+          return (
+            <MenuItem
+              key={item.label ?? i}
+              id={item.label ?? i}
+              isDisabled={item.disabled}
+              textValue={item.label}
+              onAction={() => {
+                item.onSelect?.();
+                onClose();
+              }}
+              className={({ isFocused, isHovered, isDisabled }) =>
+                `flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] focus-visible:outline-none ${
+                  isDisabled
+                    ? 'cursor-default text-muted-text opacity-50'
+                    : item.danger
+                      ? `text-red-600 ${isFocused || isHovered ? 'bg-hover' : ''}`
+                      : `cursor-pointer text-foreground ${isFocused || isHovered ? 'bg-hover' : ''}`
+                }`
+              }
+            >
+              {Icon && <Icon size={14} />}
+              <span className="flex-1 truncate">{item.label}</span>
+            </MenuItem>
+          );
+        })}
+      </Menu>
     </div>,
     document.body,
   );

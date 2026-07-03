@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::eas::auth::EasAuth;
+
 // ---------- Configuration ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +41,20 @@ pub struct EasConfig {
     /// Accept invalid TLS certs (self-signed Exchange servers). Default false.
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// Auth strategy selector. `"basic"` (default, historical) uses
+    /// `username` / `password`. `"oauth"` means the source layer also fills
+    /// `auth` with an `EasAuth::OAuth { .. }` built from the account's stored
+    /// OAuth fields. Kept as a free-form `String` (not an enum) so the config
+    /// round-trips through serde without a migration when new modes land.
+    #[serde(default)]
+    pub auth_type: String,
+    /// Typed auth payload. Built by `EasSource::eas_config()` when
+    /// `auth_type == "oauth"`; the transport calls
+    /// `auth.authorization_header()` when `Some`, else falls back to Basic
+    /// with `username` / `password`. `None` preserves the historical Basic
+    /// path (existing tests construct `EasConfig { .. }` without it).
+    #[serde(default)]
+    pub auth: Option<EasAuth>,
 }
 
 fn default_protocol_version() -> String {
@@ -51,6 +67,29 @@ fn default_device_type() -> String {
 
 fn default_user_agent() -> String {
     "KylinsMail/1.0".to_string()
+}
+
+/// Manual `Default` so adding new optional fields (`auth_type`, `auth`) doesn't
+/// break the literal construction in `eas_source::eas_config` — that site uses
+/// `..Default::default()` and only overrides the fields it explicitly maps.
+/// The `#[serde(default = "...")]` attributes only cover deserialization, so
+/// without this impl, `EasConfig { ..Default::default() }` wouldn't compile.
+impl Default for EasConfig {
+    fn default() -> Self {
+        Self {
+            url: String::default(),
+            username: String::default(),
+            password: String::default(),
+            protocol_version: default_protocol_version(),
+            device_id: String::default(),
+            device_type: default_device_type(),
+            user_agent: default_user_agent(),
+            policy_key: String::default(),
+            accept_invalid_certs: false,
+            auth_type: String::default(),
+            auth: None,
+        }
+    }
 }
 
 // ---------- Folders (FolderSync) ----------
@@ -108,7 +147,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResult {
     pub sync_key: String,
     pub added: Vec<EasItem>,
@@ -116,35 +155,83 @@ pub struct SyncResult {
     pub deleted_server_ids: Vec<String>,
     /// True if more items are available — caller should re-issue Sync with the new sync_key.
     pub more_available: bool,
+    /// EAS Sync collection status (MS-ASSYNC 2.2.3.23). `1` = success;
+    /// anything else is a protocol error the engine must surface. Defaults
+    /// to `1` so the unparsed-stub path (which returns `SyncResult::default()`)
+    /// reads as success until Task 3 wires real status parsing.
+    #[serde(default = "default_sync_status")]
+    pub status: u32,
 }
 
-/// Generic item envelope — fields vary by collection class. For MVP we keep the
-/// payload as a flexible map so we don't have to enumerate every EAS field.
-/// Phase 6+ work can specialize per class.
+fn default_sync_status() -> u32 {
+    1
+}
+
+/// Manual `Default` so `status` defaults to `1` (success) rather than the
+/// `u32` default of `0`. The `#[serde(default = ...)]` attribute only covers
+/// deserialization, not `Default::default()`, so without this impl callers
+/// writing `SyncResult::default()` would get `status = 0` (which the engine
+/// treats as an error).
+impl Default for SyncResult {
+    fn default() -> Self {
+        Self {
+            sync_key: String::default(),
+            added: Vec::default(),
+            updated: Vec::default(),
+            deleted_server_ids: Vec::default(),
+            more_available: bool::default(),
+            status: default_sync_status(),
+        }
+    }
+}
+
+/// Typed email item envelope. Replaces the previous `HashMap<String, String>`
+/// payload so the WBXML Sync-response parser (Task 2) can dispatch on typed
+/// fields rather than stringly-typed tag names. Only the Email class is
+/// modeled here; Calendar/Contacts sync stays deferred.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EasItem {
     pub server_id: String,
-    pub class: String,
-    /// Decoded item fields. Keys correspond to WBXML tag names (e.g. `"Subject"`, `"DateReceived"`).
-    pub fields: std::collections::HashMap<String, String>,
-    /// Raw body text (HTML or plain) if requested.
-    pub body: Option<String>,
-    /// Body type: `"text"`, `"html"`, `"rtf"`, `"mime"`.
-    pub body_type: Option<String>,
-    /// Preview snippet (first ~256 chars).
+    pub subject: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub cc: Option<String>,
+    pub bcc: Option<String>,
+    pub reply_to: Option<String>,
+    pub date_received: Option<String>,
+    pub read: Option<bool>,
+    pub flag: Option<bool>,
+    pub importance: Option<u8>,
+    pub body_html: Option<String>,
+    pub body_text: Option<String>,
+    pub body_truncated: Option<bool>,
     pub preview: Option<String>,
-    /// Attachments if fetched.
+    pub has_attachments: bool,
     pub attachments: Vec<EasAttachment>,
+    pub conversation_id: Option<Vec<u8>>,
+    pub is_draft: Option<bool>,
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EasAttachment {
     pub file_reference: String,
     pub display_name: String,
     pub content_id: Option<String>,
     pub is_inline: bool,
-    pub estimated_data_size: u64,
-    pub method: u8, // 1=Normal, 5=EmbeddedMessage, 6=AttachOLE
+    /// EAS `AirSyncBase:EstimatedDataSize`. Typed as `Option<u32>` so the
+    /// parser can distinguish "server omitted it" from "zero". Replaces the
+    /// previous untyped `u64` field.
+    pub estimated_data_size: Option<u32>,
+    /// EAS `AirSyncBase:Method`: 1=Normal, 5=EmbeddedMessage, 6=AttachOLE.
+    /// Typed as `Option<u8>` for the same reason as `estimated_data_size`.
+    pub method: Option<u8>,
+    /// MIME content type, e.g. `"image/png"`. Surfaced on ItemOperations fetch.
+    pub content_type: Option<String>,
+    /// URL for externally-stored attachments. Rarely populated for mail.
+    pub content_location: Option<String>,
 }
 
 // ---------- ItemOperations ----------
@@ -263,23 +350,8 @@ pub struct FolderDeleteRequest {
     pub server_id: String,
 }
 
-// ---------- Common status / errors ----------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EasError {
-    pub status: u32,
-    pub message: String,
-    pub command: String,
-}
-
-impl std::fmt::Display for EasError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "EAS {} status {}: {}",
-            self.command, self.status, self.message
-        )
-    }
-}
-
-impl std::error::Error for EasError {}
+// NOTE: The legacy `pub struct EasError { status, message, command }` that
+// previously lived here was dead code — every live EAS error in the codebase
+// flows through `crate::eas::client::EasError` (the `thiserror` enum declared
+// in `client.rs`). It was removed in Phase 3b Task 1. If you need to surface
+// an EAS error, use `client::EasError`.

@@ -60,6 +60,19 @@ pub fn write_text_file(path: String, data: String) -> Result<(), String> {
     std::fs::write(&path, data).map_err(|e| format!("failed to write {path}: {e}"))
 }
 
+/// Write base64-decoded bytes to `path`. Used by the attachment download flow
+/// (frontend `save()` dialog → this command) so the app doesn't need the
+/// `@tauri-apps/plugin-fs` JS package for binary writes.
+#[tauri::command]
+pub fn write_binary_file(path: String, data_base64: String) -> Result<(), String> {
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        data_base64.as_bytes(),
+    )
+    .map_err(|e| format!("invalid base64: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| format!("failed to write {path}: {e}"))
+}
+
 // ---------- Startup / notification / storage commands ----------
 
 #[tauri::command]
@@ -387,19 +400,6 @@ pub async fn imap_get_folder_status(
     let status = imap_client::get_folder_status(&mut session, &folder).await?;
     let _ = session.logout().await;
     Ok(status)
-}
-
-#[tauri::command]
-pub async fn imap_fetch_attachment(
-    config: ImapConfig,
-    folder: String,
-    uid: u32,
-    part_id: String,
-) -> Result<String, String> {
-    let mut session = imap_client::connect(&config).await?;
-    let data = imap_client::fetch_attachment(&mut session, &folder, uid, &part_id).await?;
-    let _ = session.logout().await;
-    Ok(data)
 }
 
 #[tauri::command]

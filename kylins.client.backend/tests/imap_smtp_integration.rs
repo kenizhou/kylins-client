@@ -17,7 +17,6 @@
 //     cargo test --test imap_smtp_integration -- --ignored --nocapture --test-threads=1
 
 use async_imap::Session;
-use base64::Engine;
 use kylins_client_lib::mail::imap::{
     client as imap_client,
     client::ImapStream,
@@ -608,13 +607,12 @@ async fn imap_append_and_fetch_attachment() {
     assert!(attachment.mime_type.contains("text/plain"));
 
     // Fetch the attachment body by section. For a simple multipart/mixed with one
-    // text part + one attachment, the attachment is section "2".
-    let data_b64 = imap_client::fetch_attachment(&mut session, &test_folder(), uid, "2")
+    // text part + one attachment, the attachment is section "2". Uses the raw
+    // fetch_attachment_bytes (config-based, opens its own connection) — the old
+    // async-imap fetch_attachment was removed (returns 0 on this server).
+    let (_mime, data) = imap_client::fetch_attachment_bytes(&config, &test_folder(), uid, "2")
         .await
-        .expect("fetch attachment");
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(&data_b64)
-        .expect("attachment base64 decode");
+        .expect("fetch attachment bytes");
     let decoded = String::from_utf8_lossy(&data).trim_end().to_string();
     assert_eq!(decoded, attachment_content);
 

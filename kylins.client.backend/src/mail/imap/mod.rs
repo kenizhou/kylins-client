@@ -2,4 +2,5 @@
 // Licensed under Apache-2.0. See ATTRIBUTIONS.md.
 
 pub mod client;
+pub mod session_manager;
 pub mod types;

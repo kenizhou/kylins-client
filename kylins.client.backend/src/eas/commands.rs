@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 use crate::eas::types::*;
+use crate::eas::wbxml::tags::{self, pages};
 use crate::eas::wbxml::types::{WbxmlElement, WbxmlValue};
 use crate::eas::wbxml::WbxmlError;
 
@@ -44,6 +45,7 @@ const AS_GET_CHANGES: u8 = 0x13;
 const AS_MORE_AVAILABLE: u8 = 0x14;
 const AS_WINDOW_SIZE: u8 = 0x15;
 const AS_COMMANDS: u8 = 0x16;
+const AS_OPTIONS: u8 = 0x17; // Options (per [MS-ASSYNC] 2.2.3.25); matches tags::airsync::OPTIONS
 const AS_APPLICATION_DATA: u8 = 0x1D;
 
 // ---------- FolderHierarchy (page 7) tag ids ----------
@@ -271,6 +273,26 @@ pub fn build_sync_request(req: &SyncRequest) -> WbxmlElement {
         ));
     }
 
+    // Per [MS-ASSYNC] 2.2.3.25 — `Options` inside a `Collection` lets the
+    // client request a specific body format. We emit an AirSyncBase
+    // `BodyPreference` with `Type=2` (HTML) so the server returns message
+    // bodies. Gated on `fetch_body` so header-only sync rounds stay cheap.
+    // Code-page ids: AirSyncBase = 17 (pages::BASE); tokens are
+    // `BodyPreference` (0x05) and `Type` (0x06) per tags::base.
+    if req.fetch_body {
+        let body_preference = WbxmlElement::container(
+            pages::BASE,
+            tags::base::BODY_PREFERENCE,
+            vec![WbxmlElement::text(pages::BASE, tags::base::TYPE, "2")],
+        );
+        let options = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_OPTIONS,
+            vec![body_preference],
+        );
+        collection_children.push(options);
+    }
+
     let mut collection = WbxmlElement::container(PAGE_AIRSYNC, AS_COLLECTION, collection_children);
 
     if !req.class.is_empty() {
@@ -331,8 +353,17 @@ fn parse_sync_collection(col: &WbxmlElement, result: &mut SyncResult) -> Result<
             (PAGE_AIRSYNC, AS_SYNC_KEY) => result.sync_key = text_value(child)?,
             (PAGE_AIRSYNC, AS_MORE_AVAILABLE) => result.more_available = true,
             (PAGE_AIRSYNC, AS_STATUS) => {
-                // Status 1 = OK, 3 = invalid sync key (need to re-init with "0")
-                let _status = text_value(child).unwrap_or_default();
+                // MS-ASSYNC 2.2.3.23 collection status. Surface the parsed
+                // value on `SyncResult.status` so callers (notably
+                // `EasSource::sync_folder`'s status-3 resync branch) can act
+                // on it. The wire value is a decimal string; a non-numeric or
+                // missing value leaves the default success status in place
+                // rather than aborting the whole parse.
+                if let Ok(s) = text_value(child) {
+                    if let Ok(n) = s.parse::<u32>() {
+                        result.status = n;
+                    }
+                }
             }
             (PAGE_AIRSYNC, AS_COMMANDS) => {
                 for cmd in &child.children {
@@ -373,34 +404,144 @@ fn parse_item(item_el: &WbxmlElement) -> Result<EasItem, WbxmlError> {
     Ok(item)
 }
 
+/// Walk `ApplicationData` children and populate `EasItem` typed fields.
+///
+/// Dispatch is by `child.tag_name()` so the parser is robust to which code
+/// page a tag was serialized on (EAS servers are inconsistent about whether
+/// `From` lives on the Email page or is repeated on a child page). Unknown
+/// tags are ignored — the MVP only surfaces the fields `EasItem` models.
+///
+/// Body type dispatch (MS-ASEMAIL `AirSyncBase:Body`):
+///   - Type 2 → HTML  (`body_html`)
+///   - Type 1 → plain (`body_text`)
+///   - other/missing → fallback writes the same payload to both slots so the
+///     UI degrades gracefully rather than showing an empty message.
+///
+/// Flag: MS-ASEMAIL `Flag` has a `Status` child; `Status = "2"` means the
+/// message is flagged for follow-up, so we set `flag = Some(true)` only in
+/// that case (and `Some(false)` if a Flag element is present with any other
+/// Status). Absent Flag → `None` (unknown).
 fn parse_application_data(app_data: &WbxmlElement, item: &mut EasItem) {
     for child in &app_data.children {
-        let key = child.tag_name().to_string();
-        match &child.value {
-            WbxmlValue::Text(t) => {
-                // Recognize a few well-known fields for typed extraction
-                match child.tag_name() {
-                    "Subject" => {
-                        item.fields.insert("subject".to_string(), t.clone());
-                    }
-                    "DateReceived" => {
-                        item.fields.insert("date_received".to_string(), t.clone());
-                    }
-                    "Read" => {
-                        item.fields.insert("is_read".to_string(), t.clone());
-                    }
-                    _ => {
-                        item.fields.insert(key, t.clone());
-                    }
-                }
+        match child.tag_name() {
+            "Subject" => item.subject = text_value_opt(child),
+            "From" => item.from = text_value_opt(child),
+            "To" => item.to = text_value_opt(child),
+            "Cc" => item.cc = text_value_opt(child),
+            "Bcc" => item.bcc = text_value_opt(child),
+            "ReplyTo" => item.reply_to = text_value_opt(child),
+            "DateReceived" => item.date_received = text_value_opt(child),
+            "Read" => item.read = text_value_opt(child).map(|s| s == "1"),
+            "Flag" => {
+                // Flag.Status == "2" → active flag. Any other present Status
+                // value is treated as not-flagged; absent Status is also
+                // not-flagged. We only set Some(..) when a Flag element exists.
+                let active = child
+                    .children
+                    .iter()
+                    .any(|c| c.tag_name() == "Status" && text_value_opt(c).as_deref() == Some("2"));
+                item.flag = Some(active);
             }
-            WbxmlValue::Opaque(b) => {
-                if let Ok(s) = std::str::from_utf8(b) {
-                    item.fields.insert(key, s.to_string());
-                }
+            "Importance" => item.importance = text_value_opt(child).and_then(|s| s.parse().ok()),
+            "Body" => parse_body(child, item),
+            "Attachments" => parse_attachments(child, item),
+            "ConversationId" => {
+                // ConversationId (Email2 page 22, token 0x09) is opaque binary
+                // on the wire, but many Exchange deployments serialize it as
+                // base64 *text*. Handle both variants and keep the bytes
+                // verbatim — downstream treats `conversation_id` as opaque
+                // bytes (no base64 decode). A missing or empty value must map
+                // to `None` (not `Some(vec![])`), since empty != absent and
+                // `Some([])` would serialize as `"conversationId":[]`,
+                // misleading the frontend's threading logic.
+                item.conversation_id = match &child.value {
+                    WbxmlValue::Opaque(b) if !b.is_empty() => Some(b.clone()),
+                    WbxmlValue::Text(s) if !s.is_empty() => Some(s.as_bytes().to_vec()),
+                    _ => None,
+                };
             }
-            WbxmlValue::Empty => {}
+            "IsDraft" => item.is_draft = text_value_opt(child).map(|s| s == "1"),
+            // Tags we deliberately ignore for MVP — they are either metadata
+            // we don't model yet, or already consumed at a higher level
+            // (e.g. Status on ApplicationData belongs to the Sync command,
+            // not the item).
+            "InternetCPID" | "ContentClass" | "ThreadTopic" | "MessageClass" | "Status" => {}
+            _ => {} // unknown tags: ignore
         }
+    }
+}
+
+/// Parse an `AirSyncBase:Body` element into `body_html` / `body_text` /
+/// `body_truncated` / `preview` on the item.
+fn parse_body(elem: &WbxmlElement, item: &mut EasItem) {
+    let mut body_type: Option<u8> = None;
+    let mut data: Option<String> = None;
+    let mut truncated = false;
+    let mut preview: Option<String> = None;
+    for child in &elem.children {
+        match child.tag_name() {
+            "Type" => body_type = text_value_opt(child).and_then(|s| s.parse().ok()),
+            "Data" => data = text_value_opt(child),
+            "Truncated" => truncated = text_value_opt(child).as_deref() == Some("1"),
+            "Preview" => preview = text_value_opt(child),
+            "EstimatedDataSize" => {} // not surfaced on EasItem
+            _ => {}
+        }
+    }
+    match body_type {
+        Some(2) => item.body_html = data,      // Type 2 = HTML
+        Some(1) => item.body_text = data,      // Type 1 = PlainText
+        _ => {
+            // Unknown / missing type: write to both slots so the UI can still
+            // render something. Prefer HTML for display, plain for search.
+            item.body_html = data.clone();
+            item.body_text = data;
+        }
+    }
+    item.body_truncated = if truncated { Some(true) } else { None };
+    item.preview = preview;
+}
+
+/// Parse an `AirSyncBase:Attachments` container into `item.attachments` and
+/// set `has_attachments` based on whether any `Attachment` children were found.
+fn parse_attachments(elem: &WbxmlElement, item: &mut EasItem) {
+    for child in &elem.children {
+        if child.tag_name() != "Attachment" {
+            continue;
+        }
+        let mut att = EasAttachment::default();
+        for field in &child.children {
+            match field.tag_name() {
+                "DisplayName" => att.display_name = text_value_opt(field).unwrap_or_default(),
+                "FileReference" => att.file_reference = text_value_opt(field).unwrap_or_default(),
+                "Method" => att.method = text_value_opt(field).and_then(|s| s.parse().ok()),
+                "ContentId" => att.content_id = text_value_opt(field),
+                "IsInline" => att.is_inline = text_value_opt(field).as_deref() == Some("1"),
+                "ContentType" => att.content_type = text_value_opt(field),
+                "EstimatedDataSize" => {
+                    att.estimated_data_size = text_value_opt(field).and_then(|s| s.parse().ok());
+                }
+                "ContentLocation" => att.content_location = text_value_opt(field),
+                _ => {}
+            }
+        }
+        item.attachments.push(att);
+    }
+    item.has_attachments = !item.attachments.is_empty();
+}
+
+/// Return the text value of a leaf element, or `None` for empty/opaque leaves.
+///
+/// Distinct from the module-level `text_value(&WbxmlElement) -> Result<String,
+/// WbxmlError>` helper (which is the fallible form used by the strict FolderSync
+/// / Sync-key parsers). This `_opt` variant is the permissive form for
+/// `ApplicationData` field extraction, where a missing or non-text value should
+/// silently map to `None` rather than abort the whole item parse.
+fn text_value_opt(elem: &WbxmlElement) -> Option<String> {
+    match &elem.value {
+        WbxmlValue::Text(s) => Some(s.clone()),
+        WbxmlValue::Opaque(b) => std::str::from_utf8(b).ok().map(|s| s.to_string()),
+        WbxmlValue::Empty => None,
     }
 }
 
@@ -1162,5 +1303,850 @@ mod tests {
         assert_eq!(class_to_folder_type("Contacts"), "9");
         assert_eq!(class_to_folder_type("Tasks"), "7");
         assert_eq!(class_to_folder_type("Unknown"), "1");
+    }
+
+    // ---- Phase 3a Task 1: typed EasItem/EasAttachment + SyncResult.status ----
+
+    /// `SyncResult::default()` must surface `status = 1` (success) per
+    /// [MS-ASSYNC] 2.2.3.23. The engine reads this to decide whether to
+    /// persist the returned sync_key.
+    #[test]
+    fn sync_result_default_status_is_success() {
+        let r = SyncResult::default();
+        assert_eq!(r.status, 1, "default SyncResult.status must be 1 (success)");
+        assert!(!r.more_available);
+        assert!(r.added.is_empty());
+        assert!(r.updated.is_empty());
+        assert!(r.deleted_server_ids.is_empty());
+    }
+
+    /// `EasItem` is now a typed struct (not a HashMap). Default has empty
+    /// server_id, None subject, no attachments, `has_attachments = false`.
+    #[test]
+    fn eas_item_is_typed_struct_with_expected_fields() {
+        let item = EasItem::default();
+        assert_eq!(item.server_id, "");
+        assert_eq!(item.subject, None);
+        assert_eq!(item.from, None);
+        assert_eq!(item.to, None);
+        assert_eq!(item.cc, None);
+        assert_eq!(item.bcc, None);
+        assert_eq!(item.reply_to, None);
+        assert_eq!(item.date_received, None);
+        assert_eq!(item.read, None);
+        assert_eq!(item.flag, None);
+        assert_eq!(item.importance, None);
+        assert_eq!(item.body_html, None);
+        assert_eq!(item.body_text, None);
+        assert_eq!(item.body_truncated, None);
+        assert_eq!(item.preview, None);
+        assert!(!item.has_attachments);
+        assert!(item.attachments.is_empty());
+        assert_eq!(item.conversation_id, None);
+        assert_eq!(item.is_draft, None);
+        assert_eq!(item.message_id, None);
+    }
+
+    /// A fully-populated `EasItem` round-trips through serde, proving the
+    /// `camelCase` rename matches what the frontend TS interface expects.
+    #[test]
+    fn eas_item_round_trips_through_serde() {
+        let item = EasItem {
+            server_id: "1:abc".to_string(),
+            subject: Some("Hello".to_string()),
+            from: Some("a@b.com".to_string()),
+            to: Some("c@d.com".to_string()),
+            cc: None,
+            bcc: None,
+            reply_to: None,
+            date_received: Some("2026-06-29T00:00:00.000Z".to_string()),
+            read: Some(true),
+            flag: Some(false),
+            importance: Some(1),
+            body_html: Some("<p>hi</p>".to_string()),
+            body_text: Some("hi".to_string()),
+            body_truncated: Some(false),
+            preview: Some("hi".to_string()),
+            has_attachments: true,
+            attachments: vec![EasAttachment {
+                file_reference: "ref-1".to_string(),
+                display_name: "file.txt".to_string(),
+                method: Some(1),
+                estimated_data_size: Some(42),
+                content_type: Some("text/plain".to_string()),
+                content_location: None,
+                is_inline: false,
+                content_id: None,
+            }],
+            conversation_id: Some(vec![0xDE, 0xAD]),
+            is_draft: Some(false),
+            message_id: Some("<msg@host>".to_string()),
+        };
+        let json = serde_json::to_string(&item).expect("serialize");
+        // camelCase rename evidence:
+        assert!(json.contains("\"dateReceived\""), "date_received must serialize as dateReceived");
+        assert!(json.contains("\"bodyHtml\""), "body_html must serialize as bodyHtml");
+        assert!(json.contains("\"hasAttachments\""), "has_attachments must serialize as hasAttachments");
+        assert!(json.contains("\"conversationId\""), "conversation_id must serialize as conversationId");
+        assert!(json.contains("\"isDraft\""), "is_draft must serialize as isDraft");
+        assert!(json.contains("\"messageId\""), "message_id must serialize as messageId");
+        assert!(json.contains("\"estimatedDataSize\""), "EasAttachment.estimated_data_size must serialize as estimatedDataSize");
+        let back: EasItem = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.server_id, item.server_id);
+        assert_eq!(back.subject, item.subject);
+        assert_eq!(back.has_attachments, item.has_attachments);
+        assert_eq!(back.attachments.len(), 1);
+        assert_eq!(back.attachments[0].content_type.as_deref(), Some("text/plain"));
+        assert_eq!(back.conversation_id, Some(vec![0xDE, 0xAD]));
+    }
+
+    /// `EasAttachment` gained `content_type`, `estimated_data_size` (now u32
+    /// per the typed contract), and `content_location`.
+    #[test]
+    fn eas_attachment_new_fields_default_none() {
+        let a = EasAttachment::default();
+        assert_eq!(a.content_type, None);
+        assert_eq!(a.estimated_data_size, None);
+        assert_eq!(a.content_location, None);
+    }
+
+    /// Email (page 2) tag constants exist at the documented hex values.
+    #[test]
+    fn email_tag_constants_match_spec() {
+        use crate::eas::wbxml::tags::email;
+        assert_eq!(email::PAGE, 2);
+        assert_eq!(email::DATE_RECEIVED, 0x0F);
+        assert_eq!(email::SUBJECT, 0x14);
+        assert_eq!(email::READ, 0x15);
+        assert_eq!(email::TO, 0x16);
+        assert_eq!(email::CC, 0x17);
+        assert_eq!(email::FROM, 0x18);
+        assert_eq!(email::REPLY_TO, 0x19);
+        assert_eq!(email::IMPORTANCE, 0x12);
+        assert_eq!(email::FLAG, 0x3A);
+    }
+
+    /// Email2 (page 22) tag constants exist at the documented hex values.
+    #[test]
+    fn email2_tag_constants_match_spec() {
+        use crate::eas::wbxml::tags::email2;
+        assert_eq!(email2::PAGE, 22);
+        assert_eq!(email2::CONVERSATION_ID, 0x09);
+        assert_eq!(email2::IS_DRAFT, 0x15);
+        assert_eq!(email2::BCC, 0x16);
+    }
+
+    // ---- Phase 3a Task 2: parse_application_data ----
+
+    /// Fixture: a synthetic EAS email ApplicationData element carrying the
+    /// fields the MVP parser must surface. Built with the real `WbxmlElement`
+    /// constructors on the documented code pages so `tag_name()` dispatch in
+    /// `parse_application_data` resolves identically to a server-generated tree.
+    ///
+    /// Tree shape (codes in `(page, token)` form):
+    /// ```text
+    /// ApplicationData (0, 0x1D)
+    ///   ├── Subject     (2, 0x14) = "Hello World"
+    ///   ├── From        (2, 0x18) = "alice@example.com"
+    ///   ├── To          (2, 0x16) = "bob@example.com"
+    ///   ├── Read        (2, 0x15) = "1"
+    ///   └── Body        (17, 0x0A)
+    ///       ├── Type    (17, 0x06) = "2"   (HTML)
+    ///       └── Data    (17, 0x0B) = "<p>Hi</p>"
+    /// ```
+    /// The fixture intentionally omits the optional fields (Cc/Bcc/Flag/Attachments/
+    /// ConversationId/IsDraft) — those are exercised by the focused tests below.
+    #[test]
+    fn parse_application_data_populates_core_email_fields() {
+        use crate::eas::wbxml::tags::{base, email, pages};
+
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(email::PAGE, email::SUBJECT, "Hello World"),
+                WbxmlElement::text(email::PAGE, email::FROM, "alice@example.com"),
+                WbxmlElement::text(email::PAGE, email::TO, "bob@example.com"),
+                WbxmlElement::text(email::PAGE, email::READ, "1"),
+                WbxmlElement::container(
+                    pages::BASE,
+                    base::BODY,
+                    vec![
+                        WbxmlElement::text(pages::BASE, base::TYPE, "2"),
+                        WbxmlElement::text(pages::BASE, base::DATA, "<p>Hi</p>"),
+                    ],
+                ),
+            ],
+        );
+
+        // Drive it through the public Sync-response parser entry point so the
+        // server_id → application_data wiring (parse_item) is also covered.
+        let item = parse_application_data_for_test("1:abc", &app_data);
+
+        assert_eq!(item.server_id, "1:abc");
+        assert_eq!(item.subject.as_deref(), Some("Hello World"));
+        assert_eq!(item.from.as_deref(), Some("alice@example.com"));
+        assert_eq!(item.to.as_deref(), Some("bob@example.com"));
+        assert_eq!(item.read, Some(true));
+        // Body Type 2 → HTML body slot populated, plain-text slot stays None.
+        assert_eq!(item.body_html.as_deref(), Some("<p>Hi</p>"));
+        assert_eq!(item.body_text, None);
+        // No attachments in this fixture.
+        assert!(!item.has_attachments);
+        assert!(item.attachments.is_empty());
+    }
+
+    /// Convenience wrapper around the (currently stubbed) parser so the test
+    /// references the real function name. This mirrors the brief's
+    /// `parse_application_data(server_id, &elem) -> EasItem` signature.
+    fn parse_application_data_for_test(server_id: &str, elem: &WbxmlElement) -> EasItem {
+        let mut item = EasItem {
+            server_id: server_id.to_string(),
+            ..Default::default()
+        };
+        parse_application_data(elem, &mut item);
+        item
+    }
+
+    /// Body Type 1 (PlainText) must populate `body_text`, leaving `body_html` None.
+    #[test]
+    fn parse_application_data_body_type_1_is_plain_text() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::BODY,
+                vec![
+                    WbxmlElement::text(pages::BASE, base::TYPE, "1"),
+                    WbxmlElement::text(pages::BASE, base::DATA, "plain body"),
+                    WbxmlElement::text(pages::BASE, base::TRUNCATED, "1"),
+                    WbxmlElement::text(pages::BASE, base::PREVIEW, "preview…"),
+                ],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.body_text.as_deref(), Some("plain body"));
+        assert_eq!(item.body_html, None);
+        assert_eq!(item.body_truncated, Some(true));
+        assert_eq!(item.preview.as_deref(), Some("preview…"));
+    }
+
+    /// A missing/unknown Body Type falls back to populating both body slots.
+    #[test]
+    fn parse_application_data_body_unknown_type_fills_both_slots() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::BODY,
+                vec![WbxmlElement::text(pages::BASE, base::DATA, "mystery")],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.body_html.as_deref(), Some("mystery"));
+        assert_eq!(item.body_text.as_deref(), Some("mystery"));
+    }
+
+    /// Flag with Status="2" → `flag = Some(true)` (active follow-up).
+    #[test]
+    fn parse_application_data_flag_active_when_status_is_2() {
+        use crate::eas::wbxml::tags::email;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                email::PAGE,
+                email::FLAG,
+                vec![WbxmlElement::text(email::PAGE, 0x3B, "2")], // Flag:Status
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.flag, Some(true));
+    }
+
+    /// Flag present but Status != "2" → `flag = Some(false)` (cleared).
+    #[test]
+    fn parse_application_data_flag_inactive_when_status_not_2() {
+        use crate::eas::wbxml::tags::email;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                email::PAGE,
+                email::FLAG,
+                vec![WbxmlElement::text(email::PAGE, 0x3B, "0")], // cleared
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.flag, Some(false));
+    }
+
+    /// No Flag element → `flag = None`.
+    #[test]
+    fn parse_application_data_flag_absent_is_none() {
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(2, 0x14, "Subject only")],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.flag, None);
+    }
+
+    /// Attachments container with one Attachment populates `attachments`,
+    /// sets `has_attachments = true`, and maps each AirSyncBase field.
+    #[test]
+    fn parse_application_data_attachments_populated() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::ATTACHMENTS,
+                vec![WbxmlElement::container(
+                    pages::BASE,
+                    base::ATTACHMENT,
+                    vec![
+                        WbxmlElement::text(pages::BASE, base::DISPLAY_NAME, "report.pdf"),
+                        WbxmlElement::text(pages::BASE, base::FILE_REFERENCE, "ref-42"),
+                        WbxmlElement::text(pages::BASE, base::METHOD, "1"),
+                        WbxmlElement::text(pages::BASE, base::CONTENT_ID, "<cid-1>"),
+                        WbxmlElement::text(pages::BASE, base::IS_INLINE, "0"),
+                        WbxmlElement::text(pages::BASE, base::CONTENT_TYPE, "application/pdf"),
+                        WbxmlElement::text(pages::BASE, base::ESTIMATED_DATA_SIZE, "4096"),
+                        WbxmlElement::text(pages::BASE, base::CONTENT_LOCATION, "https://x/a.pdf"),
+                    ],
+                )],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert!(item.has_attachments);
+        assert_eq!(item.attachments.len(), 1);
+        let a = &item.attachments[0];
+        assert_eq!(a.display_name, "report.pdf");
+        assert_eq!(a.file_reference, "ref-42");
+        assert_eq!(a.method, Some(1));
+        assert_eq!(a.content_id.as_deref(), Some("<cid-1>"));
+        assert!(!a.is_inline);
+        assert_eq!(a.content_type.as_deref(), Some("application/pdf"));
+        assert_eq!(a.estimated_data_size, Some(4096));
+        assert_eq!(a.content_location.as_deref(), Some("https://x/a.pdf"));
+    }
+
+    /// Empty Attachments container → `has_attachments = false`, empty vec.
+    #[test]
+    fn parse_application_data_empty_attachments_has_none() {
+        use crate::eas::wbxml::tags::{base, pages};
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::container(
+                pages::BASE,
+                base::ATTACHMENTS,
+                vec![],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert!(!item.has_attachments);
+        assert!(item.attachments.is_empty());
+    }
+
+    /// ConversationId (opaque) round-trips into `conversation_id: Vec<u8>`.
+    #[test]
+    fn parse_application_data_conversation_id_opaque() {
+        use crate::eas::wbxml::tags::email2;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::opaque(
+                email2::PAGE,
+                email2::CONVERSATION_ID,
+                vec![0xDE, 0xAD, 0xBE, 0xEF],
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.conversation_id, Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+    }
+
+    /// ConversationId carried as base64 **text** (page 22, token 0x09) — the form
+    /// many Exchange deployments serialize it in — must parse to a non-empty
+    /// `Some(Vec<u8>)`. The bytes are kept verbatim (no base64 decode); downstream
+    /// treats `conversation_id` as opaque bytes regardless of wire form.
+    ///
+    /// Regression for the asymmetry where the old `opaque_value_opt` only matched
+    /// `WbxmlValue::Opaque` and silently dropped the text form.
+    #[test]
+    fn parse_application_data_conversation_id_text_form_is_kept() {
+        use crate::eas::wbxml::tags::email2;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(
+                email2::PAGE,
+                email2::CONVERSATION_ID,
+                "Y29udm8=", // arbitrary base64-looking string; kept verbatim
+            )],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        let cid = item
+            .conversation_id
+            .clone()
+            .expect("text-form ConversationId must not be dropped");
+        assert!(!cid.is_empty(), "non-empty text must yield non-empty bytes");
+        assert_eq!(cid, b"Y29udm8=".to_vec());
+    }
+
+    /// A missing or empty ConversationId must parse to `None`, NOT `Some(vec![])`.
+    /// `Some([])` serializes as `"conversationId":[]` (empty array) which is
+    /// semantically wrong — empty != absent — and would mislead the frontend's
+    /// threading logic. This locks the `None`-on-empty contract.
+    ///
+    /// Regression for the old `unwrap_or_default()` which turned a missing/opaque
+    /// value into `Some(vec![])`.
+    #[test]
+    fn parse_application_data_conversation_id_missing_or_empty_is_none() {
+        use crate::eas::wbxml::tags::email2;
+
+        // Case 1: no ConversationId element at all.
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(2, 0x14, "Subject only")],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "absent ConversationId must be None, not Some(vec![])"
+        );
+
+        // Case 2: ConversationId present but empty (Empty value).
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::empty(email2::PAGE, email2::CONVERSATION_ID)],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "empty ConversationId must be None, not Some(vec![])"
+        );
+
+        // Case 3: ConversationId present as empty opaque blob.
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::opaque(email2::PAGE, email2::CONVERSATION_ID, vec![])],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "empty-opaque ConversationId must be None, not Some(vec![])"
+        );
+
+        // Case 4: ConversationId present as empty text string.
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![WbxmlElement::text(email2::PAGE, email2::CONVERSATION_ID, "")],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(
+            item.conversation_id,
+            None,
+            "empty-text ConversationId must be None, not Some(vec![])"
+        );
+    }
+
+    /// IsDraft="1" → `Some(true)`; IsDraft="0" → `Some(false)`.
+    #[test]
+    fn parse_application_data_is_draft_flag() {
+        use crate::eas::wbxml::tags::email2;
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(email2::PAGE, email2::IS_DRAFT, "1"),
+                WbxmlElement::text(email2::PAGE, email2::BCC, "secret@example.com"),
+            ],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.is_draft, Some(true));
+        assert_eq!(item.bcc.as_deref(), Some("secret@example.com"));
+    }
+
+    /// Unknown tags are ignored — the parser must not panic or mis-dispatch.
+    #[test]
+    fn parse_application_data_ignores_unknown_tags() {
+        // Use an unregistered (page, token) so tag_name() returns "unknown".
+        let app_data = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(0xFE, 0x7F, "garbage"),
+                WbxmlElement::text(2, 0x14, "Real Subject"),
+            ],
+        );
+        let item = parse_application_data_for_test("s1", &app_data);
+        assert_eq!(item.subject.as_deref(), Some("Real Subject"));
+    }
+
+    // ---- Phase 3a Task 3: build_sync_request emits BodyPreference ----
+
+    /// `build_sync_request` must emit an `Options/BodyPreference/Type=2` element
+    /// inside each `Collection` so the server returns HTML bodies (per
+    /// [MS-ASAIRSMB] AirSyncBase:BodyPreference). This test serializes the
+    /// built tree to WBXML bytes and back, then walks the deserialized tree to
+    /// prove the element survives a real round-trip — a pure structural
+    /// equality check would miss serializer/deserializer bugs.
+    #[test]
+    fn build_sync_request_emits_body_preference_type_2() {
+        use crate::eas::wbxml::tags::{airsync, base, pages};
+
+        let req = SyncRequest {
+            collection_id: "col-1".to_string(),
+            sync_key: "key-0".to_string(),
+            class: "Email".to_string(),
+            window_size: 25,
+            filter_age_days: 7,
+            fetch_body: true,
+        };
+        let tree = build_sync_request(&req);
+        let back = round_trip(&tree);
+
+        // Root: Sync (page 0, 0x05)
+        assert_eq!(back.page, PAGE_AIRSYNC);
+        assert_eq!(back.token, AS_SYNC);
+
+        // Walk Collections → Collection.
+        let collections = back
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTIONS)
+            .expect("missing Collections container");
+        let collection = collections
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTION)
+            .expect("missing Collection element");
+
+        // Options must be present inside the collection.
+        let options = collection
+            .children
+            .iter()
+            .find(|c| c.page == pages::AIRSYNC && c.token == airsync::OPTIONS)
+            .expect("missing Options element inside Collection");
+        assert_eq!(options.tag_name(), "Options");
+
+        // BodyPreference inside Options.
+        let body_pref = options
+            .children
+            .iter()
+            .find(|c| c.page == pages::BASE && c.token == base::BODY_PREFERENCE)
+            .expect("missing BodyPreference element inside Options");
+        assert_eq!(body_pref.tag_name(), "BodyPreference");
+
+        // Type child must be present with value "2" (HTML).
+        let type_el = body_pref
+            .children
+            .iter()
+            .find(|c| c.page == pages::BASE && c.token == base::TYPE)
+            .expect("missing Type element inside BodyPreference");
+        assert_eq!(type_el.tag_name(), "Type");
+        match &type_el.value {
+            WbxmlValue::Text(t) => assert_eq!(t, "2"),
+            other => panic!("expected Text value for BodyPreference/Type, got {:?}", other),
+        }
+    }
+
+    /// When `fetch_body` is false, the `Options/BodyPreference` block must be
+    /// omitted so the server doesn't waste bandwidth returning bodies.
+    #[test]
+    fn build_sync_request_omits_body_preference_when_fetch_body_false() {
+        use crate::eas::wbxml::tags::{airsync, base, pages};
+
+        let req = SyncRequest {
+            collection_id: "col-1".to_string(),
+            sync_key: "key-0".to_string(),
+            class: "Email".to_string(),
+            window_size: 25,
+            filter_age_days: 7,
+            fetch_body: false,
+        };
+        let tree = build_sync_request(&req);
+        let back = round_trip(&tree);
+
+        let collections = back
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTIONS)
+            .expect("missing Collections container");
+        let collection = collections
+            .children
+            .iter()
+            .find(|c| c.page == PAGE_AIRSYNC && c.token == AS_COLLECTION)
+            .expect("missing Collection element");
+
+        let has_body_pref = collection.children.iter().any(|c| {
+            c.page == pages::BASE && c.token == base::BODY_PREFERENCE
+                || (c.page == pages::AIRSYNC
+                    && c.token == airsync::OPTIONS
+                    && c.children.iter().any(|o| o.page == pages::BASE && o.token == base::BODY_PREFERENCE))
+        });
+        assert!(
+            !has_body_pref,
+            "BodyPreference should NOT be emitted when fetch_body=false"
+        );
+    }
+
+    // ---- Phase 3a Task 5: top-level parse_sync_response orchestration ----
+    //
+    // Tasks 1-2 covered `parse_application_data` (ApplicationData -> EasItem).
+    // Task 3 covered request building. Task 4 covered `eas_item_to_remote` and
+    // `sync_folder`'s status-3 recovery branch. This block locks the
+    // top-level orchestration that those tasks did NOT exercise:
+    //   * Sync -> Collections -> Collection traversal
+    //   * SyncKey / Status / MoreAvailable extraction at the Collection level
+    //   * Commands -> Add/Change/Delete dispatch into `added` / `updated` /
+    //     `deleted_server_ids`
+    //
+    // The fixture trees are built with the real `WbxmlElement` constructors on
+    // the documented code pages (AirSync=0, Email=2, AirSyncBase=17), so
+    // `tag_name()` dispatch resolves identically to a server-generated tree.
+
+    /// Build a single EAS email `ApplicationData` element carrying Subject +
+    /// From + To + Body[Type=2 HTML]. Shared by the Add and Change fixtures
+    /// below so the test body stays focused on the top-level orchestration.
+    fn fixture_email_app_data(
+        subject: &str,
+        from: &str,
+        to: &str,
+        body_html: &str,
+    ) -> WbxmlElement {
+        use crate::eas::wbxml::tags::{base, email, pages};
+        WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_APPLICATION_DATA,
+            vec![
+                WbxmlElement::text(email::PAGE, email::SUBJECT, subject),
+                WbxmlElement::text(email::PAGE, email::FROM, from),
+                WbxmlElement::text(email::PAGE, email::TO, to),
+                WbxmlElement::container(
+                    pages::BASE,
+                    base::BODY,
+                    vec![
+                        WbxmlElement::text(pages::BASE, base::TYPE, "2"),
+                        WbxmlElement::text(pages::BASE, base::DATA, body_html),
+                    ],
+                ),
+            ],
+        )
+    }
+
+    /// Full Sync-response fixture: Sync -> Collections -> Collection with
+    /// SyncKey="{sk1}", Status="1", MoreAvailable, and a Commands block
+    /// containing one Add (ServerId "1:1" + the email ApplicationData above).
+    ///
+    /// Asserts the entire top-level orchestration path: sync_key, status,
+    /// more_available, and the added/updated/deleted vectors are populated by
+    /// walking the real tree through `parse_sync_response`.
+    #[test]
+    fn parse_sync_response_extracts_full_sync_collection() {
+        let add_cmd = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_ADD,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SERVER_ID, "1:1"),
+                fixture_email_app_data("Hello", "a@b", "c@d", "<p>hi</p>"),
+            ],
+        );
+        let commands = WbxmlElement::container(PAGE_AIRSYNC, AS_COMMANDS, vec![add_cmd]);
+        let collection = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTION,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, "{sk1}"),
+                WbxmlElement::text(PAGE_AIRSYNC, AS_STATUS, "1"),
+                WbxmlElement::empty(PAGE_AIRSYNC, AS_MORE_AVAILABLE),
+                commands,
+            ],
+        );
+        let collections = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTIONS,
+            vec![collection],
+        );
+        let tree = WbxmlElement::container(PAGE_AIRSYNC, AS_SYNC, vec![collections]);
+
+        let result = parse_sync_response(&tree).expect("parse_sync_response must succeed");
+
+        // Top-level orchestration fields.
+        assert_eq!(result.sync_key, "{sk1}");
+        assert_eq!(result.status, 1, "success status must surface from Collection/Status");
+        assert!(
+            result.more_available,
+            "MoreAvailable element must set more_available=true"
+        );
+
+        // Added item: full envelope must round-trip through parse_item ->
+        // parse_application_data (covered in depth by Task 2; here we lock the
+        // Add-dispatch wiring at the Commands level).
+        assert_eq!(result.added.len(), 1, "exactly one Add command");
+        let added = &result.added[0];
+        assert_eq!(added.server_id, "1:1");
+        assert_eq!(added.subject.as_deref(), Some("Hello"));
+        assert_eq!(added.from.as_deref(), Some("a@b"));
+        assert_eq!(added.to.as_deref(), Some("c@d"));
+        assert_eq!(
+            added.body_html.as_deref(),
+            Some("<p>hi</p>"),
+            "Body Type=2 must populate body_html"
+        );
+
+        // No Change/Delete in this fixture.
+        assert!(result.updated.is_empty(), "no Change commands in fixture");
+        assert!(
+            result.deleted_server_ids.is_empty(),
+            "no Delete commands in fixture"
+        );
+    }
+
+    /// A Commands block with Change + Delete must populate `updated` and
+    /// `deleted_server_ids` respectively, and leave `added` empty.
+    #[test]
+    fn parse_sync_response_dispatches_change_and_delete() {
+        let change_cmd = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_CHANGE,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SERVER_ID, "2:2"),
+                fixture_email_app_data("Updated", "x@y", "z@w", "<p>u</p>"),
+            ],
+        );
+        // EAS Delete carries the ServerId as a text leaf (per MS-ASSYNC
+        // 2.2.3.4), not as a child element.
+        let delete_cmd = WbxmlElement::text(PAGE_AIRSYNC, AS_DELETE, "3:3");
+        let commands = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COMMANDS,
+            vec![change_cmd, delete_cmd],
+        );
+        let collection = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTION,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, "{sk2}"),
+                WbxmlElement::text(PAGE_AIRSYNC, AS_STATUS, "1"),
+                commands,
+            ],
+        );
+        let tree = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_SYNC,
+            vec![WbxmlElement::container(
+                PAGE_AIRSYNC,
+                AS_COLLECTIONS,
+                vec![collection],
+            )],
+        );
+
+        let result = parse_sync_response(&tree).expect("parse");
+
+        assert!(result.added.is_empty(), "no Add in this fixture");
+        assert_eq!(result.updated.len(), 1, "one Change");
+        assert_eq!(result.updated[0].server_id, "2:2");
+        assert_eq!(
+            result.deleted_server_ids,
+            vec!["3:3".to_string()],
+            "Delete ServerId must land in deleted_server_ids"
+        );
+        // No MoreAvailable in this fixture.
+        assert!(
+            !result.more_available,
+            "MoreAvailable absent must remain false"
+        );
+    }
+
+    /// Status-recovery parse lock: a Collection carrying `Status = "3"`
+    /// (invalid sync key, per MS-ASSYNC 2.2.3.23) must surface on
+    /// `SyncResult.status` so `EasSource::sync_folder`'s resync branch can act
+    /// on it. Task 4 covered the *behavioral* recovery; this test locks the
+    /// *parse-level* status plumbing that feeds it.
+    ///
+    /// Without the parser surfacing Status, `result.status` would stay at the
+    /// `SyncResult::default()` value of `1` regardless of the wire value, and
+    /// the resync branch would never fire on a real status-3 response.
+    #[test]
+    fn parse_sync_response_surfaces_collection_status_3() {
+        let collection = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTION,
+            vec![
+                WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, "{stale}"),
+                WbxmlElement::text(PAGE_AIRSYNC, AS_STATUS, "3"),
+            ],
+        );
+        let tree = WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_SYNC,
+            vec![WbxmlElement::container(
+                PAGE_AIRSYNC,
+                AS_COLLECTIONS,
+                vec![collection],
+            )],
+        );
+
+        let result = parse_sync_response(&tree).expect("parse");
+
+        assert_eq!(
+            result.status, 3,
+            "Collection/Status=3 must surface on SyncResult.status so sync_folder can resync"
+        );
+        assert_eq!(result.sync_key, "{stale}");
+        // A status-3 response typically carries no Commands; assert the
+        // vectors stay empty so the engine's resync path (which wipes the
+        // cache and re-enters with sync_key "0") is not fed stale items.
+        assert!(result.added.is_empty());
+        assert!(result.updated.is_empty());
+        assert!(result.deleted_server_ids.is_empty());
+    }
+
+    /// `parse_sync_response` must reject a tree whose root is not
+    /// Sync (page 0, token 0x05) with `WbxmlError::UnexpectedTag`. This locks
+    /// the `expect_tag` guard so a misrouted response (e.g. a FolderSync tree
+    /// handed to the Sync parser) fails loudly rather than returning a default
+    /// `SyncResult` that looks like success.
+    #[test]
+    fn parse_sync_response_rejects_non_sync_root() {
+        let wrong_root =
+            WbxmlElement::container(PAGE_FOLDER, FH_FOLDER_SYNC, vec![]);
+        let err = parse_sync_response(&wrong_root).expect_err("must reject non-Sync root");
+        assert!(
+            matches!(err, WbxmlError::UnexpectedTag { .. }),
+            "expected UnexpectedTag, got {err:?}"
+        );
+    }
+
+    /// An empty Sync tree (root with no Collections child) must parse
+    /// successfully and yield a default `SyncResult` (status=1, empty vectors,
+    /// sync_key=""). This is the shape a server returns when it has nothing to
+    /// say; the engine must treat it as a no-op success, not an error.
+    #[test]
+    fn parse_sync_response_empty_tree_is_default_success() {
+        let tree = WbxmlElement::container(PAGE_AIRSYNC, AS_SYNC, vec![]);
+        let result = parse_sync_response(&tree).expect("parse");
+        assert_eq!(result.status, 1, "default status is success");
+        assert_eq!(result.sync_key, "");
+        assert!(!result.more_available);
+        assert!(result.added.is_empty());
+        assert!(result.updated.is_empty());
+        assert!(result.deleted_server_ids.is_empty());
     }
 }

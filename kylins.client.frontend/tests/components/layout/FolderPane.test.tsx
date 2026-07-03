@@ -90,8 +90,10 @@ describe('FolderPane', () => {
         ],
       },
     });
-    const { getByText } = render(<FolderPane />);
+    const { getByText, getByLabelText } = render(<FolderPane />);
     expect(getByText('Projects')).toBeInTheDocument();
+    // Folder levels are collapsed by default; expand Projects to reveal Apollo.
+    fireEvent.click(getByLabelText('Expand folder'));
     expect(getByText('Apollo')).toBeInTheDocument();
   });
 });
@@ -100,15 +102,27 @@ describe('FolderPane context menu', () => {
   it('enables Rename/Delete for a user folder', () => {
     const { getByText } = render(<FolderPane />);
     fireEvent.contextMenu(getByText('Todo'));
-    expect(getByText('Rename Folder').closest('button')!.disabled).toBe(false);
-    expect(getByText('Delete Folder').closest('button')!.disabled).toBe(false);
+    expect(getByText('Rename Folder').closest('[role="menuitem"]')).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(getByText('Delete Folder').closest('[role="menuitem"]')).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
   });
 
   it('disables Rename/Delete for a system folder', () => {
     const { getByText } = render(<FolderPane />);
     fireEvent.contextMenu(getByText('Inbox'));
-    expect(getByText('Rename Folder').closest('button')!.disabled).toBe(true);
-    expect(getByText('Delete Folder').closest('button')!.disabled).toBe(true);
+    expect(getByText('Rename Folder').closest('[role="menuitem"]')).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(getByText('Delete Folder').closest('[role="menuitem"]')).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
   });
 
   it('opens an inline create input from "New Subfolder"', () => {

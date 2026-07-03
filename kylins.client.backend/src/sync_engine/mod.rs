@@ -115,6 +115,18 @@ pub struct RemoteMessage {
     pub has_attachments: bool,
 }
 
+/// A CONDSTORE flag-only delta: the server reported a FLAGS change for `uid` since the
+/// last modseq. Carries just is_read/is_starred (the flags the UI tracks). The engine
+/// applies this via `apply_flag_updates`, which MUST NOT touch the cached envelope
+/// (subject/from/body) — unlike a full `RemoteMessage` upsert.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagUpdate {
+    pub uid: u32,
+    pub is_read: bool,
+    pub is_starred: bool,
+}
+
 /// Result of one folder delta sync. The engine applies `added`/`updated`, processes
 /// `vanished_uids`, and persists `next_cursor`. `uidvalidity_changed` signals a cache
 /// wipe is required before applying (IMAP UIDVALIDITY changed).
@@ -123,6 +135,7 @@ pub struct RemoteMessage {
 pub struct FolderDelta {
     pub added: Vec<RemoteMessage>,
     pub updated: Vec<RemoteMessage>,
+    pub flag_updates: Vec<FlagUpdate>,
     pub vanished_uids: Vec<u32>,
     pub next_cursor: Cursor,
     pub uidvalidity_changed: bool,
@@ -132,6 +145,12 @@ pub struct FolderDelta {
 pub enum SourceError {
     #[error("operation not supported by this source")]
     Unsupported,
+    /// Provider returned a throttle response (HTTP 429 / 503 with Retry-After,
+    /// or an EAS status indicating backoff). `retry_after` is epoch-seconds.
+    /// The engine records it via `db::rate_limit::set_rate_limit` so the next
+    /// round short-circuits until the window passes.
+    #[error("source rate-limited; retry after epoch {retry_after}")]
+    RateLimited { retry_after: i64 },
     #[error("{0}")]
     Other(String),
 }
@@ -180,6 +199,39 @@ pub trait MailSource: Send + Sync {
     ) -> Result<(), SourceError>;
     async fn send(&self, raw_base64url: &str) -> Result<(), SourceError>;
 
+    /// Load this source's persisted per-folder cursor. Each source owns its cursor
+    /// payload and its own persistence table (IMAP: `folder_sync_state`; EAS:
+    /// `eas_sync_state`). The engine calls this before `sync_folder` so the source
+    /// resumes from its real cursor instead of a wrong-type default (the bug this
+    /// fixes: EAS was being handed an `Cursor::Imap` and re-bootstrapping every
+    /// round). Default = `Cursor::default()` so mock/test sources need no change.
+    async fn load_cursor(
+        &self,
+        _pool: &sqlx::SqlitePool,
+        _account_id: &str,
+        _folder_path: &str,
+    ) -> Cursor {
+        Cursor::default()
+    }
+
+    /// Resolve the source's connection config for a given folder, used by
+    /// `request_bodies_inner` to issue ONE batched `fetch_bodies_batch` per
+    /// folder instead of N per-UID connects. Returns `Ok(None)` for non-IMAP
+    /// sources (EAS today); the caller then falls back to the per-message
+    /// `fetch_body` path. Default = `Ok(None)` so mock/test sources and EAS
+    /// need no change — only `ImapSource` overrides this.
+    ///
+    /// Returns `ImapConfig` by value (not `Arc<ImapConfig>`) to keep the
+    /// trait's async-future `Send` bounds simple: the config is small (~6
+    /// strings + a bool) and `fetch_bodies_batch` borrows it for the call
+    /// only.
+    async fn imap_config_for_folder(
+        &self,
+        _folder: &str,
+    ) -> Result<Option<crate::mail::imap::types::ImapConfig>, SourceError> {
+        Ok(None)
+    }
+
     // Optional real-time (Phase 2). Default = Unsupported.
     async fn watch(&self, _folder: &RemoteFolder) -> Result<(), SourceError> {
         Err(SourceError::Unsupported)
@@ -191,16 +243,26 @@ pub trait MailSource: Send + Sync {
 
 /// Factory: load the (decrypted) account and return the matching source adapter.
 /// The SyncEngine uses this to construct one worker per account.
+///
+/// `manager` is threaded through so ImapSource can use the persistent session
+/// instead of connect-per-call (the swap itself is Task 4 — Task 3 only wires
+/// the handle through). EasSource ignores it (EAS uses HTTP, no long-lived
+/// socket to manage this way today).
 pub async fn source_for_account(
     pool: &SqlitePool,
     account_id: &str,
+    manager: &std::sync::Arc<crate::mail::imap::session_manager::ImapSessionManager>,
 ) -> Result<Arc<dyn MailSource>, String> {
     let acc = crate::db::accounts::get_by_id(pool, account_id)
         .await?
         .ok_or_else(|| format!("account {account_id} not found"))?;
     Ok(match acc.provider.as_str() {
-        "imap" => Arc::new(imap_source::ImapSource::new(acc)),
-        "eas" => Arc::new(eas_source::EasSource::new(acc)),
+        "imap" => Arc::new(imap_source::ImapSource::new(
+            acc,
+            pool.clone(),
+            std::sync::Arc::clone(manager),
+        )),
+        "eas" => Arc::new(eas_source::EasSource::new(acc, pool.clone())),
         other => return Err(format!("unsupported provider {other}")),
     })
 }
@@ -273,7 +335,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let src = source_for_account(&pool, &acc.id).await.unwrap();
+        let manager = Arc::new(
+            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        );
+        let src = source_for_account(&pool, &acc.id, &manager).await.unwrap();
         // Stub ImapSource advertises default (empty) capabilities until Task 7.
         assert_eq!(src.capabilities(), Capabilities::default());
     }
@@ -292,7 +357,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let res = source_for_account(&pool, &acc.id).await;
+        let manager = Arc::new(
+            crate::mail::imap::session_manager::ImapSessionManager::new(),
+        );
+        let res = source_for_account(&pool, &acc.id, &manager).await;
         assert!(res.is_err());
         assert!(res.err().unwrap().contains("unsupported provider"));
     }

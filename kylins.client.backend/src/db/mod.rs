@@ -14,6 +14,7 @@
 
 pub mod accounts;
 pub mod ai_cache;
+pub mod attachments;
 pub mod calendar_events;
 pub mod commands;
 pub mod contact_sync_state;
@@ -25,6 +26,7 @@ pub mod message_bodies;
 pub mod messages;
 pub mod mutations;
 pub mod queue;
+pub mod rate_limit;
 pub mod scheduled_emails;
 pub mod search;
 pub mod send_as_aliases;
@@ -157,11 +159,36 @@ pub async fn init_db(dir: &Path) -> Result<DbPool, sqlx::Error> {
         .filename(&db_path)
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(std::time::Duration::from_secs(5))
+        // 30s busy_timeout: SQLite/WAL allows only ONE writer at a time; a
+        // contending write blocks for up to `busy_timeout` before returning
+        // SQLITE_BUSY (code 5). For a large folder (Deleted Items ≈ 13k+
+        // messages) `apply_folder_delta` runs multi-second transactions, and a
+        // second writer (frontend `db_*`, another account's worker, an
+        // IDLE-nudged sync) waiting only 5s would spuriously fail with
+        // "database is locked", dropping + retrying the delta (wasted work +
+        // sync thrash). 30s is safe for a background desktop sync — the user
+        // is never blocked on it because writes happen off the UI thread.
+        // (apply_folder_delta also batches its writes into short chunks, so a
+        // 30s ceiling is effectively never hit.)
+        .busy_timeout(std::time::Duration::from_secs(30))
         .foreign_keys(true);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
+        // 5s ceiling on *pool acquisition* — distinct from `busy_timeout` above,
+        // which only governs the SQLite write lock on a connection we already
+        // hold. `max_connections(5)` means at most 5 connections are checked out
+        // at once; the 6th caller (a foreground `db_*` IPC during a large
+        // `apply_folder_delta` write, or a second account's worker) parks on the
+        // pool's semaphore. sqlx's default `acquire_timeout` is **forever**, so a
+        // stuck transaction (or one that legitimately takes seconds on a 13k-
+        // message folder) suspends every later caller indefinitely — the
+        // "never times out, all suspended" symptom. 5s bounds the park: a
+        // timed-out acquisition returns `PoolAcquire(TimedOut)`, which the IPC
+        // layer already maps to `String` + logs as a soft error (the user gets a
+        // "couldn't load right now, retry" rather than a permanent hang). 5s is
+        // generous for a desktop app with at most a few concurrent writers.
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect_with(opts)
         .await?;
 

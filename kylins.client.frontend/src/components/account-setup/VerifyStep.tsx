@@ -34,11 +34,11 @@ export function VerifyStep({ error, onRetry, onBack, onReplace }: VerifyStepProp
               <p className="max-w-xs text-sm text-[var(--muted-text)]">{error}</p>
             </div>
             <div className="mt-2 flex items-center gap-3">
-              {onBack && <SetupBackButton onClick={onBack} />}
+              {onBack && <SetupBackButton onPress={onBack} />}
               {isDuplicateError && onReplace && (
-                <SetupButton onClick={onReplace}>Replace existing account</SetupButton>
+                <SetupButton onPress={onReplace}>Replace existing account</SetupButton>
               )}
-              {onRetry && <SetupButton onClick={onRetry}>Retry</SetupButton>}
+              {onRetry && <SetupButton onPress={onRetry}>Retry</SetupButton>}
             </div>
           </>
         ) : (

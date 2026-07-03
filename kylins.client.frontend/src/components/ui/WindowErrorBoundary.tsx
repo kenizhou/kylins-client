@@ -1,4 +1,5 @@
 import { Component, type ReactNode, useEffect, useState } from 'react';
+import { Button } from 'react-aria-components';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { MinimizeIcon, MaximizeIcon, RestoreIcon, CloseIcon } from '@/components/icons';
 
@@ -71,32 +72,27 @@ function EmergencyTitleBar({ title }: { title?: string }) {
         {title ?? 'Kylins'}
       </span>
       <div className="flex items-center gap-1" style={noDragStyle}>
-        <button
-          type="button"
-          onClick={handleMinimize}
-          className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-          title="Minimize"
+        <Button
+          onPress={handleMinimize}
+          className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           aria-label="Minimize"
         >
           <MinimizeIcon size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={handleToggleMaximize}
-          className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-          title={isMaximized ? 'Restore' : 'Maximize'}
+        </Button>
+        <Button
+          onPress={handleToggleMaximize}
+          className="rounded p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           aria-label={isMaximized ? 'Restore' : 'Maximize'}
         >
           {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-        </button>
-        <button
-          type="button"
-          onClick={handleClose}
-          className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+        </Button>
+        <Button
+          onPress={handleClose}
+          className="p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           aria-label="Close window"
         >
           <CloseIcon size={14} />
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -112,24 +108,24 @@ function ErrorFallback({ error }: { error?: Error }) {
           {error?.message ?? 'An unexpected error occurred.'}
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => window.location.reload()}
-            className="rounded bg-[var(--primary)] px-4 py-2 text-sm font-medium text-[var(--primary-fg)]"
+          <Button
+            onPress={() => window.location.reload()}
+            className="rounded bg-[var(--primary)] px-4 py-2 text-sm font-medium text-[var(--primary-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           >
             Reload
-          </button>
-          <button
-            onClick={async () => {
+          </Button>
+          <Button
+            onPress={async () => {
               try {
                 await getCurrentWindow().close();
               } catch {
                 /* ignore in non-Tauri contexts */
               }
             }}
-            className="rounded border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
+            className="rounded border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           >
             Close Window
-          </button>
+          </Button>
         </div>
       </div>
     </div>

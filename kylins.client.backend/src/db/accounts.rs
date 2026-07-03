@@ -100,6 +100,10 @@ pub struct Account {
     pub eas_policy_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eas_user_agent: Option<String>,
+    /// EAS auth strategy: `"basic"` (default/null) or `"oauth"`. Phase 3b Task 3.
+    /// Mirrors the `eas_policy_key` Option<String> pattern. NULL = Basic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<String>,
 }
 
 /// Input for [`create`]. Mirrors the TypeScript `CreateAccountInput`
@@ -241,6 +245,9 @@ pub struct AccountUpdates {
     pub eas_policy_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eas_user_agent: Option<String>,
+    /// EAS auth strategy — see [`Account::auth_type`]. Phase 3b Task 3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<String>,
 }
 
 /// Map a raw row to an [`Account`], decrypting the four secret fields.
@@ -294,6 +301,7 @@ fn row_to_account(row: &SqliteRow) -> Result<Account, String> {
         eas_device_id: row.try_get("eas_device_id").ok().flatten(),
         eas_policy_key: row.try_get("eas_policy_key").ok().flatten(),
         eas_user_agent: row.try_get("eas_user_agent").ok().flatten(),
+        auth_type: row.try_get("auth_type").ok().flatten(),
     })
 }
 
@@ -578,6 +586,7 @@ pub async fn update(pool: &SqlitePool, id: &str, updates: AccountUpdates) -> Res
     push_str!("eas_device_id", updates.eas_device_id);
     push_str!("eas_policy_key", updates.eas_policy_key);
     push_str!("eas_user_agent", updates.eas_user_agent);
+    push_str!("auth_type", updates.auth_type);
 
     // Always stamp updated_at.
     sets.push("updated_at = ?".to_string());

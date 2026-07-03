@@ -46,6 +46,7 @@ beforeEach(() => {
     spellcheckLanguage: 'system',
     showNotificationsForNewUnread: true,
     showNotificationsForRepeatedOpens: true,
+    doNotDisturb: false,
     playSoundOnNewMail: true,
     resurfaceMessagesOnUnsnooze: true,
     appIconBadge: 'unread-count',

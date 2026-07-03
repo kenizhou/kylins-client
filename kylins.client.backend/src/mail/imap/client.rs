@@ -12,6 +12,22 @@ use tokio_native_tls::TlsStream;
 
 use super::types::*;
 
+/// Headers-only sync fetch query (RFC 3501 BODY.PEEK[HEADER.FIELDS]). Sync pulls
+/// envelopes + flags + size — NOT full bodies — so async-imap can parse the small
+/// responses and a 10K-message folder syncs in seconds instead of hanging on
+/// full-body downloads. Bodies are fetched on demand via `fetch_message_body` /
+/// `sync_request_bodies`.
+///
+/// The field list mirrors the spec for `parse_message`: addressing (`From`/`To`/
+/// `Cc`/`Bcc`/`Reply-To`), threading (`Message-Id`/`In-Reply-To`/`References`),
+/// list management (`List-Unsubscribe`/`List-Unsubscribe-Post`), and
+/// `Authentication-Results` for phishing checks. `RFC822.SIZE` gives the UI the
+/// on-wire size without a second round-trip.
+pub const SYNC_FETCH_QUERY: &str =
+    "UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC BCC REPLY-TO \
+     DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST \
+     AUTHENTICATION-RESULTS)]";
+
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -230,7 +246,7 @@ pub async fn fetch_messages(
 
     let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
         let stream = session
-            .uid_fetch(uid_range, "UID FLAGS INTERNALDATE BODY.PEEK[]")
+            .uid_fetch(uid_range, SYNC_FETCH_QUERY)
             .await
             .map_err(|e| format!("UID FETCH {folder} uids={uid_range} failed: {e}"))?;
         Ok::<_, String>(stream.collect::<Vec<_>>().await)
@@ -278,7 +294,10 @@ pub async fn fetch_messages(
                 continue;
             }
         };
-        let raw_size = raw.len() as u32;
+        // SYNC_FETCH_QUERY asks for RFC822.SIZE — prefer the server-reported
+        // on-wire size (accurate; the body bytes here are header-only). Fall
+        // back to the buffered length if the server omitted RFC822.SIZE.
+        let raw_size = fetch.size.unwrap_or(raw.len() as u32);
         let flags: Vec<_> = fetch.flags().collect();
         let is_read = flags.iter().any(|f| matches!(f, Flag::Seen));
         let is_starred = flags.iter().any(|f| matches!(f, Flag::Flagged));
@@ -373,6 +392,150 @@ pub async fn fetch_new_uids(
     let mut result: Vec<u32> = uids.into_iter().filter(|&u| u > last_uid).collect();
     result.sort();
     Ok(result)
+}
+
+/// A CONDSTORE flag-change entry: the server reported a FLAGS change for `uid`
+/// at MODSEQ `modseq` since the last cursor. `is_read`/`is_starred` are the only
+/// flags the UI tracks (Seen/Flagged). `modseq` is carried so the caller can pick
+/// the next cursor.
+#[derive(Debug, Clone)]
+pub struct ImapFlagChange {
+    pub uid: u32,
+    pub is_read: bool,
+    pub is_starred: bool,
+    pub modseq: u64,
+}
+
+/// Pure reduction of parsed Fetch responses (from a CHANGEDSINCE round) into flag
+/// changes plus the next modseq cursor. Factored out of `fetch_changed_flags` so
+/// the mapping/cursor math is unit-testable without a live socket.
+///
+/// - `since_modseq`: the cursor we queried with; seeds the running max so an empty
+///   response still yields a cursor >= the current one.
+/// - `fetches`: `(uid, flags-as-strs, modseq)` tuples standing in for parsed
+///   Fetches. Flags are owned `String`s so this function is lifetime-free and
+///   callable from both the live path (which maps `Flag` → string) and tests.
+/// - `mailbox_highest_modseq`: the mailbox's HIGHESTMODSEQ (from SELECT), so a
+///   no-change round still advances to the server's current watermark.
+///
+/// Returns `(changes, next_modseq)` where `next_modseq = max(since, max(fetch
+/// modseqs), mailbox_highest_modseq)`.
+fn fetch_changed_flags_response_from_fetches(
+    since_modseq: u64,
+    fetches: Vec<(u32, Vec<String>, u64)>,
+    mailbox_highest_modseq: u64,
+) -> (Vec<ImapFlagChange>, u64) {
+    let mut changes = Vec::new();
+    let mut max_modseq = since_modseq;
+    for (uid, flags, modseq) in fetches {
+        if modseq > max_modseq {
+            max_modseq = modseq;
+        }
+        let is_read = flags.iter().any(|f| f.eq_ignore_ascii_case("\\Seen"));
+        let is_starred = flags.iter().any(|f| f.eq_ignore_ascii_case("\\Flagged"));
+        changes.push(ImapFlagChange {
+            uid,
+            is_read,
+            is_starred,
+            modseq,
+        });
+    }
+    (changes, max_modseq.max(mailbox_highest_modseq))
+}
+
+/// CONDSTORE flag-delta fetch (RFC 7162 §3.1). Returns messages whose metadata
+/// changed since `since_modseq`, plus the next modseq cursor (max of returned
+/// modseqs and the mailbox HIGHESTMODSEQ, so a no-change round still advances).
+/// Requires the server to advertise CONDSTORE; the caller gates on
+/// `caps.condstore && since_modseq > 0` (a first-sync modseq of 0 must NOT issue
+/// CHANGEDSINCE — it would return every message as "changed").
+///
+/// Note: async-imap 0.10.4 exposes `Fetch.modseq` as a PUBLIC FIELD (`Option<u64>`),
+/// not a method — `Fetch.flags()` IS a method (iterator). SELECT refreshes
+/// `mailbox.highest_modseq`.
+pub async fn fetch_changed_flags(
+    session: &mut ImapSession,
+    folder: &str,
+    since_modseq: u64,
+) -> Result<(Vec<ImapFlagChange>, u64), String> {
+    // SELECT refreshes mailbox.highest_modseq (the server's current watermark).
+    let mailbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(folder))
+        .await
+        .map_err(|_| {
+            format!(
+                "SELECT {folder} timed out after {}s — check your server settings or network connection",
+                IMAP_CMD_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("SELECT {folder} failed: {e}"))?;
+    let mailbox_highest = mailbox.highest_modseq.unwrap_or(0);
+
+    // CHANGEDSINCE is a modifier on the FETCH, not a separate command. The query
+    // mirrors what the brief specifies: UID + FLAGS + the MODSEQ of each returned
+    // message, scoped to messages changed since `since_modseq`.
+    let query = format!("UID FLAGS MODSEQ (CHANGEDSINCE {since_modseq})");
+    // The timeout wraps an async block whose body is `Result<Vec<Result<Fetch,
+    // Error>>, String>` (the outer String = transport/timeout error; each inner
+    // Result = one Fetch stream item). The two `?`s unwrap: (1) the timeout's
+    // Elapsed, (2) the transport String. The remaining `Vec<Result<Fetch,_>>` is
+    // iterated below — individual stream-item errors are logged, not fatal.
+    let raw_fetches: Vec<_> = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
+        let stream = session
+            .uid_fetch("1:*", &query)
+            .await
+            .map_err(|e| format!("UID FETCH CHANGEDSINCE {folder} failed: {e}"))?;
+        Ok::<_, String>(stream.collect::<Vec<_>>().await)
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "UID FETCH CHANGEDSINCE {folder} timed out after {}s — check your server settings or network connection",
+            IMAP_FETCH_TIMEOUT.as_secs()
+        )
+    })??
+    .into_iter()
+    .filter_map(|r| match r {
+        Ok(f) => Some(f),
+        Err(e) => {
+            log::warn!("IMAP CHANGEDSINCE {folder}: fetch stream error: {e}");
+            None
+        }
+    })
+    .collect();
+
+    // Reduce the parsed Fetches via the shared pure helper so the tested mapping
+    // logic is exactly what runs in production (no divergent duplicate). Map each
+    // `Flag` to its canonical backslash-string form; the helper matches
+    // case-insensitively on "\\Seen"/"\\Flagged". Fetches without a UID are
+    // skipped (CHANGEDSINCE responses always carry UID, but be defensive). Flag
+    // strings are owned so the helper stays lifetime-free.
+    let tuples: Vec<(u32, Vec<String>, u64)> = raw_fetches
+        .into_iter()
+        .filter_map(|f| {
+            let uid = f.uid?;
+            let flags: Vec<String> = f
+                .flags()
+                .map(|fl| match fl {
+                    Flag::Seen => "\\Seen".to_string(),
+                    Flag::Flagged => "\\Flagged".to_string(),
+                    Flag::Answered => "\\Answered".to_string(),
+                    Flag::Deleted => "\\Deleted".to_string(),
+                    Flag::Draft => "\\Draft".to_string(),
+                    Flag::Recent => "\\Recent".to_string(),
+                    Flag::MayCreate => "\\*".to_string(),
+                    Flag::Custom(s) => s.to_string(),
+                })
+                .collect();
+            let ms = f.modseq.unwrap_or(0);
+            Some((uid, flags, ms))
+        })
+        .collect();
+
+    Ok(fetch_changed_flags_response_from_fetches(
+        since_modseq,
+        tuples,
+        mailbox_highest,
+    ))
 }
 
 pub async fn search_all_uids(session: &mut ImapSession, folder: &str) -> Result<Vec<u32>, String> {
@@ -596,73 +759,6 @@ pub async fn get_folder_status(
         unseen: mailbox.unseen.unwrap_or(0),
         highest_modseq: mailbox.highest_modseq,
     })
-}
-
-pub async fn fetch_attachment(
-    session: &mut ImapSession,
-    folder: &str,
-    uid: u32,
-    part_id: &str,
-) -> Result<String, String> {
-    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(folder))
-        .await
-        .map_err(|_| format!("SELECT {folder} timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
-        .map_err(|e| format!("SELECT {folder} failed: {e}"))?;
-
-    let uid_str = uid.to_string();
-    let fetches: Vec<_> = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
-        let stream = session
-            .uid_fetch(&uid_str, "BODY.PEEK[]")
-            .await
-            .map_err(|e| format!("UID FETCH attachment failed: {e}"))?;
-        Ok::<_, String>(stream.collect::<Vec<_>>().await)
-    })
-    .await
-    .map_err(|_| format!("UID FETCH attachment timed out after {}s — check your server settings or network connection", IMAP_FETCH_TIMEOUT.as_secs()))?
-    ?
-    .into_iter()
-    .filter_map(|r| r.ok())
-    .collect();
-
-    let fetch = fetches
-        .first()
-        .ok_or_else(|| format!("No response for UID {uid}"))?;
-    let raw = fetch
-        .body()
-        .ok_or_else(|| format!("No body for UID {uid}"))?;
-
-    let parser = MessageParser::default();
-    let message = parser
-        .parse(raw)
-        .ok_or_else(|| format!("Failed to parse message UID {uid}"))?;
-
-    let section_map = build_imap_section_map(&message);
-    let target_part_idx = section_map
-        .iter()
-        .find(|(_, section)| section.as_str() == part_id)
-        .map(|(&idx, _)| idx)
-        .ok_or_else(|| format!("Section {part_id} not found in message UID {uid}"))?;
-
-    let part = message
-        .parts
-        .get(target_part_idx)
-        .ok_or_else(|| format!("Part index {target_part_idx} out of range for UID {uid}"))?;
-
-    let data = match &part.body {
-        mail_parser::PartType::Binary(data) | mail_parser::PartType::InlineBinary(data) => {
-            data.as_ref().to_vec()
-        }
-        mail_parser::PartType::Text(text) => text.as_bytes().to_vec(),
-        mail_parser::PartType::Html(html) => html.as_bytes().to_vec(),
-        mail_parser::PartType::Message(msg) => msg.raw_message.as_ref().to_vec(),
-        mail_parser::PartType::Multipart(_) => {
-            return Err(format!(
-                "Part {part_id} is a multipart container, not a leaf part"
-            ));
-        }
-    };
-
-    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
 }
 
 pub async fn fetch_raw_message(
@@ -1037,7 +1133,11 @@ pub async fn raw_fetch_messages(
         highest_modseq: None,
     };
 
-    let fetch_cmd = format!("a3 UID FETCH {uid_range} (UID FLAGS INTERNALDATE BODY.PEEK[])\r\n");
+    // Headers-only, mirroring SYNC_FETCH_QUERY. The raw-TCP fallback exists
+    // because async-imap 0.10 silently returns 0 items on very large bodies;
+    // keeping the same field set as the primary path means a fallback behaves
+    // consistently (no surprise full-body downloads, no re-introduced hang).
+    let fetch_cmd = format!("a3 UID FETCH {uid_range} ({SYNC_FETCH_QUERY})\r\n");
     reader
         .get_mut()
         .write_all(fetch_cmd.as_bytes())
@@ -1077,6 +1177,603 @@ pub async fn raw_fetch_messages(
         messages,
         folder_status,
     })
+}
+
+/// One-connection bulk fetch: connect + login + SELECT once, then UID FETCH each
+/// chunk of `uids` on the SAME raw connection. Avoids the per-chunk reconnect
+/// storm that `raw_fetch_messages` triggers when `async-imap`'s `uid_fetch`
+/// returns 0 items on a server (parser incompatibility) and forces the whole
+/// folder through the raw fallback — ~31 rapid reconnects for a 3133-message
+/// folder trips the server's connection/flood limit (`* BYE Connection closed.
+/// 14`), which errors mid-folder and drops the delta.
+///
+/// Best-effort: if a chunk errors mid-way (server drops the connection), logs
+/// the detail and returns what was fetched so far — the caller's cursor still
+/// advances past the UIDs it got, breaking the infinite-retry-from-same-UID
+/// loop. The caller passes the WHOLE folder's pending UIDs; this function owns
+/// the single connection lifecycle end-to-end.
+pub async fn raw_fetch_folder(
+    config: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+    chunk_size: usize,
+) -> Result<ImapFetchResult, String> {
+    if uids.is_empty() {
+        // Nothing to do; report a zero-status so callers can still advance.
+        return Ok(ImapFetchResult {
+            messages: vec![],
+            folder_status: ImapFolderStatus {
+                uidvalidity: 0,
+                uidnext: 0,
+                exists: 0,
+                unseen: 0,
+                highest_modseq: None,
+            },
+        });
+    }
+
+    log::info!(
+        "RAW IMAP FETCH FOLDER: connecting to {}:{} for {folder}, {} UID(s) in chunks of {chunk_size}",
+        config.host,
+        config.port,
+        uids.len()
+    );
+
+    // 1. connect (+ read greeting for plain/tls; STARTTLS path consumes it
+    //    during handshake) — mirrors raw_fetch_messages exactly.
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+
+    // 2. login (LOGIN vs XOAUTH2, same cmd shape as raw_fetch_messages).
+    let login_cmd = if config.auth_method == "oauth2" {
+        let xoauth2 = format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            config.username, config.password
+        );
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            xoauth2.as_bytes(),
+        );
+        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
+    } else {
+        format!(
+            "a1 LOGIN \"{}\" \"{}\"\r\n",
+            config.username, config.password
+        )
+    };
+    raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
+
+    // 3. SELECT once for the whole folder.
+    let select_cmd = format!("a2 SELECT \"{folder}\"\r\n");
+    let select_response = raw_send_and_wait(&mut reader, select_cmd.as_bytes(), "a2").await?;
+
+    let mut exists = 0u32;
+    let mut uidvalidity = 0u32;
+    let mut unseen = 0u32;
+    for line in select_response.lines() {
+        if let Some(n) = parse_untagged_number(line, "EXISTS") {
+            exists = n;
+        }
+        if line.contains("[UIDVALIDITY") {
+            if let Some(v) = extract_bracket_number(line, "UIDVALIDITY") {
+                uidvalidity = v;
+            }
+        }
+        if line.contains("[UNSEEN") {
+            if let Some(v) = extract_bracket_number(line, "UNSEEN") {
+                unseen = v;
+            }
+        }
+    }
+
+    let folder_status = ImapFolderStatus {
+        uidvalidity,
+        uidnext: 0,
+        exists,
+        unseen,
+        highest_modseq: None,
+    };
+
+    // 4. UID FETCH each chunk on the SAME connection. Fresh IMAP tag per chunk
+    //    (a3, a4, ...). On error: log the detail + break, returning what we have
+    //    so the caller's cursor still advances past fetched UIDs.
+    let parser = MessageParser::default();
+    let mut messages: Vec<ImapMessage> = Vec::new();
+    let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
+    let mut tag_index = 3u32;
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let range = uid_set_raw(chunk);
+        let tag = format!("a{tag_index}");
+        let fetch_cmd = format!("{tag} UID FETCH {range} ({SYNC_FETCH_QUERY})\r\n");
+
+        // Protocol trace: the UID FETCH command (without the parenthesized list
+        // body, which is long and constant — see SYNC_FETCH_QUERY). Logged at
+        // DEBUG so it ships in dev builds but not release.
+        log::debug!("C: {tag} UID FETCH {range} (SYNC_FETCH_QUERY)");
+
+        if let Err(e) = reader
+            .get_mut()
+            .write_all(fetch_cmd.as_bytes())
+            .await
+        {
+            log::warn!(
+                "[sync] raw fetch {folder} chunk {} (uids {range}): write failed: {e}; returning {} fetched so far",
+                i + 1,
+                messages.len()
+            );
+            break;
+        }
+
+        match raw_parse_fetch_responses(&mut reader, &tag).await {
+            Ok(raw_messages) => {
+                log::debug!(
+                    "S: {tag} OK (FETCH FOLDER chunk {} uids {range}: {} message(s))",
+                    i + 1,
+                    raw_messages.len()
+                );
+                log::info!(
+                    "RAW IMAP FETCH FOLDER {folder} chunk {} (uids {range}): parsed {} raw messages",
+                    i + 1,
+                    raw_messages.len()
+                );
+                for raw_msg in &raw_messages {
+                    match parse_message(
+                        &parser,
+                        &raw_msg.body,
+                        raw_msg.uid,
+                        folder,
+                        raw_msg.body.len() as u32,
+                        raw_msg.is_read,
+                        raw_msg.is_starred,
+                        raw_msg.is_draft,
+                        raw_msg.internal_date,
+                    ) {
+                        Ok(msg) => messages.push(msg),
+                        Err(e) => log::warn!(
+                            "RAW FETCH FOLDER {folder}: failed to parse UID {}: {e}",
+                            raw_msg.uid
+                        ),
+                    }
+                }
+            }
+            Err(e) => {
+                // Best-effort mid-folder: connection closed / read failure / etc.
+                // Log the DETAIL (e.g. "Connection closed during FETCH" /
+                // "FETCH read: ...") so the root cause (BYE) is captured.
+                log::debug!("S: {tag} <error: {e}> (FETCH FOLDER chunk {})", i + 1);
+                log::warn!(
+                    "[sync] raw fetch {folder} chunk {} (uids {range}) failed: {e}; returning {} fetched so far",
+                    i + 1,
+                    messages.len()
+                );
+                break;
+            }
+        }
+
+        tag_index = tag_index.saturating_add(1);
+    }
+
+    // 5. best-effort LOGOUT (ignore errors — connection may already be closed).
+    let _ = reader.get_mut().write_all(b"LOGOUT\r\n").await;
+
+    log::info!(
+        "RAW IMAP FETCH FOLDER {folder}: {}/{} UID(s) fetched across {} chunk(s)",
+        messages.len(),
+        uids.len(),
+        chunks.len()
+    );
+
+    Ok(ImapFetchResult {
+        messages,
+        folder_status,
+    })
+}
+
+/// Local comma-join of UIDs for the raw FETCH command (mirrors sync_engine's
+/// `uid_set` but kept private to this module so the raw path is self-contained).
+fn uid_set_raw(uids: &[u32]) -> String {
+    uids.iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Derive a single-line preview from a body's plain-text part: collapse all
+/// whitespace runs to one space, trim, cap at 200 chars. Pure so it can be
+/// unit-tested without a socket.
+///
+/// Note: the cap is 200 `char`s (Unicode scalar values), not bytes — a 200-char
+/// cap on a multibyte body would otherwise truncate mid-codepoint. Truncation is
+/// hard (no trailing `...`) so the caller can compose; the thread-list UI owns
+/// ellipsization, not the parser.
+fn derive_snippet(body_text: &str) -> String {
+    let collapsed: String = body_text
+        .split(|c: char| c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed.chars().take(200).collect()
+}
+
+/// Build the `a1 LOGIN` / `a1 AUTHENTICATE XOAUTH2` command for `config`. Used
+/// by the raw-fetch paths so they share one auth-string construction.
+fn build_login_cmd(config: &ImapConfig) -> String {
+    if config.auth_method == "oauth2" {
+        let xoauth2 = format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            config.username, config.password
+        );
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            xoauth2.as_bytes(),
+        );
+        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
+    } else {
+        format!(
+            "a1 LOGIN \"{}\" \"{}\"\r\n",
+            config.username, config.password
+        )
+    }
+}
+
+/// Open a raw IMAP connection, LOGIN, SELECT `folder`, then `UID FETCH <uid>
+/// (UID BODY.PEEK[])` and parse the single returned message with mail_parser.
+/// Used by `fetch_attachment_bytes` and the `sync_fetch_inline_images` command
+/// to obtain the parsed MIME tree (so a specific part can be located by section
+/// and decoded). Single connection lifecycle (connect → login → select → fetch
+/// → drop), like `fetch_bodies_batch`. Raw (NOT async-imap) because async-imap
+/// returns 0 items on this server. Returns `Ok(None)` if the server sent no
+/// FETCH response for the UID.
+async fn fetch_parsed_message(
+    config: &ImapConfig,
+    folder: &str,
+    uid: u32,
+) -> Result<Option<mail_parser::Message<'static>>, String> {
+    log::info!(
+        "FETCH PARSED: {}:{} {folder} UID {uid}",
+        config.host,
+        config.port
+    );
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+    raw_send_and_wait(&mut reader, build_login_cmd(config).as_bytes(), "a1").await?;
+    let _ = raw_send_and_wait(
+        &mut reader,
+        format!("a2 SELECT \"{folder}\"\r\n").as_bytes(),
+        "a2",
+    )
+    .await?;
+    // (UID BODY.PEEK[]) — UID must be requested explicitly (RFC 3501) so the
+    // response carries `UID <u>` (see commit a4d50f4). BODY.PEEK so opening /
+    // extracting a part does not mark the message \Seen.
+    let fetch_cmd = format!("a3 UID FETCH {uid} (UID BODY.PEEK[])\r\n");
+    log::debug!("C: a3 UID FETCH {uid} (UID BODY.PEEK[])");
+    reader
+        .get_mut()
+        .write_all(fetch_cmd.as_bytes())
+        .await
+        .map_err(|e| format!("write fetch cmd: {e}"))?;
+    let raws = raw_parse_fetch_responses(&mut reader, "a3").await?;
+    let raw = match raws.into_iter().next() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    // parse() borrows from raw.body (a local); into_owned() detaches the
+    // message into Message<'static> so it can be returned.
+    Ok(MessageParser::default().parse(&raw.body).map(|m| m.into_owned()))
+}
+
+/// Fetch ONE attachment part by IMAP MIME section (`part_id`, e.g. "1.2") and
+/// return its decoded bytes + mime type. Fetches the FULL message via
+/// `fetch_parsed_message`, locates the part via `build_imap_section_map`, and
+/// returns mail_parser's already-decoded bytes (mail_parser handles
+/// Content-Transfer-Encoding: base64 / quoted-printable). Whole-message fetch
+/// (not `BODY[section]`) because raw `BODY[section]` returns transfer-encoded
+/// bytes that we'd have to decode ourselves; letting mail_parser decode is
+/// simpler and matches what `parse_message`/`fetch_bodies_batch` already do.
+pub async fn fetch_attachment_bytes(
+    config: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    part_id: &str,
+) -> Result<(String, Vec<u8>), String> {
+    let message = fetch_parsed_message(config, folder, uid)
+        .await?
+        .ok_or_else(|| format!("UID {uid} in {folder}: no parseable message"))?;
+    let section_map = build_imap_section_map(&message);
+    let target_part_idx = section_map
+        .iter()
+        .find(|(_, section)| section.as_str() == part_id)
+        .map(|(&idx, _)| idx)
+        .ok_or_else(|| {
+            format!(
+                "Section {part_id} not found in UID {uid} (known sections: {:?})",
+                section_map.values().collect::<Vec<_>>()
+            )
+        })?;
+    let part = message
+        .parts
+        .get(target_part_idx)
+        .ok_or_else(|| format!("Part index {target_part_idx} out of range for UID {uid}"))?;
+    let mime_type = part
+        .content_type()
+        .map(|ct| {
+            let ctype = ct.ctype();
+            let subtype = ct.subtype().unwrap_or("octet-stream");
+            format!("{ctype}/{subtype}")
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let data = match &part.body {
+        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+            d.as_ref().to_vec()
+        }
+        mail_parser::PartType::Text(t) => t.as_bytes().to_vec(),
+        mail_parser::PartType::Html(h) => h.as_bytes().to_vec(),
+        mail_parser::PartType::Message(m) => m.raw_message.as_ref().to_vec(),
+        mail_parser::PartType::Multipart(_) => {
+            return Err(format!(
+                "Section {part_id} is a multipart container, not a leaf part (UID {uid})"
+            ));
+        }
+    };
+    Ok((mime_type, data))
+}
+
+/// Fetch all inline parts that carry a `Content-ID` (the parts referenced by
+/// `cid:` in an HTML body) for a message in ONE round-trip — returns each as
+/// `(content_id, mime_type, base64-bytes)`. Used by `sync_fetch_inline_images`
+/// so the reading pane can build a `cid -> data:` URL map without N full-message
+/// fetches. Fetches the full message once via `fetch_parsed_message` and walks
+/// the parsed MIME tree. Best-effort: parts that fail to extract are skipped.
+pub async fn fetch_inline_cid_parts(
+    config: &ImapConfig,
+    folder: &str,
+    uid: u32,
+) -> Result<Vec<InlineCidPart>, String> {
+    let message = fetch_parsed_message(config, folder, uid)
+        .await?
+        .ok_or_else(|| format!("UID {uid} in {folder}: no parseable message"))?;
+    let section_map = build_imap_section_map(&message);
+    let mut out = Vec::new();
+    for &part_idx in section_map.keys() {
+        let part = match message.parts.get(part_idx) {
+            Some(p) => p,
+            None => continue,
+        };
+        let content_id = match part.content_id() {
+            Some(s) => s.trim_matches(['<', '>']).to_string(),
+            None => continue,
+        };
+        let mime_type = part
+            .content_type()
+            .map(|ct| {
+                let ctype = ct.ctype();
+                let subtype = ct.subtype().unwrap_or("octet-stream");
+                format!("{ctype}/{subtype}")
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let data = match &part.body {
+            mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+                d.as_ref().to_vec()
+            }
+            mail_parser::PartType::Text(t) => t.as_bytes().to_vec(),
+            mail_parser::PartType::Html(h) => h.as_bytes().to_vec(),
+            mail_parser::PartType::Message(m) => m.raw_message.as_ref().to_vec(),
+            mail_parser::PartType::Multipart(_) => continue,
+        };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        out.push(InlineCidPart {
+            content_id,
+            mime_type,
+            base64: b64,
+        });
+    }
+    Ok(out)
+}
+
+/// One inline `cid:` part returned by [`fetch_inline_cid_parts`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InlineCidPart {
+    pub content_id: String,
+    pub mime_type: String,
+    pub base64: String,
+}
+
+/// Viewport-aware batch body prefetch. ONE connect + login + SELECT + chunked
+/// `UID FETCH <uid-set> BODY.PEEK[]` + LOGOUT (reuses `raw_fetch_folder`'s
+/// single-connection skeleton — never per-UID reconnects). `BODY.PEEK[]` (not
+/// `BODY[]`) so prefetch does not set `\Seen`. Chunks at `chunk_size` (50 is the
+/// recommended cap — see plan Global Constraints). Best-effort: on mid-batch
+/// error (server drop), logs and returns what was fetched so far.
+///
+/// The connect/login/SELECT/LOGOUT sequence mirrors `raw_fetch_folder` exactly
+/// rather than factoring it out, because the chunk loop here issues a different
+/// FETCH command (`BODY.PEEK[]`, no `(SYNC_FETCH_QUERY)` parens) and reuses
+/// `raw_parse_fetch_responses` — the shared surface is the four raw helpers
+/// (`raw_connect_starttls`/`connect_stream`/`raw_send_and_wait`/
+/// `raw_parse_fetch_responses`), which is exactly the reuse the brief requires.
+pub async fn fetch_bodies_batch(
+    config: &ImapConfig,
+    folder: &str,
+    uids: &[u32],
+    chunk_size: usize,
+) -> Result<Vec<FetchedBody>, String> {
+    if uids.is_empty() {
+        return Ok(vec![]);
+    }
+    let chunk_size = if chunk_size == 0 { 50 } else { chunk_size };
+
+    log::info!(
+        "FETCH BODIES BATCH: {}:{} {folder}, {} UID(s) in chunks of {chunk_size}",
+        config.host,
+        config.port,
+        uids.len()
+    );
+
+    // 1. connect (+ greeting), 2. login — identical to raw_fetch_folder.
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+    let login_cmd = if config.auth_method == "oauth2" {
+        let xoauth2 = format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            config.username, config.password
+        );
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            xoauth2.as_bytes(),
+        );
+        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
+    } else {
+        format!(
+            "a1 LOGIN \"{}\" \"{}\"\r\n",
+            config.username, config.password
+        )
+    };
+    raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
+
+    // 3. SELECT once for the whole batch. The SELECT response (EXISTS/UIDVALIDITY)
+    //    is ignored here — bodies don't need folder_status, only the cursor
+    //    matters and the caller already knows the folder.
+    let select_cmd = format!("a2 SELECT \"{folder}\"\r\n");
+    let _ = raw_send_and_wait(&mut reader, select_cmd.as_bytes(), "a2").await?;
+
+    // 4. UID FETCH each chunk on the SAME connection. Fresh IMAP tag per chunk
+    //    (a3, a4, ...). BODY.PEEK[] — NEVER BODY[] (prefetch must not set \Seen).
+    //    Parse via raw_parse_fetch_responses (handles literal-size framing),
+    //    then re-parse each body with MessageParser to extract text/html/snippet.
+    let parser = MessageParser::default();
+    let mut out: Vec<FetchedBody> = Vec::new();
+    let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
+    let mut tag_index = 3u32;
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let range = uid_set_raw(chunk);
+        let tag = format!("a{tag_index}");
+        // (UID BODY.PEEK[]) — NEVER plain BODY.PEEK[]. RFC 3501: a UID FETCH
+        // response only includes UID if it was requested as an item. With plain
+        // BODY.PEEK[], Exchange replies `* N FETCH (BODY[] {size}` — no UID —
+        // and raw_parse_fetch_responses then can't extract the UID, discards the
+        // literal, and skips the message (`parsed 0 bodies`, every uid "not in
+        // batch result"). Requesting UID explicitly yields `UID <u> BODY[] {size}`.
+        // BODY.PEEK (not BODY) so prefetch does not set \Seen.
+        let fetch_cmd = format!("{tag} UID FETCH {range} (UID BODY.PEEK[])\r\n");
+
+        // Protocol trace: log the UID FETCH (UID BODY.PEEK[]) command at DEBUG.
+        log::debug!("C: {tag} UID FETCH {range} (UID BODY.PEEK[])");
+
+        if let Err(e) = reader.get_mut().write_all(fetch_cmd.as_bytes()).await {
+            log::warn!(
+                "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}): write failed: {e}; returning {} fetched so far",
+                i + 1,
+                out.len()
+            );
+            break;
+        }
+        match raw_parse_fetch_responses(&mut reader, &tag).await {
+            Ok(raw_messages) => {
+                log::debug!(
+                    "S: {tag} OK (BODIES BATCH chunk {} uids {range}: {} body(ies))",
+                    i + 1,
+                    raw_messages.len()
+                );
+                for raw_msg in &raw_messages {
+                    // body_text(0) / body_html(0): per mail-parser 0.9.4, these
+                    // return the first text/html part AND auto-convert when one
+                    // representation is missing (HTML→text and vice-versa), so an
+                    // HTML-only message still yields a body_text for the snippet.
+                    // This is the same call shape `parse_message` uses (see lines
+                    // ~2061-2062), keeping the two body-extraction paths
+                    // consistent — no divergent parsing here.
+                    let parsed = match parser.parse(&raw_msg.body) {
+                        Some(p) => p,
+                        None => {
+                            log::warn!(
+                                "fetch_bodies_batch {folder}: UID {} parse failed; skipping",
+                                raw_msg.uid
+                            );
+                            continue;
+                        }
+                    };
+                    let body_text = parsed.body_text(0).map(|s| s.to_string());
+                    let body_html = parsed.body_html(0).map(|s| s.to_string());
+                    let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
+                    // Extract attachment metadata from the SAME parsed message
+                    // (no extra fetch) so the engine can persist it to the
+                    // `attachments` table for the reading-pane list + inline
+                    // cid: resolution. Same helper `parse_message` uses.
+                    let attachments = extract_attachments(&parsed, raw_msg.uid);
+                    out.push(FetchedBody {
+                        uid: raw_msg.uid,
+                        body_html,
+                        body_text,
+                        snippet,
+                        attachments,
+                    });
+                }
+                log::info!(
+                    "FETCH BODIES BATCH {folder} chunk {} (uids {range}): parsed {} bodies",
+                    i + 1,
+                    raw_messages.len()
+                );
+            }
+            Err(e) => {
+                log::debug!("S: {tag} <error: {e}> (BODIES BATCH chunk {})", i + 1);
+                log::warn!(
+                    "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}) failed: {e}; returning {} fetched so far",
+                    i + 1,
+                    out.len()
+                );
+                break;
+            }
+        }
+        tag_index = tag_index.saturating_add(1);
+    }
+
+    // 5. best-effort LOGOUT (ignore errors — connection may already be closed).
+    let _ = reader.get_mut().write_all(b"LOGOUT\r\n").await;
+
+    log::info!(
+        "FETCH BODIES BATCH {folder}: {}/{} UID(s) fetched",
+        out.len(),
+        uids.len()
+    );
+    Ok(out)
 }
 
 pub async fn raw_fetch_diagnostic(
@@ -1199,9 +1896,19 @@ async fn raw_connect_starttls(config: &ImapConfig) -> Result<ImapStream, String>
             IMAP_CMD_TIMEOUT.as_secs()
         ))?
         .map_err(|e| format!("STARTTLS resp: {e}"))?;
-    let resp = String::from_utf8_lossy(&tmp[..n]);
+    let resp_bytes = &tmp[..n];
+    let resp = String::from_utf8_lossy(resp_bytes);
     if !resp.contains("OK") {
         return Err(format!("STARTTLS rejected: {resp}"));
+    }
+    // RFC 3501 §6.2.1 injection guard — see `connect_starttls` for the full
+    // rationale. Same protection on the raw path used by `raw_fetch_folder` /
+    // `raw_fetch_messages` / `raw_fetch_diagnostic`: any bytes after the single
+    // STARTTLS OK line are an injection and must abort the handshake.
+    if let Some(injected) = extract_starttls_injection(resp_bytes) {
+        return Err(format!(
+            "STARTTLS plaintext injection detected (RFC 3501 §6.2.1): trailing {injected:?} after OK; aborting handshake"
+        ));
     }
     let nc = build_tls_connector(config.accept_invalid_certs)?;
     let tc = tokio_native_tls::TlsConnector::from(nc);
@@ -1222,6 +1929,32 @@ async fn raw_send_and_wait(
     cmd: &[u8],
     tag: &str,
 ) -> Result<String, String> {
+    // Protocol trace: log the command being sent (C: ...) at DEBUG. Trim the
+    // trailing CRLF + mask the password in LOGIN/AUTHENTICATE so the trace is
+    // safe to ship in a log file. The raw bytes here are exactly what goes on
+    // the wire (tag + command + CRLF), matching the IMAP convention of logging
+    // "C: <command>" / "S: <response>".
+    let cmd_str = String::from_utf8_lossy(cmd);
+    let cmd_trimmed = cmd_str.trim_end_matches(['\r', '\n']);
+    let masked = if cmd_trimmed.starts_with("a1 LOGIN")
+        || cmd_trimmed.starts_with("a1 AUTHENTICATE")
+    {
+        // Mask credentials: keep the command verb + tag, drop the payload.
+        if let Some(space_idx) = cmd_trimmed.find(' ') {
+            // "a1 LOGIN ..." -> "a1 LOGIN <masked>"
+            let verb_end = cmd_trimmed[space_idx + 1..]
+                .find(' ')
+                .map(|i| space_idx + 1 + i)
+                .unwrap_or(cmd_trimmed.len());
+            format!("{} <masked>", &cmd_trimmed[..verb_end])
+        } else {
+            "<masked>".to_string()
+        }
+    } else {
+        cmd_trimmed.to_string()
+    };
+    log::debug!("C: {masked}");
+
     reader
         .get_mut()
         .write_all(cmd)
@@ -1241,18 +1974,31 @@ async fn raw_send_and_wait(
         )
         .await
         {
-            Ok(Ok(0)) => return Err(format!("{tag}: connection closed")),
+            Ok(Ok(0)) => {
+                log::debug!("S: <connection closed> (tag={tag})");
+                return Err(format!("{tag}: connection closed"));
+            }
             Ok(Ok(_)) => {
                 response.push_str(&line);
                 if line.starts_with(&tag_ok) {
+                    // Log the tagged OK status line (the final response). Trimming
+                    // the CRLF keeps the trace one-line-per-command.
+                    log::debug!("S: {}", line.trim_end_matches(['\r', '\n']));
                     return Ok(response);
                 }
                 if line.starts_with(&tag_no) || line.starts_with(&tag_bad) {
+                    log::debug!("S: {}", line.trim_end_matches(['\r', '\n']));
                     return Err(format!("{tag} failed: {line}"));
                 }
             }
-            Ok(Err(e)) => return Err(format!("{tag} read: {e}")),
-            Err(_) => return Err(format!("{tag}: timeout")),
+            Ok(Err(e)) => {
+                log::debug!("S: <read error: {e}> (tag={tag})");
+                return Err(format!("{tag} read: {e}"));
+            }
+            Err(_) => {
+                log::debug!("S: <timeout> (tag={tag})");
+                return Err(format!("{tag}: timeout"));
+            }
         }
     }
 }
@@ -1538,9 +2284,20 @@ async fn connect_starttls(config: &ImapConfig) -> Result<ImapSession, String> {
             IMAP_CMD_TIMEOUT.as_secs()
         ))?
         .map_err(|e| format!("Failed to read STARTTLS response: {e}"))?;
-    let response = String::from_utf8_lossy(&buf[..n]);
+    let response_bytes = &buf[..n];
+    let response = String::from_utf8_lossy(response_bytes);
     if !response.contains("OK") {
         return Err(format!("STARTTLS rejected: {response}"));
+    }
+    // RFC 3501 §6.2.1 injection guard: reject ANY bytes after the STARTTLS OK
+    // line before the TLS handshake. A MITM could inject untagged responses
+    // (e.g. a fake "* OK ..." or "* BAD ...") that would be misinterpreted as
+    // part of the encrypted stream once the handshake takes over. A well-formed
+    // server sends exactly one OK line and nothing else.
+    if let Some(injected) = extract_starttls_injection(response_bytes) {
+        return Err(format!(
+            "STARTTLS plaintext injection detected (RFC 3501 §6.2.1): trailing {injected:?} after OK; aborting handshake"
+        ));
     }
 
     let native_connector = build_tls_connector(config.accept_invalid_certs)?;
@@ -1695,7 +2452,44 @@ fn parse_message(
         "Authentication-Results".into(),
     )));
 
-    let section_map = build_imap_section_map(&message);
+    let attachments = extract_attachments(&message, uid);
+
+    Ok(ImapMessage {
+        uid,
+        folder: folder.to_string(),
+        message_id,
+        in_reply_to,
+        references,
+        from_address,
+        from_name,
+        to_addresses,
+        cc_addresses,
+        bcc_addresses,
+        reply_to,
+        subject,
+        date,
+        is_read,
+        is_starred,
+        is_draft,
+        body_html,
+        body_text,
+        snippet,
+        raw_size,
+        list_unsubscribe,
+        list_unsubscribe_post,
+        auth_results,
+        attachments,
+    })
+}
+
+/// Extract attachment metadata (IMAP MIME section `part_id`, filename,
+/// mime_type, size, content_id, is_inline) from a parsed message. Shared by
+/// `parse_message` (folder sync) and `fetch_bodies_batch` (on-demand body
+/// fetch) so both paths produce identical `ImapAttachment` metadata that can be
+/// persisted to the `attachments` table and later used to fetch a single part
+/// via `BODY.PEEK[<part_id>]`. `uid` is for log correlation only.
+fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAttachment> {
+    let section_map = build_imap_section_map(message);
 
     log::debug!(
         "IMAP parse UID {uid}: {} parts, {} attachment indices {:?}, section_map: {:?}",
@@ -1705,7 +2499,7 @@ fn parse_message(
         section_map,
     );
 
-    let attachments: Vec<ImapAttachment> = message
+    message
         .attachments
         .iter()
         .filter_map(|&part_idx| {
@@ -1738,38 +2532,20 @@ fn parse_message(
                     .to_string(),
                 mime_type,
                 size: att.len() as u32,
-                content_id: att.content_id().map(|s| s.to_string()),
-                is_inline: att.content_disposition().is_some_and(|cd| cd.is_inline()),
+                // Trim RFC 2392 angle brackets (`<foo@bar>`) so the stored
+                // value matches the bare `cid:foo@bar` form used in HTML and
+                // by fetch_inline_cid_parts. Without this, AttachmentList's
+                // "hide cid:-referenced parts" filter (`inlineCids.has(cid)`)
+                // misses and inline images show twice (in-body + as a chip).
+                content_id: att
+                    .content_id()
+                    .map(|s| s.trim_matches(['<', '>']).to_string()),
+                is_inline: att
+                    .content_disposition()
+                    .is_some_and(|cd| cd.is_inline()),
             })
         })
-        .collect();
-
-    Ok(ImapMessage {
-        uid,
-        folder: folder.to_string(),
-        message_id,
-        in_reply_to,
-        references,
-        from_address,
-        from_name,
-        to_addresses,
-        cc_addresses,
-        bcc_addresses,
-        reply_to,
-        subject,
-        date,
-        is_read,
-        is_starred,
-        is_draft,
-        body_html,
-        body_text,
-        snippet,
-        raw_size,
-        list_unsubscribe,
-        list_unsubscribe_post,
-        auth_results,
-        attachments,
-    })
+        .collect()
 }
 
 fn build_imap_section_map(
@@ -1901,9 +2677,127 @@ pub async fn session_capabilities(
     ))
 }
 
+/// Pure helper: detect whether the STARTTLS OK response is followed by extra
+/// bytes (the injection attack). RFC 3501 §6.2.1: the client MUST reject any
+/// data between the STARTTLS OK and the TLS handshake.
+///
+/// `ok_response` is the bytes read after sending STARTTLS. If the response
+/// contains MORE than the single OK line (e.g. an extra untagged response the
+/// attacker injected), this returns the injected bytes; the caller aborts.
+fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
+    // A well-formed STARTTLS OK is exactly one line ending in \r\n:
+    //   "a001 OK Begin TLS negotiation now\r\n"
+    // Any bytes AFTER the first \r\n are injection.
+    let crlf = ok_response.windows(2).position(|w| w == b"\r\n")?;
+    let after = &ok_response[crlf + 2..];
+    if after.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(after).to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::capabilities_from_strs;
+    use super::{
+        capabilities_from_strs, derive_snippet, extract_starttls_injection,
+        fetch_changed_flags_response_from_fetches, uid_set_raw, SYNC_FETCH_QUERY,
+    };
+
+    // ---------- derive_snippet (pure preview-text helper for fetch_bodies_batch) ----------
+    //
+    // The snippet is the ~200-char single-line preview the thread list shows
+    // without re-reading the (large) `message_bodies` row. The live batch fetch
+    // is exercised by the Task 5 ignored integration test; here we cover the
+    // pure parser so whitespace-collapse + truncation are regression-locked
+    // without a socket.
+
+    #[test]
+    fn derive_snippet_strips_whitespace_and_truncates() {
+        // Leading/trailing whitespace + newlines collapse to single spaces;
+        // result is capped at 200 chars.
+        let body = "  Hello,\n\n   world.   \n\nThis is a long body.   ";
+        let s = derive_snippet(body);
+        assert!(s.starts_with("Hello,"));
+        assert!(!s.contains('\n'));
+        assert!(!s.contains("  ")); // no double spaces
+    }
+
+    #[test]
+    fn derive_snippet_truncates_at_200_chars() {
+        let body = "x".repeat(500);
+        let s = derive_snippet(&body);
+        assert_eq!(s.len(), 200);
+    }
+
+    #[test]
+    fn derive_snippet_empty_yields_empty() {
+        assert_eq!(derive_snippet("   \n\n  "), "");
+        assert_eq!(derive_snippet(""), "");
+    }
+
+    /// RED test 1 for the CONDSTORE CHANGEDSINCE flag-change parser. Maps three
+    /// parsed Fetch responses (uid, flags, modseq) into `ImapFlagChange`s and
+    /// computes the next modseq cursor = max(max_fetch_modseq, mailbox_highest).
+    /// The live `uid_fetch` is exercised in the Task 5 manual e2e; here we test
+    /// the pure reduction so the parsing/mapping logic is covered without a socket.
+    #[test]
+    fn changed_flags_parser_maps_modseq_and_flags() {
+        // Simulate three parsed Fetches from a CHANGEDSINCE response.
+        let out = fetch_changed_flags_response_from_fetches(
+            100, // since_modseq
+            vec![
+                (10, vec!["\\Seen".to_string()], 150u64),            // uid 10 now read, modseq 150
+                (11, vec!["\\Flagged".to_string()], 160),            // uid 11 now starred
+                (12, vec!["\\Seen".to_string(), "\\Flagged".to_string()], 170),  // both
+            ],
+            175, // mailbox HIGHESTMODSEQ
+        );
+        assert_eq!(out.0.len(), 3);
+        assert!(out.0.iter().any(|c| c.uid == 10 && c.is_read && !c.is_starred));
+        assert!(out.0.iter().any(|c| c.uid == 11 && !c.is_read && c.is_starred));
+        assert!(out.0.iter().any(|c| c.uid == 12 && c.is_read && c.is_starred));
+        // next_modseq = max(fetch modseq, mailbox highestmodseq) = 175
+        assert_eq!(out.1, 175);
+    }
+
+    /// RED test 2 for the parser: an empty change set still advances the cursor to
+    /// `max(since, mailbox_highest)`. A no-change round must not stall the modseq
+    /// cursor at the stale `since` value forever (otherwise every subsequent round
+    /// re-queries the same window and we lose liveness).
+    #[test]
+    fn changed_flags_parser_floors_next_modseq_at_since() {
+        let out = fetch_changed_flags_response_from_fetches(200, vec![], 200);
+        assert!(out.0.is_empty());
+        assert_eq!(out.1, 200);
+    }
+
+    /// Regression lock for the headers-first sync fix. The folder sweep MUST NOT
+    /// request `BODY.PEEK[]` (full body) — that hangs async-imap on large folders
+    /// and downloads gigabytes of bodies the user may never open. Sync pulls
+    /// headers + metadata only; bodies arrive on demand via `sync_request_bodies`
+    /// → `fetch_message_body`. If this assertion fails, someone reverted the
+    /// sync query to the full-body form.
+    #[test]
+    fn sync_fetch_query_is_headers_only_not_full_body() {
+        assert!(
+            SYNC_FETCH_QUERY.contains("HEADER.FIELDS"),
+            "SYNC_FETCH_QUERY must select header fields (BODY.PEEK[HEADER.FIELDS ...]); \
+             got: {SYNC_FETCH_QUERY}",
+        );
+        assert!(
+            !SYNC_FETCH_QUERY.contains("BODY.PEEK[]"),
+            "SYNC_FETCH_QUERY must NOT contain the full-body literal `BODY.PEEK[]` \
+             (it hangs large-folder sync); got: {SYNC_FETCH_QUERY}",
+        );
+        // The query must also request the metadata the message list / threading
+        // needs — FLAGS, INTERNALDATE, UID, and RFC822.SIZE (the last so the UI
+        // can show message sizes without a second fetch).
+        assert!(SYNC_FETCH_QUERY.contains("UID"));
+        assert!(SYNC_FETCH_QUERY.contains("FLAGS"));
+        assert!(SYNC_FETCH_QUERY.contains("INTERNALDATE"));
+        assert!(SYNC_FETCH_QUERY.contains("RFC822.SIZE"));
+    }
 
     #[test]
     fn capabilities_from_strs_maps_known_flags() {
@@ -1934,5 +2828,67 @@ mod tests {
     fn capabilities_from_strs_empty_iter() {
         let (idle, condstore, qresync, vanished) = capabilities_from_strs::<[&str; 0]>([]);
         assert!(!idle && !condstore && !qresync && !vanished);
+    }
+
+    /// Regression lock for the single-connection raw fetch path
+    /// (`raw_fetch_folder`). The per-chunk UID command MUST be a comma-joined
+    /// list with no trailing separator — a malformed set (`1,2,3,`) makes the
+    /// server reject the FETCH and we lose the whole chunk. This is the one
+    /// pure piece of the bulk-fetch path; the socket/login/SELECT logic is
+    /// exercised in the manual e2e (large folder finishes instead of BYE-looping).
+    #[test]
+    fn uid_set_raw_joins_comma_no_trailing_separator() {
+        assert_eq!(uid_set_raw(&[]), "");
+        assert_eq!(uid_set_raw(&[42]), "42");
+        assert_eq!(uid_set_raw(&[1, 2, 3]), "1,2,3");
+        assert_eq!(uid_set_raw(&[100, 200, 300, 400]), "100,200,300,400");
+        // No trailing comma on any length.
+        let s = uid_set_raw(&[7, 8, 9, 10, 11]);
+        assert!(!s.ends_with(','), "uid_set_raw must not trail with a comma: {s}");
+    }
+
+    // ---------- STARTTLS injection guard (RFC 3501 §6.2.1) ----------
+    //
+    // The pure helper `extract_starttls_injection` is the testable surface of
+    // the guard. The live socket wiring (aborting the handshake when trailing
+    // bytes appear after the STARTTLS OK) is in `connect_starttls` and
+    // `raw_connect_starttls`; those paths can't be exercised without a MITM
+    // that injects plaintext, so the regression coverage lives here on the
+    // pure function that both call sites consult.
+
+    #[test]
+    fn starttls_guard_accepts_single_ok_line() {
+        assert_eq!(
+            extract_starttls_injection(b"a001 OK Begin TLS negotiation now\r\n"),
+            None,
+            "a single OK line is clean"
+        );
+    }
+
+    #[test]
+    fn starttls_guard_rejects_trailing_injected_bytes() {
+        // An attacker prepends a fake "* OK ..." before the TLS handshake.
+        let injected = b"a001 OK Begin TLS negotiation now\r\n* BAD evil injected\r\n";
+        let extra = extract_starttls_injection(injected);
+        assert_eq!(
+            extra.as_deref(),
+            Some("* BAD evil injected\r\n"),
+            "trailing bytes after the STARTTLS OK must be flagged as injection"
+        );
+    }
+
+    #[test]
+    fn starttls_guard_rejects_trailing_partial_line() {
+        // Even partial bytes (no terminating \r\n) are injection.
+        let extra = extract_starttls_injection(b"a001 OK\r\nevil");
+        assert_eq!(extra.as_deref(), Some("evil"));
+    }
+
+    #[test]
+    fn starttls_guard_returns_none_on_no_crlf() {
+        // Malformed response (no CRLF at all) — caller should already have rejected
+        // this for not containing "OK", but the helper returns None rather than
+        // panic. The caller's "OK" check catches it first.
+        assert_eq!(extract_starttls_injection(b"garbage"), None);
     }
 }

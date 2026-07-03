@@ -256,6 +256,10 @@ export function useKeyboardShortcuts(): void {
         if (eventMatchesCombo(event, combo, mac)) {
           const binding = keyMap[commandId] ?? comboKey;
           if (isInputElement(target) && bindingNeedsInputGuard(binding)) return;
+          // Standard edit commands (cut/copy/paste/undo/etc.) should not be
+          // intercepted while the user is typing in an input. Let the browser's
+          // native editing behavior run so clipboard operations actually work.
+          if (commandId.startsWith('edit:') && isInputElement(target)) return;
           event.preventDefault();
           dispatch(commandId);
           return;

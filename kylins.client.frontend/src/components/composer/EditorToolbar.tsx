@@ -6,8 +6,17 @@
 // bold/italic/underline/strike/link/headings/lists/quote/code/history, so all
 // toggles go through the editor chain.
 
-import { useRef, useState } from 'react';
+import { useRef } from 'react';
 import type { Editor } from '@tiptap/react';
+import {
+  ToggleButton,
+  Select,
+  SelectValue,
+  Popover,
+  ListBox,
+  ListBoxItem,
+  Button,
+} from 'react-aria-components';
 import {
   BoldIcon,
   ItalicIcon,
@@ -50,21 +59,15 @@ function ToolbarButton({
   title: string;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
+    <ToggleButton
+      isSelected={active}
+      onChange={onClick}
+      isDisabled={disabled}
       aria-label={title}
-      aria-pressed={active}
-      className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
-        active
-          ? 'bg-[var(--selected)] text-[var(--selected-text)]'
-          : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
-      } disabled:cursor-not-allowed disabled:opacity-40`}
+      className="flex h-8 w-8 items-center justify-center rounded-md transition-colors data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Icon size={16} />
-    </button>
+    </ToggleButton>
   );
 }
 
@@ -72,58 +75,48 @@ function ToolbarDivider() {
   return <div className="mx-1 h-4 w-px bg-[var(--border)]" />;
 }
 
+const FONT_OPTIONS = [
+  { label: 'Sans', value: 'var(--font-ui)' },
+  { label: 'Serif', value: 'var(--font-serif)' },
+  { label: 'Mono', value: 'var(--font-mono)' },
+];
+
 function FontFamilySelect({ editor, disabled }: { editor: Editor; disabled?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const options = [
-    { label: 'Sans', value: 'var(--font-ui)' },
-    { label: 'Serif', value: 'var(--font-serif)' },
-    { label: 'Mono', value: 'var(--font-mono)' },
-  ];
-  const current = options.find((o) => editor.isActive('textStyle', { fontFamily: o.value }));
+  const current = FONT_OPTIONS.find((o) => editor.isActive('textStyle', { fontFamily: o.value }));
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        title="Font family"
-        aria-label="Font family"
-        className={`flex h-8 items-center gap-1 rounded-md px-1.5 text-xs transition-colors ${
-          current
-            ? 'bg-[var(--selected)] text-[var(--selected-text)]'
-            : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
-        } disabled:cursor-not-allowed disabled:opacity-40`}
-      >
+    <Select
+      isDisabled={disabled}
+      aria-label="Font family"
+      selectedKey={current?.value ?? null}
+      onSelectionChange={(key) => {
+        const option = FONT_OPTIONS.find((o) => o.value === key);
+        if (option) editor.chain().focus().setFontFamily(option.value).run();
+      }}
+      className="relative"
+    >
+      <Button className="flex h-8 items-center gap-1 rounded-md px-1.5 text-xs transition-colors data-[pressed]:bg-[var(--selected)] data-[pressed]:text-[var(--selected-text)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <FontIcon size={15} />
-        <span className="hidden sm:inline">{current?.label ?? 'Font'}</span>
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
-          <div className="absolute top-full left-0 z-50 mt-1 min-w-[100px] rounded-md border border-[var(--border)] bg-[var(--background)] p-1 shadow-lg">
-            {options.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                onClick={() => {
-                  editor.chain().focus().setFontFamily(o.value).run();
-                  setOpen(false);
-                }}
-                className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                  current?.value === o.value
-                    ? 'bg-[var(--selected)] text-[var(--selected-text)]'
-                    : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
-                }`}
-                style={{ fontFamily: o.value }}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+        <SelectValue className="hidden sm:inline">
+          {({ selectedText }) => <>{selectedText || 'Font'}</>}
+        </SelectValue>
+        <span className="hidden sm:inline text-[10px] opacity-70">▼</span>
+      </Button>
+      <Popover className="min-w-[100px] rounded-md border border-[var(--border)] bg-[var(--background)] p-1 shadow-lg">
+        <ListBox items={FONT_OPTIONS} className="outline-none" aria-label="Font family">
+          {(option) => (
+            <ListBoxItem
+              id={option.value}
+              textValue={option.label}
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)] data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)]"
+              style={{ fontFamily: option.value }}
+            >
+              {option.label}
+            </ListBoxItem>
+          )}
+        </ListBox>
+      </Popover>
+    </Select>
   );
 }
 
@@ -309,20 +302,14 @@ export function EditorToolbar({
       <div className="flex-1" />
 
       {onToggleAiAssist && (
-        <button
-          type="button"
-          onClick={onToggleAiAssist}
-          title="AI Assist"
+        <ToggleButton
+          isSelected={aiAssistOpen}
+          onChange={onToggleAiAssist}
           aria-label="AI Assist"
-          aria-pressed={aiAssistOpen}
-          className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs transition-colors ${
-            aiAssistOpen
-              ? 'bg-[var(--accent)] font-medium text-[var(--accent-foreground)]'
-              : 'text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)]'
-          }`}
+          className="flex h-8 items-center gap-1 rounded-md px-2 text-xs transition-colors data-[selected]:bg-[var(--accent)] data-[selected]:font-medium data-[selected]:text-[var(--accent-foreground)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span>AI</span>
-        </button>
+        </ToggleButton>
       )}
     </div>
   );

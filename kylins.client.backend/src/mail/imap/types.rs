@@ -54,7 +54,7 @@ pub struct ImapMessage {
     pub attachments: Vec<ImapAttachment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImapAttachment {
     pub part_id: String,
     pub filename: String,
@@ -84,6 +84,22 @@ pub struct ImapFolderSyncResult {
     pub uids: Vec<u32>,
     pub messages: Vec<ImapMessage>,
     pub folder_status: ImapFolderStatus,
+}
+
+/// One message body returned by `fetch_bodies_batch`. The `snippet` is the
+/// ~200-char whitespace-collapsed preview derived from `body_text`; the engine
+/// writes it onto `messages.snippet` so the thread list shows a preview without
+/// a second read of the (large) `message_bodies` row. `attachments` carries the
+/// parsed MIME attachment metadata (part_id/section, filename, mime_type, size,
+/// content_id, is_inline) so the engine can persist it to the `attachments`
+/// table without re-parsing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FetchedBody {
+    pub uid: u32,
+    pub body_html: Option<String>,
+    pub body_text: Option<String>,
+    pub snippet: String,
+    pub attachments: Vec<ImapAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

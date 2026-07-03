@@ -8,6 +8,12 @@ use tauri::{
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
+// KeepAll rotation: the plugin's default is `KeepOne`, which DELETES the old log
+// file once `max_file_size` is exceeded. On a chatty DEBUG log that rotates
+// constantly, so history looks like it was overwritten. KeepAll preserves the
+// rotated file as `{name}_{timestamp}.log; the 10 MB cap stops mid-session
+// rotation under normal use. Targets: LogDir (OS log dir) + Stdout (dev console).
+use tauri_plugin_log::{Target, TargetKind, RotationStrategy, TimezoneStrategy};
 
 pub mod commands;
 pub mod crypto;
@@ -62,6 +68,7 @@ pub fn run() {
             commands::decrypt_secret,
             commands::read_text_file,
             commands::write_text_file,
+            commands::write_binary_file,
             commands::get_autostart_state,
             commands::set_autostart_enabled,
             commands::send_desktop_notification,
@@ -84,7 +91,6 @@ pub fn run() {
             commands::imap_copy_messages,
             commands::imap_delete_messages,
             commands::imap_get_folder_status,
-            commands::imap_fetch_attachment,
             commands::imap_append_message,
             commands::imap_create_folder,
             commands::imap_delete_folder,
@@ -127,12 +133,14 @@ pub fn run() {
             db::commands::db_get_all_folders,
             db::commands::db_get_folder_by_role,
             db::commands::db_get_unread_counts_by_account,
+            db::commands::db_get_total_unread,
             db::commands::db_upsert_folders,
             db::commands::db_create_folder,
             db::commands::db_rename_folder,
             db::commands::db_delete_folder,
             db::commands::db_get_threads,
             db::commands::db_get_messages_for_thread,
+            db::commands::db_get_attachments,
             db::commands::db_mark_thread_read,
             db::commands::db_get_message_body,
             db::commands::db_set_message_body,
@@ -205,10 +213,14 @@ pub fn run() {
             db::commands::db_remove_from_image_allowlist,
             db::commands::db_get_cached_ai_result,
             db::commands::db_cache_ai_result,
+            db::commands::db_get_rate_limit_info,
+            db::commands::db_get_uncached_body_message_ids,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,
             sync_engine::commands::sync_request_bodies,
+            sync_engine::commands::sync_fetch_attachment,
+            sync_engine::commands::sync_fetch_inline_images,
             sync_engine::commands::sync_apply_mutation,
         ])
         .setup(|app| {
@@ -220,10 +232,58 @@ pub fn run() {
                 };
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
+                        // FIRST in the chain (plugins-workspace #2262 workaround:
+                        // timezone_strategy applied after `level`/`targets` in
+                        // some versions silently no-ops). Default is Utc; without
+                        // this, log timestamps are hours off from the local
+                        // clock, which makes correlating log lines to user actions
+                        // painful. Local timestamps match what `fern`/`env_logger`
+                        // emit in dev so prod + dev logs read the same.
+                        // (Variant is `UseLocal`, not `Local`, in v2.x — confirmed
+                        // against tauri-plugin-log 2.8.0 which is pinned in
+                        // Cargo.lock; the brief's `TimezoneStrategy::Local` was a
+                        // slight misnomer.)
+                        .timezone_strategy(TimezoneStrategy::UseLocal)
                         .level(level)
                         .level_for("sqlx::query", log::LevelFilter::Warn)
+                        // Default is KeepOne (deletes the old log on rotation);
+                        // KeepAll preserves rotated files as {name}_{timestamp}.log.
+                        .rotation_strategy(RotationStrategy::KeepAll)
+                        // 10 MB so a normal session doesn't rotate mid-run, while
+                        // still bounding the log dir over a long-lived desktop app.
+                        .max_file_size(10 * 1024 * 1024)
+                        .targets([
+                            Target::new(TargetKind::LogDir { file_name: None }),
+                            Target::new(TargetKind::Stdout),
+                        ])
                         .build(),
                 )?;
+            }
+
+            // Panic hook: forward every panic (any thread, including spawned
+            // tokio worker tasks — whose panics otherwise go only to stderr and
+            // are silently swallowed by `tokio::spawn`'s detached JoinHandle)
+            // into the log file via `log::error!`. The default hook is chained
+            // afterward so the std panic print to stderr is preserved (Tauri's
+            // terminal in dev, the crash handler in prod). Installed AFTER the
+            // log plugin is up so `log::error!` has a subscriber; BEFORE the db
+            // pool + sync engine spawn so a panic during init is captured too.
+            {
+                let default_hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    let location = info
+                        .location()
+                        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                        .unwrap_or_default();
+                    let payload = info
+                        .payload()
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                        .unwrap_or("<non-string panic payload>");
+                    log::error!("PANIC at {location}: {payload}");
+                    default_hook(info);
+                }));
             }
 
             // Open the SQLite database (creates mailclient.db + WAL files if

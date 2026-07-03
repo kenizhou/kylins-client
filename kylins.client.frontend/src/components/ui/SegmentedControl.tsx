@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import { useId } from 'react';
+import { ToggleButton, ToggleButtonGroup } from 'react-aria-components';
 
 interface SegmentedControlProps<T extends string> {
   options: { value: T; label: string }[];
@@ -11,25 +13,28 @@ export function SegmentedControl<T extends string>({
   value,
   onChange,
 }: SegmentedControlProps<T>): ReactNode {
+  const baseId = useId();
+
   return (
-    <div className="inline-flex rounded-lg border border-[var(--border)] bg-[var(--background)] p-1">
-      {options.map((opt) => {
-        const active = value === opt.value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => onChange(opt.value)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-              active
-                ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
-                : 'text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)]'
-            }`}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
+    <ToggleButtonGroup
+      selectionMode="single"
+      disallowEmptySelection
+      selectedKeys={[value]}
+      onSelectionChange={(keys) => {
+        const next = Array.from(keys)[0];
+        if (next) onChange(String(next).slice(baseId.length + 1) as T);
+      }}
+      className="inline-flex rounded-lg border border-border bg-background p-1"
+    >
+      {options.map((opt) => (
+        <ToggleButton
+          key={opt.value}
+          id={`${baseId}-${opt.value}`}
+          className="px-3 py-1.5 text-xs font-medium rounded-md transition-colors text-muted-text hover:bg-hover hover:text-foreground selected:bg-primary selected:text-primary-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {opt.label}
+        </ToggleButton>
+      ))}
+    </ToggleButtonGroup>
   );
 }

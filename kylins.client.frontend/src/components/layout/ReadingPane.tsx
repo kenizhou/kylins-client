@@ -1,19 +1,14 @@
-import { useRef, useState, useEffect } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
-import {
-  ArrowBendDoubleUpLeft,
-  ArrowBendUpLeft,
-  ArrowBendUpRight,
-  Archive,
-} from '@phosphor-icons/react';
-import { MoreIcon, DeleteIcon, FlagIcon, MailIcon } from '../icons';
+import { ArrowBendDoubleUpLeft, ArrowBendUpLeft, ArrowBendUpRight } from '@phosphor-icons/react';
+import { MailIcon } from '../icons';
 import { IconButton } from '../ui/IconButton';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
-import { useThreadStore } from '../../stores/threadStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
+import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
+import { fetchInlineImages } from '../../services/db/attachments';
 import { InlineReply } from '../email/InlineReply';
 import { formatFullDate } from '../../utils/formatDate';
 import { getInitials } from '../../data/demoMessages';
@@ -67,82 +62,51 @@ function recipientList(recipients: { name: string; address: string }[]): string 
   return `${first.name} <${first.address}> +${recipients.length - 1} more`;
 }
 
-interface MoreActionsMenuProps {
-  x: number;
-  y: number;
-  isRead?: boolean;
-  disabled?: boolean;
-  onToggleRead: () => void;
-  onClose: () => void;
-}
-
-function MoreActionsMenu({ x, y, isRead, disabled, onToggleRead, onClose }: MoreActionsMenuProps) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
-    function onPointer(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener('keydown', onKey);
-    document.addEventListener('mousedown', onPointer);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.removeEventListener('mousedown', onPointer);
-    };
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      ref={ref}
-      role="menu"
-      className="fixed min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg"
-      style={{ left: x, top: y, zIndex: 'var(--z-dropdown)' }}
-    >
-      <button
-        type="button"
-        role="menuitem"
-        disabled={disabled}
-        onClick={() => {
-          onToggleRead();
-          onClose();
-        }}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <MailIcon size={16} />
-        <span>{isRead ? 'Mark as unread' : 'Mark as read'}</span>
-      </button>
-    </div>,
-    document.body,
-  );
-}
-
 export function ReadingPane() {
   const message = useViewStore((s) => s.selectedMessage);
-  const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === message?.threadId));
-  const markThreadRead = useThreadStore((s) => s.markThreadRead);
-  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
-  const deleteThread = useThreadStore((s) => s.deleteThread);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
   const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
   const { getLevelById } = useClassification();
   const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
-  // Reset the inline composer when the selected message changes. Uses the
-  // prev-value render pattern (setState-during-render to correct stale state)
-  // rather than setState-in-effect.
+  const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
+  // Reset per-message ephemeral state when the selected message changes. Uses
+  // the prev-value render pattern (setState-during-render to correct stale
+  // state) rather than setState-in-effect (the project's eslint rule
+  // react-hooks/set-state-in-effect rejects synchronous setState in effects).
   const [activeMsgId, setActiveMsgId] = useState<string | undefined>(message?.id);
   if (message?.id !== activeMsgId) {
     setActiveMsgId(message?.id);
     setComposeMode(null);
+    setCidMap(new Map());
   }
 
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [morePos, setMorePos] = useState<{ x: number; y: number } | null>(null);
-  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  // Inline `cid:` image resolution. When the selected message changes, fetch
+  // its inline Content-ID parts in ONE round-trip and build a cid → data: URL
+  // map that EmailRenderer substitutes into the HTML (before the remote-image
+  // block, so inline images render without the "Load images" toggle). The map
+  // is reset at render time above (on message change); this effect only fetches
+  // and calls setState from the async callback (lint-allowed).
+  useEffect(() => {
+    const id = message?.id;
+    const acct = activeAccountId;
+    if (!id || !acct) return;
+    let cancelled = false;
+    fetchInlineImages(acct, id)
+      .then((parts) => {
+        if (cancelled) return;
+        const m = new Map<string, string>();
+        for (const p of parts) {
+          m.set(p.contentId, `data:${p.mimeType};base64,${p.base64}`);
+        }
+        setCidMap(m);
+      })
+      .catch((e) => console.error('[reading-pane] fetchInlineImages failed', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [message?.id, activeAccountId]);
 
   if (!message) {
     return (
@@ -182,31 +146,6 @@ export function ReadingPane() {
   const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
   const prominent = level ? isProminent(level) : false;
   const style = level ? levelStyle(level) : null;
-
-  const handleToggleMore = () => {
-    if (!moreOpen && moreButtonRef.current) {
-      const rect = moreButtonRef.current.getBoundingClientRect();
-      setMorePos({
-        x: Math.max(8, rect.right - 160),
-        y: rect.bottom + 4,
-      });
-    }
-    setMoreOpen((v) => !v);
-  };
-
-  const handleMarkRead = () => {
-    if (selectedThread) {
-      void markThreadRead(selectedThread, !selectedThread.isRead);
-    }
-  };
-
-  const handleStar = () => {
-    if (selectedThread) void toggleThreadStarred(selectedThread);
-  };
-
-  const handleDelete = () => {
-    if (selectedThread) void deleteThread(selectedThread);
-  };
 
   return (
     <div className="reading-pane relative flex h-full min-w-0 flex-col bg-[var(--card)]">
@@ -298,42 +237,6 @@ export function ReadingPane() {
                 </span>
               }
             />
-            <div className="mx-1 h-4 w-px bg-[var(--border)]" />
-            <IconButton size="sm" title="Archive" onClick={() => {}} icon={<Archive size={18} />} />
-            <IconButton
-              size="sm"
-              title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
-              onClick={handleStar}
-              className={
-                selectedThread?.isStarred
-                  ? 'text-[var(--amber)] hover:text-[var(--amber)]'
-                  : undefined
-              }
-              icon={<FlagIcon size={17} />}
-            />
-            <IconButton
-              size="sm"
-              title="Delete"
-              onClick={handleDelete}
-              icon={<DeleteIcon size={17} />}
-            />
-            <IconButton
-              ref={moreButtonRef}
-              size="sm"
-              title="More actions"
-              onClick={handleToggleMore}
-              icon={<MoreIcon size={17} />}
-            />
-            {moreOpen && morePos && (
-              <MoreActionsMenu
-                x={morePos.x}
-                y={morePos.y}
-                isRead={selectedThread?.isRead}
-                disabled={!selectedThread}
-                onToggleRead={handleMarkRead}
-                onClose={() => setMoreOpen(false)}
-              />
-            )}
           </div>
         </div>
       </div>
@@ -344,6 +247,11 @@ export function ReadingPane() {
         onContextMenu={message.preventCopy ? (e) => e.preventDefault() : undefined}
       >
         {prominent && level && <ClassificationWatermark level={level} identity={accountEmail} />}
+        <AttachmentList
+          accountId={activeAccountId}
+          messageId={message.id}
+          bodyHtml={message.html}
+        />
         <EmailRenderer
           html={message.html}
           text={message.text}
@@ -352,7 +260,7 @@ export function ReadingPane() {
           accountId={activeAccountId}
           senderAllowlisted={false}
           isMessageSuspicious={isSuspicious}
-          cidMap={null}
+          cidMap={cidMap}
         />
       </main>
       {prominent && level && <ClassificationBanner level={level} position="bottom" />}

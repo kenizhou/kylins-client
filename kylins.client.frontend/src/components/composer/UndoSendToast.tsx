@@ -5,6 +5,7 @@
 // wraps this in CSSTransition; Kylins uses a plain conditional render (the
 // slide-in/countdown animations live in globals.css under .composer-toast).
 
+import { Button } from 'react-aria-components';
 import { useComposerStore } from '@/stores/composerStore';
 
 export function UndoSendToast() {
@@ -27,9 +28,12 @@ export function UndoSendToast() {
     <div className="composer-toast fixed bottom-4 left-1/2 z-[80] -translate-x-1/2 overflow-hidden rounded-lg bg-[var(--foreground)] text-[var(--background)] shadow-lg">
       <div className="flex items-center gap-3 px-4 py-2.5">
         <span className="text-sm">Sending email...</span>
-        <button onClick={handleUndo} className="kylins-link text-sm font-medium">
+        <Button
+          onPress={handleUndo}
+          className="kylins-link text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
           Undo
-        </button>
+        </Button>
       </div>
       <div className="h-0.5 bg-white/20">
         <div className="composer-countdown h-full rounded-full bg-[var(--primary)]" />

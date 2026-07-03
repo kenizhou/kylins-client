@@ -1,10 +1,12 @@
 import { ReadingPane } from '@/components/layout/ReadingPane';
-import { MenuBar } from '@/components/ui/MenuBar';
 import { CommandRibbon } from '@/components/layout/CommandRibbon';
 import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
 import type { MailMessage } from '@/features/view/viewStore';
 import { useClassification } from '@/features/classification/useClassification';
 import { WindowErrorBoundary } from '@/components/ui/WindowErrorBoundary';
+import { useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 interface MessageViewerWindowProps {
   message: MailMessage;
@@ -25,14 +27,26 @@ function MessageViewerWindowContent({ message }: MessageViewerWindowProps) {
     ? `${message.subject || 'Message'} — ${level.name}`
     : message.subject || 'Message';
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    void listen<{ threadId: string }>('thread:deleted', (event) => {
+      if (event.payload.threadId === message.threadId) {
+        void getCurrentWindow().close();
+      }
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [message.threadId]);
+
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
       <WindowTitleBar title={title} />
 
-      <div className="shrink-0">
-        <MenuBar variant="viewer" />
-      </div>
-      <CommandRibbon mode="read" />
+      <CommandRibbon mode="read" viewer />
 
       <div className="min-h-0 flex-1">
         <ReadingPane />

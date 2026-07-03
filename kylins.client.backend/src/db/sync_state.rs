@@ -54,7 +54,9 @@ pub async fn advance_imap_cursor(
            last_uid = CASE WHEN folder_sync_state.uidvalidity = excluded.uidvalidity
                            THEN MAX(excluded.last_uid, folder_sync_state.last_uid)
                            ELSE excluded.last_uid END,
-           modseq = excluded.modseq,
+           modseq = CASE WHEN folder_sync_state.uidvalidity = excluded.uidvalidity
+                         THEN MAX(excluded.modseq, folder_sync_state.modseq)
+                         ELSE excluded.modseq END,
            last_sync_at = excluded.last_sync_at",
     )
     .bind(account_id)
@@ -173,6 +175,41 @@ mod tests {
                 uidvalidity: 100,
                 highest_uid: 9,
                 highest_modseq: 2
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn imap_cursor_modseq_advances_monotonically() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "a").await;
+        advance_imap_cursor(&pool, "a", "INBOX", 100, 5, 50)
+            .await
+            .unwrap();
+        // A lagging round reports modseq 30 — must NOT regress to 30.
+        advance_imap_cursor(&pool, "a", "INBOX", 100, 5, 30)
+            .await
+            .unwrap();
+        let c = get_imap_cursor(&pool, "a", "INBOX").await;
+        assert_eq!(
+            c,
+            Cursor::Imap {
+                uidvalidity: 100,
+                highest_uid: 5,
+                highest_modseq: 50
+            }
+        );
+        // A newer modseq advances.
+        advance_imap_cursor(&pool, "a", "INBOX", 100, 8, 90)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_imap_cursor(&pool, "a", "INBOX").await,
+            Cursor::Imap {
+                uidvalidity: 100,
+                highest_uid: 8,
+                highest_modseq: 90
             }
         );
     }

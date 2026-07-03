@@ -80,7 +80,10 @@ export async function runOAuthFlow(
 export async function testImapConnection(account: Account): Promise<void> {
   const imap = new ImapProvider(account);
   await imap.connect(); // throws on failure
-  await smtpTestConnection(account);
+  const smtpResult = await smtpTestConnection(account);
+  if (!smtpResult.success) {
+    throw new Error(smtpResult.message);
+  }
 }
 
 export async function testEasConnection(account: Account): Promise<void> {
