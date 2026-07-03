@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ToggleButton, Button } from 'react-aria-components';
 import { useAccountStore } from '../../stores/accountStore';
 import { useAccountSetupStore } from '../../stores/accountSetupStore';
 import { getAllAccounts } from '../../services/accounts';
@@ -57,13 +58,12 @@ export function AccountsPreferences() {
       <PreferencesTabLayout>
         <PreferencesSectionCard title="Accounts" icon={PreferencesAccountsIcon}>
           <p className="text-sm text-[var(--muted-text)] mb-4">No accounts configured yet.</p>
-          <button
-            type="button"
-            onClick={handleOpenSetup}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
+          <Button
+            onPress={handleOpenSetup}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             Add account
-          </button>
+          </Button>
 
           {showSetup && (
             <SetupOverlay onClose={handleCloseSetup} onComplete={handleSetupComplete} />
@@ -80,15 +80,11 @@ export function AccountsPreferences() {
           {accounts.map((account) => {
             const active = account.id === effectiveAccountId;
             return (
-              <button
+              <ToggleButton
                 key={account.id}
-                type="button"
-                onClick={() => setSelectedAccountId(account.id)}
-                className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition-colors ${
-                  active
-                    ? 'border-[var(--primary)] bg-[var(--selected)] text-[var(--primary)]'
-                    : 'border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)]'
-                }`}
+                isSelected={active}
+                onPress={() => setSelectedAccountId(account.id)}
+                className="flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition-colors border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] selected:border-[var(--primary)] selected:bg-[var(--selected)] selected:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               >
                 <ProviderBadge
                   provider={account.provider}
@@ -107,17 +103,16 @@ export function AccountsPreferences() {
                     Paused
                   </span>
                 )}
-              </button>
+              </ToggleButton>
             );
           })}
-          <button
-            type="button"
-            onClick={handleOpenSetup}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+          <Button
+            onPress={handleOpenSetup}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             <PlusIcon size={14} />
             Add account
-          </button>
+          </Button>
         </div>
 
         {selectedAccount ? (
@@ -141,14 +136,13 @@ export function AccountsPreferences() {
 function SetupOverlay({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-[var(--background)]">
-      <button
-        type="button"
-        onClick={onClose}
-        className="absolute right-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+      <Button
+        onPress={onClose}
+        className="absolute right-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
         <CloseIcon size={14} />
         Cancel
-      </button>
+      </Button>
       <AccountSetupFlow variant="modal" onComplete={onComplete} />
     </div>
   );

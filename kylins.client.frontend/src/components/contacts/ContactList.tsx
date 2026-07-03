@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
+import {
+  SearchField,
+  Input,
+  Button,
+  Select,
+  Popover,
+  ListBox,
+  ListBoxItem,
+  SelectValue,
+} from 'react-aria-components';
 import { useContactStore } from '../../stores/contactStore';
 import { ContactAvatar } from './ContactAvatar';
 import { getContactIdsForGroup, type Contact } from '../../services/db/contacts';
-import { SearchIcon } from '../icons';
+import { SearchIcon, CloseIcon, CaretDownIcon } from '../icons';
 
 export function ContactList() {
   const contacts = useContactStore((s) => s.contacts);
@@ -26,7 +36,7 @@ export function ContactList() {
     let cancelled = false;
     getContactIdsForGroup(selectedGroupId).then((ids) => {
       if (cancelled) return;
-       
+
       setGroupContactIds(new Set(ids));
     });
     return () => {
@@ -62,32 +72,55 @@ export function ContactList() {
   return (
     <div className="flex flex-col h-full min-w-0">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
-        <div className="relative flex-1">
+        <SearchField
+          value={searchQuery}
+          onChange={setSearchQuery}
+          className="relative flex-1"
+          aria-label="Search contacts"
+        >
           <SearchIcon
             size={14}
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-text)]"
           />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search contacts…"
-            className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-3 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/60 focus:border-[var(--primary)]"
-          />
-        </div>
+          <Input className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-8 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/60 focus:border-[var(--primary)]" />
+          {searchQuery !== '' && (
+            <Button className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded p-0.5 text-[var(--muted-text)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+              <CloseIcon size={14} />
+            </Button>
+          )}
+        </SearchField>
+
         {groups.length > 0 && (
-          <select
-            value={selectedGroupId ?? ''}
-            onChange={(e) => setSelectedGroupId(e.target.value || null)}
-            className="rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-sm text-[var(--foreground)] outline-none"
+          <Select
+            selectedKey={selectedGroupId ?? ''}
+            onSelectionChange={(key) => setSelectedGroupId(String(key) || null)}
+            className="min-w-[140px]"
+            aria-label="Filter contacts by group"
           >
-            <option value="">All contacts</option>
-            {groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
+            <Button className="flex w-full items-center justify-between rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-sm text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+              <SelectValue />
+              <CaretDownIcon size={14} />
+            </Button>
+            <Popover className="min-w-[--trigger-width] rounded-md border border-[var(--border)] bg-[var(--background)] shadow-lg">
+              <ListBox className="py-1 outline-none">
+                <ListBoxItem
+                  id=""
+                  className="cursor-pointer px-3 py-2 text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] selected:bg-[var(--selected)] selected:text-[var(--foreground)]"
+                >
+                  All contacts
+                </ListBoxItem>
+                {groups.map((g) => (
+                  <ListBoxItem
+                    key={g.id}
+                    id={g.id}
+                    className="cursor-pointer px-3 py-2 text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] selected:bg-[var(--selected)] selected:text-[var(--foreground)]"
+                  >
+                    {g.name}
+                  </ListBoxItem>
+                ))}
+              </ListBox>
+            </Popover>
+          </Select>
         )}
       </div>
 
