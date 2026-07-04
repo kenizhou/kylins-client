@@ -210,18 +210,43 @@ describe('composer/buildSendDraft', () => {
     expect(draft.from).toEqual({ email: 'fallback@example.com' });
   });
 
+  it('includes the display name when fromName is provided', async () => {
+    const draft = await buildSendDraft(
+      baseInput({ fromEmail: 'alice@example.com', fromName: 'Alice Smith' }),
+      'draft-1',
+      'fallback@example.com',
+    );
+    expect(draft.from).toEqual({ name: 'Alice Smith', email: 'alice@example.com' });
+  });
+
+  it('falls back to fallbackFromName when fromName is missing', async () => {
+    const draft = await buildSendDraft(
+      baseInput({ fromEmail: 'alice@example.com' }),
+      'draft-1',
+      'fallback@example.com',
+      'Account Display Name',
+    );
+    expect(draft.from).toEqual({ name: 'Account Display Name', email: 'alice@example.com' });
+  });
+
   it('populates cc/bcc/replyTo only when present', async () => {
     const draft = await buildSendDraft(
       baseInput({
         cc: [{ name: 'carol', email: 'carol@example.com' }],
         bcc: [{ name: 'dan@example.com', email: 'dan@example.com' }],
-        replyTo: [{ name: 'alice@example.com', email: 'alice@example.com' }],
+        replyTo: [
+          { name: 'reply1', email: 'reply1@example.com' },
+          { name: 'reply2', email: 'reply2@example.com' },
+        ],
       }),
       'draft-1',
       'fallback@example.com',
     );
     expect(draft.cc).toEqual([{ name: 'carol', email: 'carol@example.com' }]);
     expect(draft.bcc).toEqual([{ email: 'dan@example.com' }]);
-    expect(draft.replyTo).toEqual({ email: 'alice@example.com' });
+    expect(draft.replyTo).toEqual([
+      { name: 'reply1', email: 'reply1@example.com' },
+      { name: 'reply2', email: 'reply2@example.com' },
+    ]);
   });
 });

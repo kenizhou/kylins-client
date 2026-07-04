@@ -51,6 +51,8 @@ export interface DraftInput {
   subject: string;
   bodyHtml: string;
   fromEmail?: string | null;
+  /** Display name for the From header (alias or account display name). */
+  fromName?: string | null;
   threadId?: string | null;
   inReplyToMessageId?: string | null;
   signatureId?: string | null;

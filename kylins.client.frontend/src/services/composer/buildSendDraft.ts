@@ -41,11 +41,13 @@ import { extractInlineImages, htmlToPlainText } from '@/utils/emailBuilder';
  *                      backend uses the same id for cleanup. Otherwise pass a
  *                      freshly-generated `newDraftId()`.
  * @param fallbackFrom  Sender address to use when `input.fromEmail` is null.
+ * @param fallbackFromName  Sender display name to use when `input.fromName` is null.
  */
 export async function buildSendDraft(
   input: DraftInput,
   draftId: string,
   fallbackFrom: string,
+  fallbackFromName?: string,
 ): Promise<SendDraft> {
   // 1. Prepare HTML body (inline styles + strip signature wrapper).
   const preparedHtml = stripSignature(inlineCss(input.bodyHtml));
@@ -99,9 +101,10 @@ export async function buildSendDraft(
   // 5. Assemble the SendDraft. Optional/empty fields stay `undefined` so they
   //    are omitted from the JSON payload (Rust `skip_serializing_if`).
   const fromEmail = input.fromEmail ?? fallbackFrom;
+  const fromName = input.fromName ?? fallbackFromName ?? '';
   const draft: SendDraft = {
     draftId,
-    from: toAddress({ name: '', email: fromEmail }),
+    from: toAddress({ name: fromName, email: fromEmail }),
     to: input.to.map(toAddress),
     subject: input.subject,
     htmlBody: htmlWithCids,
@@ -110,7 +113,7 @@ export async function buildSendDraft(
   if (input.cc && input.cc.length > 0) draft.cc = input.cc.map(toAddress);
   if (input.bcc && input.bcc.length > 0) draft.bcc = input.bcc.map(toAddress);
   if (input.replyTo && input.replyTo.length > 0) {
-    draft.replyTo = toAddress(input.replyTo[0]!);
+    draft.replyTo = input.replyTo.map(toAddress);
   }
   if (input.inReplyToMessageId) draft.inReplyTo = input.inReplyToMessageId;
   if (attachments.length > 0) draft.attachments = attachments;

@@ -460,6 +460,8 @@ export function Composer({ windowed = false }: ComposerProps) {
     const currentDraftId = state.draftId;
     const currentStagingDraftId = state.stagingDraftId;
 
+    const selectedAlias = aliases.find((a) => a.email === (state.fromEmail ?? activeAccount.email));
+
     const input = {
       accountId: activeAccountId,
       to: state.to,
@@ -468,6 +470,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       subject: state.subject,
       bodyHtml: html,
       fromEmail: state.fromEmail ?? activeAccount.email,
+      fromName: selectedAlias?.displayName ?? activeAccount.displayName ?? '',
       threadId: state.threadId,
       inReplyToMessageId: state.inReplyToMessageId,
       signatureId: state.signatureId,
@@ -495,6 +498,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
 
     state.setUndoSendVisible(true);
+    state.setUndoStagingDraftId(currentStagingDraftId);
 
     const timer = setTimeout(async () => {
       try {
@@ -644,6 +648,18 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const handleClose = useCallback(async () => {
     stopAutoSave();
+    const state = useComposerStore.getState();
+    const currentDraftId = state.draftId;
+    const currentStagingDraftId = state.stagingDraftId;
+    // Best-effort cleanup of staged attachments for unsaved drafts. Saved drafts
+    // keep their filePath references, so we leave the outbox directory alone.
+    if (!currentDraftId) {
+      try {
+        await cleanupAttachments(currentStagingDraftId);
+      } catch {
+        /* ignore — best-effort */
+      }
+    }
     closeComposer();
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
@@ -998,7 +1014,7 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   return (
     <div className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center p-4 pointer-events-none">
-      <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={closeComposer} />
+      <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={handleClose} />
       {composerPanel}
     </div>
   );

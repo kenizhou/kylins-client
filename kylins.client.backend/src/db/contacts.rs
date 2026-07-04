@@ -504,10 +504,6 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), String> {
 
 /// Upsert a contact from mail interaction — bumps frequency if exists.
 /// Mirrors `upsertContact` (ON CONFLICT(email) DO UPDATE).
-///
-/// Source precedence is respected: if the existing row has a higher-priority
-/// source (`local` or any synced source), the mail-sourced `display_name` is
-/// ignored and only `frequency` / `last_contacted_at` are bumped.
 pub async fn upsert(
     pool: &SqlitePool,
     email: &str,
@@ -519,10 +515,7 @@ pub async fn upsert(
         "INSERT INTO contacts (id, email, display_name, source, first_contacted_at, last_contacted_at)
          VALUES ($1, $2, $3, 'mail', unixepoch(), unixepoch())
          ON CONFLICT(email) DO UPDATE SET
-           display_name = CASE
-             WHEN contacts.source = 'mail' THEN COALESCE($3, contacts.display_name)
-             ELSE contacts.display_name
-           END,
+           display_name = COALESCE($3, contacts.display_name),
            frequency = contacts.frequency + 1,
            last_contacted_at = unixepoch(),
            updated_at = unixepoch()",
@@ -588,8 +581,15 @@ pub async fn record_from_remote_msg(
 
     // From / Reply-To are collected from every non-excluded folder.
     if let Some(from) = msg.from_address.as_deref() {
-        let name = msg.from_name.as_deref();
-        candidates.push((name.map(|n| n.to_string()), from.to_string()));
+        let parsed = parse_address_header(from);
+        if !parsed.is_empty() {
+            candidates.extend(parsed);
+        } else {
+            // Some backends (IMAP) store only the bare email in from_address
+            // and put the display name in from_name; keep that fallback.
+            let name = msg.from_name.as_deref();
+            candidates.push((name.map(|n| n.to_string()), from.to_string()));
+        }
     }
     if let Some(reply_to) = msg.reply_to.as_deref() {
         candidates.extend(parse_address_header(reply_to));

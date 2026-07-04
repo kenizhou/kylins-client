@@ -922,11 +922,33 @@ async fn save_sent_copy(
 /// Tauri's `appDataDir()`). Missing dir = no-op (the user may have no
 /// attachments, or the dir was already cleaned).
 async fn cleanup_attachment_files(data_dir: &std::path::Path, draft_id: &str) -> Result<(), String> {
-    let dir = data_dir.join("outbox-attachments").join(draft_id);
-    if !dir.exists() {
-        return Ok(());
+    // draft_id comes from the frontend as an opaque identifier; make sure it
+    // cannot be used to traverse outside the per-draft staging directory.
+    if draft_id.is_empty()
+        || draft_id == "."
+        || draft_id == ".."
+        || draft_id.contains('/')
+        || draft_id.contains('\\')
+    {
+        return Err(format!("invalid draft_id for attachment cleanup: {:?}", draft_id));
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+    let dir = data_dir.join("outbox-attachments").join(draft_id);
+    // Resolve the final path and ensure it is still inside the staging root.
+    let Ok(canonical_root) = tokio::fs::canonicalize(data_dir.join("outbox-attachments")).await else {
+        return Ok(());
+    };
+    let Ok(canonical_target) = tokio::fs::canonicalize(&dir).await else {
+        return Ok(());
+    };
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(format!(
+            "attachment cleanup path escapes staging root: {:?}",
+            canonical_target
+        ));
+    }
+    tokio::fs::remove_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Convert a stored `MailFolder` (DB row) into a `RemoteFolder` so it can be

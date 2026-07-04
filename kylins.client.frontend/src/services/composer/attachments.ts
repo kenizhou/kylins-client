@@ -119,15 +119,18 @@ function mimeTypeToExtension(mimeType: string): string {
   const sub = mimeType.split('/')[1];
   if (!sub) return 'bin';
   // Strip any parameters (e.g. `image/png; charset=...` → `png`).
-  return sub.split(';')[0]!.trim() || 'bin';
+  return sub.split(';')[0]?.trim() || 'bin';
 }
 
 /**
  * Strip path separators and shell-dangerous characters from a user-supplied
  * filename so it is safe to write under the outbox. Preserves dots and dashes.
+ * Rejects reserved names `.` and `..` which would otherwise traverse the
+ * directory tree.
  */
 function sanitizeFilename(name: string): string {
   const cleaned = name.replace(/[\\/:*?"<>|]/g, '_').trim();
+  if (cleaned === '.' || cleaned === '..') return 'attachment';
   return cleaned.length > 0 ? cleaned : 'attachment';
 }
 

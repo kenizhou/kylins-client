@@ -72,6 +72,11 @@ export interface ComposerState {
   stagingDraftId: string;
   undoSendTimer: ReturnType<typeof setTimeout> | null;
   undoSendVisible: boolean;
+  /**
+   * The stagingDraftId associated with the message currently in the undo-send
+   * window. Needed so clicking Undo can clean up staged attachment files.
+   */
+  undoStagingDraftId: string | null;
   attachments: ComposerAttachment[];
   lastSavedAt: number | null;
   isSaving: boolean;
@@ -144,6 +149,7 @@ export interface ComposerState {
   setStagingDraftId: (id: string) => void;
   setUndoSendTimer: (timer: ReturnType<typeof setTimeout> | null) => void;
   setUndoSendVisible: (visible: boolean) => void;
+  setUndoStagingDraftId: (id: string | null) => void;
   addAttachment: (attachment: ComposerAttachment) => void;
   removeAttachment: (id: string) => void;
   clearAttachments: () => void;
@@ -185,6 +191,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   stagingDraftId: newDraftId(),
   undoSendTimer: null,
   undoSendVisible: false,
+  undoStagingDraftId: null,
   attachments: [],
   viewMode: 'modal',
   fromEmail: null,
@@ -295,6 +302,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setStagingDraftId: (stagingDraftId) => set({ stagingDraftId }),
   setUndoSendTimer: (undoSendTimer) => set({ undoSendTimer }),
   setUndoSendVisible: (undoSendVisible) => set({ undoSendVisible }),
+  setUndoStagingDraftId: (undoStagingDraftId) => set({ undoStagingDraftId }),
   addAttachment: (attachment) =>
     set((state) => ({ attachments: [...state.attachments, attachment] })),
   removeAttachment: (id) =>

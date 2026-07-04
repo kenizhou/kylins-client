@@ -61,7 +61,12 @@ export async function sendEmail(
   }
 
   const sendDraftId = stagingDraftId ?? newDraftId();
-  const draft = await buildSendDraft(input, sendDraftId, account.email);
+  const draft = await buildSendDraft(
+    input,
+    sendDraftId,
+    account.email,
+    account.displayName ?? undefined,
+  );
 
   try {
     await invoke('sync_apply_mutation', {

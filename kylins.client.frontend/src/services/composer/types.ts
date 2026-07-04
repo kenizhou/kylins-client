@@ -51,7 +51,7 @@ export interface SendDraft {
   to: AddressSpec[];
   cc?: AddressSpec[];
   bcc?: AddressSpec[];
-  replyTo?: AddressSpec;
+  replyTo?: AddressSpec[];
   subject: string;
   htmlBody?: string;
   textBody?: string;

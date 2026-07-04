@@ -17,17 +17,6 @@ const SECURITY_OPTIONS: { value: SecurityMode; label: string }[] = [
   { value: 'none', label: 'None' },
 ];
 
-const IMAP_PORT_OPTIONS = [
-  { value: '993', label: '993' },
-  { value: '143', label: '143' },
-];
-
-const SMTP_PORT_OPTIONS = [
-  { value: '465', label: '465' },
-  { value: '587', label: '587' },
-  { value: '25', label: '25' },
-];
-
 export interface ImapManualValues {
   imapHost: string;
   imapPort: string;
@@ -102,12 +91,14 @@ export function ImapManualForm({
 
             <div className="grid grid-cols-2 gap-3">
               <SetupField label="Port" error={errors.imapPort}>
-                <SetupSelect
-                  ariaLabel="Port"
+                <SetupInput
+                  placeholder="993"
                   value={values.imapPort}
-                  onChange={(value) => onChange({ imapPort: value })}
-                  options={IMAP_PORT_OPTIONS}
-                  error={!!errors.imapPort}
+                  onChange={(e) => onChange({ imapPort: e.target.value })}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </SetupField>
               <SetupField label="Security" error={errors.imapSecurity}>
@@ -158,12 +149,14 @@ export function ImapManualForm({
 
             <div className="grid grid-cols-2 gap-3">
               <SetupField label="Port" error={errors.smtpPort}>
-                <SetupSelect
-                  ariaLabel="Port"
+                <SetupInput
+                  placeholder="587"
                   value={values.smtpPort}
-                  onChange={(value) => onChange({ smtpPort: value })}
-                  options={SMTP_PORT_OPTIONS}
-                  error={!!errors.smtpPort}
+                  onChange={(e) => onChange({ smtpPort: e.target.value })}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
               </SetupField>
               <SetupField label="Security" error={errors.smtpSecurity}>
