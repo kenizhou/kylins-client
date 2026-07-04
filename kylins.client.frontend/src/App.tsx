@@ -259,8 +259,8 @@ export default function App() {
             isOpen={accountSetupOpen}
             onClose={handleCloseSetup}
             disableBackdropClose
-            size="md"
-            contentClassName="bg-[var(--background)]"
+            size="auto"
+            contentClassName="bg-[var(--background)] p-6 pt-14"
           >
             <AccountSetupFlow variant="modal" onComplete={handleSetupComplete} />
           </Modal>

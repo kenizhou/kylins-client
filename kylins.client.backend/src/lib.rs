@@ -303,7 +303,15 @@ pub fn run() {
                 app.manage(pool.clone());
                 // SyncEngine owns one polling worker per account. The frontend starts
                 // it (sync_start) once accounts are loaded; events flow via AppHandle.
-                let engine = sync_engine::engine::SyncEngine::new_tauri(pool, app.handle().clone());
+                // `data_dir` is the SAME path the frontend resolves via
+                // `@tauri-apps/api/path`'s `appDataDir()` — threaded through so
+                // `send_op`'s attachment cleanup removes the dir the T7 frontend
+                // staged under `<appData>/outbox-attachments/{draft_id}/`.
+                let engine = sync_engine::engine::SyncEngine::new_tauri(
+                    pool,
+                    app.handle().clone(),
+                    data_dir,
+                );
                 app.manage(engine);
             }
 

@@ -1,41 +1,31 @@
-// Ported from velo (https://github.com/avihaymenahem/velo) — Apache-2.0.
-// See ATTRIBUTIONS.md. Adapted for Kylins Client (CID/Message-ID domain renamed).
+// Send-flow helpers retained after T7.
+//
+// Previously this module built the entire RFC5322 MIME message + base64url
+// envelope in TS (`buildRawEmail`). MIME assembly has moved to the Rust
+// backend (`mail_builder::MessageBuilder` — see
+// `kylins.client.backend/src/mail/builder.rs`); only the two body-prep
+// helpers that the TS side still needs remain here:
+//
+// - `htmlToPlainText` — used by `buildSendDraft` to populate `textBody`
+//   (the multipart/alternative plain part).
+// - `extractInlineImages` — used by `buildSendDraft` to pull `data:` URLs
+//   out of the body so they can be staged on disk and referenced by `cid:`
+//   (no base64 crosses IPC). The two consumers are `buildSendDraft` and the
+//   message viewer (which uses it to canonicalize incoming HTML).
+
+/** Inline-image extraction result element. `base64` is the raw payload. */
+export interface InlineImage {
+  cid: string;
+  mimeType: string;
+  base64: string;
+}
 
 /**
- * Build an RFC 2822 email message and encode as base64url.
- * Used by Gmail-API-style providers; EAS/SMTP providers build MIME server-side.
+ * Convert HTML to a plain-text approximation suitable for the
+ * multipart/alternative text part. Strips tags but preserves paragraph and
+ * line breaks; un-escapes the common entities.
  */
-export interface EmailAttachment {
-  filename: string;
-  mimeType: string;
-  content: string; // base64-encoded content
-}
-
-export interface EmailDraft {
-  from: string;
-  to: string[];
-  cc?: string[];
-  bcc?: string[];
-  replyTo?: string[];
-  subject: string;
-  htmlBody: string;
-  inReplyTo?: string;
-  references?: string;
-  threadId?: string;
-  attachments?: EmailAttachment[];
-  extraHeaders?: Record<string, string>;
-}
-
-function base64UrlEncode(str: string): string {
-  const bytes = new TextEncoder().encode(str);
-  let binary = '';
-  for (const b of bytes) {
-    binary += String.fromCharCode(b);
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function htmlToPlainText(html: string): string {
+export function htmlToPlainText(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
@@ -47,37 +37,17 @@ function htmlToPlainText(html: string): string {
     .trim();
 }
 
-function buildAlternativePart(boundary: string, htmlBody: string): string[] {
-  const textContent = htmlToPlainText(htmlBody);
-  const lines: string[] = [];
-
-  lines.push(`--${boundary}`);
-  lines.push('Content-Type: text/plain; charset=UTF-8');
-  lines.push('');
-  lines.push(textContent);
-  lines.push('');
-
-  lines.push(`--${boundary}`);
-  lines.push('Content-Type: text/html; charset=UTF-8');
-  lines.push('');
-  lines.push(htmlBody);
-  lines.push('');
-
-  lines.push(`--${boundary}--`);
-  return lines;
-}
-
-interface InlineImage {
-  cid: string;
-  mimeType: string;
-  base64: string;
-}
-
 /**
- * Extract base64 data URLs from HTML and replace with cid: references.
- * Returns the modified HTML and extracted inline images.
+ * Extract base64 `data:` URLs from `<img>` tags and replace each with a
+ * `cid:` reference. Returns the rewritten HTML plus the extracted image
+ * payloads (caller writes them to disk and emits `AttachmentRef`s with the
+ * matching `cid`).
+ *
+ * The generated `cid` is opaque but shaped like an email
+ * (`inline_<timestamp>_<index>@kylins.mail`) so it round-trips cleanly
+ * through mail-builder's `MessageId` header writer.
  */
-function extractInlineImages(html: string): { html: string; images: InlineImage[] } {
+export function extractInlineImages(html: string): { html: string; images: InlineImage[] } {
   const images: InlineImage[] = [];
   const processed = html.replace(
     /<img([^>]*)\ssrc="data:([^;]+);base64,([^"]+)"([^>]*)>/g,
@@ -88,117 +58,4 @@ function extractInlineImages(html: string): { html: string; images: InlineImage[
     },
   );
   return { html: processed, images };
-}
-
-/**
- * Generate a unique Message-ID for outgoing emails.
- */
-function generateMessageId(from: string): string {
-  const timestamp = Date.now();
-  const random = Math.random().toString(36).slice(2, 10);
-  const domain = from.includes('@') ? from.split('@')[1] : 'kylins.mail';
-  return `<${timestamp}.${random}@${domain}>`;
-}
-
-export function buildRawEmail(draft: EmailDraft): string {
-  const messageId = generateMessageId(draft.from);
-  const lines: string[] = [`From: ${draft.from}`, `To: ${draft.to.join(', ')}`];
-
-  if (draft.cc && draft.cc.length > 0) {
-    lines.push(`Cc: ${draft.cc.join(', ')}`);
-  }
-  if (draft.bcc && draft.bcc.length > 0) {
-    lines.push(`Bcc: ${draft.bcc.join(', ')}`);
-  }
-  if (draft.replyTo && draft.replyTo.length > 0) {
-    lines.push(`Reply-To: ${draft.replyTo.join(', ')}`);
-  }
-
-  lines.push(`Date: ${new Date().toUTCString()}`);
-  lines.push(`Message-ID: ${messageId}`);
-  lines.push(`Subject: ${draft.subject}`);
-  for (const [key, value] of Object.entries(draft.extraHeaders ?? {})) {
-    lines.push(`${key}: ${value}`);
-  }
-  lines.push(`MIME-Version: 1.0`);
-
-  if (draft.inReplyTo) {
-    lines.push(`In-Reply-To: ${draft.inReplyTo}`);
-  }
-  if (draft.references) {
-    lines.push(`References: ${draft.references}`);
-  }
-
-  const { html: processedHtml, images: inlineImages } = extractInlineImages(draft.htmlBody);
-  const hasAttachments = draft.attachments && draft.attachments.length > 0;
-  const hasInlineImages = inlineImages.length > 0;
-
-  if (hasAttachments || hasInlineImages) {
-    const mixedBoundary = `----=_Mixed_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const relatedBoundary = `----=_Related_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const altBoundary = `----=_Alt_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-    if (hasAttachments) {
-      lines.push(`Content-Type: multipart/mixed; boundary="${mixedBoundary}"`);
-      lines.push('');
-
-      lines.push(`--${mixedBoundary}`);
-    }
-
-    if (hasInlineImages) {
-      lines.push(`Content-Type: multipart/related; boundary="${relatedBoundary}"`);
-      lines.push('');
-
-      lines.push(`--${relatedBoundary}`);
-      lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
-      lines.push('');
-      lines.push(...buildAlternativePart(altBoundary, processedHtml));
-      lines.push('');
-
-      // Inline image parts
-      for (const img of inlineImages) {
-        lines.push(`--${relatedBoundary}`);
-        lines.push(`Content-Type: ${img.mimeType}`);
-        lines.push('Content-Transfer-Encoding: base64');
-        lines.push(`Content-ID: <${img.cid}>`);
-        lines.push('Content-Disposition: inline');
-        lines.push('');
-        for (let i = 0; i < img.base64.length; i += 76) {
-          lines.push(img.base64.slice(i, i + 76));
-        }
-        lines.push('');
-      }
-      lines.push(`--${relatedBoundary}--`);
-    } else {
-      // No inline images, just alternative
-      lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
-      lines.push('');
-      lines.push(...buildAlternativePart(altBoundary, processedHtml));
-    }
-
-    if (hasAttachments) {
-      lines.push('');
-      // Attachment parts
-      for (const att of draft.attachments!) {
-        lines.push(`--${mixedBoundary}`);
-        lines.push(`Content-Type: ${att.mimeType}; name="${att.filename}"`);
-        lines.push('Content-Transfer-Encoding: base64');
-        lines.push(`Content-Disposition: attachment; filename="${att.filename}"`);
-        lines.push('');
-        const raw = att.content;
-        for (let i = 0; i < raw.length; i += 76) {
-          lines.push(raw.slice(i, i + 76));
-        }
-        lines.push('');
-      }
-      lines.push(`--${mixedBoundary}--`);
-    }
-  } else {
-    const altBoundary = `----=_Part_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
-    lines.push('');
-    lines.push(...buildAlternativePart(altBoundary, processedHtml));
-  }
-
-  return base64UrlEncode(lines.join('\r\n'));
 }

@@ -82,6 +82,8 @@ pub struct Account {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imap_username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_client_id: Option<String>,
@@ -151,6 +153,8 @@ pub struct CreateAccountInput {
     pub imap_password: Option<String>,
     #[serde(default)]
     pub imap_username: Option<String>,
+    #[serde(default)]
+    pub smtp_username: Option<String>,
     #[serde(default)]
     pub oauth_provider: Option<String>,
     #[serde(default)]
@@ -226,6 +230,8 @@ pub struct AccountUpdates {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imap_username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_client_id: Option<String>,
@@ -292,6 +298,7 @@ fn row_to_account(row: &SqliteRow) -> Result<Account, String> {
         auth_method: row.try_get("auth_method").ok().flatten(),
         imap_password,
         imap_username: row.try_get("imap_username").ok().flatten(),
+        smtp_username: row.try_get("smtp_username").ok().flatten(),
         oauth_provider: row.try_get("oauth_provider").ok().flatten(),
         oauth_client_id: row.try_get("oauth_client_id").ok().flatten(),
         oauth_client_secret,
@@ -429,7 +436,7 @@ pub async fn create(pool: &SqlitePool, input: CreateAccountInput) -> Result<Acco
             is_active, is_default, sort_order, created_at, updated_at,
             imap_host, imap_port, imap_security,
             smtp_host, smtp_port, smtp_security,
-            auth_method, imap_password, imap_username,
+            auth_method, imap_password, imap_username, smtp_username,
             oauth_provider, oauth_client_id, oauth_client_secret,
             accept_invalid_certs,
             eas_url, eas_protocol_version, eas_device_id
@@ -439,7 +446,7 @@ pub async fn create(pool: &SqlitePool, input: CreateAccountInput) -> Result<Acco
             ?, ?, ?, strftime('%s','now'), strftime('%s','now'),
             ?, ?, ?,
             ?, ?, ?,
-            ?, ?, ?,
+            ?, ?, ?, ?,
             ?, ?, ?,
             ?,
             ?, ?, ?
@@ -466,6 +473,7 @@ pub async fn create(pool: &SqlitePool, input: CreateAccountInput) -> Result<Acco
     .bind(input.auth_method)
     .bind(&imap_password)
     .bind(input.imap_username)
+    .bind(input.smtp_username)
     .bind(input.oauth_provider)
     .bind(input.oauth_client_id)
     .bind(&oauth_client_secret)
@@ -573,6 +581,7 @@ pub async fn update(pool: &SqlitePool, id: &str, updates: AccountUpdates) -> Res
         binds.push(SqliteValue::Text(encrypt(&v)?));
     }
     push_str!("imap_username", updates.imap_username);
+    push_str!("smtp_username", updates.smtp_username);
     push_str!("oauth_provider", updates.oauth_provider);
     push_str!("oauth_client_id", updates.oauth_client_id);
     if let Some(v) = updates.oauth_client_secret {

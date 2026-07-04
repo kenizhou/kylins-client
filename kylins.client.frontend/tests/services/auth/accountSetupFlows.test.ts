@@ -69,11 +69,14 @@ describe('accountSetupFlows', () => {
     expect(acc.email).toBe('g@x.com');
   });
 
-  it('buildImapAccount maps a password provider with presets', () => {
-    const acc = buildImapAccount(getProvider('yahoo'), 'y@yahoo.com', 'apppass');
+  it('buildImapAccount maps a password provider with presets and defaults username to email', () => {
+    const acc = buildImapAccount(getProvider('yahoo'), 'y@yahoo.com', 'apppass', 'Y User');
     expect(acc.provider).toBe('imap');
     expect(acc.authMethod).toBe('password');
+    expect(acc.displayName).toBe('Y User');
     expect(acc.imapPassword).toBe('apppass');
+    expect(acc.imapUsername).toBe('y@yahoo.com');
+    expect(acc.smtpUsername).toBe('y@yahoo.com');
     expect(acc.imapHost).toBe('imap.mail.yahoo.com');
   });
 

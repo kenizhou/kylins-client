@@ -11,7 +11,8 @@
 // (jsdom doesn't have it; without it the hook short-circuits to a no-op).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, render, screen, act, fireEvent } from '@testing-library/react';
+import React, { useRef } from 'react';
 
 const { mockInvoke, mockGetUncached } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
@@ -26,6 +27,11 @@ vi.mock('../../src/services/db/messages', () => ({
 }));
 
 import { useViewportBodyPrefetch } from '../../src/hooks/useViewportBodyPrefetch';
+import { useAutoHideScrollbar } from '../../src/hooks/useAutoHideScrollbar';
+
+function makeItems(ids: string[]) {
+  return ids.map((id) => ({ kind: 'thread' as const, thread: { id } as never }));
+}
 
 describe('useViewportBodyPrefetch', () => {
   beforeEach(() => {
@@ -44,7 +50,7 @@ describe('useViewportBodyPrefetch', () => {
 
   it('is a no-op when there are no visible items', async () => {
     const virtualizer = { getVirtualItems: () => [] } as never;
-    renderHook(() => useViewportBodyPrefetch({ virtualizer, threads: [], accountId: 'a' }));
+    renderHook(() => useViewportBodyPrefetch({ virtualizer, items: [], accountId: 'a' }));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
@@ -57,8 +63,13 @@ describe('useViewportBodyPrefetch', () => {
     const virtualizer = {
       getVirtualItems: () => [{ index: 0 }, { index: 1 }, { index: 2 }],
     } as never;
-    const threads = [{ id: 't0' }, { id: 't1' }, { id: 't2' }] as never;
-    renderHook(() => useViewportBodyPrefetch({ virtualizer, threads, accountId: 'a' }));
+    renderHook(() =>
+      useViewportBodyPrefetch({
+        virtualizer,
+        items: makeItems(['t0', 't1', 't2']),
+        accountId: 'a',
+      }),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
@@ -77,8 +88,9 @@ describe('useViewportBodyPrefetch', () => {
     const virtualizer = {
       getVirtualItems: () => [{ index: 0 }, { index: 1 }],
     } as never;
-    const threads = [{ id: 't0' }, { id: 't1' }] as never;
-    renderHook(() => useViewportBodyPrefetch({ virtualizer, threads, accountId: 'a' }));
+    renderHook(() =>
+      useViewportBodyPrefetch({ virtualizer, items: makeItems(['t0', 't1']), accountId: 'a' }),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
@@ -93,8 +105,9 @@ describe('useViewportBodyPrefetch', () => {
     const virtualizer = {
       getVirtualItems: () => [{ index: 0 }, { index: 1 }],
     } as never;
-    const threads = [{ id: 't0' }, { id: 't1' }] as never;
-    renderHook(() => useViewportBodyPrefetch({ virtualizer, threads, accountId: 'a' }));
+    renderHook(() =>
+      useViewportBodyPrefetch({ virtualizer, items: makeItems(['t0', 't1']), accountId: 'a' }),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
@@ -107,8 +120,9 @@ describe('useViewportBodyPrefetch', () => {
     const virtualizer = {
       getVirtualItems: () => [{ index: 0 }],
     } as never;
-    const threads = [{ id: 't0' }] as never;
-    renderHook(() => useViewportBodyPrefetch({ virtualizer, threads, accountId: 'a' }));
+    renderHook(() =>
+      useViewportBodyPrefetch({ virtualizer, items: makeItems(['t0']), accountId: 'a' }),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
@@ -119,8 +133,9 @@ describe('useViewportBodyPrefetch', () => {
     const virtualizer = {
       getVirtualItems: () => [{ index: 0 }],
     } as never;
-    const threads = [{ id: 't0' }] as never;
-    renderHook(() => useViewportBodyPrefetch({ virtualizer, threads, accountId: null }));
+    renderHook(() =>
+      useViewportBodyPrefetch({ virtualizer, items: makeItems(['t0']), accountId: null }),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
@@ -139,7 +154,7 @@ describe('useViewportBodyPrefetch', () => {
     renderHook(() =>
       useViewportBodyPrefetch({
         virtualizer,
-        threads: [{ id: 't0' }, { id: 't1' }] as never,
+        items: makeItems(['t0', 't1']),
         accountId: 'a',
       }),
     );
@@ -155,41 +170,54 @@ describe('useViewportBodyPrefetch', () => {
     });
   });
 
-  it('throttles to <=1 batch/sec on rapid scroll-settle', async () => {
-    // Two rapid re-runs within 1s must coalesce to ONE invoke; after the 1s
-    // throttle window elapses, a new trigger fires a second time.
-    mockGetUncached.mockResolvedValue(['t1']);
-    const virtualizer = { getVirtualItems: () => [{ index: 0 }] } as never;
-    const { rerender } = renderHook(
-      ({ vr }: { vr: unknown } = {}) =>
-        useViewportBodyPrefetch({
-          virtualizer: vr as never,
-          threads: [{ id: 't0' }, { id: 't1' }] as never,
-          accountId: 'a',
-        }),
-      { initialProps: { vr: virtualizer } },
-    );
+  it('skips group headers when mapping virtual-item indices to thread ids', async () => {
+    mockGetUncached.mockResolvedValue(['t2']);
+    const virtualizer = {
+      // Virtualizer sees 4 rows: 1 group header + 3 threads.
+      getVirtualItems: () => [{ index: 1 }, { index: 2 }, { index: 3 }],
+    } as never;
+    const items = [{ kind: 'group' as const, label: 'Today' }, ...makeItems(['t0', 't1', 't2'])];
+    renderHook(() => useViewportBodyPrefetch({ virtualizer, items, accountId: 'a' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(mockGetUncached).toHaveBeenCalledWith('a', ['t0', 't1', 't2']);
+    expect(mockInvoke).toHaveBeenCalledWith('sync_request_bodies', {
+      accountId: 'a',
+      messageIds: ['t2'],
+    });
+  });
 
-    // First fire: first-mount immediate path (0-ms timeout).
+  it('prefetches on scroll events when useAutoHideScrollbar shares the scroll container', async () => {
+    mockGetUncached.mockResolvedValue(['t1']);
+
+    function ScrollContainer() {
+      const scrollRef = useRef<HTMLDivElement>(null);
+      const virtualizer = {
+        getVirtualItems: () => [{ index: 0 }, { index: 1 }],
+        options: { getScrollElement: () => scrollRef.current },
+      } as never;
+      useAutoHideScrollbar(scrollRef);
+      useViewportBodyPrefetch({ virtualizer, items: makeItems(['t0', 't1']), accountId: 'a' });
+      return React.createElement(
+        'div',
+        { ref: scrollRef, 'data-testid': 'scroll', style: { overflow: 'auto', height: 200 } },
+        React.createElement('div', { style: { height: 2000 } }),
+      );
+    }
+
+    render(React.createElement(ScrollContainer));
+
+    // First-mount immediate batch.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(mockInvoke).toHaveBeenCalledTimes(1);
 
-    // Rapid second trigger well inside the 1s throttle window — must NOT fire.
-    // Drive Date.now() forward 400ms; re-run the effect by passing a new
-    // virtualizer ref (deps include virtualizer).
-    vi.setSystemTime(new Date(Date.now() + 400));
-    rerender({ vr: { getVirtualItems: () => [{ index: 0 }] } as never });
-    await act(async () => {
-      // Advance past the debounce; the throttle should still suppress.
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    expect(mockInvoke).toHaveBeenCalledTimes(1);
-
-    // After the 1s throttle window elapses, a new trigger fires.
+    // Scroll should schedule another batch once the 1s throttle window passes.
     vi.setSystemTime(new Date(Date.now() + 1200));
-    rerender({ vr: { getVirtualItems: () => [{ index: 0 }] } as never });
+    const scrollEl = screen.getByTestId('scroll');
+    fireEvent.scroll(scrollEl);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });

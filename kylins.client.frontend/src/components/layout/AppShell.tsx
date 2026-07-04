@@ -33,7 +33,7 @@ export function AppShell() {
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
         <MainContent>
-          {commandRibbonVisible && <CommandRibbon />}
+          {commandRibbonVisible && activeApp !== 'contacts' && <CommandRibbon />}
           <div className="flex flex-1 overflow-hidden">
             {activeApp === 'calendar' ? (
               <CalendarPage />

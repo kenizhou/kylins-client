@@ -37,6 +37,7 @@ export interface CreateAccountInput {
   authMethod?: AuthMethod;
   imapPassword?: string;
   imapUsername?: string;
+  smtpUsername?: string;
   oauthProvider?: string;
   oauthClientId?: string;
   oauthClientSecret?: string;

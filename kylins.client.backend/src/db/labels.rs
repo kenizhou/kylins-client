@@ -183,6 +183,25 @@ pub async fn get_folder_by_role(
     Ok(row.as_ref().map(row_to_folder))
 }
 
+/// Resolve the account's Sent folder for the best-effort Sent-append step in
+/// `send_op` (T8). Preference: `role == "sent"` via [`get_folder_by_role`].
+/// Returns `Ok(None)` if no Sent row exists — the caller logs + skips the
+/// append (best-effort, never fails the op).
+///
+/// **Optional refinements deferred** (per T8 plan): a per-account
+/// `sent_folder_path` settings override, and conventional-name fallbacks
+/// (`imap_folder_path IN ('Sent', 'INBOX/Sent', 'Sent Items', ...)`) for
+/// servers that don't advertise `\Sent` special-use. Wired when a real
+/// account needs them; the role lookup covers IMAP servers that advertise
+/// `\Sent` (Gmail, Dovecot default, etc.) and EAS (which doesn't take this
+/// path — `saves_sent_automatically = true`).
+pub async fn resolve_sent_folder(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Option<MailFolder>, String> {
+    get_folder_by_role(pool, account_id, "sent").await
+}
+
 /// Unread thread counts per label for an account, computed live from
 /// `thread_labels × threads`. Returns a map `{ label_id -> unread_count }`
 /// which serializes to a JSON object matching the TS `Record<string, number>`

@@ -2,9 +2,16 @@ import { useState } from 'react';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { PreferencesTabLayout, PreferencesTabColumns } from './PreferencesTabLayout';
 import { ContactsIcon, UploadIcon, DownloadIcon } from '../icons';
+import { usePreferencesStore } from '@/stores/preferencesStore';
 
 export function ContactsPreferences() {
   const [defaultSort, setDefaultSort] = useState('frequency');
+  const autoExtractFromMail = usePreferencesStore((s) => s.autoExtractContactsFromMail);
+  const setAutoExtractFromMail = usePreferencesStore((s) => s.setAutoExtractContactsFromMail);
+  const autoExtractFromReceived = usePreferencesStore((s) => s.autoExtractContactsFromReceived);
+  const setAutoExtractFromReceived = usePreferencesStore(
+    (s) => s.setAutoExtractContactsFromReceived,
+  );
 
   return (
     <PreferencesTabLayout>
@@ -24,6 +31,34 @@ export function ContactsPreferences() {
                     <option value="name">Name (A–Z)</option>
                     <option value="recent">Most recently contacted</option>
                   </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoExtractFromMail}
+                      onChange={(e) => setAutoExtractFromMail(e.target.checked)}
+                      className="rounded border-[var(--border)] bg-[var(--background)] text-[var(--primary)]"
+                    />
+                    Extract contacts from outgoing mail
+                  </label>
+                  <p className="text-xs text-[var(--muted-text)] pl-6">
+                    Adds To/Cc/Bcc recipients from sent messages and the send flow.
+                  </p>
+
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoExtractFromReceived}
+                      onChange={(e) => setAutoExtractFromReceived(e.target.checked)}
+                      className="rounded border-[var(--border)] bg-[var(--background)] text-[var(--primary)]"
+                    />
+                    Extract contacts from incoming mail
+                  </label>
+                  <p className="text-xs text-[var(--muted-text)] pl-6">
+                    Adds senders from Inbox/Archive. Off by default to reduce noise.
+                  </p>
                 </div>
 
                 <div className="flex flex-col gap-1">

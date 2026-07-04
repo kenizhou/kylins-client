@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
-import { MailIcon, ReplyFilledIcon, ReplyAllFilledIcon, ForwardFilledIcon } from '../icons';
+import { MailIcon, ReplyFilledIcon, ReplyAllFilledIcon, MailSendIcon, PlusIcon } from '../icons';
 import { IconButton } from '../ui/IconButton';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -8,6 +8,7 @@ import { usePreferencesStore } from '../../stores/preferencesStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
 import { fetchInlineImages } from '../../services/db/attachments';
+import { upsertContact } from '../../services/db/contacts';
 import { InlineReply } from '../email/InlineReply';
 import { formatFullDate } from '../../utils/formatDate';
 import { getInitials } from '../../data/demoMessages';
@@ -71,6 +72,7 @@ export function ReadingPane() {
   const { getLevelById } = useClassification();
   const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
   const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
+  const [contactAdded, setContactAdded] = useState(false);
   // Reset per-message ephemeral state when the selected message changes. Uses
   // the prev-value render pattern (setState-during-render to correct stale
   // state) rather than setState-in-effect (the project's eslint rule
@@ -141,6 +143,14 @@ export function ReadingPane() {
   const handleReplyAll = () => setComposeMode('replyAll');
   const handleForward = () => setComposeMode('forward');
 
+  async function handleAddContact() {
+    if (!message) return;
+    const name = message.from.name === message.from.address ? null : message.from.name;
+    await upsertContact(message.from.address, name);
+    setContactAdded(true);
+    window.setTimeout(() => setContactAdded(false), 2000);
+  }
+
   const isSuspicious = message.subject?.toLowerCase().includes('verify your account') ?? false;
 
   const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
@@ -192,6 +202,15 @@ export function ReadingPane() {
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <span className="font-semibold text-[var(--text)]">{message.from.name}</span>
                 <span className="text-sm text-[var(--muted-text)]">{message.from.address}</span>
+                <button
+                  type="button"
+                  onClick={handleAddContact}
+                  className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:opacity-90 transition-opacity"
+                  title="Add sender to contacts"
+                >
+                  <PlusIcon size={10} />
+                  {contactAdded ? 'Saved' : 'Add to contacts'}
+                </button>
               </div>
               <div className="mt-0.5 text-sm text-[var(--muted-text)]">
                 <span className="text-[var(--muted-text)]">To:</span>{' '}
@@ -233,7 +252,7 @@ export function ReadingPane() {
               onClick={handleForward}
               icon={
                 <span className="text-[var(--primary)]">
-                  <ForwardFilledIcon size={18} />
+                  <MailSendIcon size={18} />
                 </span>
               }
             />

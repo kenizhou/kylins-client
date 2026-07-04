@@ -246,7 +246,7 @@ mod tests {
                 .await
                 .unwrap();
             sqlx::query(
-                "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, foo TEXT)",
+                "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, imap_username TEXT, foo TEXT)",
             )
             .execute(&pool)
             .await

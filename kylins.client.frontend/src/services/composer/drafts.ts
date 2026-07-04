@@ -18,14 +18,27 @@ import { formatRecipients, type Recipient } from '@/features/composer/contacts';
 
 /**
  * Serializable attachment shape stored in `local_drafts.attachments` as JSON.
- * The live composer attachment (`ComposerAttachment`) also carries a `File`
- * handle which is not JSON-serializable, so it is dropped at the boundary.
+ *
+ * T7b: the canonical shape is **path-backed** — the bytes live on disk under
+ * `<appData>/outbox-attachments/{stagingDraftId}/` and only `filePath` is
+ * persisted. The composer never carries base64 for regular attachments.
+ *
+ * `content` is retained only for backward-compat with drafts persisted before
+ * T7b; `buildSendDraft` backfills `filePath` from `content` at send time (a
+ * one-time decode + stage). New code must never emit `content`.
  */
 export interface StoredAttachment {
   filename: string;
   mimeType: string;
-  content: string; // base64
+  /** Absolute path to the staged file under the per-draft outbox directory. */
+  filePath: string;
   size: number;
+  /**
+   * @deprecated Legacy base64 payload from pre-T7b drafts. Kept optional so
+   * `buildSendDraft` can detect + backfill old rows; never emitted by the
+   * composer anymore.
+   */
+  content?: string;
 }
 
 /** Editable draft fields, matching the composer store shape. */

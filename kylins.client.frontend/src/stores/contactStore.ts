@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import type { Contact, ContactGroup } from '../services/db/contacts';
 
+export interface ContactPanelSizes {
+  account: number;
+  list: number;
+  detail: number;
+}
+
 export interface ContactState {
   contacts: Contact[];
   groups: ContactGroup[];
@@ -9,6 +15,8 @@ export interface ContactState {
   selectedAccountId: string | null;
   searchQuery: string;
   isLoading: boolean;
+  accountPaneVisible: boolean;
+  contactPanelSizes: ContactPanelSizes;
 
   setContacts: (contacts: Contact[]) => void;
   addContact: (contact: Contact) => void;
@@ -23,6 +31,9 @@ export interface ContactState {
   setSelectedAccountId: (id: string | null) => void;
   setSearchQuery: (query: string) => void;
   setIsLoading: (loading: boolean) => void;
+  setAccountPaneVisible: (visible: boolean) => void;
+  toggleAccountPane: () => void;
+  setContactPanelSizes: (sizes: ContactPanelSizes) => void;
 }
 
 export const useContactStore = create<ContactState>((set) => ({
@@ -33,7 +44,8 @@ export const useContactStore = create<ContactState>((set) => ({
   selectedAccountId: null,
   searchQuery: '',
   isLoading: false,
-
+  accountPaneVisible: true,
+  contactPanelSizes: { account: 18, list: 32, detail: 50 },
   setContacts: (contacts) => set({ contacts }),
   addContact: (contact) =>
     set((state) => ({
@@ -93,4 +105,7 @@ export const useContactStore = create<ContactState>((set) => ({
     }),
   setSearchQuery: (query) => set({ searchQuery: query }),
   setIsLoading: (isLoading) => set({ isLoading }),
+  setAccountPaneVisible: (accountPaneVisible) => set({ accountPaneVisible }),
+  toggleAccountPane: () => set((state) => ({ accountPaneVisible: !state.accountPaneVisible })),
+  setContactPanelSizes: (contactPanelSizes) => set({ contactPanelSizes }),
 }));

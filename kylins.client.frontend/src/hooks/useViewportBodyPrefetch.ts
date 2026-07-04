@@ -11,12 +11,12 @@
 // usefully fill the cache and patch snippets (patches are idempotent).
 //
 // ── Why the trigger surface is what it is ──────────────────────────────
-// The setup effect depends on `[virtualizer, accountId, threads.length]`.
+// The setup effect depends on `[virtualizer, accountId, items.length]`.
 //   • `accountId` re-runs setup on folder/account switch.
-//   • `threads.length` (a PRIMITIVE) re-runs setup when loadThreads lands.
-//     We deliberately do NOT depend on the `threads` array itself —
-//     `threadStore.patchSnippets` swaps the array reference on every snippet
-//     patch, which would re-run this effect in a loop. `threads.length` only
+//   • `items.length` (a PRIMITIVE) re-runs setup when loadThreads lands.
+//     We deliberately do NOT depend on the `items` array itself —
+//     `threadStore.patchSnippets` swaps the underlying threads array on every snippet
+//     patch, which would re-run this effect in a loop. `items.length` only
 //     changes when the count actually changes.
 //   • The @tanstack/react-virtual `virtualizer` reference is STABLE across
 //     scrolls — scrolling mutates its internal measurement state, not the
@@ -44,14 +44,16 @@
 import { useEffect, useRef } from 'react';
 import type { Virtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
-import { useThreadStore } from '../stores/threadStore';
 import { useUIStore } from '../stores/uiStore';
 import { getUncachedBodyMessageIds } from '../services/db/messages';
 import type { Thread } from '../services/db/threads';
 
+type ListItem = { kind: 'group'; label: string } | { kind: 'thread'; thread: Thread };
+
 interface Options {
   virtualizer: Virtualizer<HTMLDivElement, Element>;
-  threads: Thread[];
+  /** Virtualized list items (threads interleaved with optional group headers). */
+  items: ListItem[];
   /** Account id for the currently-loaded list. */
   accountId: string | null;
 }
@@ -81,7 +83,7 @@ function isTauriEnv(): boolean {
  * rate-limited (Phase 3f) — prefetch is low-priority and the next poll will
  * fill the cache.
  */
-export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Options): void {
+export function useViewportBodyPrefetch({ virtualizer, items, accountId }: Options): void {
   // First-mount gate: the very first setup uses a 0-ms timeout so the initial
   // viewport prefetches on the next tick. Subsequent setups debounce.
   const didMountRef = useRef(false);
@@ -92,28 +94,23 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
   // `scheduleBatch`, which is a no-op if a batch is already pending — the
   // pending batch reads the freshest viewport + store state when it fires.
   const pendingTimerRef = useRef<number | null>(null);
-  // Mirror `threads` into a ref so the timeout reads the freshest array
-  // WITHOUT `threads` being in the effect's dep array. Reason: `patchSnippets`
-  // replaces `threads` with a new array reference on every snippet patch; if
-  // `threads` were a dep, that would re-fire this effect in a loop. The ref
-  // is updated in a dedicated effect (NOT during render — React anti-pattern).
-  const threadsRef = useRef(threads);
+  // Mirror `items` into a ref so the timeout reads the freshest list WITHOUT
+  // `items` being in the effect's dep array. Reason: `patchSnippets`
+  // replaces the underlying threads with a new array reference on every snippet
+  // patch; if `items` were a dep, that would re-fire this effect in a loop.
+  // The ref is updated in a dedicated effect (NOT during render — React anti-pattern).
+  const itemsRef = useRef(items);
   useEffect(() => {
-    threadsRef.current = threads;
-  }, [threads]);
+    itemsRef.current = items;
+  }, [items]);
 
   useEffect(() => {
     if (!isTauriEnv() || !accountId) return;
 
-    // Run one prefetch batch against the CURRENT viewport + store state.
+    // Run one prefetch batch against the CURRENT viewport + list state.
     const runBatch = async (): Promise<void> => {
-      // Prefer the live store array when the caller is wired to threadStore
-      // (production); fall back to the prop (unit tests that don't seed the
-      // store). Both paths see the same data in production.
-      const storeThreads = useThreadStore.getState().threads;
-      const liveThreads =
-        storeThreads && storeThreads.length > 0 ? storeThreads : threadsRef.current;
-      if (liveThreads.length === 0) return;
+      const liveItems = itemsRef.current;
+      if (liveItems.length === 0) return;
 
       // Rate-limit gate.
       if (useUIStore.getState().rateLimitedAccountIds.has(accountId)) return;
@@ -122,16 +119,16 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
       if (visible.length === 0) return;
       const firstIdx = Math.max(0, visible[0]!.index - VIEWPORT_BUFFER);
       const lastIdx = Math.min(
-        liveThreads.length - 1,
+        liveItems.length - 1,
         visible[visible.length - 1]!.index + VIEWPORT_BUFFER,
       );
 
-      // Map visible thread rows to their latest message_id. Phase 0:
-      // thread.id == message_id, so the latest message_id is thread.id.
+      // Map visible rows to their latest message_id. Group headers are skipped.
+      // Phase 0: thread.id == message_id, so the latest message_id is thread.id.
       const candidateIds: string[] = [];
       for (let i = firstIdx; i <= lastIdx; i++) {
-        const t = liveThreads[i];
-        if (t) candidateIds.push(t.id);
+        const item = liveItems[i];
+        if (item?.kind === 'thread') candidateIds.push(item.thread.id);
         if (candidateIds.length >= MAX_PREFETCH) break;
       }
       if (candidateIds.length === 0) return;
@@ -182,7 +179,7 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
 
     // Fire once for the current viewport on setup. Immediate (0 ms) on the
     // very first mount ever; debounced thereafter. Re-running setup when
-    // `threads.length` changes (below) is what makes prefetch fire AFTER
+    // `items.length` changes (below) is what makes prefetch fire AFTER
     // loadThreads populates the store.
     const isFirst = !didMountRef.current;
     didMountRef.current = true;
@@ -213,7 +210,7 @@ export function useViewportBodyPrefetch({ virtualizer, threads, accountId }: Opt
         pendingTimerRef.current = null;
       }
     };
-    // `threads.length` (primitive) fires setup when threads load or the folder
-    // changes. NOT `threads` (patchSnippets swaps its reference per snippet).
-  }, [virtualizer, accountId, threads.length]);
+    // `items.length` (primitive) fires setup when items load or the folder
+    // changes. NOT `items` (patchSnippets swaps its underlying array per snippet).
+  }, [virtualizer, accountId, items.length]);
 }

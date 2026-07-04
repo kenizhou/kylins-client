@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Panel, Group, Separator } from 'react-resizable-panels';
 import { useContactStore } from '@/stores/contactStore';
 import { useAccountStore } from '@/stores/accountStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -6,10 +7,77 @@ import { ContactAccountPane } from '@/components/contacts/ContactAccountPane';
 import { ContactList } from '@/components/contacts/ContactList';
 import { ContactDetail } from '@/components/contacts/ContactDetail';
 import { GroupDetail } from '@/components/contacts/GroupDetail';
+import { ContactsCommandRibbon } from '@/components/contacts/ContactsCommandRibbon';
 import { Modal } from '@/components/ui/Modal';
 import { getContacts, getContactGroups, createContact } from '@/services/db/contacts';
-import { ContactsIcon, PlusIcon, UploadIcon, DownloadIcon } from '@/components/icons';
 import { importVCard, exportVCard } from '@/services/sync/vcard';
+import type { ContactPanelSizes } from '@/stores/contactStore';
+
+const CONSTRAINTS = {
+  account: { min: 12 },
+  list: { min: 12 },
+  detail: { min: 20 },
+} as const;
+
+function normalizeSizes(sizes: ContactPanelSizes): ContactPanelSizes {
+  const sum = sizes.account + sizes.list + sizes.detail;
+  if (sum === 0) return sizes;
+  return {
+    account: (sizes.account / sum) * 100,
+    list: (sizes.list / sum) * 100,
+    detail: (sizes.detail / sum) * 100,
+  };
+}
+
+function scaleTo(total: number, values: [number, number]): [number, number] {
+  const sum = values[0] + values[1];
+  if (sum === 0) return [total / 2, total / 2];
+  return [(values[0] / sum) * total, (values[1] / sum) * total];
+}
+
+function buildLayout(sizes: ContactPanelSizes, showAccountPane: boolean): Record<string, number> {
+  if (showAccountPane) {
+    const normalized = normalizeSizes(sizes);
+    return {
+      'contacts-accounts': normalized.account,
+      'contacts-list': normalized.list,
+      'contacts-detail': normalized.detail,
+    };
+  }
+  const [list, detail] = scaleTo(100, [sizes.list, sizes.detail]);
+  return {
+    'contacts-list': list,
+    'contacts-detail': detail,
+  };
+}
+
+function writeLayout(
+  layout: Record<string, number>,
+  sizes: ContactPanelSizes,
+  showAccountPane: boolean,
+  setContactPanelSizes: (sizes: ContactPanelSizes) => void,
+) {
+  if (showAccountPane) {
+    const next: ContactPanelSizes = {
+      account: layout['contacts-accounts'] ?? sizes.account,
+      list: layout['contacts-list'] ?? sizes.list,
+      detail: layout['contacts-detail'] ?? sizes.detail,
+    };
+    setContactPanelSizes(normalizeSizes(next));
+    return;
+  }
+
+  // Account pane is hidden: convert the visible list/detail percentages back to
+  // the full three-pane scale so toggling the account pane restores the layout.
+  const available = 100 - sizes.account;
+  const listScaled = layout['contacts-list'] ?? 50;
+  const detailScaled = layout['contacts-detail'] ?? 50;
+  setContactPanelSizes({
+    account: sizes.account,
+    list: (listScaled / 100) * available,
+    detail: (detailScaled / 100) * available,
+  });
+}
 
 export function ContactsPage() {
   const contacts = useContactStore((s) => s.contacts);
@@ -22,6 +90,9 @@ export function ContactsPage() {
   const setIsLoading = useContactStore((s) => s.setIsLoading);
   const setSelectedAccountId = useContactStore((s) => s.setSelectedAccountId);
   const addContact = useContactStore((s) => s.addContact);
+  const accountPaneVisible = useContactStore((s) => s.accountPaneVisible);
+  const contactPanelSizes = useContactStore((s) => s.contactPanelSizes);
+  const setContactPanelSizes = useContactStore((s) => s.setContactPanelSizes);
   const pushToast = useToastStore((s) => s.push);
   const accounts = useAccountStore((s) => s.accounts);
 
@@ -96,76 +167,84 @@ export function ContactsPage() {
     }
   }
 
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
-        <div className="flex items-center gap-2">
-          <ContactsIcon size={20} className="text-[var(--foreground)]" />
-          <h1 className="text-base font-semibold text-[var(--foreground)]">Contacts</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsAddOpen(true)}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            <PlusIcon size={13} />
-            Add contact
-          </button>
-          <button
-            type="button"
-            onClick={handleImport}
-            disabled={importing}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            <UploadIcon size={13} />
-            {importing ? 'Importing…' : 'Import'}
-          </button>
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={exporting}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            <DownloadIcon size={13} />
-            {exporting ? 'Exporting…' : 'Export'}
-          </button>
-        </div>
-      </div>
+  const layout = buildLayout(contactPanelSizes, accountPaneVisible);
 
-      <div className="flex flex-1 overflow-hidden p-2 gap-2">
-        <div className="w-56 rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
-          <ContactAccountPane
-            accounts={accounts}
-            selectedAccountId={selectedAccountId}
-            onSelect={setSelectedAccountId}
-          />
-        </div>
-        <div className="w-80 rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
-          <ContactList />
-        </div>
-        <div className="flex-1 min-w-0 rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
-          {selectedContact ? (
-            <ContactDetail
-              key={selectedContact.id}
-              contact={selectedContact}
-              groups={groups}
-              onUpdate={() => void refresh()}
-            />
-          ) : selectedGroup ? (
-            <GroupDetail
-              key={selectedGroup.id}
-              group={selectedGroup}
-              contacts={contacts}
-              onUpdate={() => void refresh()}
-            />
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-[var(--muted-text)] text-sm">
-              Select a contact or group to view details.
+  function handleLayoutChanged(nextLayout: Record<string, number>) {
+    writeLayout(nextLayout, contactPanelSizes, accountPaneVisible, setContactPanelSizes);
+  }
+
+  return (
+    <div className="flex flex-1 flex-col h-full">
+      <ContactsCommandRibbon
+        onAddContact={() => setIsAddOpen(true)}
+        onImport={handleImport}
+        onExport={handleExport}
+        importing={importing}
+        exporting={exporting}
+      />
+
+      <Group
+        key={accountPaneVisible ? 'with-account' : 'no-account'}
+        className="flex-1 w-full p-2"
+        orientation="horizontal"
+        onLayoutChanged={handleLayoutChanged}
+      >
+        {accountPaneVisible && (
+          <Panel
+            id="contacts-accounts"
+            defaultSize={layout['contacts-accounts']}
+            minSize={CONSTRAINTS.account.min}
+          >
+            <div className="h-full rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
+              <ContactAccountPane
+                accounts={accounts}
+                selectedAccountId={selectedAccountId}
+                onSelect={setSelectedAccountId}
+              />
             </div>
-          )}
-        </div>
-      </div>
+          </Panel>
+        )}
+        {accountPaneVisible && (
+          <Separator className="mx-1 w-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />
+        )}
+        <Panel
+          id="contacts-list"
+          defaultSize={layout['contacts-list']}
+          minSize={CONSTRAINTS.list.min}
+        >
+          <div className="h-full rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
+            <ContactList />
+          </div>
+        </Panel>
+        <Separator className="mx-1 w-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />
+        <Panel
+          id="contacts-detail"
+          defaultSize={layout['contacts-detail']}
+          minSize={CONSTRAINTS.detail.min}
+        >
+          <div className="h-full rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
+            {selectedContact ? (
+              <ContactDetail
+                key={selectedContact.id}
+                contact={selectedContact}
+                groups={groups}
+                onUpdate={() => void refresh()}
+              />
+            ) : selectedGroup ? (
+              <GroupDetail
+                key={selectedGroup.id}
+                group={selectedGroup}
+                contacts={contacts}
+                onUpdate={() => void refresh()}
+              />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-[var(--muted-text)] text-sm">
+                Select a contact or group to view details.
+              </div>
+            )}
+          </div>
+        </Panel>
+      </Group>
 
       <Modal
         isOpen={isAddOpen}

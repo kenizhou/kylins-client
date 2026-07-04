@@ -20,11 +20,13 @@ function composerStateToDraftInput(
   state: ReturnType<typeof useComposerStore.getState>,
   accountId: string,
 ): DraftInput {
-  // Drop the non-serializable `File` handle; keep the base64 content.
+  // Persist path-backed attachment refs (T7b). The staged file lives under
+  // `<appData>/outbox-attachments/{stagingDraftId}/` and remains valid across
+  // app restarts, so a restored draft's `filePath` still points at real bytes.
   const attachments: StoredAttachment[] = state.attachments.map((a) => ({
     filename: a.filename,
     mimeType: a.mimeType,
-    content: a.content,
+    filePath: a.filePath,
     size: a.size,
   }));
 

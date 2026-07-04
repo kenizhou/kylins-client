@@ -3,6 +3,7 @@
 
 import { create } from 'zustand';
 import { parseRecipients, type Recipient } from '@/features/composer/contacts';
+import { newDraftId } from '@/services/composer/attachments';
 
 export type Importance = 'low' | 'normal' | 'high';
 export type ComposerMode = 'new' | 'reply' | 'replyAll' | 'forward';
@@ -10,11 +11,17 @@ export type ComposerViewMode = 'modal' | 'fullpage';
 
 export interface ComposerAttachment {
   id: string;
-  file: File;
   filename: string;
   mimeType: string;
   size: number;
-  content: string; // base64
+  /**
+   * Absolute path to the staged copy under
+   * `<appData>/outbox-attachments/{stagingDraftId}/`. T7b: this is the
+   * canonical payload — the composer never holds base64 for regular
+   * attachments. Set at pick-time by the staging helpers in
+   * `services/composer/attachments.ts`.
+   */
+  filePath: string;
 }
 
 /**
@@ -47,6 +54,22 @@ export interface ComposerState {
   inReplyToMessageId: string | null;
   showCcBcc: boolean;
   draftId: string | null;
+  /**
+   * Stable per-session id used as the on-disk outbox folder name (the
+   * directory attachment files are staged under). This is **distinct** from
+   * `draftId` (the persisted `local_drafts` row id): the Rust backend
+   * generates its own UUID on insert, so we cannot pre-set the row id from
+   * TS. `stagingDraftId` is generated up-front so attachment picks can stage
+   * files before the first autoSave creates a row.
+   *
+   * Lifecycle:
+   *  - `openComposer` generates a fresh `stagingDraftId`.
+   *  - Pick-time staging writes into `<appData>/outbox-attachments/{stagingDraftId}/`.
+   *  - At send time this becomes `SendDraft.draftId`; the T8 backend cleanup
+   *    deletes the matching folder on send-success.
+   *  - `closeComposer` / discard calls `cleanupAttachments(stagingDraftId)`.
+   */
+  stagingDraftId: string;
   undoSendTimer: ReturnType<typeof setTimeout> | null;
   undoSendVisible: boolean;
   attachments: ComposerAttachment[];
@@ -118,6 +141,7 @@ export interface ComposerState {
   setBodyHtml: (bodyHtml: string) => void;
   setShowCcBcc: (showCcBcc: boolean) => void;
   setDraftId: (id: string | null) => void;
+  setStagingDraftId: (id: string) => void;
   setUndoSendTimer: (timer: ReturnType<typeof setTimeout> | null) => void;
   setUndoSendVisible: (visible: boolean) => void;
   addAttachment: (attachment: ComposerAttachment) => void;
@@ -158,6 +182,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   inReplyToMessageId: null,
   showCcBcc: false,
   draftId: null,
+  stagingDraftId: newDraftId(),
   undoSendTimer: null,
   undoSendVisible: false,
   attachments: [],
@@ -196,6 +221,10 @@ export const useComposerStore = create<ComposerState>((set) => ({
       inReplyToMessageId: opts?.inReplyToMessageId ?? null,
       showCcBcc: (opts?.cc?.length ?? 0) > 0 || (opts?.bcc?.length ?? 0) > 0,
       draftId: opts?.draftId ?? null,
+      // Always start a fresh staging directory per compose session. Re-opening
+      // a persisted draft does NOT reuse its old staging folder (the backend
+      // may have already cleaned it up on a prior send); new picks stage anew.
+      stagingDraftId: newDraftId(),
       viewMode: 'modal',
       fromEmail: opts?.fromEmail ?? null,
       attachments: [],
@@ -232,6 +261,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
       inReplyToMessageId: null,
       showCcBcc: false,
       draftId: null,
+      stagingDraftId: newDraftId(),
       viewMode: 'modal',
       fromEmail: null,
       attachments: [],
@@ -262,6 +292,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setBodyHtml: (bodyHtml) => set({ bodyHtml }),
   setShowCcBcc: (showCcBcc) => set({ showCcBcc }),
   setDraftId: (draftId) => set({ draftId }),
+  setStagingDraftId: (stagingDraftId) => set({ stagingDraftId }),
   setUndoSendTimer: (undoSendTimer) => set({ undoSendTimer }),
   setUndoSendVisible: (undoSendVisible) => set({ undoSendVisible }),
   addAttachment: (attachment) =>

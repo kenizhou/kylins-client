@@ -9,6 +9,7 @@ import {
 } from '../icons';
 import { useUIStore } from '../../stores/uiStore';
 import { useViewStore } from '../../features/view/viewStore';
+import { useContactStore } from '../../stores/contactStore';
 import { Button, ToggleButton, ToggleButtonGroup } from 'react-aria-components';
 
 interface ToolWindowItem {
@@ -38,6 +39,25 @@ export function ToolWindowBar() {
   const setActiveApp = useUIStore((s) => s.setActiveApp);
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
   const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
+  const accountPaneVisible = useContactStore((s) => s.accountPaneVisible);
+  const toggleAccountPane = useContactStore((s) => s.toggleAccountPane);
+
+  const isContacts = activeApp === 'contacts';
+  const leftPaneVisible = isContacts ? accountPaneVisible : folderPaneVisible;
+  const leftPaneLabel = leftPaneVisible
+    ? isContacts
+      ? 'Hide account pane'
+      : 'Hide folder pane'
+    : isContacts
+      ? 'Show account pane'
+      : 'Show folder pane';
+  const toggleLeftPane = () => {
+    if (isContacts) {
+      toggleAccountPane();
+    } else {
+      setFolderPaneVisible(!folderPaneVisible);
+    }
+  };
 
   return (
     <nav
@@ -117,11 +137,11 @@ export function ToolWindowBar() {
         </ToggleButtonGroup>
 
         <Button
-          aria-label={folderPaneVisible ? 'Hide folder pane' : 'Show folder pane'}
-          onPress={() => setFolderPaneVisible(!folderPaneVisible)}
+          aria-label={leftPaneLabel}
+          onPress={toggleLeftPane}
           className={`${TOOL_BUTTON_CLASS} text-muted-text hover:bg-hover hover:text-foreground`}
         >
-          {folderPaneVisible ? <PanelLeftCloseIcon size={22} /> : <PanelLeftOpenIcon size={22} />}
+          {leftPaneVisible ? <PanelLeftCloseIcon size={22} /> : <PanelLeftOpenIcon size={22} />}
         </Button>
       </div>
     </nav>

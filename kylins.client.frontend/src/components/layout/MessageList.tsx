@@ -7,6 +7,7 @@ import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
+import { useAutoHideScrollbar, autoHideScrollbarClass } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
@@ -22,7 +23,7 @@ import {
   FileTextIcon,
   ReplyIcon,
   ReplyAllIcon,
-  ForwardIcon,
+  MailSendIcon,
   TagIcon,
   SearchIcon,
   PreferencesMailRulesIcon,
@@ -248,7 +249,7 @@ export function MessageList() {
   // rate-limited. See `hooks/useViewportBodyPrefetch.ts`.
   useViewportBodyPrefetch({
     virtualizer,
-    threads,
+    items,
     accountId: selectedFolder?.accountId ?? null,
   });
 
@@ -272,6 +273,7 @@ export function MessageList() {
 
   const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
   const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+  useAutoHideScrollbar(scrollRef);
 
   const showEmpty = !isLoading && items.length === 0;
 
@@ -299,7 +301,7 @@ export function MessageList() {
       },
       {
         label: 'Forward',
-        icon: ForwardIcon,
+        icon: MailSendIcon,
         onSelect: () => void openComposerForThread(menu.thread, 'forward', accountEmail),
       },
       {
@@ -358,7 +360,7 @@ export function MessageList() {
       <div
         ref={scrollRef}
         tabIndex={0}
-        className="flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+        className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
         onKeyDown={(e) => {
           if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
           e.preventDefault();

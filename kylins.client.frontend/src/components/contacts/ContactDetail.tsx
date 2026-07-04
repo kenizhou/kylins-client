@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useComposerStore } from '../../stores/composerStore';
 import { useContactStore } from '../../stores/contactStore';
 import { ContactAvatar } from './ContactAvatar';
+import { SourceBadge } from './SourceBadge';
 import {
   updateContact,
   deleteContact,
@@ -150,6 +151,14 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
               {contact.displayName && (
                 <p className="text-sm text-[var(--muted-text)] truncate">{contact.email}</p>
               )}
+              <div className="mt-1 flex items-center gap-2">
+                <SourceBadge contact={contact} />
+                {contact.isReadonly && (
+                  <span className="text-xs text-[var(--muted-text)]">
+                    Edits must be made at the source.
+                  </span>
+                )}
+              </div>
             </>
           )}
           <div className="flex flex-wrap items-center gap-2 mt-3">
@@ -200,6 +209,8 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
                   Cancel
                 </button>
               </>
+            ) : contact.isReadonly ? (
+              <span className="text-xs text-[var(--muted-text)]">Read-only</span>
             ) : (
               <button
                 type="button"
@@ -210,14 +221,16 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
                 Edit
               </button>
             )}
-            <button
-              type="button"
-              onClick={handleDelete}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors"
-            >
-              <TrashIcon size={13} />
-              Delete
-            </button>
+            {!contact.isReadonly && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors"
+              >
+                <TrashIcon size={13} />
+                Delete
+              </button>
+            )}
           </div>
         </div>
       </div>

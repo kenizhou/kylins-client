@@ -156,15 +156,17 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
     }
 
     await runWithVerification(s, async () => {
-      const input = buildImapAccount(config, s.email, s.password);
+      const input = buildImapAccount(config, s.email, s.password, s.displayName);
       input.acceptInvalidCerts = s.acceptInvalidCerts;
       if (useManual) {
         input.imapHost = s.imapHost;
         input.imapPort = Number(s.imapPort) || 993;
         input.imapSecurity = s.imapSecurity;
+        input.imapUsername = s.imapUsername;
         input.smtpHost = s.smtpHost;
         input.smtpPort = Number(s.smtpPort) || 587;
         input.smtpSecurity = s.smtpSecurity;
+        input.smtpUsername = s.smtpUsername;
       }
       await testImapConnection(toTestAccount(input, s.email));
       await createAccount(input);
@@ -184,14 +186,16 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
     }
     setTestState({ isTesting: true, result: null });
     try {
-      const input = buildImapAccount(s.config, s.email, s.password);
+      const input = buildImapAccount(s.config, s.email, s.password, s.displayName);
       input.acceptInvalidCerts = s.acceptInvalidCerts;
       input.imapHost = s.imapHost;
       input.imapPort = Number(s.imapPort) || 993;
       input.imapSecurity = s.imapSecurity;
+      input.imapUsername = s.imapUsername;
       input.smtpHost = s.smtpHost;
       input.smtpPort = Number(s.smtpPort) || 587;
       input.smtpSecurity = s.smtpSecurity;
+      input.smtpUsername = s.smtpUsername;
       await testImapConnection(toTestAccount(input, s.email));
       setTestState({
         isTesting: false,
@@ -265,11 +269,13 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
         <SetupStepTransition>
           <CredentialsGate
             config={s.config}
+            displayName={s.displayName}
             email={s.email}
             password={s.password}
             advancedClientId={s.advancedClientId}
             advancedClientSecret={s.advancedClientSecret}
             onChange={(patch) => {
+              if (patch.displayName !== undefined) s.setDisplayName(patch.displayName);
               if (patch.email !== undefined) s.setEmail(patch.email);
               if (patch.password !== undefined) s.setPassword(patch.password);
               if (patch.advancedClientId !== undefined)
@@ -303,26 +309,43 @@ export function AccountSetupFlow({ variant, onComplete }: AccountSetupFlowProps)
               imapHost: s.imapHost,
               imapPort: s.imapPort,
               imapSecurity: s.imapSecurity,
+              imapUsername: s.imapUsername,
               smtpHost: s.smtpHost,
               smtpPort: s.smtpPort,
               smtpSecurity: s.smtpSecurity,
+              smtpUsername: s.smtpUsername,
               acceptInvalidCerts: s.acceptInvalidCerts,
             }}
+            password={s.password}
             errors={imapErrors}
             onChange={(patch) => {
               if (patch.imapHost !== undefined) s.setImap({ imapHost: patch.imapHost });
               if (patch.imapPort !== undefined) s.setImap({ imapPort: patch.imapPort });
               if (patch.imapSecurity !== undefined) s.setImap({ imapSecurity: patch.imapSecurity });
+              if (patch.imapUsername !== undefined) s.setImap({ imapUsername: patch.imapUsername });
               if (patch.smtpHost !== undefined) s.setSmtp({ smtpHost: patch.smtpHost });
               if (patch.smtpPort !== undefined) s.setSmtp({ smtpPort: patch.smtpPort });
               if (patch.smtpSecurity !== undefined) s.setSmtp({ smtpSecurity: patch.smtpSecurity });
+              if (patch.smtpUsername !== undefined) s.setSmtp({ smtpUsername: patch.smtpUsername });
+              if (patch.password !== undefined) s.setPassword(patch.password);
               if (patch.acceptInvalidCerts !== undefined)
                 s.setAcceptInvalidCerts(patch.acceptInvalidCerts);
             }}
             onSubmit={() => void handleImapPassword(true)}
             onTestConnection={() => void handleTestConnection()}
             onBack={s.back}
-            canSubmit={!!s.imapHost && !!s.smtpHost}
+            canSubmit={
+              !!s.imapHost &&
+              !!s.smtpHost &&
+              !!s.imapUsername &&
+              !!s.smtpUsername &&
+              /(^\d{1,5}$)/.test(s.imapPort) &&
+              Number(s.imapPort) > 0 &&
+              Number(s.imapPort) <= 65535 &&
+              /(^\d{1,5}$)/.test(s.smtpPort) &&
+              Number(s.smtpPort) > 0 &&
+              Number(s.smtpPort) <= 65535
+            }
             isTesting={testState.isTesting}
             testResult={testState.result}
           />

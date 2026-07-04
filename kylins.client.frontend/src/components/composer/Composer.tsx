@@ -33,6 +33,7 @@ import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
+import { cleanupAttachments, stageAttachmentBytes } from '@/services/composer/attachments';
 import { invoke } from '@tauri-apps/api/core';
 import { upsertContact } from '@/services/db/contacts';
 import { insertScheduledEmail } from '@/services/db/scheduledEmails';
@@ -48,7 +49,6 @@ import { interpolateVariables } from '@/utils/templateVariables';
 import { formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
 import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
-import { readFileAsBase64 } from '@/utils/fileUtils';
 import { getAttachments, fetchAttachment } from '@/services/db/attachments';
 import {
   MaximizeIcon,
@@ -86,6 +86,27 @@ function htmlToPlainText(html: string): string {
 
 function buildMinimalEml(subject: string, body: string): string {
   return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
+}
+
+/**
+ * Decode a base64 string into bytes. Uses `atob` (Tauri webview + jsdom) with
+ * a Node `Buffer` fallback so it works in tests. Used only at the seed
+ * boundary (forwarding original-message attachments) where the DB layer
+ * already stores attachment bytes as base64; the decoded bytes are written
+ * straight to disk via `stageAttachmentBytes`, so no base64 lingers in
+ * composer state.
+ */
+function base64ToBytes(base64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const B = (globalThis as any).Buffer;
+  if (B) return new Uint8Array(B.from(base64, 'base64'));
+  throw new Error('No base64 decoder available (atob nor Buffer found)');
 }
 
 function newAttachmentId(): string {
@@ -167,21 +188,33 @@ export function Composer({ windowed = false }: ComposerProps) {
     async function seed() {
       attachmentSeededRef.current = true;
 
+      // T7b: every staged attachment lands under the per-session outbox
+      // directory (`stagingDraftId`), and only the resulting `filePath` is
+      // kept on the ComposerAttachment. No base64 lingers in composer state.
+      const stagingDraftId = useComposerStore.getState().stagingDraftId;
+
       if (includeOriginalAttachments && activeAccountId) {
         try {
           const rows = await getAttachments(activeAccountId, messageId);
           for (const row of rows) {
-            if (cancelled) break;
+            if (cancelled) return;
             const partId = row.imapPartId || row.id;
-            const bytes = await fetchAttachment(activeAccountId, messageId, partId);
-            if (cancelled) break;
+            const fetched = await fetchAttachment(activeAccountId, messageId, partId);
+            if (cancelled) return;
+            // DB stores fetched attachment bytes as base64; decode once and
+            // stage to disk so the composer never carries the payload.
+            const staged = await stageAttachmentBytes(
+              stagingDraftId,
+              row.filename || 'attachment',
+              fetched.mimeType || row.mimeType || 'application/octet-stream',
+              base64ToBytes(fetched.base64),
+            );
             addAttachment({
               id: newAttachmentId(),
-              file: new File([], row.filename || 'attachment'),
-              filename: row.filename || 'attachment',
-              mimeType: bytes.mimeType || row.mimeType || 'application/octet-stream',
+              filename: staged.filename,
+              mimeType: staged.mimeType,
               size: row.size,
-              content: bytes.base64,
+              filePath: staged.filePath,
             });
           }
         } catch (err) {
@@ -193,15 +226,20 @@ export function Composer({ windowed = false }: ComposerProps) {
         try {
           const body = originalMessageText ?? htmlToPlainText(originalMessageHtml ?? '');
           const eml = buildMinimalEml(originalMessageSubject ?? 'Forwarded message', body);
-          const content = btoa(unescape(encodeURIComponent(eml)));
           const filename = `${(originalMessageSubject ?? 'message').replace(/[^a-z0-9]/gi, '_')}.eml`;
+          const bytes = new TextEncoder().encode(eml);
+          const staged = await stageAttachmentBytes(
+            stagingDraftId,
+            filename,
+            'message/rfc822',
+            bytes,
+          );
           addAttachment({
             id: newAttachmentId(),
-            file: new File([], filename),
-            filename,
-            mimeType: 'message/rfc822',
-            size: content.length,
-            content,
+            filename: staged.filename,
+            mimeType: staged.mimeType,
+            size: bytes.length,
+            filePath: staged.filePath,
           });
         } catch (err) {
           console.error('[Composer] failed to build forward-as-attachment', err);
@@ -375,15 +413,29 @@ export function Composer({ windowed = false }: ComposerProps) {
       setIsDragging(false);
       const files = e.dataTransfer.files;
       if (!files || files.length === 0) return;
+      const stagingDraftId = useComposerStore.getState().stagingDraftId;
       for (const file of Array.from(files)) {
-        const content = await readFileAsBase64(file);
+        // T7b: stage the file to disk under the per-session outbox directory
+        // and keep only the resulting `filePath` on the ComposerAttachment.
+        // We read the drop payload as an ArrayBuffer (NOT base64) so a 200 MB
+        // attachment never becomes a ~267 MB base64 string in JS memory; the
+        // bytes go straight to disk and the Uint8Array is released.
+        // The Tauri webview disables `dragDropEnabled` in tauri.conf.json, so
+        // dropped File objects do not expose a `path` property here — we must
+        // read bytes via the File API and write them through `stageAttachmentBytes`.
+        const buf = await file.arrayBuffer();
+        const staged = await stageAttachmentBytes(
+          stagingDraftId,
+          file.name,
+          file.type || 'application/octet-stream',
+          new Uint8Array(buf),
+        );
         addAttachment({
-          id: crypto.randomUUID(),
-          file,
-          filename: file.name,
-          mimeType: file.type || 'application/octet-stream',
+          id: newAttachmentId(),
+          filename: staged.filename,
+          mimeType: staged.mimeType,
           size: file.size,
-          content,
+          filePath: staged.filePath,
         });
       }
     },
@@ -406,6 +458,7 @@ export function Composer({ windowed = false }: ComposerProps) {
 
     const html = getFullHtml();
     const currentDraftId = state.draftId;
+    const currentStagingDraftId = state.stagingDraftId;
 
     const input = {
       accountId: activeAccountId,
@@ -418,12 +471,14 @@ export function Composer({ windowed = false }: ComposerProps) {
       threadId: state.threadId,
       inReplyToMessageId: state.inReplyToMessageId,
       signatureId: state.signatureId,
+      // T7b: regular attachments pass through `filePath` (no base64). The
+      // backend MIME builder streams the bytes from disk at send time.
       attachments:
         state.attachments.length > 0
           ? state.attachments.map((a) => ({
               filename: a.filename,
               mimeType: a.mimeType,
-              content: a.content,
+              filePath: a.filePath,
               size: a.size,
             }))
           : undefined,
@@ -443,7 +498,21 @@ export function Composer({ windowed = false }: ComposerProps) {
 
     const timer = setTimeout(async () => {
       try {
-        await sendEmail(activeAccountId, input, currentDraftId);
+        const result = await sendEmail(activeAccountId, input, currentStagingDraftId);
+        if (!result.success) {
+          console.error('[composer] send failed:', result.message);
+          return;
+        }
+        // T7b: the persisted `local_drafts` row id is distinct from the
+        // staging id; sendEmail handles outbox cleanup via the T8 backend,
+        // the composer owns the drafts-row deletion.
+        if (currentDraftId) {
+          try {
+            await deleteDraft(currentDraftId);
+          } catch {
+            /* ignore — best-effort */
+          }
+        }
         if (messageSentSound) {
           // TODO: play actual sent sound once a sound asset is bundled.
           console.log('[composer] message sent sound');
@@ -465,7 +534,14 @@ export function Composer({ windowed = false }: ComposerProps) {
 
     state.setUndoSendTimer(timer);
     closeComposer();
-  }, [activeAccountId, activeAccount, closeComposer, getFullHtml]);
+  }, [
+    activeAccountId,
+    activeAccount,
+    closeComposer,
+    getFullHtml,
+    undoSendDuration,
+    messageSentSound,
+  ]);
 
   const handleSchedule = useCallback(
     async (scheduledAt: number) => {
@@ -474,13 +550,17 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.to.length === 0) return;
 
       const html = getFullHtml();
+      // T7b: schedule metadata persists path-backed refs (no base64). The
+      // staged files remain under the per-session outbox directory; a future
+      // scheduled-send worker would stream them at the scheduled time.
       const attachmentData =
         state.attachments.length > 0
           ? JSON.stringify(
               state.attachments.map((a) => ({
                 filename: a.filename,
                 mimeType: a.mimeType,
-                content: a.content,
+                filePath: a.filePath,
+                size: a.size,
               })),
             )
           : null;
@@ -539,13 +619,24 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const handleDiscard = useCallback(async () => {
     stopAutoSave();
-    const currentDraftId = useComposerStore.getState().draftId;
+    const state = useComposerStore.getState();
+    const currentDraftId = state.draftId;
+    const currentStagingDraftId = state.stagingDraftId;
     if (currentDraftId) {
       try {
         await deleteDraft(currentDraftId);
       } catch {
         /* ignore */
       }
+    }
+    // T7b: best-effort cleanup of any staged attachment files. On send-success
+    // the T8 backend cleans the same directory; on user discard we do it here.
+    // Per-attachment removal mid-compose can leave orphans, so we clean the
+    // whole outbox folder at discard.
+    try {
+      await cleanupAttachments(currentStagingDraftId);
+    } catch {
+      /* ignore — best-effort */
     }
     closeComposer();
     await closeWindowIfWindowed();

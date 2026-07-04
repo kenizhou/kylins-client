@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { SearchField, Input, Button } from 'react-aria-components';
 import { useContactStore } from '@/stores/contactStore';
 import { ContactAvatar } from '@/components/contacts/ContactAvatar';
+import { SourceBadge } from '@/components/contacts/SourceBadge';
 import { LOCAL_SENTINEL } from '@/components/contacts/constants';
 import type { Contact, ContactGroup } from '@/services/db/contacts';
 import { SearchIcon, CloseIcon, ContactsIcon } from '@/components/icons';
@@ -167,11 +168,14 @@ export function ContactList() {
                       </div>
                     )}
                   </div>
-                  {contact.frequency > 0 && (
-                    <span className="text-[10px] text-[var(--muted-text)]">
-                      {contact.frequency}
-                    </span>
-                  )}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {contact.frequency > 0 && (
+                      <span className="text-[10px] text-[var(--muted-text)]">
+                        {contact.frequency}
+                      </span>
+                    )}
+                    <SourceBadge contact={contact} />
+                  </div>
                 </li>
               );
             })}

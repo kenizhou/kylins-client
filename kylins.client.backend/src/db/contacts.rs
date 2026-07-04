@@ -19,6 +19,10 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
+use crate::db::settings;
+use crate::mail::address::{is_unworthy_address, parse_address_header};
+use crate::sync_engine::RemoteMessage;
+
 /// Trim + lowercase an email address. Mirrors `normalizeEmail` in
 /// `utils/emailUtils.ts`.
 fn normalize_email(email: &str) -> String {
@@ -500,6 +504,10 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), String> {
 
 /// Upsert a contact from mail interaction — bumps frequency if exists.
 /// Mirrors `upsertContact` (ON CONFLICT(email) DO UPDATE).
+///
+/// Source precedence is respected: if the existing row has a higher-priority
+/// source (`local` or any synced source), the mail-sourced `display_name` is
+/// ignored and only `frequency` / `last_contacted_at` are bumped.
 pub async fn upsert(
     pool: &SqlitePool,
     email: &str,
@@ -508,11 +516,14 @@ pub async fn upsert(
     let id = uuid::Uuid::new_v4().to_string();
     let normalized = normalize_email(email);
     sqlx::query(
-        "INSERT INTO contacts (id, email, display_name, source, last_contacted_at)
-         VALUES ($1, $2, $3, 'mail', unixepoch())
+        "INSERT INTO contacts (id, email, display_name, source, first_contacted_at, last_contacted_at)
+         VALUES ($1, $2, $3, 'mail', unixepoch(), unixepoch())
          ON CONFLICT(email) DO UPDATE SET
-           display_name = COALESCE($3, display_name),
-           frequency = frequency + 1,
+           display_name = CASE
+             WHEN contacts.source = 'mail' THEN COALESCE($3, contacts.display_name)
+             ELSE contacts.display_name
+           END,
+           frequency = contacts.frequency + 1,
            last_contacted_at = unixepoch(),
            updated_at = unixepoch()",
     )
@@ -522,6 +533,103 @@ pub async fn upsert(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Maximum number of visible recipients on a single message before we treat it
+/// as bulk mail and skip contact extraction.
+const MASS_MAIL_RECIPIENT_LIMIT: usize = 25;
+
+/// Extract contacts from a `RemoteMessage` and upsert them.
+///
+/// - `folder_role` is the normalized role of the folder the message came from
+///   (`inbox`, `sent`, `drafts`, `trash`, `junk`, `archive`, etc.).
+/// - `own_emails` is the set of addresses that belong to the account itself
+///   (primary account email + send-as aliases). They are never recorded.
+pub async fn record_from_remote_msg(
+    pool: &SqlitePool,
+    account_id: &str,
+    msg: &RemoteMessage,
+    folder_role: Option<&str>,
+    own_emails: &[String],
+) -> Result<(), String> {
+    let _ = account_id; // reserved for per-account contact attribution if needed later
+
+    let role = folder_role.unwrap_or("");
+    if matches!(role, "trash" | "junk" | "drafts") {
+        return Ok(());
+    }
+
+    let is_sent = role == "sent";
+
+    // Respect user preferences: extraction from Sent is on by default;
+    // extraction from received folders is off by default.
+    if is_sent {
+        let enabled = settings::get_bool(pool, "auto_extract_contacts_from_mail")
+            .await
+            .unwrap_or(Some(true))
+            .unwrap_or(true);
+        if !enabled {
+            return Ok(());
+        }
+    } else if matches!(role, "inbox" | "archive") {
+        let enabled = settings::get_bool(pool, "auto_extract_contacts_from_received")
+            .await
+            .unwrap_or(Some(false))
+            .unwrap_or(false);
+        if !enabled {
+            return Ok(());
+        }
+    }
+
+    let own_set: std::collections::HashSet<&str> = own_emails.iter().map(|s| s.as_str()).collect();
+
+    let mut candidates: Vec<(Option<String>, String)> = Vec::new();
+
+    // From / Reply-To are collected from every non-excluded folder.
+    if let Some(from) = msg.from_address.as_deref() {
+        let name = msg.from_name.as_deref();
+        candidates.push((name.map(|n| n.to_string()), from.to_string()));
+    }
+    if let Some(reply_to) = msg.reply_to.as_deref() {
+        candidates.extend(parse_address_header(reply_to));
+    }
+
+    // To / Cc / Bcc are only collected from the Sent folder.
+    if is_sent {
+        if let Some(to) = msg.to_addresses.as_deref() {
+            candidates.extend(parse_address_header(to));
+        }
+        if let Some(cc) = msg.cc_addresses.as_deref() {
+            candidates.extend(parse_address_header(cc));
+        }
+        if let Some(bcc) = msg.bcc_addresses.as_deref() {
+            candidates.extend(parse_address_header(bcc));
+        }
+    }
+
+    // Mass-mail / newsletter guard: count visible recipients on sent messages.
+    if is_sent {
+        let visible_count =
+            msg.to_addresses.as_ref().map(|s| parse_address_header(s).len()).unwrap_or(0)
+                + msg.cc_addresses.as_ref().map(|s| parse_address_header(s).len()).unwrap_or(0)
+                + msg.bcc_addresses.as_ref().map(|s| parse_address_header(s).len()).unwrap_or(0);
+        if visible_count > MASS_MAIL_RECIPIENT_LIMIT {
+            return Ok(());
+        }
+    }
+
+    for (name, email) in candidates {
+        let normalized = normalize_email(&email);
+        if own_set.contains(normalized.as_str()) {
+            continue;
+        }
+        if is_unworthy_address(&normalized, name.as_deref()) {
+            continue;
+        }
+        upsert(pool, &normalized, name.as_deref()).await?;
+    }
+
     Ok(())
 }
 
@@ -940,4 +1048,118 @@ pub async fn groups_for_contact(
     .await
     .map_err(|e| e.to_string())?;
     Ok(rows.iter().map(row_to_group).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::init_db;
+    use crate::sync_engine::RemoteMessage;
+
+    #[tokio::test]
+    async fn record_from_remote_msg_upserts_from_and_recipients() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        settings::set_bool(&pool, "auto_extract_contacts_from_received", true)
+            .await
+            .unwrap();
+
+        let msg = RemoteMessage {
+            uid: 1,
+            folder: "INBOX".into(),
+            from_address: Some("alice@example.com".into()),
+            from_name: Some("Alice".into()),
+            to_addresses: Some("bob@example.com".into()),
+            cc_addresses: Some("carol@example.com".into()),
+            ..Default::default()
+        };
+        record_from_remote_msg(&pool, "acc-1", &msg, Some("inbox"), &[])
+            .await
+            .unwrap();
+
+        let all = list(&pool, Default::default()).await.unwrap();
+        let emails: Vec<String> = all.iter().map(|c| c.email.clone()).collect();
+        assert!(emails.contains(&"alice@example.com".into()));
+        assert!(!emails.contains(&"bob@example.com".into()));
+        assert!(!emails.contains(&"carol@example.com".into()));
+    }
+
+    #[tokio::test]
+    async fn record_from_remote_msg_sent_records_recipients() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+
+        let msg = RemoteMessage {
+            uid: 2,
+            folder: "Sent".into(),
+            from_address: Some("alice@example.com".into()),
+            from_name: Some("Alice".into()),
+            to_addresses: Some("bob@example.com".into()),
+            cc_addresses: Some("carol@example.com".into()),
+            ..Default::default()
+        };
+        record_from_remote_msg(&pool, "acc-1", &msg, Some("sent"), &["alice@example.com".into()])
+            .await
+            .unwrap();
+
+        let all = list(&pool, Default::default()).await.unwrap();
+        let emails: Vec<String> = all.iter().map(|c| c.email.clone()).collect();
+        assert!(emails.contains(&"bob@example.com".into()));
+        assert!(emails.contains(&"carol@example.com".into()));
+        assert!(!emails.contains(&"alice@example.com".into()));
+    }
+
+    #[tokio::test]
+    async fn record_from_remote_msg_skips_trash_and_drafts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+
+        for role in ["trash", "junk", "drafts"] {
+            let msg = RemoteMessage {
+                uid: 3,
+                folder: role.into(),
+                from_address: Some("sender@example.com".into()),
+                ..Default::default()
+            };
+            record_from_remote_msg(&pool, "acc-1", &msg, Some(role), &[])
+                .await
+                .unwrap();
+        }
+
+        let all = list(&pool, Default::default()).await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_from_remote_msg_skips_mass_mail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+
+        let recipients: Vec<String> = (0..30).map(|i| format!("user{}@example.com", i)).collect();
+        let msg = RemoteMessage {
+            uid: 4,
+            folder: "Sent".into(),
+            to_addresses: Some(recipients.join(", ")),
+            ..Default::default()
+        };
+        record_from_remote_msg(&pool, "acc-1", &msg, Some("sent"), &[])
+            .await
+            .unwrap();
+
+        let all = list(&pool, Default::default()).await.unwrap();
+        assert!(all.is_empty());
+    }
+
+    #[tokio::test]
+    async fn upsert_bumps_frequency_for_existing_mail_contact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+
+        upsert(&pool, "bob@example.com", Some("Bob")).await.unwrap();
+        upsert(&pool, "bob@example.com", None).await.unwrap();
+
+        let all = list(&pool, Default::default()).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].frequency, 2);
+    }
 }
