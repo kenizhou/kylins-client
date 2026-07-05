@@ -29,6 +29,7 @@ export const SETTING_KEYS = {
   checkSpelling: 'check_spelling',
   checkGrammar: 'check_grammar',
   spellcheckLanguage: 'spellcheck_language',
+  alwaysShowCcBcc: 'always_show_cc_bcc',
 
   // Notifications
   showNotificationsForNewUnread: 'show_notifications_for_new_unread',

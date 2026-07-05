@@ -33,6 +33,7 @@ pub mod send_as_aliases;
 pub mod settings;
 pub mod signatures;
 pub mod sync_state;
+pub mod tasks;
 pub mod templates;
 pub mod threads;
 

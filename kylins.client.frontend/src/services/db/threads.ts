@@ -142,6 +142,7 @@ export function mapMessageToMailMessage(
     from: { name: fromName, address: msg.from_address ?? fromName },
     to: parseAddresses(msg.to_addresses),
     cc: parseAddresses(msg.cc_addresses),
+    replyTo: parseAddresses(msg.reply_to),
     date: new Date((msg.date ?? 0) * 1000).toISOString(),
     preview: msg.snippet ?? '',
     html: bodyHtml,

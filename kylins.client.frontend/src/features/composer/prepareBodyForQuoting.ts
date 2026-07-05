@@ -29,15 +29,32 @@ function plaintextToHtml(text: string): string {
 }
 
 const CID_IMG_RE = /<img\b[^>]*\ssrc=["']cid:[^"']*["'][^>]*>/gi;
+const CID_SRC_RE = /src=(["'])cid:([^"']+)\1/gi;
 
 /**
  * Sanitize + inline CSS + strip CID inline images from an original message
  * body, returning safe, self-styled HTML ready to embed in the editor.
+ *
+ * When `cidMap` is provided, `src="cid:..."` references that exist in the map
+ * are rewritten to the corresponding `data:` URL so forwarded inline images
+ * render in the composer and survive to be re-attached as CID parts at send
+ * time. References not in the map are left as-is; when no map is provided the
+ * entire CID image tag is stripped (reply behavior).
  */
-export function prepareBodyForQuoting(message: QuoteableMessage): string {
+export function prepareBodyForQuoting(
+  message: QuoteableMessage,
+  cidMap?: Map<string, string>,
+): string {
   const html = message.html && message.html.trim() ? message.html : null;
   let source = html ?? plaintextToHtml(message.text ?? '');
-  source = source.replace(CID_IMG_RE, '');
+  if (cidMap) {
+    source = source.replace(CID_SRC_RE, (_match, _quote, cid) => {
+      const dataUrl = cidMap.get(cid);
+      return dataUrl ? `src="${dataUrl}"` : _match;
+    });
+  } else {
+    source = source.replace(CID_IMG_RE, '');
+  }
   source = sanitizeForCompose(source);
   source = inlineCss(source);
   return source;
@@ -59,8 +76,8 @@ export function buildReplyQuote(message: QuoteableMessage): string {
 }
 
 /** Forward quote: "Forwarded Message" header block + body, wrapped in gmail_quote. */
-export function buildForwardQuote(message: QuoteableMessage): string {
-  const prepared = prepareBodyForQuoting(message);
+export function buildForwardQuote(message: QuoteableMessage, cidMap?: Map<string, string>): string {
+  const prepared = prepareBodyForQuoting(message, cidMap);
   const header = (label: string, value: string) =>
     `${escapeHtml(label)}: ${escapeHtml(value)}<br/>`;
 

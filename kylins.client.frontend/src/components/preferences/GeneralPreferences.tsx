@@ -198,6 +198,11 @@ export function GeneralPreferences() {
             ]}
             onChange={s.setSpellcheckLanguage}
           />
+          <CheckboxRow
+            label="Always show Cc / Bcc / Reply-To"
+            checked={s.alwaysShowCcBcc}
+            onChange={s.setAlwaysShowCcBcc}
+          />
         </PreferencesSectionCard>
 
         <PreferencesSectionCard title="Sending" icon={PreferencesSendingIcon}>

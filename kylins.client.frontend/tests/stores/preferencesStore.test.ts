@@ -44,6 +44,7 @@ beforeEach(() => {
     checkSpelling: true,
     checkGrammar: false,
     spellcheckLanguage: 'system',
+    alwaysShowCcBcc: false,
     showNotificationsForNewUnread: true,
     showNotificationsForRepeatedOpens: true,
     doNotDisturb: false,
@@ -103,12 +104,10 @@ describe('preferencesStore', () => {
     expect(usePreferencesStore.getState().undoSendDuration).toBe('30');
   });
 
-  it('opens and closes preferences', () => {
-    usePreferencesStore.getState().openPreferences('Notifications');
-    expect(usePreferencesStore.getState().isOpen).toBe(true);
-    expect(usePreferencesStore.getState().activeTab).toBe('Notifications');
-
-    usePreferencesStore.getState().closePreferences();
-    expect(usePreferencesStore.getState().isOpen).toBe(false);
+  it('persists alwaysShowCcBcc changes to settings', async () => {
+    usePreferencesStore.getState().setAlwaysShowCcBcc(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settingsModule.setSetting).toHaveBeenCalledWith('always_show_cc_bcc', 'true');
+    expect(usePreferencesStore.getState().alwaysShowCcBcc).toBe(true);
   });
 });

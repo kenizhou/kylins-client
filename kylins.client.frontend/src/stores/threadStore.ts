@@ -15,6 +15,8 @@ import {
 import { getMessageBody } from '../services/db/messageBodies';
 import { useViewStore } from '../features/view/viewStore';
 import { useFolderStore } from './folderStore';
+import { getFolderByRole } from '../services/db/labels';
+import type { FolderRole } from '../services/mail/folders';
 
 async function getThreadMessages(
   thread: Thread,
@@ -63,6 +65,7 @@ interface ThreadState {
     dstFolderPath: string,
     messages?: DbMessageRow[],
   ) => Promise<void>;
+  moveThreadToRole: (thread: Thread, role: FolderRole, messages?: DbMessageRow[]) => Promise<void>;
 }
 
 export const useThreadStore = create<ThreadState>((set, get) => ({
@@ -249,11 +252,68 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   moveThread: async (thread, dstLabel, dstFolderPath, messages) => {
-    console.log('[threadStore] moveThread stub', {
-      threadId: thread.id,
-      dstLabel,
-      dstFolderPath,
-      messageCount: messages?.length,
+    const state = get();
+    const wasSelected = state.selectedThreadId === thread.id;
+    const idx = state.threads.findIndex((t) => t.id === thread.id);
+    const nextThread =
+      wasSelected && idx !== -1 ? (state.threads[idx + 1] ?? state.threads[idx - 1] ?? null) : null;
+
+    set({
+      threads: state.threads.filter((t) => t.id !== thread.id),
+      selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
     });
+
+    if (wasSelected) {
+      useViewStore.getState().setSelectedMessage(null);
+      if (nextThread) {
+        await get().selectThread(nextThread);
+      }
+    } else if (useViewStore.getState().selectedMessage?.threadId === thread.id) {
+      useViewStore.getState().setSelectedMessage(null);
+    }
+
+    const labelId = state.currentQuery?.labelId;
+    if (labelId && !thread.isRead) {
+      useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+    }
+
+    const msgs = await getThreadMessages(thread, messages);
+
+    // Resolve the source label/folder. The folder pane selection is the
+    // authoritative source when it matches the thread's account; otherwise fall
+    // back to the message's IMAP folder path.
+    const selected = useFolderStore.getState().selected;
+    let srcLabel = selected?.accountId === thread.accountId ? selected.labelId : null;
+    const srcFolderPath = msgs[0]?.imap_folder ?? '';
+    if (!srcLabel && srcFolderPath) {
+      const folder = useFolderStore
+        .getState()
+        .byAccount[
+          thread.accountId
+        ]?.find((f) => f.remoteId === srcFolderPath || f.name === srcFolderPath);
+      srcLabel = folder?.id ?? null;
+    }
+
+    void invoke('sync_apply_mutation', {
+      accountId: thread.accountId,
+      op: {
+        type: 'move',
+        messageIds: msgs.map((m) => m.id),
+        srcLabel: srcLabel ?? '',
+        dstLabel,
+        srcFolderPath,
+        dstFolderPath,
+        uids: msgs.map((m) => m.imap_uid ?? 0),
+      },
+    }).catch((e) => console.error('sync_apply_mutation move failed', e));
+  },
+
+  moveThreadToRole: async (thread, role, messages) => {
+    const folder = await getFolderByRole(thread.accountId, role);
+    if (!folder) {
+      console.error(`[threadStore] no ${role} folder for account ${thread.accountId}`);
+      return;
+    }
+    await get().moveThread(thread, folder.id, folder.remoteId, messages);
   },
 }));

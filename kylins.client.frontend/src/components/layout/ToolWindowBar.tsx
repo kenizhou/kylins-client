@@ -10,6 +10,7 @@ import {
 import { useUIStore } from '../../stores/uiStore';
 import { useViewStore } from '../../features/view/viewStore';
 import { useContactStore } from '../../stores/contactStore';
+import { useIncompleteTaskCount } from '../../stores/taskStore';
 import { Button, ToggleButton, ToggleButtonGroup } from 'react-aria-components';
 
 interface ToolWindowItem {
@@ -22,10 +23,10 @@ const APP_TOOLS: ToolWindowItem[] = [
   { id: 'mail', label: 'Mail', icon: <MailIcon size={22} /> },
   { id: 'calendar', label: 'Calendar', icon: <CalendarIcon size={22} /> },
   { id: 'contacts', label: 'Contacts', icon: <ContactsIcon size={22} /> },
+  { id: 'tasks', label: 'Tasks', icon: <TasksIcon size={22} /> },
 ];
 
 const AUX_TOOLS: ToolWindowItem[] = [
-  { id: 'tasks', label: 'Tasks', icon: <TasksIcon size={22} /> },
   { id: 'ai', label: 'AI Assistant', icon: <AiIcon size={22} /> },
 ];
 
@@ -41,6 +42,7 @@ export function ToolWindowBar() {
   const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
   const accountPaneVisible = useContactStore((s) => s.accountPaneVisible);
   const toggleAccountPane = useContactStore((s) => s.toggleAccountPane);
+  const incompleteTaskCount = useIncompleteTaskCount();
 
   const isContacts = activeApp === 'contacts';
   const leftPaneVisible = isContacts ? accountPaneVisible : folderPaneVisible;
@@ -95,6 +97,11 @@ export function ToolWindowBar() {
                   <span className="absolute bottom-2 left-0 top-2 w-1 rounded-r bg-primary" />
                 )}
                 {tool.icon}
+                {tool.id === 'tasks' && incompleteTaskCount > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground">
+                    {incompleteTaskCount > 99 ? '99+' : incompleteTaskCount}
+                  </span>
+                )}
               </>
             )}
           </ToggleButton>

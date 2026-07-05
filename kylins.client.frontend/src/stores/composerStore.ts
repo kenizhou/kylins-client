@@ -226,7 +226,10 @@ export const useComposerStore = create<ComposerState>((set) => ({
       bodyHtml: opts?.bodyHtml ?? '',
       threadId: opts?.threadId ?? null,
       inReplyToMessageId: opts?.inReplyToMessageId ?? null,
-      showCcBcc: (opts?.cc?.length ?? 0) > 0 || (opts?.bcc?.length ?? 0) > 0,
+      showCcBcc:
+        (opts?.cc?.length ?? 0) > 0 ||
+        (opts?.bcc?.length ?? 0) > 0 ||
+        (opts?.replyTo?.length ?? 0) > 0,
       draftId: opts?.draftId ?? null,
       // Always start a fresh staging directory per compose session. Re-opening
       // a persisted draft does NOT reuse its old staging folder (the backend
@@ -248,7 +251,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
       deliverAt: opts?.deliverAt ?? null,
       preventCopy: opts?.preventCopy ?? false,
       originalMessageId: opts?.originalMessageId ?? null,
-      includeOriginalAttachments: opts?.includeOriginalAttachments ?? false,
+      includeOriginalAttachments: opts?.includeOriginalAttachments ?? opts?.mode === 'forward',
       forwardAsAttachment: opts?.forwardAsAttachment ?? false,
       originalMessageSubject: opts?.originalMessageSubject ?? '',
       originalMessageHtml: opts?.originalMessageHtml ?? null,

@@ -12,6 +12,7 @@ import { Composer } from '../composer/Composer';
 import { UndoSendToast } from '../composer/UndoSendToast';
 import { CalendarPage } from '../calendar/CalendarPage';
 import { ContactsPage } from '../contacts/ContactsPage';
+import { TasksPage } from '../tasks/TasksPage';
 
 function MainContent({ children }: { children: React.ReactNode }) {
   return (
@@ -39,6 +40,8 @@ export function AppShell() {
               <CalendarPage />
             ) : activeApp === 'contacts' ? (
               <ContactsPage />
+            ) : activeApp === 'tasks' ? (
+              <TasksPage />
             ) : (
               <ReadingPaneLayout
                 folderPaneVisible={folderPaneVisible}

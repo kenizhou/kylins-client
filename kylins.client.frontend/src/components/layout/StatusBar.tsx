@@ -7,7 +7,7 @@ import { useViewStore } from '../../features/view/viewStore';
 import type { MessageListDensity, ReadingPanePosition } from '../../features/view/types';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { IconButton } from '@/components/ui/IconButton';
-import { PlusIcon, MinimizeIcon } from '../icons';
+import { PlusIcon, MinimizeIcon, SpinnerIcon } from '../icons';
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2;
@@ -84,6 +84,20 @@ function SyncStatusIndicator() {
   );
 }
 
+function SendProgressIndicator() {
+  const sendProgress = useUIStore((s) => s.sendProgress);
+  if (!sendProgress.active) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-[var(--primary)]"
+      title={sendProgress.message}
+    >
+      <SpinnerIcon size={12} />
+      <span>{sendProgress.message ?? 'Sending…'}</span>
+    </span>
+  );
+}
+
 export function StatusBar() {
   const readerZoom = useUIStore((s) => s.readerZoom);
   const setReaderZoom = useUIStore((s) => s.setReaderZoom);
@@ -94,6 +108,7 @@ export function StatusBar() {
     <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-xs bg-[var(--chrome)] text-[var(--muted-text)] shrink-0">
       <div className="flex items-center gap-3">
         <SyncStatusIndicator />
+        <SendProgressIndicator />
         <span>1 selected</span>
       </div>
       <div className="flex items-center gap-3">

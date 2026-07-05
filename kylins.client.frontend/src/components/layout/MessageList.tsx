@@ -6,6 +6,7 @@ import type { ColumnDef } from '../../features/view/types';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
 import { useAutoHideScrollbar, autoHideScrollbarClass } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
@@ -201,6 +202,7 @@ export function MessageList() {
   const density = useViewStore((s) => s.messageListDensity);
   const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
   const conversationView = useViewStore((s) => s.conversationView);
+  const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
 
   const selectedFolder = useFolderStore((s) => s.selected);
   const threads = useThreadStore((s) => s.threads);
@@ -284,7 +286,8 @@ export function MessageList() {
 
   const menuItems = useMemo(() => {
     if (!menu) return [];
-    const accountEmail = accounts.find((a) => a.id === menu.thread.accountId)?.email ?? null;
+    const account = accounts.find((a) => a.id === menu.thread.accountId) ?? null;
+    const replyMode = defaultReplyBehavior === 'reply-all' ? 'replyAll' : 'reply';
     return [
       { label: 'Copy', icon: CopyIcon, disabled: true },
       { label: 'Quick Print', icon: FileTextIcon, disabled: true },
@@ -292,17 +295,26 @@ export function MessageList() {
       {
         label: 'Reply',
         icon: ReplyIcon,
-        onSelect: () => void openComposerForThread(menu.thread, 'reply', accountEmail),
+        onSelect: () => {
+          if (!account) return;
+          void openComposerForThread(menu.thread, replyMode, account);
+        },
       },
       {
         label: 'Reply All',
         icon: ReplyAllIcon,
-        onSelect: () => void openComposerForThread(menu.thread, 'replyAll', accountEmail),
+        onSelect: () => {
+          if (!account) return;
+          void openComposerForThread(menu.thread, 'replyAll', account);
+        },
       },
       {
         label: 'Forward',
         icon: MailSendIcon,
-        onSelect: () => void openComposerForThread(menu.thread, 'forward', accountEmail),
+        onSelect: () => {
+          if (!account) return;
+          void openComposerForThread(menu.thread, 'forward', account);
+        },
       },
       {
         label: menu.thread.isRead ? 'Mark as Unread' : 'Mark as Read',
@@ -333,7 +345,7 @@ export function MessageList() {
       },
       { label: 'Archive', icon: ArchiveIcon, disabled: true },
     ];
-  }, [menu, accounts, markThreadRead, toggleThreadStarred, deleteThread]);
+  }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
     <div className="message-list flex flex-col h-full bg-[var(--card)]">

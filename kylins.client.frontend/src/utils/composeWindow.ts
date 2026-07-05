@@ -7,6 +7,7 @@ export interface ComposeWindowOptions {
   to?: Recipient[];
   cc?: Recipient[];
   bcc?: Recipient[];
+  replyTo?: Recipient[];
   subject?: string;
   bodyHtml?: string;
   threadId?: string | null;
@@ -45,6 +46,7 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
       to: opts.to,
       cc: opts.cc,
       bcc: opts.bcc,
+      replyTo: opts.replyTo,
       subject: opts.subject,
       bodyHtml: opts.bodyHtml,
       threadId: opts.threadId,
@@ -78,6 +80,8 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
     if (opts.to && opts.to.length > 0) params.set('to', formatRecipients(opts.to).join(','));
     if (opts.cc && opts.cc.length > 0) params.set('cc', formatRecipients(opts.cc).join(','));
     if (opts.bcc && opts.bcc.length > 0) params.set('bcc', formatRecipients(opts.bcc).join(','));
+    if (opts.replyTo && opts.replyTo.length > 0)
+      params.set('replyTo', formatRecipients(opts.replyTo).join(','));
     if (opts.subject) params.set('subject', opts.subject);
     if (opts.bodyHtml) params.set('body', btoa(unescape(encodeURIComponent(opts.bodyHtml))));
     if (opts.threadId) params.set('threadId', opts.threadId);
@@ -166,6 +170,7 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     to: decodeRecipients('to'),
     cc: decodeRecipients('cc'),
     bcc: decodeRecipients('bcc'),
+    replyTo: decodeRecipients('replyTo'),
     subject: params.get('subject') ?? undefined,
     bodyHtml,
     threadId: params.get('threadId'),

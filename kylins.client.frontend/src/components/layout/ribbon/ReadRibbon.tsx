@@ -43,6 +43,7 @@ import {
 } from '../../../utils/composerActions';
 import { useViewStore } from '../../../features/view/viewStore';
 import { useAccountStore } from '../../../stores/accountStore';
+import { usePreferencesStore } from '../../../stores/preferencesStore';
 import { useThreadStore } from '../../../stores/threadStore';
 import { useFolderStore } from '../../../stores/folderStore';
 import { useClassification } from '../../../features/classification/useClassification';
@@ -241,7 +242,8 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   const selectedFolder = useFolderStore((s) => s.selected);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
-  const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
+  const account = accounts.find((a) => a.id === activeAccountId) ?? null;
+  const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
   const { levels, getDefaultLevel, getLevelById } = useClassification();
   const [moveOpen, setMoveOpen] = useState(false);
 
@@ -267,33 +269,37 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   };
 
   const handleReply = () => {
-    if (!selectedMessage) return;
-    openReplyComposer(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    if (defaultReplyBehavior === 'reply-all') {
+      void openReplyAllComposer(selectedMessage, account);
+    } else {
+      void openReplyComposer(selectedMessage, account);
+    }
   };
 
   const handleReplyWithAttachments = () => {
-    if (!selectedMessage) return;
-    openReplyComposerWithAttachments(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openReplyComposerWithAttachments(selectedMessage, account);
   };
 
   const handleReplyAll = () => {
-    if (!selectedMessage) return;
-    openReplyAllComposer(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openReplyAllComposer(selectedMessage, account);
   };
 
   const handleReplyAllWithAttachments = () => {
-    if (!selectedMessage) return;
-    openReplyAllComposerWithAttachments(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openReplyAllComposerWithAttachments(selectedMessage, account);
   };
 
   const handleForward = () => {
-    if (!selectedMessage) return;
-    openForwardComposer(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openForwardComposer(selectedMessage, account);
   };
 
   const handleForwardAsAttachment = () => {
-    if (!selectedMessage) return;
-    openForwardComposerAsAttachment(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openForwardComposerAsAttachment(selectedMessage, account);
   };
 
   const hasMessage = selectedMessage != null;

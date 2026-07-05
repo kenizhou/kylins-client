@@ -9,12 +9,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
-import { Button, Input, TextField } from 'react-aria-components';
+import { Button, Input, TextField, Checkbox } from 'react-aria-components';
 import { EditorToolbar } from '@/components/composer/EditorToolbar';
 import { buildComposerExtensions } from '@/features/composer/editorExtensions';
 import { RecipientField } from '@/features/composer/RecipientField';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { sendEmail } from '@/services/composer/send';
+import { stageAttachmentBytes, newDraftId } from '@/services/composer/attachments';
+import { getAttachments, fetchAttachment, fetchInlineImages } from '@/services/db/attachments';
+import { base64ToBytes } from '@/utils/base64';
+import type { ComposerAttachment } from '@/stores/composerStore';
 import { buildReplyQuote, buildForwardQuote } from '@/features/composer/prepareBodyForQuoting';
 import {
   participantsForReply,
@@ -33,10 +37,18 @@ import {
 } from '@/services/db/sendAsAliases';
 import { useAccountStore } from '@/stores/accountStore';
 import { useComposerStore } from '@/stores/composerStore';
-import { SendIcon, PopOutIcon } from '@/components/icons';
+import { usePreferencesStore } from '@/stores/preferencesStore';
+import { SendIcon, PopOutIcon, CloseIcon } from '@/components/icons';
 import type { MailMessage } from '@/features/view/viewStore';
 
 type InlineMode = 'reply' | 'replyAll' | 'forward';
+
+function newAttachmentId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 interface InlineReplyProps {
   message: MailMessage;
@@ -72,7 +84,26 @@ export function InlineReply({
   const [toRecipients, setToRecipients] = useState<Recipient[]>(initial.to);
   const [ccRecipients, setCcRecipients] = useState<Recipient[]>(initial.cc);
   const [bccRecipients, setBccRecipients] = useState<Recipient[]>([]);
-  const [showCcBcc, setShowCcBcc] = useState(initial.cc.length > 0);
+  const [replyToRecipients, setReplyToRecipients] = useState<Recipient[]>([]);
+  const [includeOriginalAttachments, setIncludeOriginalAttachments] = useState(true);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const attachmentSeededRef = useRef(false);
+  const inlineImagesSeededRef = useRef(false);
+  const alwaysShowCcBcc = usePreferencesStore((s) => s.alwaysShowCcBcc);
+  const [ccExpanded, setCcExpanded] = useState(() => initial.cc.length > 0 || alwaysShowCcBcc);
+  const [bccExpanded, setBccExpanded] = useState(() => alwaysShowCcBcc);
+  const [replyToExpanded, setReplyToExpanded] = useState(() => alwaysShowCcBcc);
+  const showCc = ccExpanded || alwaysShowCcBcc || ccRecipients.length > 0;
+  const showBcc = bccExpanded || alwaysShowCcBcc || bccRecipients.length > 0;
+  const showReplyTo = replyToExpanded || alwaysShowCcBcc || replyToRecipients.length > 0;
+
+  const handleAddressBlockBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (alwaysShowCcBcc) return;
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    if (ccRecipients.length === 0) setCcExpanded(false);
+    if (bccRecipients.length === 0) setBccExpanded(false);
+    if (replyToRecipients.length === 0) setReplyToExpanded(false);
+  };
 
   const [subject, setSubject] = useState(() =>
     subjectWithPrefix(message.subject, isForward ? 'Fwd:' : 'Re:'),
@@ -103,7 +134,55 @@ export function InlineReply({
     };
   }, [accountId]);
 
-  // Smart-From: pick the alias the message was addressed to (Mailspring
+  // Seed forwarded original-message attachments as file-backed refs. Inline
+  // images are intentionally re-attached as files rather than preserved as CID
+  // references, matching the modal composer forward path.
+  useEffect(() => {
+    if (!isForward || !accountId || !message.messageId || !includeOriginalAttachments) {
+      attachmentSeededRef.current = false;
+      return;
+    }
+    if (attachmentSeededRef.current) return;
+
+    const messageId = message.messageId!;
+    const accountId_ = accountId!;
+    let cancelled = false;
+    async function seed() {
+      attachmentSeededRef.current = true;
+      const stagingDraftId = newDraftId();
+      try {
+        const rows = await getAttachments(accountId_, messageId);
+        const seeded: ComposerAttachment[] = [];
+        for (const row of rows) {
+          if (cancelled) return;
+          const partId = row.imapPartId || row.id;
+          const fetched = await fetchAttachment(accountId_, messageId, partId);
+          if (cancelled) return;
+          const staged = await stageAttachmentBytes(
+            stagingDraftId,
+            row.filename || 'attachment',
+            fetched.mimeType || row.mimeType || 'application/octet-stream',
+            base64ToBytes(fetched.base64),
+          );
+          seeded.push({
+            id: newAttachmentId(),
+            filename: staged.filename,
+            mimeType: staged.mimeType,
+            size: row.size,
+            filePath: staged.filePath,
+          });
+        }
+        if (!cancelled) setAttachments((prev) => [...prev, ...seeded]);
+      } catch (err) {
+        console.error('[InlineReply] failed to seed original attachments', err);
+      }
+    }
+    seed();
+    return () => {
+      cancelled = true;
+    };
+  }, [isForward, accountId, message.messageId, includeOriginalAttachments]);
+
   // _fromContactForReply). Falls back to the account address.
   const accounts = useAccountStore((s) => s.accounts);
   const openComposer = useComposerStore((s) => s.openComposer);
@@ -156,6 +235,38 @@ export function InlineReply({
     editor.commands.setContent(seeded, { emitUpdate: false });
   }, [editor, signature]);
 
+  // Forward inline images: fetch Content-ID parts and rewrite the quoted body
+  // so inline images render as data URLs. The send pipeline converts them back
+  // to CID attachments. Guarded by ref so user edits are not overwritten.
+  useEffect(() => {
+    if (!isForward || !accountId || !message.messageId) return;
+    if (inlineImagesSeededRef.current) return;
+    inlineImagesSeededRef.current = true;
+
+    const messageId = message.messageId!;
+    const accountId_ = accountId!;
+    let cancelled = false;
+    async function seed() {
+      try {
+        const parts = await fetchInlineImages(accountId_, messageId);
+        if (cancelled || parts.length === 0) return;
+        const cidMap = new Map(
+          parts.map((p) => [p.contentId, `data:${p.mimeType};base64,${p.base64}`]),
+        );
+        const html = applySignatureAboveQuote(buildForwardQuote(message, cidMap), signature);
+        editor?.commands.setContent(html, { emitUpdate: false });
+      } catch (err) {
+        console.error('[InlineReply] failed to seed inline images', err);
+      }
+    }
+    seed();
+    return () => {
+      cancelled = true;
+    };
+  }, [isForward, accountId, message.messageId, message, editor, signature]);
+
+  // Smart-From: pick the alias the message was addressed to (Mailspring
+  // _fromContactForReply). Falls back to the account address.
   const handleSend = useCallback(async () => {
     if (!editor || status === 'sending') return;
     if (!accountId) {
@@ -175,6 +286,7 @@ export function InlineReply({
       to: toRecipients,
       cc: ccRecipients.length > 0 ? ccRecipients : undefined,
       bcc: bccRecipients.length > 0 ? bccRecipients : undefined,
+      replyTo: replyToRecipients.length > 0 ? replyToRecipients : undefined,
       subject,
       bodyHtml: editor.getHTML(),
       fromEmail: fromEmail ?? accountEmail ?? undefined,
@@ -185,6 +297,15 @@ export function InlineReply({
       classificationId: message.classificationId,
       isEncrypted: message.isEncrypted,
       isSigned: message.isSigned,
+      attachments:
+        attachments.length > 0
+          ? attachments.map((a) => ({
+              filename: a.filename,
+              mimeType: a.mimeType,
+              filePath: a.filePath,
+              size: a.size,
+            }))
+          : undefined,
     });
     if (result.success) {
       setStatus('sent');
@@ -200,7 +321,9 @@ export function InlineReply({
     toRecipients,
     ccRecipients,
     bccRecipients,
+    replyToRecipients,
     subject,
+    attachments,
     fromEmail,
     accountEmail,
     message.threadId,
@@ -218,6 +341,7 @@ export function InlineReply({
       to: toRecipients,
       cc: ccRecipients.length > 0 ? ccRecipients : undefined,
       bcc: bccRecipients.length > 0 ? bccRecipients : undefined,
+      replyTo: replyToRecipients.length > 0 ? replyToRecipients : undefined,
       subject,
       bodyHtml: editor?.getHTML() ?? '',
       threadId: message.threadId ?? null,
@@ -227,6 +351,8 @@ export function InlineReply({
       classificationId: message.classificationId,
       isEncrypted: message.isEncrypted,
       isSigned: message.isSigned,
+      originalMessageId: message.messageId ?? null,
+      includeOriginalAttachments: isForward ? true : undefined,
     });
     onClose();
   }, [
@@ -235,6 +361,7 @@ export function InlineReply({
     toRecipients,
     ccRecipients,
     bccRecipients,
+    replyToRecipients,
     subject,
     editor,
     message.threadId,
@@ -249,43 +376,83 @@ export function InlineReply({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--card)]">
-      {/* Header: From (only when smart-From picked a non-default alias), To/Cc/Bcc, Subject */}
+      {/* Header: From, To/Cc/Bcc/Reply-To toggles, Subject */}
       <div className="border-b border-[var(--border)] px-4 py-2 text-xs">
-        {fromEmail && fromEmail !== accountEmail && (
-          <div className="mb-0.5 flex gap-2">
-            <span className="w-8 shrink-0 text-[var(--muted-text)]">From</span>
-            <span className="min-w-0 break-words text-[var(--foreground)]">{fromEmail}</span>
-          </div>
-        )}
+        <div className="mb-0.5 flex items-start gap-2">
+          {fromEmail && fromEmail !== accountEmail && (
+            <div className="flex flex-1 min-w-0 gap-2">
+              <span className="w-8 shrink-0 text-[var(--muted-text)]">From</span>
+              <span className="min-w-0 break-words text-[var(--foreground)]">{fromEmail}</span>
+            </div>
+          )}
+          {!alwaysShowCcBcc && (
+            <div className="flex items-center gap-2 text-[var(--muted-text)]">
+              <span className="text-[var(--border)]" aria-hidden="true">
+                |
+              </span>
+              {!showCc && (
+                <Button
+                  type="button"
+                  onPress={() => setCcExpanded(true)}
+                  className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Cc
+                </Button>
+              )}
+              {!showBcc && (
+                <Button
+                  type="button"
+                  onPress={() => setBccExpanded(true)}
+                  className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Bcc
+                </Button>
+              )}
+              {!showReplyTo && (
+                <Button
+                  type="button"
+                  onPress={() => setReplyToExpanded(true)}
+                  className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  &gt;&gt;
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
         <RecipientField
           label="To"
           recipients={toRecipients}
           onChange={setToRecipients}
           placeholder="Recipients"
         />
-        {showCcBcc ? (
-          <div className="mt-1 space-y-1">
-            <RecipientField
-              label="Cc"
-              recipients={ccRecipients}
-              onChange={setCcRecipients}
-              placeholder="Cc recipients"
-            />
-            <RecipientField
-              label="Bcc"
-              recipients={bccRecipients}
-              onChange={setBccRecipients}
-              placeholder="Bcc recipients"
-            />
+        {(showCc || showBcc || showReplyTo || alwaysShowCcBcc) && (
+          <div className="mt-1 space-y-1" onBlur={handleAddressBlockBlur}>
+            {showCc && (
+              <RecipientField
+                label="Cc"
+                recipients={ccRecipients}
+                onChange={setCcRecipients}
+                placeholder="Cc recipients"
+              />
+            )}
+            {showBcc && (
+              <RecipientField
+                label="Bcc"
+                recipients={bccRecipients}
+                onChange={setBccRecipients}
+                placeholder="Bcc recipients"
+              />
+            )}
+            {showReplyTo && (
+              <RecipientField
+                label="Reply-To"
+                recipients={replyToRecipients}
+                onChange={setReplyToRecipients}
+                placeholder="Reply-To address"
+              />
+            )}
           </div>
-        ) : (
-          <Button
-            type="button"
-            onPress={() => setShowCcBcc(true)}
-            className="kylins-link ml-10 mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Cc / Bcc
-          </Button>
         )}
         <div className="mt-1 flex items-center gap-2">
           <span className="w-8 shrink-0 text-[var(--muted-text)]">Sub</span>
@@ -298,6 +465,39 @@ export function InlineReply({
             />
           </TextField>
         </div>
+        {isForward && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <Checkbox
+              isSelected={includeOriginalAttachments}
+              onChange={(selected) => {
+                setIncludeOriginalAttachments(selected);
+                if (!selected) {
+                  setAttachments([]);
+                  attachmentSeededRef.current = false;
+                }
+              }}
+              className="flex items-center gap-2 text-[var(--foreground)]"
+            >
+              <span className="text-xs">Include original attachments</span>
+            </Checkbox>
+            {attachments.map((att) => (
+              <span
+                key={att.id}
+                className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[10px] text-[var(--foreground)]"
+              >
+                <span className="max-w-[120px] truncate">{att.filename}</span>
+                <button
+                  type="button"
+                  onClick={() => setAttachments((prev) => prev.filter((a) => a.id !== att.id))}
+                  className="text-[var(--muted-text)] hover:text-[var(--foreground)]"
+                  aria-label={`Remove ${att.filename}`}
+                >
+                  <CloseIcon size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <EditorToolbar editor={editor} onRequestLink={() => setShowLinkDialog(true)} />

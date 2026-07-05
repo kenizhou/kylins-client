@@ -18,6 +18,8 @@ import type { DraftInput } from './drafts';
 import { buildSendDraft } from './buildSendDraft';
 import { newDraftId } from './attachments';
 import { useAccountStore } from '@/stores/accountStore';
+import { useUIStore } from '@/stores/uiStore';
+import { useToastStore } from '@/stores/toastStore';
 import { upsertContact } from '@/services/db/contacts';
 import { getSettingBool } from '@/services/settings';
 import { SETTING_KEYS } from '@/services/settingsKeys';
@@ -60,6 +62,9 @@ export async function sendEmail(
     return { success: false, message: `No account found for id ${accountId}` };
   }
 
+  const setProgress = useUIStore.getState().setSendProgress;
+  setProgress({ active: true, message: 'Sending…' });
+
   const sendDraftId = stagingDraftId ?? newDraftId();
   const draft = await buildSendDraft(
     input,
@@ -75,6 +80,8 @@ export async function sendEmail(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    setProgress({ active: false });
+    useToastStore.getState().push(`Send failed: ${message}`, 'error');
     return { success: false, message };
   }
 
@@ -92,6 +99,7 @@ export async function sendEmail(
     }
   }
 
+  setProgress({ active: false });
   window.dispatchEvent(new Event(SEND_COMPLETE_EVENT));
   return { success: true, message: 'Queued for send' };
 }

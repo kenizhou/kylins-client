@@ -6,10 +6,15 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { searchContacts, type DbContact } from '@/services/db/contacts';
-import { parseRecipients, isValidEmail, type Recipient } from '@/features/composer/contacts';
+import {
+  parseRecipients,
+  isValidEmail,
+  formatRecipient,
+  type Recipient,
+} from '@/features/composer/contacts';
 import { CopyIcon, MoveIcon, TrashIcon, CaretDownIcon } from '@/components/icons';
 
-export type MoveTarget = 'to' | 'cc' | 'bcc';
+export type MoveTarget = 'to' | 'cc' | 'bcc' | 'replyTo';
 
 interface RecipientFieldProps {
   label: string;
@@ -179,9 +184,7 @@ export function RecipientField({
                 setMenuIndex(i);
               }}
             >
-              <span className="max-w-[180px] truncate">
-                {r.name !== r.email ? r.name : r.email}
-              </span>
+              <span className="max-w-[260px] truncate">{formatRecipient(r)}</span>
               <button
                 type="button"
                 data-chip-arrow

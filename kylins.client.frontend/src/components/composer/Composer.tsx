@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
-import { Button, Input, TextField } from 'react-aria-components';
+import { Button, Input, TextField, Checkbox } from 'react-aria-components';
 
 import { RecipientField } from '@/features/composer/RecipientField';
 import type { MoveTarget } from '@/features/composer/RecipientField';
@@ -28,6 +28,7 @@ import { FromSelector } from './FromSelector';
 import { ClassificationSelector } from '@/features/composer/ClassificationSelector';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
+import { useUIStore } from '@/stores/uiStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
 import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
@@ -55,9 +56,9 @@ import {
   RestoreIcon,
   PopOutIcon,
   PlusIcon,
-  WarningIcon,
   CloseIcon,
   SendIcon,
+  SpinnerIcon,
 } from '../icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
@@ -127,8 +128,8 @@ export function Composer({ windowed = false }: ComposerProps) {
   const to = useComposerStore((s) => s.to);
   const cc = useComposerStore((s) => s.cc);
   const bcc = useComposerStore((s) => s.bcc);
+  const replyTo = useComposerStore((s) => s.replyTo);
   const subject = useComposerStore((s) => s.subject);
-  const showCcBcc = useComposerStore((s) => s.showCcBcc);
   const fromEmail = useComposerStore((s) => s.fromEmail);
   const viewMode = useComposerStore((s) => s.viewMode);
   const signatureHtml = useComposerStore((s) => s.signatureHtml);
@@ -141,10 +142,11 @@ export function Composer({ windowed = false }: ComposerProps) {
   const setTo = useComposerStore((s) => s.setTo);
   const setCc = useComposerStore((s) => s.setCc);
   const setBcc = useComposerStore((s) => s.setBcc);
+  const setReplyTo = useComposerStore((s) => s.setReplyTo);
   const setSubject = useComposerStore((s) => s.setSubject);
-  const setShowCcBcc = useComposerStore((s) => s.setShowCcBcc);
   const setFromEmail = useComposerStore((s) => s.setFromEmail);
   const setViewMode = useComposerStore((s) => s.setViewMode);
+  const setIncludeOriginalAttachments = useComposerStore((s) => s.setIncludeOriginalAttachments);
   const addAttachment = useComposerStore((s) => s.addAttachment);
   const originalMessageId = useComposerStore((s) => s.originalMessageId);
   const includeOriginalAttachments = useComposerStore((s) => s.includeOriginalAttachments);
@@ -164,11 +166,21 @@ export function Composer({ windowed = false }: ComposerProps) {
   const checkSpelling = usePreferencesStore((s) => s.checkSpelling);
   const undoSendDuration = usePreferencesStore((s) => s.undoSendDuration);
   const messageSentSound = usePreferencesStore((s) => s.messageSentSound);
+  const alwaysShowCcBcc = usePreferencesStore((s) => s.alwaysShowCcBcc);
 
   const sendingRef = useRef(false);
+  const sendProgressActive = useUIStore((s) => s.sendProgress.active);
   const attachmentSeededRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
+  const [ccExpanded, setCcExpanded] = useState(() => alwaysShowCcBcc || cc.length > 0);
+  const [bccExpanded, setBccExpanded] = useState(() => alwaysShowCcBcc || bcc.length > 0);
+  const [replyToExpanded, setReplyToExpanded] = useState(
+    () => alwaysShowCcBcc || replyTo.length > 0,
+  );
+  const showCc = ccExpanded || alwaysShowCcBcc || cc.length > 0;
+  const showBcc = bccExpanded || alwaysShowCcBcc || bcc.length > 0;
+  const showReplyTo = replyToExpanded || alwaysShowCcBcc || replyTo.length > 0;
   const [isDragging, setIsDragging] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
@@ -467,6 +479,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       to: state.to,
       cc: state.cc.length > 0 ? state.cc : undefined,
       bcc: state.bcc.length > 0 ? state.bcc : undefined,
+      replyTo: state.replyTo.length > 0 ? state.replyTo : undefined,
       subject: state.subject,
       bodyHtml: html,
       fromEmail: state.fromEmail ?? activeAccount.email,
@@ -698,16 +711,22 @@ export function Composer({ windowed = false }: ComposerProps) {
   }, [handleSend, handleSendAndCloseWindow, windowed]);
 
   const handleMoveRecipient = useCallback(
-    (recipient: Recipient, from: 'to' | 'cc' | 'bcc', toField: MoveTarget) => {
+    (recipient: Recipient, from: 'to' | 'cc' | 'bcc' | 'replyTo', toField: MoveTarget) => {
       const eqEmail = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-      const lists = { to, cc, bcc };
-      const setters = { to: setTo, cc: setCc, bcc: setBcc };
+      const lists = { to, cc, bcc, replyTo };
+      const setters = { to: setTo, cc: setCc, bcc: setBcc, replyTo: setReplyTo };
       setters[from](lists[from].filter((r) => !eqEmail(r.email, recipient.email)));
+      if (toField === 'replyTo') {
+        if (!replyTo.some((r) => eqEmail(r.email, recipient.email))) {
+          setReplyTo([...replyTo, recipient]);
+        }
+        return;
+      }
       if (!lists[toField].some((r) => eqEmail(r.email, recipient.email))) {
         setters[toField]([...lists[toField], recipient]);
       }
     },
-    [to, cc, bcc, setTo, setCc, setBcc],
+    [to, cc, bcc, replyTo, setTo, setCc, setBcc, setReplyTo],
   );
 
   const handlePopOutComposer = useCallback(async () => {
@@ -720,6 +739,8 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.to.length > 0) params.set('to', formatRecipients(state.to).join(','));
       if (state.cc.length > 0) params.set('cc', formatRecipients(state.cc).join(','));
       if (state.bcc.length > 0) params.set('bcc', formatRecipients(state.bcc).join(','));
+      if (state.replyTo.length > 0)
+        params.set('replyTo', formatRecipients(state.replyTo).join(','));
       if (state.subject) params.set('subject', state.subject);
       if (state.threadId) params.set('threadId', state.threadId);
       if (state.inReplyToMessageId) params.set('inReplyToMessageId', state.inReplyToMessageId);
@@ -767,6 +788,14 @@ export function Composer({ windowed = false }: ComposerProps) {
     }
   }, [editor, closeComposer]);
 
+  const handleAddressBlockBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (alwaysShowCcBcc) return;
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    if (cc.length === 0) setCcExpanded(false);
+    if (bcc.length === 0) setBccExpanded(false);
+    if (replyTo.length === 0) setReplyToExpanded(false);
+  };
+
   if (!isOpen) return null;
 
   const isFullpage = windowed || viewMode === 'fullpage';
@@ -780,7 +809,6 @@ export function Composer({ windowed = false }: ComposerProps) {
           : 'New Message';
   const savedLabel = isSaving ? 'Saving...' : lastSavedAt ? 'Draft saved' : null;
 
-  const requiresClassification = !classificationId;
   const prominent = isProminent(currentLevel);
 
   const composerPanel = (
@@ -851,22 +879,61 @@ export function Composer({ windowed = false }: ComposerProps) {
             <CommandRibbon mode="compose" />
           </div>
 
-          {requiresClassification && (
-            <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
-              <span className="inline-flex items-center gap-1.5">
-                <WarningIcon size={14} />
-                <span>Select a classification before sending.</span>
-              </span>
-            </div>
-          )}
-
           {/* Address fields */}
           <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
-            <FromSelector
-              aliases={aliases}
-              selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
-              onChange={(alias) => setFromEmail(alias.email)}
-            />
+            <div className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                {aliases.length > 1 ? (
+                  <FromSelector
+                    aliases={aliases}
+                    selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
+                    onChange={(alias) => setFromEmail(alias.email)}
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                    <span className="w-8 shrink-0 text-xs font-medium text-[var(--muted-text)]">
+                      From
+                    </span>
+                    <span className="min-w-0 truncate">
+                      {aliases[0]?.displayName
+                        ? `${aliases[0].displayName} <${aliases[0].email}>`
+                        : (aliases[0]?.email ?? activeAccount?.email ?? '')}
+                    </span>
+                  </div>
+                )}
+              </div>
+              {!alwaysShowCcBcc && (
+                <div className="flex items-center gap-2 text-xs text-[var(--muted-text)]">
+                  <span className="text-[var(--border)]" aria-hidden="true">
+                    |
+                  </span>
+                  {!showCc && (
+                    <Button
+                      onPress={() => setCcExpanded(true)}
+                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Cc
+                    </Button>
+                  )}
+                  {!showBcc && (
+                    <Button
+                      onPress={() => setBccExpanded(true)}
+                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Bcc
+                    </Button>
+                  )}
+                  {!showReplyTo && (
+                    <Button
+                      onPress={() => setReplyToExpanded(true)}
+                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      &gt;&gt;
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
             <RecipientField
               label="To"
               recipients={to}
@@ -875,41 +942,55 @@ export function Composer({ windowed = false }: ComposerProps) {
               moveTargets={[
                 { label: 'Cc', target: 'cc' },
                 { label: 'Bcc', target: 'bcc' },
+                { label: 'Reply-To', target: 'replyTo' },
               ]}
               onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
             />
-            {showCcBcc ? (
-              <>
-                <RecipientField
-                  label="Cc"
-                  recipients={cc}
-                  onChange={setCc}
-                  placeholder="Cc recipients"
-                  moveTargets={[
-                    { label: 'To', target: 'to' },
-                    { label: 'Bcc', target: 'bcc' },
-                  ]}
-                  onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
-                />
-                <RecipientField
-                  label="Bcc"
-                  recipients={bcc}
-                  onChange={setBcc}
-                  placeholder="Bcc recipients"
-                  moveTargets={[
-                    { label: 'To', target: 'to' },
-                    { label: 'Cc', target: 'cc' },
-                  ]}
-                  onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-                />
-              </>
-            ) : (
-              <Button
-                onPress={() => setShowCcBcc(true)}
-                className="kylins-link ml-10 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                Cc / Bcc
-              </Button>
+            {(showCc || showBcc || showReplyTo || alwaysShowCcBcc) && (
+              <div className="space-y-1" onBlur={handleAddressBlockBlur}>
+                {showCc && (
+                  <RecipientField
+                    label="Cc"
+                    recipients={cc}
+                    onChange={setCc}
+                    placeholder="Cc recipients"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Bcc', target: 'bcc' },
+                      { label: 'Reply-To', target: 'replyTo' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+                  />
+                )}
+                {showBcc && (
+                  <RecipientField
+                    label="Bcc"
+                    recipients={bcc}
+                    onChange={setBcc}
+                    placeholder="Bcc recipients"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Cc', target: 'cc' },
+                      { label: 'Reply-To', target: 'replyTo' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
+                  />
+                )}
+                {showReplyTo && (
+                  <RecipientField
+                    label="Reply-To"
+                    recipients={replyTo}
+                    onChange={setReplyTo}
+                    placeholder="Reply-To address"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Cc', target: 'cc' },
+                      { label: 'Bcc', target: 'bcc' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'replyTo', target)}
+                  />
+                )}
+              </div>
             )}
           </div>
 
@@ -943,6 +1024,17 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       {/* Attachments */}
       <div className="border-t border-[var(--border)]">
+        {originalMessageId && !forwardAsAttachment && (
+          <div className="flex items-center gap-2 px-4 py-1.5">
+            <Checkbox
+              isSelected={includeOriginalAttachments}
+              onChange={setIncludeOriginalAttachments}
+              className="flex items-center gap-2 text-xs text-[var(--foreground)]"
+            >
+              Include original attachments
+            </Checkbox>
+          </div>
+        )}
         <AttachmentPicker />
       </div>
 
@@ -967,20 +1059,19 @@ export function Composer({ windowed = false }: ComposerProps) {
         <div className="flex items-center gap-2">
           <Button
             onPress={handleDiscard}
+            isDisabled={sendProgressActive}
             className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             Discard
           </Button>
           <Button
             onPress={windowed ? handleSendAndCloseWindow : handleSend}
-            isDisabled={to.length === 0 || requiresClassification}
-            aria-label={
-              requiresClassification ? 'Select a classification before sending' : undefined
-            }
+            isDisabled={to.length === 0 || sendProgressActive}
+            aria-label={undefined}
             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <SendIcon size={14} />
-            Send
+            {sendProgressActive ? <SpinnerIcon size={14} /> : <SendIcon size={14} />}
+            {sendProgressActive ? 'Sending…' : 'Send'}
           </Button>
         </div>
       </div>

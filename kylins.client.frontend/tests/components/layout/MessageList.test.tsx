@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, waitFor, fireEvent, screen } from '@testing-library/react';
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve([])) }));
+
 import { MessageList } from '../../../src/components/layout/MessageList';
 import { useThreadStore } from '../../../src/stores/threadStore';
 import { useFolderStore } from '../../../src/stores/folderStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
 import { useComposerStore } from '../../../src/stores/composerStore';
+import { usePreferencesStore } from '../../../src/stores/preferencesStore';
 import { getThreads, getMessagesForThread } from '../../../src/services/db/threads';
 import { getMessageBody } from '../../../src/services/db/messageBodies';
 import type { Thread, DbMessageRow } from '../../../src/services/db/threads';
@@ -262,6 +266,7 @@ describe('MessageList', () => {
       activeAccountId: 'a1',
       defaultAccountId: 'a1',
     });
+    usePreferencesStore.setState({ defaultReplyBehavior: 'reply' });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());

@@ -107,7 +107,9 @@ export async function getAliasesForAccount(accountId: string): Promise<DbSendAsA
  * Synthesize a send-as identity for an account's own address. Used so the From
  * selector always has at least one entry even when the alias table is empty.
  */
-export function accountAsAlias(account: Account): SendAsAlias {
+export function accountAsAlias(
+  account: Pick<Account, 'id' | 'email' | 'displayName'>,
+): SendAsAlias {
   return {
     id: `account-${account.id}`,
     email: account.email,
