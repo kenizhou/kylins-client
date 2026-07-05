@@ -282,7 +282,7 @@ export function SetupShell({ variant, children, announcement, contentRef }: Setu
       {isFullscreen && <SetupTitleBar />}
       <main
         ref={contentRef}
-        className="relative flex flex-1 items-center justify-center overflow-y-auto p-6 pt-[calc(1.5rem+env(safe-area-inset-top))] pr-[calc(1.5rem+env(safe-area-inset-right))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] pl-[calc(1.5rem+env(safe-area-inset-left))]"
+        className="relative flex flex-1 items-start justify-center overflow-y-auto p-6 pt-[calc(1.5rem+env(safe-area-inset-top))] pr-[calc(1.5rem+env(safe-area-inset-right))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] pl-[calc(1.5rem+env(safe-area-inset-left))]"
         style={isFullscreen ? dragStyle : undefined}
       >
         {/* Subtle ambient radial wash behind the card */}
@@ -313,14 +313,14 @@ export function SetupShell({ variant, children, announcement, contentRef }: Setu
 export interface SetupCardProps {
   children: ReactNode;
   className?: string;
-  width?: 'md' | 'lg';
+  width?: 'md' | 'lg' | 'xl';
 }
 
 export function SetupCard({ children, className = '', width = 'md' }: SetupCardProps) {
-  const widthClass = width === 'lg' ? 'max-w-2xl' : 'max-w-md';
+  const widthClass = width === 'xl' ? 'max-w-4xl' : width === 'lg' ? 'max-w-2xl' : 'max-w-md';
   return (
     <div
-      className={`setup-fade mx-auto w-full ${widthClass} rounded-xl border border-border bg-card p-6 sm:p-8 shadow-lg shadow-black/5 ${className}`}
+      className={`setup-fade mx-auto w-full ${widthClass} rounded-2xl border border-border/60 bg-card/95 p-6 shadow-2xl shadow-black/[0.06] backdrop-blur-sm sm:p-8 ${className}`}
     >
       {children}
     </div>
@@ -351,18 +351,20 @@ export function SetupHeader({
   return (
     <div className={`mb-8 flex flex-col ${alignClass}`}>
       {!hideMark && (
-        <div className={`mb-4 flex ${align === 'center' ? 'justify-center' : 'justify-start'}`}>
-          <KylinsMark className="h-10 w-10 text-primary" />
+        <div className={`mb-5 flex ${align === 'center' ? 'justify-center' : 'justify-start'}`}>
+          <KylinsMark className="h-12 w-12 text-primary" />
         </div>
       )}
       {eyebrow && (
-        <span className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">
+        <span className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
           {eyebrow}
         </span>
       )}
-      <h1 className="text-balance text-2xl font-semibold text-foreground sm:text-3xl">{title}</h1>
+      <h1 className="text-balance text-[1.75rem] font-semibold tracking-tight text-foreground sm:text-[2rem]">
+        {title}
+      </h1>
       {subtitle && (
-        <p className="mt-2 text-balance text-sm leading-relaxed text-muted-text">{subtitle}</p>
+        <p className="mt-3 text-balance text-sm leading-relaxed text-muted-text">{subtitle}</p>
       )}
     </div>
   );
@@ -392,10 +394,11 @@ export function SetupButton({
   onPress,
 }: SetupButtonProps) {
   const base =
-    'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-[colors,transform,shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 motion-safe:active:scale-[0.98]';
+    'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 motion-safe:active:scale-[0.97] motion-safe:hover:-translate-y-px';
   const variantMap = {
-    primary: 'bg-primary text-primary-foreground hover:bg-primary/90',
-    secondary: 'border border-border bg-secondary text-secondary-foreground hover:bg-hover',
+    primary: 'bg-primary text-primary-foreground shadow-md hover:bg-primary/90 hover:shadow-lg',
+    secondary:
+      'border border-border/80 bg-secondary text-secondary-foreground hover:bg-hover hover:border-border hover:shadow-sm',
     ghost: 'text-muted-text hover:bg-hover hover:text-foreground',
   };
 
@@ -420,7 +423,7 @@ export function SetupButton({
 // ---------------------------------------------------------------------------
 
 const inputBase =
-  'min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-text focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50';
+  'min-h-11 w-full rounded-lg border border-border/80 bg-background px-3.5 py-2.5 text-sm text-foreground shadow-sm transition-all placeholder:text-muted-text/70 hover:border-border hover:bg-background focus:border-primary focus:bg-background focus:outline-none focus:ring-[3px] focus:ring-ring/40 disabled:opacity-50';
 
 export interface SetupInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   error?: boolean;
@@ -447,6 +450,7 @@ export interface SetupSelectProps {
   onChange: (value: string) => void;
   options: SetupSelectOption[];
   label?: string;
+  ariaLabel?: string;
   error?: boolean;
   describedBy?: string;
 }
@@ -457,6 +461,7 @@ export function SetupSelect({
   onChange,
   options,
   label,
+  ariaLabel,
   error,
   describedBy,
 }: SetupSelectProps) {
@@ -464,7 +469,7 @@ export function SetupSelect({
     <Select
       selectedKey={value}
       onSelectionChange={(key) => onChange(String(key))}
-      aria-label={label}
+      aria-label={ariaLabel ?? label}
       aria-invalid={error || undefined}
       aria-describedby={describedBy}
       className="flex flex-col gap-1.5"
@@ -472,12 +477,12 @@ export function SetupSelect({
       {label && <Label className="text-sm font-medium text-foreground">{label}</Label>}
       <Button
         id={id}
-        className={`${inputBase} flex min-h-11 items-center justify-between text-left ${error ? 'border-destructive focus:border-destructive focus:ring-destructive/30' : ''}`}
+        className={`${inputBase} flex min-h-11 items-center justify-between text-left ${error ? 'border-destructive focus:border-destructive focus:ring-destructive/25' : ''}`}
       >
         <SelectValue />
-        <ArrowRightIcon size={14} className="rotate-90 text-muted-text" aria-hidden="true" />
+        <ArrowRightIcon size={14} className="rotate-90 text-muted-text/70" aria-hidden="true" />
       </Button>
-      <Popover className="min-w-[--trigger-width] rounded-lg border border-border bg-background shadow-lg">
+      <Popover className="min-w-[--trigger-width] rounded-lg border border-border/60 bg-background shadow-xl shadow-black/[0.08]">
         <ListBox className="py-1 outline-none">
           {options.map((option) => (
             <ListBoxItem
@@ -516,7 +521,7 @@ export function SetupField({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={fieldId} className="flex flex-col gap-1.5">
+      <label htmlFor={fieldId} className="flex flex-col gap-2">
         <span className="text-sm font-medium text-foreground">{label}</span>
         {React.isValidElement(children)
           ? React.cloneElement(
@@ -534,12 +539,12 @@ export function SetupField({
           : children}
       </label>
       {hint && (
-        <span id={hintId} className="text-xs text-muted-text">
+        <span id={hintId} className="text-xs text-muted-text/80">
           {hint}
         </span>
       )}
       {error && (
-        <span id={errorId} className="text-xs text-destructive" role="alert">
+        <span id={errorId} className="text-xs font-medium text-destructive" role="alert">
           {error}
         </span>
       )}
@@ -556,7 +561,7 @@ export function SetupBackButton({ onPress }: { onPress: () => void }) {
     <Button
       type="button"
       onPress={onPress}
-      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-muted-text transition-[colors,transform] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-safe:hover:-translate-x-0.5"
+      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border/60 bg-secondary px-4 text-sm font-medium text-muted-text transition-all hover:border-border hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-safe:active:scale-[0.97]"
     >
       <ArrowLeftIcon size={16} aria-hidden="true" />
       Back

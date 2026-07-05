@@ -9,6 +9,7 @@ import { getSetting } from './services/settings';
 import { getAllAccounts, deleteAccountByEmail } from './services/accounts';
 import { themeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
+import { activateBuiltInPlugins } from './services/plugins/builtInPlugins';
 import { useUIStore } from './stores/uiStore';
 import { useAccountStore } from './stores/accountStore';
 import { useFolderStore } from './stores/folderStore';
@@ -123,6 +124,7 @@ export default function App() {
                 to: composeParams.to,
                 cc: composeParams.cc,
                 bcc: composeParams.bcc,
+                replyTo: composeParams.replyTo,
                 subject: composeParams.subject,
                 bodyHtml: composeParams.bodyHtml,
                 threadId: composeParams.threadId,
@@ -174,6 +176,7 @@ export default function App() {
 
             // Plugin discovery: load any previously installed plugins, then activate.
             await pluginManager.loadInstalledPlugins();
+            activateBuiltInPlugins();
 
             // Load existing accounts into the store so the UI reflects any
             // already-configured accounts on startup.
@@ -259,8 +262,8 @@ export default function App() {
             isOpen={accountSetupOpen}
             onClose={handleCloseSetup}
             disableBackdropClose
-            size="md"
-            contentClassName="bg-[var(--background)]"
+            size="auto"
+            contentClassName="bg-[var(--background)] p-6 pt-14"
           >
             <AccountSetupFlow variant="modal" onComplete={handleSetupComplete} />
           </Modal>

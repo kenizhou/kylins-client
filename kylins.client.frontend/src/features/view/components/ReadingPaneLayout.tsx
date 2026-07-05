@@ -34,12 +34,12 @@ function PanelCard({ children }: { children: React.ReactNode }) {
  * drag hit region to at least 10px (fine pointer) regardless of visual width,
  * so the bar can stay slim-looking while remaining easy to grab.
  */
-function VDivider({ hidden = false }: { hidden?: boolean }) {
-  if (hidden) {
-    // Thin and colored to match the folder pane's surface so it disappears
-    // against it. Still draggable — react-resizable-panels expands the hit
-    // region to ≥10px regardless of visual width.
-    return <Separator className="w-px bg-[var(--surface)]" />;
+function VDivider({ invisible = false }: { invisible?: boolean }) {
+  if (invisible) {
+    // 1px transparent divider between FolderPane and MessageList. The
+    // resizable-panels library keeps a ≥10px drag hit region regardless of
+    // visual width, so resizing stays easy.
+    return <Separator className="w-px bg-transparent" />;
   }
   return (
     <Separator className="mx-1 w-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />
@@ -360,7 +360,7 @@ export function ReadingPaneLayout({
               {folderPane}
             </Panel>
           )}
-          {showFolderPane && <VDivider />}
+          {showFolderPane && <VDivider invisible />}
           <Panel
             id="message-list"
             defaultSize={outerLayout['message-list']}
@@ -399,7 +399,7 @@ export function ReadingPaneLayout({
               {folderPane}
             </Panel>
           )}
-          {showFolderPane && <VDivider />}
+          {showFolderPane && <VDivider invisible />}
           <Panel
             id="message-list"
             defaultSize={outerLayout['message-list']}

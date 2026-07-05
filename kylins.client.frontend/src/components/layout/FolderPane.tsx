@@ -13,6 +13,7 @@ import { useFolderStore } from '../../stores/folderStore';
 import type { MailFolder } from '../../services/mail/folders';
 import { getFolderIcon } from '../../utils/folderIcons';
 import { buildFolderTree, type FolderTreeNode } from '../../utils/folderTree';
+import { useAutoHideScrollbar, autoHideScrollbarClass } from '../../hooks/useAutoHideScrollbar';
 import { ContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { Modal } from '../ui/Modal';
 import {
@@ -118,7 +119,7 @@ function FolderRow({
         onPress={onClick}
         className={`
           group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left
-          ${active ? 'bg-selected text-selected-text' : 'text-foreground hover:bg-hover'}
+          ${active ? 'bg-selected text-selected-text folder-pane-selected-row' : 'text-foreground hover:bg-hover'}
         `}
       >
         {active && <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />}
@@ -393,8 +394,12 @@ function AccountFolderTree({
         id={folder.id}
         textValue={folder.name}
         className={({ isSelected, isHovered }) =>
-          `group relative flex items-center outline-none ${
-            isSelected ? 'bg-selected text-selected-text' : isHovered ? 'bg-hover' : ''
+          `group relative flex w-full items-center outline-none ${
+            isSelected
+              ? 'bg-selected text-selected-text folder-pane-selected-row'
+              : isHovered
+                ? 'bg-hover'
+                : ''
           }`
         }
       >
@@ -504,6 +509,8 @@ export function FolderPane() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [collapsedInitialized, setCollapsedInitialized] = useState(false);
   const [accountsCollapsed, setAccountsCollapsed] = useState<Set<string>>(new Set());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useAutoHideScrollbar(scrollRef);
 
   const toggleAccountCollapsed = (accountId: string) => {
     setAccountsCollapsed((prev) => {
@@ -638,7 +645,7 @@ export function FolderPane() {
 
   return (
     <div className="flex h-full flex-col rounded-xl bg-surface">
-      <div className="flex-1 overflow-auto [scrollbar-width:none] hover:[scrollbar-width:thin] [&::-webkit-scrollbar]:w-0 hover:[&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-text/40 hover:[&::-webkit-scrollbar-thumb]:bg-muted-text/60">
+      <div ref={scrollRef} className={`flex-1 folder-pane-scroll ${autoHideScrollbarClass}`}>
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-text">
             No folders yet. Add an account to get started.

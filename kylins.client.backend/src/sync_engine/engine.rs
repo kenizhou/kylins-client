@@ -8,6 +8,7 @@
 // TestSink collects events for unit tests (so the engine is drivable without a WebView).
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +17,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::db::{accounts, labels, messages, sync_state};
+use crate::db::{accounts, contacts, labels, messages, send_as_aliases, sync_state};
 use crate::mail::imap::session_manager::ImapSessionManager;
 use crate::sync_engine::{source_for_account, Cursor, MailSource, RemoteFolder};
 
@@ -209,28 +210,61 @@ pub struct SyncEngine {
     /// methods until Task 4 swaps `imap_client::connect()` per-call for
     /// `manager.execute(...)`; Task 3 is plumbing only (no behavior change).
     pub session_manager: Arc<ImapSessionManager>,
+    /// Tauri's `appDataDir` — the SAME directory the frontend resolves via
+    /// `@tauri-apps/api/path`'s `appDataDir()`. Used by `send_op` (T8) to
+    /// clean up the staged attachment directory `<appData>/outbox-attachments/
+    /// {draft_id}/` after a successful send. Threading the resolved path
+    /// through the engine (rather than re-resolving it via a Tauri handle)
+    /// keeps `send_op` testable without an `AppHandle` — tests pass a tempdir.
+    pub data_dir: PathBuf,
 }
 
 impl SyncEngine {
     pub fn new(pool: SqlitePool, sink: Arc<dyn EventSink>) -> Arc<Self> {
+        // Default `data_dir` to the system temp dir so existing tests that
+        // don't exercise cleanup keep working unchanged. Production code uses
+        // [`Self::new_tauri`] / [`Self::with_data_dir`] to pass the real
+        // `appDataDir`.
+        Self::with_data_dir(pool, sink, std::env::temp_dir())
+    }
+
+    /// Construct with an explicit `data_dir` (the Tauri `appDataDir` in
+    /// production, a tempdir in tests). Required for `send_op`'s attachment
+    /// cleanup to remove the SAME dir the frontend staged under.
+    pub fn with_data_dir(
+        pool: SqlitePool,
+        sink: Arc<dyn EventSink>,
+        data_dir: PathBuf,
+    ) -> Arc<Self> {
         Arc::new(Self {
             workers: Mutex::new(HashMap::new()),
             pool,
             sink,
             breakers: Mutex::new(HashMap::new()),
             session_manager: Arc::new(ImapSessionManager::new()),
+            data_dir,
         })
     }
 
-    /// Production constructor: emit over the Tauri WebView.
-    pub fn new_tauri(pool: SqlitePool, app: AppHandle) -> Arc<Self> {
-        Self::new(pool, Arc::new(TauriSink(app)))
+    /// Production constructor: emit over the Tauri WebView. `data_dir` MUST be
+    /// the same path the frontend resolves via `appDataDir()` — `lib.rs`
+    /// computes it once via `app.path().app_data_dir()` and passes it here so
+    /// backend cleanup targets `<appData>/outbox-attachments/{draft_id}/`,
+    /// matching the T7 frontend `attachments.ts` staging dir byte-for-byte.
+    pub fn new_tauri(pool: SqlitePool, app: AppHandle, data_dir: PathBuf) -> Arc<Self> {
+        Self::with_data_dir(pool, Arc::new(TauriSink(app)), data_dir)
     }
 
     /// Spawn a worker for every active account.
     pub async fn start(self: &Arc<Self>) -> Result<(), String> {
         let accs = accounts::get_all(&self.pool).await?;
-        for a in accs.iter().filter(|a| a.is_active) {
+        let active: Vec<_> = accs.iter().filter(|a| a.is_active).cloned().collect();
+        log::info!(
+            "[send] SyncEngine::start: spawning workers for {} active account(s): [{}]",
+            active.len(),
+            active.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
+        );
+        for a in &active {
             self.spawn_worker(a.id.clone()).await;
         }
         Ok(())
@@ -238,6 +272,9 @@ impl SyncEngine {
 
     /// Ensure a worker exists for the account, then nudge it to sync immediately.
     pub async fn sync_account_now(self: &Arc<Self>, account_id: String) {
+        log::info!(
+            "[send] sync_account_now ENTER account_id={account_id} (ensure_worker + nudge)"
+        );
         self.ensure_worker(account_id.clone()).await;
         self.nudge_worker(&account_id).await;
     }
@@ -256,25 +293,51 @@ impl SyncEngine {
             let ws = self.workers.lock().await;
             ws.get(account_id).map(|w| w.tx.clone())
         };
-        if let Some(tx) = tx {
-            let _ = tx.send(SyncOp::SyncNow).await;
+        match tx {
+            Some(tx) => {
+                log::info!(
+                    "[send] nudge_worker account_id={account_id} sending SyncOp::SyncNow"
+                );
+                if tx.send(SyncOp::SyncNow).await.is_err() {
+                    log::warn!(
+                        "[send] nudge_worker account_id={account_id} mpsc send FAILED (worker gone?)"
+                    );
+                }
+            }
+            None => {
+                log::warn!(
+                    "[send] nudge_worker account_id={account_id} NO WORKER running \
+                     (sync_start not called? account inactive?) — Send op will sit in queue"
+                );
+            }
         }
     }
 
     /// Ensure a worker exists for the account (no-op if already running).
     pub async fn ensure_worker(self: &Arc<Self>, account_id: String) {
         if self.workers.lock().await.contains_key(&account_id) {
+            log::info!(
+                "[send] ensure_worker account_id={account_id}: worker already running (no-op)"
+            );
             return;
         }
+        log::info!(
+            "[send] ensure_worker account_id={account_id}: NO worker yet → spawning"
+        );
         self.spawn_worker(account_id).await;
     }
 
     async fn spawn_worker(self: &Arc<Self>, account_id: String) {
+        log::info!("[send] spawn_worker ENTER account_id={account_id}");
         // Validate the account + capture provider up front (skip silently if missing).
         let acc = match accounts::get_by_id(&self.pool, &account_id).await {
             Ok(Some(a)) => a,
             _ => {
-                log::warn!("[sync] spawn_worker: account {account_id} not found");
+                log::warn!(
+                    "[send] spawn_worker: account {account_id} not found in DB — \
+                     worker NOT started. Send op will sit in queue until sync_start \
+                     is called for an account that exists."
+                );
                 return;
             }
         };
@@ -449,10 +512,16 @@ impl SyncEngine {
                 if channel_open {
                     tokio::select! {
                         _ = tick.tick() => {
+                            log::info!(
+                                "[send] worker {aid} tick fired → run_sync_round (periodic poll)"
+                            );
                             let _ = run_sync_round(&engine, &aid, &provider).await;
                         }
                         op = rx.recv() => match op {
                             Some(SyncOp::SyncNow) => {
+                                log::info!(
+                                    "[send] worker {aid} received SyncNow → run_sync_round (will reach run_replay_round ONLY if list_folders + folder iteration succeed)"
+                                );
                                 let _ = run_sync_round(&engine, &aid, &provider).await;
                             }
                             Some(SyncOp::Shutdown) => {
@@ -572,11 +641,35 @@ async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn 
             return;
         }
     };
+    log::info!(
+        "[send] run_replay_round ENTER account_id={account_id} dequeued {} op(s)",
+        ops.len()
+    );
+    if ops.is_empty() {
+        // Nothing pending — emit the queue event (0 pending) and return so the
+        // user can grep "dequeued 0 op(s)" to see idle replay rounds fire.
+        let pending = crate::db::queue::pending_count_for_account(pool, account_id)
+            .await
+            .unwrap_or(0);
+        engine.emit_queue(account_id, pending);
+        return;
+    }
     for op in ops {
+        log::info!(
+            "[send] processing op id={} account_id={account_id} op_type={} resource_id={}",
+            op.id,
+            op.operation_type,
+            op.resource_id
+        );
         let mop = match crate::db::mutations::MutationOp::from_pending(&op) {
             Ok(m) => m,
             Err(e) => {
-                log::warn!("[sync] decode op {} failed: {e}", op.id);
+                log::warn!(
+                    "[send] decode op {} FAILED (op_type={}, resource_id={}): {e} — op skipped, will retry next round",
+                    op.id,
+                    op.operation_type,
+                    op.resource_id
+                );
                 continue;
             }
         };
@@ -586,6 +679,25 @@ async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn 
         // also best-effort IMAP-APPEND a Sent copy and clean up staged
         // attachment files on success; the signature already threads `engine`
         // + `account_id` so T8 drops in without reshuffling the call site.
+        let dispatch = match &mop {
+            crate::db::mutations::MutationOp::Send { draft } => {
+                log::info!(
+                    "[send] op {} dispatch: Send → send_op (draft_id={}, subject={:?})",
+                    op.id,
+                    draft.draft_id,
+                    draft.subject
+                );
+                "send_op"
+            }
+            _ => {
+                log::info!(
+                    "[send] op {} dispatch: {} → exec_via_source",
+                    op.id,
+                    mop.op_type()
+                );
+                "exec_via_source"
+            }
+        };
         let result = match &mop {
             crate::db::mutations::MutationOp::Send { draft } => {
                 // `draft` is `&Box<SendDraft>`; `send_op` takes `&SendDraft`.
@@ -597,12 +709,22 @@ async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn 
         };
         match result {
             Ok(()) => {
+                log::info!(
+                    "[send] op {} OK via {} → mark_completed",
+                    op.id,
+                    dispatch
+                );
                 if let Err(e) = crate::db::queue::mark_completed(pool, &op.id).await {
                     log::warn!("[sync] mark_completed {} failed: {e}", op.id);
                 }
             }
             Err(e) => {
                 let msg = e.to_string();
+                log::warn!(
+                    "[send] op {} ERR via {}: {msg} → mark_failed (will retry with backoff)",
+                    op.id,
+                    dispatch
+                );
                 if let Err(e2) = crate::db::queue::mark_failed(pool, &op.id, &msg).await {
                     log::warn!("[sync] mark_failed {} failed: {e2}", op.id);
                 }
@@ -612,40 +734,254 @@ async fn run_replay_round(engine: &Arc<SyncEngine>, account_id: &str, src: &dyn 
     let pending = crate::db::queue::pending_count_for_account(pool, account_id)
         .await
         .unwrap_or(0);
+    log::info!(
+        "[send] run_replay_round EXIT account_id={account_id} remaining_pending={pending}"
+    );
     engine.emit_queue(account_id, pending);
 }
 
-/// Build RFC5322 MIME bytes from `draft` (via `mail_builder::build_mime`) and
-/// transmit them via `MailSource::send(&[u8])`.
+/// Build RFC5322 MIME bytes from `draft` (via `mail_builder::build_mime`),
+/// transmit them via `MailSource::send(&[u8])`, then — for IMAP/SMTP accounts
+/// where the server does NOT auto-save a Sent copy — best-effort IMAP-APPEND
+/// the MIME to the account's Sent folder, and finally clean up the staged
+/// attachment directory on success.
 ///
-/// **T6 scope:** build + send only. **T8 extends this** to also best-effort
-/// IMAP-APPEND a Sent copy when `!src.capabilities().saves_sent_automatically`
-/// (gated by the per-account `save_sent_copy` setting), and to clean up the
-/// staged attachment directory on success. The `engine` + `account_id`
-/// parameters are threaded now so T8 can reach the pool + resolve the Sent
-/// folder without reshuffling this call site — they are intentionally unused
-/// in T6 (guarded by `let _ = ...` to avoid dead-code warnings).
+/// **Best-effort invariant (load-bearing):** a Sent-append failure or
+/// cleanup failure MUST NEVER fail the op. The send already succeeded, so
+/// returning `Err` here would cause the replay worker to `mark_failed` +
+/// retry the whole op on the next round, re-sending the email and producing
+/// duplicates. Both the append and cleanup paths log a warning and continue.
 ///
-/// Build failures are surfaced as `SourceError::Other(...)` so the replay
-/// worker's standard Ok→mark_completed / Err→mark_failed handling applies and
-/// the op retries with backoff like any other failed mutation.
+/// The append is gated by BOTH:
+///   - `!src.capabilities().saves_sent_automatically` (EAS SaveInSentItems
+///     already saved; Gmail/Graph defer to 3c/3d), AND
+///   - the per-account `save_sent_copy` setting (default TRUE when the key
+///     is absent — `None → true`).
+///
+/// Build/send failures DO surface as `Err(SourceError::Other(...))` so the
+/// replay worker's standard Ok→mark_completed / Err→mark_failed handling
+/// applies and the op retries with backoff like any other failed mutation.
 async fn send_op(
     engine: &Arc<SyncEngine>,
     account_id: &str,
     src: &dyn MailSource,
     draft: &crate::mail::builder::SendDraft,
 ) -> Result<(), crate::sync_engine::SourceError> {
-    // T8 will use these; T6 only needs `src` + `draft`.
-    let _ = engine;
-    let _ = account_id;
-    build_and_send(src, draft).await
+    log::info!(
+        "[send] send_op ENTER account_id={account_id} draft_id={} from={} to_count={} caps.saves_sent_automatically={}",
+        draft.draft_id,
+        draft.from.email,
+        draft.to.len(),
+        src.capabilities().saves_sent_automatically
+    );
+
+    // Build MIME once — reused for both send and Sent-append (no rebuild).
+    let mime = match crate::mail::builder::build_mime(draft).await {
+        Ok(bytes) => {
+            log::info!(
+                "[send] build_mime OK draft_id={} {} bytes",
+                draft.draft_id,
+                bytes.len()
+            );
+            bytes
+        }
+        Err(e) => {
+            log::warn!(
+                "[send] build_mime ERR draft_id={}: {e}",
+                draft.draft_id
+            );
+            return Err(crate::sync_engine::SourceError::Other(format!(
+                "build_mime: {e}"
+            )));
+        }
+    };
+
+    // The retryable unit: an Err here surfaces to the replay worker, which
+    // marks the op failed + schedules backoff. Anything AFTER this line is
+    // best-effort and MUST NOT return Err (send already succeeded).
+    log::info!(
+        "[send] calling src.send draft_id={} (transport = {})",
+        draft.draft_id,
+        src_send_label(src)
+    );
+    match src.send(&mime).await {
+        Ok(()) => log::info!("[send] src.send OK draft_id={}", draft.draft_id),
+        Err(e) => {
+            log::warn!(
+                "[send] src.send ERR draft_id={}: {e} (op will mark_failed + retry)",
+                draft.draft_id
+            );
+            return Err(e);
+        }
+    }
+
+    // ---- best-effort Sent-append (IMAP/SMTP only; EAS skips — SaveInSentItems) ----
+    if !src.capabilities().saves_sent_automatically {
+        // Default TRUE when the setting is absent OR the read fails: only an
+        // explicit `Some(false)` skips the append. `unwrap_or(None)` on Err
+        // keeps the read failure best-effort (treat as unset = default-true).
+        let save = save_sent_copy(&engine.pool, account_id)
+            .await
+            .unwrap_or(None)
+            != Some(false);
+        if !save {
+            log::info!(
+                "[send] sent-append SKIPPED: per-account save_sent_copy=false (draft_id={})",
+                draft.draft_id
+            );
+        } else {
+            match crate::db::labels::resolve_sent_folder(&engine.pool, account_id).await {
+                Ok(Some(folder)) => {
+                    let sent_remote = mail_folder_to_remote(&folder);
+                    log::info!(
+                        "[send] sent-append calling src.append draft_id={} folder={} (best-effort)",
+                        draft.draft_id,
+                        sent_remote.remote_id
+                    );
+                    match src.append(&sent_remote, &mime, &["\\Seen"]).await {
+                        Ok(()) => log::info!(
+                            "[send] sent-append OK draft_id={}",
+                            draft.draft_id
+                        ),
+                        Err(e) => log::warn!(
+                            "[send] sent-append ERR (best-effort; send already succeeded) account_id={account_id} draft_id={}: {e}",
+                            draft.draft_id
+                        ),
+                    }
+                }
+                Ok(None) => log::warn!(
+                    "[send] sent-append SKIPPED: no Sent folder resolved for account_id={account_id} (draft_id={})",
+                    draft.draft_id
+                ),
+                Err(e) => log::warn!(
+                    "[send] sent-append SKIPPED: resolve_sent_folder err account_id={account_id} draft_id={}: {e}",
+                    draft.draft_id
+                ),
+            }
+        }
+    } else {
+        log::info!(
+            "[send] sent-append SKIPPED: source caps.saves_sent_automatically=true (EAS-style) draft_id={}",
+            draft.draft_id
+        );
+    }
+
+    // ---- best-effort cleanup of staged attachment files ----
+    // `<appData>/outbox-attachments/{draft_id}/` is where the T7 frontend
+    // (`attachments.ts`) stages attachment files for the picker + inline
+    // images. On successful send the staged files are no longer needed — the
+    // message (with attachments embedded in the MIME) is on its way and the
+    // Sent copy (if appended) carries them too. Failure here is logged +
+    // swallowed: orphaned files are cosmetic, not a send-flow error.
+    match cleanup_attachment_files(&engine.data_dir, &draft.draft_id).await {
+        Ok(()) => log::info!(
+            "[send] attachment cleanup OK draft_id={} (data_dir={})",
+            draft.draft_id,
+            engine.data_dir.display()
+        ),
+        Err(e) => log::warn!(
+            "[send] attachment cleanup ERR (best-effort) draft_id={}: {e}",
+            draft.draft_id
+        ),
+    }
+    log::info!("[send] send_op EXIT OK draft_id={}", draft.draft_id);
+    Ok(())
+}
+
+/// Best-effort label for the `src.send` log line — distinguishes IMAP/SMTP
+/// (which actually transports) from EAS (WBXML SendMail) from test mocks.
+/// Pure string match on the source's type name; falls back to "?" if the
+/// type name is unavailable (e.g. mock sources in tests).
+fn src_send_label(src: &dyn MailSource) -> &'static str {
+    let ty = std::any::type_name_of_val(src);
+    if ty.contains("ImapSource") {
+        "SMTP (ImapSource::send → smtp_client::send_raw_email)"
+    } else if ty.contains("EasSource") {
+        "EAS SendMail (EasSource::send → EasClient::send_mail)"
+    } else if ty.contains("MockSource") {
+        "MockSource::send (test)"
+    } else {
+        "?UnknownSource::send"
+    }
+}
+
+/// Read the per-account `save_sent_copy` setting. The key layout is
+/// `account.{account_id}.save_sent_copy`; values follow the settings layer's
+/// bool convention (`"true"` / `"false"`). Returns `None` when the key is
+/// absent — the caller (`send_op`) treats `None` as default-true.
+async fn save_sent_copy(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Option<bool>, String> {
+    crate::db::settings::get_bool(pool, &format!("account.{account_id}.save_sent_copy")).await
+}
+
+/// Remove the staged attachment directory for `draft_id`. Path:
+/// `<data_dir>/outbox-attachments/{draft_id}/`, matching the T7 frontend
+/// `attachments.ts` `outboxDir(draftId)` resolver byte-for-byte (both use
+/// Tauri's `appDataDir()`). Missing dir = no-op (the user may have no
+/// attachments, or the dir was already cleaned).
+async fn cleanup_attachment_files(data_dir: &std::path::Path, draft_id: &str) -> Result<(), String> {
+    // draft_id comes from the frontend as an opaque identifier; make sure it
+    // cannot be used to traverse outside the per-draft staging directory.
+    if draft_id.is_empty()
+        || draft_id == "."
+        || draft_id == ".."
+        || draft_id.contains('/')
+        || draft_id.contains('\\')
+    {
+        return Err(format!("invalid draft_id for attachment cleanup: {:?}", draft_id));
+    }
+    let dir = data_dir.join("outbox-attachments").join(draft_id);
+    // Resolve the final path and ensure it is still inside the staging root.
+    let Ok(canonical_root) = tokio::fs::canonicalize(data_dir.join("outbox-attachments")).await else {
+        return Ok(());
+    };
+    let Ok(canonical_target) = tokio::fs::canonicalize(&dir).await else {
+        return Ok(());
+    };
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(format!(
+            "attachment cleanup path escapes staging root: {:?}",
+            canonical_target
+        ));
+    }
+    tokio::fs::remove_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Convert a stored `MailFolder` (DB row) into a `RemoteFolder` so it can be
+/// fed to `MailSource::append(&RemoteFolder, ...)` in `send_op`. Mirrors the
+/// inline conversion used at the IDLE-watcher call site (~line 389) for the
+/// INBOX folder; pulled into a helper because T8 needs the same mapping for
+/// the Sent folder. Only the fields the source adapters actually read
+/// (`remote_id` for IMAP) are load-bearing; the rest are best-effort mirrored.
+fn mail_folder_to_remote(f: &crate::db::labels::MailFolder) -> RemoteFolder {
+    RemoteFolder {
+        remote_id: f.remote_id.clone(),
+        name: f.name.clone(),
+        delimiter: f
+            .delimiter
+            .clone()
+            .unwrap_or_else(|| "/".to_string()),
+        special_use: f.imap_special_use.clone(),
+        role: f.role.clone(),
+        parent_id: f.parent_id.clone(),
+        exists: 0,
+        unseen: 0,
+    }
 }
 
 /// Core build-and-send logic, split out from `send_op` so unit tests can reach
 /// it without constructing a full `SyncEngine`. The worker-path test
 /// (`send_op_builds_mime_and_calls_send`) drives this directly with a
-/// `MockSource`. T8's `send_op` will keep calling this for the build+send
-/// portion and layer append + cleanup around it.
+/// `MockSource`. Kept as a pub(crate) test seam even after T8 inlined the
+/// build step into `send_op` (so the MIME bytes are built once and reused for
+/// the append) — the test still validates the build-and-send path in
+/// isolation, and any future caller that wants "send-only, no append/cleanup"
+/// can reach for this helper.
+#[allow(dead_code)] // test seam; referenced from #[cfg(test)] mod tests below
 pub(crate) async fn build_and_send(
     src: &dyn MailSource,
     draft: &crate::mail::builder::SendDraft,
@@ -737,6 +1073,10 @@ async fn run_sync_round_with_source(
     // blip does not wedge every account's sync).
     match crate::db::rate_limit::get_rate_limit(&engine.pool, account_id).await {
         Ok(Some(retry_after)) => {
+            log::warn!(
+                "[send] {account_id} run_sync_round_with_source: rate-limited, returning Ok \
+                 WITHOUT calling run_replay_round — Send op will sit in queue until window clears"
+            );
             engine.sink.emit_status(StatusEvent {
                 account_id: account_id.into(),
                 state: "rate_limited".into(),
@@ -760,6 +1100,11 @@ async fn run_sync_round_with_source(
     // by the failure that triggered the cooldown; bypass rounds must not
     // escalate it further or the cooldown would never expire on a dead account).
     if let Some(cooldown_until) = breaker_cooldown(engine, account_id).await {
+        log::warn!(
+            "[send] {account_id} run_sync_round_with_source: circuit breaker in cooldown \
+             (until={cooldown_until}), returning Ok WITHOUT calling run_replay_round — \
+             Send op will sit in queue until breaker clears"
+        );
         engine.sink.emit_status(StatusEvent {
             account_id: account_id.into(),
             state: "error".into(),
@@ -780,7 +1125,11 @@ async fn run_sync_round_with_source(
             f
         }
         Err(e) => {
-            log::warn!("[sync] {account_id} list_folders failed: {e}");
+            log::warn!(
+                "[send] {account_id} run_sync_round_with_source: list_folders FAILED ({e}) \
+                 — returning Err WITHOUT calling run_replay_round. \
+                 Send op will sit in queue until list_folders succeeds."
+            );
             // Phase 3f Task 5: if the source signalled a rate limit, persist
             // the window so the NEXT round short-circuits at the top via the
             // rate-limit check. This is NOT a breaker failure (the server told
@@ -846,6 +1195,32 @@ async fn run_sync_round_with_source(
         count: 0,
     });
 
+    // Addresses that belong to the account itself. Auto-extraction must never
+    // record the user's own email or verified send-as aliases as contacts.
+    let own_emails: Vec<String> = match accounts::get_by_id(&engine.pool, account_id).await {
+        Ok(Some(account)) => {
+            let mut set: Vec<String> = Vec::new();
+            let primary = account.email.trim().to_lowercase();
+            if !primary.is_empty() {
+                set.push(primary);
+            }
+            if let Ok(aliases) = send_as_aliases::emails_for_account(&engine.pool, account_id).await {
+                for alias in aliases {
+                    let email = alias.trim().to_lowercase();
+                    if !email.is_empty() && !set.contains(&email) {
+                        set.push(email);
+                    }
+                }
+            }
+            set
+        }
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            log::warn!("[sync] {account_id} failed to load account for contact extraction: {e}");
+            Vec::new()
+        }
+    };
+
     // Per-folder delta sync.
     for f in &folders {
         let label_id = format!("{account_id}:{}", f.remote_id);
@@ -883,6 +1258,23 @@ async fn run_sync_round_with_source(
                 continue;
             }
         };
+
+        // Extract contacts from the headers of every added/updated message.
+        // This runs outside the message-transaction batches so it cannot
+        // contribute to SQLite write-lock contention.
+        for m in delta.added.iter().chain(delta.updated.iter()) {
+            if let Err(e) = contacts::record_from_remote_msg(
+                &engine.pool,
+                account_id,
+                m,
+                f.role.as_deref(),
+                &own_emails,
+            )
+            .await
+            {
+                log::warn!("[contacts] {account_id} extraction failed for {}: {e}", m.uid);
+            }
+        }
         // Advance the cursor. Each source owns its own cursor payload and its
         // own persistence call (IMAP merges monotonically; EAS overwrites the
         // opaque sync_key). The branches are mutually exclusive — a delta from
@@ -979,7 +1371,17 @@ async fn run_sync_round_with_source(
     // we just used for the sync round. Runs on every poll tick AND on SyncNow,
     // since this is the tail of `run_sync_round_with_source`. Failures are
     // logged + retained with backoff (see `run_replay_round`).
+    log::info!(
+        "[send] {account_id} run_sync_round_with_source reached the tail — \
+         calling run_replay_round NOW (this is where Send actually fires)"
+    );
     run_replay_round(engine, account_id, src).await;
+
+    // Best-effort contact sync pass. A configured CardDAV/Google/EAS source is
+    // independent of mail sync; failures are logged but do not fail the round.
+    if let Err(e) = crate::sync::contacts::source::run_for_account(&engine.pool, account_id).await {
+        log::warn!("[contacts] {account_id} sync-source pass failed: {e}");
+    }
 
     Ok(())
 }
@@ -2215,5 +2617,299 @@ mod tests {
             }
             other => panic!("expected RecordedCall::Send, got {other:?}"),
         }
+    }
+
+    // ---- Send-flow T8: best-effort Sent-append + save_sent_copy + cleanup ----
+    //
+    // T8 widens `send_op` from "build + send" to "build + send + best-effort
+    // IMAP-APPEND to Sent + cleanup staged attachments". The load-bearing
+    // invariant is **best-effort means NEVER fail the op** — an append failure
+    // or cleanup failure logs a warning and `send_op` still returns Ok (so the
+    // replay worker `mark_completed`s the op, no retry, no duplicate send).
+    // The append is gated by BOTH `!saves_sent_automatically` AND the
+    // per-account `save_sent_copy` setting (default true on missing key).
+
+    use crate::db::settings;
+    use crate::mail::builder::{AddressSpec, SendDraft};
+    use crate::sync_engine::mock_source::RecordedCall;
+
+    /// Seed a `labels` row with `role='sent'` for the account, matching the
+    /// shape the IMAP folder-list sync writes (so `resolve_sent_folder` finds
+    /// it). `remote_id` carries the IMAP path the append will target.
+    async fn seed_sent_folder(pool: &SqlitePool, account_id: &str, remote_id: &str) {
+        sqlx::query(
+            "INSERT INTO labels (id, account_id, name, type, visible, sort_order, source, role,
+                                 remote_id, delimiter, mail_class)
+             VALUES (?, ?, 'Sent', 'system', 1, 0, 'imap', 'sent', ?, '/', 'mail')",
+        )
+        .bind(format!("{account_id}:{remote_id}"))
+        .bind(account_id)
+        .bind(remote_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Minimal text-only draft for T8 tests. `draft_id` is the dir name under
+    /// `<appData>/outbox-attachments/` that the cleanup step removes.
+    fn t8_draft(draft_id: &str) -> SendDraft {
+        SendDraft {
+            draft_id: draft_id.into(),
+            from: AddressSpec {
+                name: None,
+                email: "alice@kylins.local".into(),
+            },
+            to: vec![AddressSpec {
+                name: None,
+                email: "bob@kylins.local".into(),
+            }],
+            subject: "Hello from T8".into(),
+            text_body: Some("the quick brown fox".into()),
+            ..Default::default()
+        }
+    }
+
+    /// IMAP-like caps: `saves_sent_automatically = false` (client must APPEND
+    /// to Sent). This is the gate that makes `send_op` attempt the append.
+    fn imap_caps() -> crate::sync_engine::Capabilities {
+        crate::sync_engine::Capabilities {
+            saves_sent_automatically: false,
+            ..Default::default()
+        }
+    }
+
+    /// EAS-like caps: `saves_sent_automatically = true` (SaveInSentItems
+    /// already saved). `send_op` must SKIP the append for these sources.
+    fn eas_caps() -> crate::sync_engine::Capabilities {
+        crate::sync_engine::Capabilities {
+            saves_sent_automatically: true,
+            ..Default::default()
+        }
+    }
+
+    /// IMAP/SMTP account + a Sent folder + default `save_sent_copy` (absent =
+    /// true) → `send_op` MUST call `src.append(&["\\Seen"])` once with the
+    /// MIME bytes that `send` already saw. Pins the happy path: append fires,
+    /// the folder is the resolved Sent, the flag is `\Seen`.
+    #[tokio::test]
+    async fn send_op_appends_for_imap_when_save_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_sent_folder(&pool, "a", "Sent").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(imap_caps());
+
+        send_op(&engine, "a", &src, &t8_draft("d1")).await.unwrap();
+
+        let calls = src.recorded_calls();
+        // Exactly two calls: Send, then Append (in that order).
+        assert_eq!(
+            calls.len(),
+            2,
+            "IMAP/SMTP send_op must record Send + Append; got {calls:?}"
+        );
+        assert!(matches!(calls[0], RecordedCall::Send { .. }));
+        match &calls[1] {
+            RecordedCall::Append {
+                folder,
+                flags,
+                raw_bytes,
+            } => {
+                assert_eq!(folder, "Sent", "append must target the resolved Sent folder");
+                assert_eq!(flags, &vec!["\\Seen".to_string()], "append must pass \\Seen");
+                // Reuse invariant: the same MIME bytes are appended, not rebuilt.
+                let s = String::from_utf8_lossy(raw_bytes);
+                assert!(
+                    s.contains("Hello from T8"),
+                    "appended bytes must be the same MIME that was sent"
+                );
+            }
+            other => panic!("expected RecordedCall::Append, got {other:?}"),
+        }
+    }
+
+    /// EAS account (saves_sent_automatically=true) → `send_op` MUST NOT call
+    /// `append`. The SaveInSentItems EAS flag already server-side stored the
+    /// copy; calling append would double-save. Pins the gate.
+    #[tokio::test]
+    async fn send_op_skips_append_for_eas() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        // A Sent folder exists, but EAS caps must short-circuit before lookup.
+        seed_sent_folder(&pool, "a", "Sent").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(eas_caps());
+
+        send_op(&engine, "a", &src, &t8_draft("d2")).await.unwrap();
+
+        let calls = src.recorded_calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "EAS send_op must record only Send (no append); got {calls:?}"
+        );
+        assert!(matches!(calls[0], RecordedCall::Send { .. }));
+    }
+
+    /// Mock `append` returns Err, `send` returns Ok → `send_op` returns Ok.
+    /// This is THE load-bearing best-effort invariant: a Sent-append failure
+    /// after a successful SMTP send must NOT fail the op (otherwise the replay
+    /// worker `mark_failed`s + retries, re-sending the email → duplicates).
+    #[tokio::test]
+    async fn send_op_append_failure_does_not_fail_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_sent_folder(&pool, "a", "Sent").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![])
+            .with_caps(imap_caps())
+            .with_fail_append(true);
+
+        // Must return Ok despite the append failure.
+        let res = send_op(&engine, "a", &src, &t8_draft("d3")).await;
+        assert!(res.is_ok(), "append failure must NOT fail the op");
+
+        // Both Send and Append were attempted (the failure was on the append
+        // side, not a skip).
+        let calls = src.recorded_calls();
+        assert_eq!(calls.len(), 2);
+        assert!(matches!(calls[0], RecordedCall::Send { .. }));
+        assert!(matches!(calls[1], RecordedCall::Append { .. }));
+    }
+
+    /// On successful send, `send_op` MUST remove the staged attachment
+    /// directory `<appData>/outbox-attachments/{draft_id}/`. The dir is
+    /// created by the T7 frontend `attachments.ts` picker; leaving it would
+    /// leak user files (potentially large). Stages a temp dir matching the
+    /// cleanup path, asserts it exists before + is gone after.
+    #[tokio::test]
+    async fn send_op_cleans_up_attachments_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        // EAS caps so the append step is skipped — isolates the cleanup
+        // assertion (we're not depending on a Sent folder here).
+        seed_sent_folder(&pool, "a", "Sent").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(eas_caps());
+
+        // Stage the attachment dir matching the T7 frontend layout exactly:
+        // `<data_dir>/outbox-attachments/{draft_id}/attachment.png`.
+        let draft_id = "cleanup-test-draft";
+        let attach_dir = tmp
+            .path()
+            .join("outbox-attachments")
+            .join(draft_id);
+        std::fs::create_dir_all(&attach_dir).unwrap();
+        let staged_file = attach_dir.join("attachment.png");
+        std::fs::write(&staged_file, b"pretend-png-bytes").unwrap();
+        assert!(staged_file.exists(), "precondition: staged file exists");
+
+        send_op(&engine, "a", &src, &t8_draft(draft_id))
+            .await
+            .unwrap();
+
+        assert!(
+            !attach_dir.exists(),
+            "staged attachment dir must be removed on successful send"
+        );
+    }
+
+    /// `save_sent_copy` set explicitly to `false` for the account → append is
+    /// skipped (Send still fires). Pins the per-account opt-out: a user who
+    /// disables "save sent copy" must not get the IMAP APPEND.
+    #[tokio::test]
+    async fn send_op_skips_append_when_save_sent_copy_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_sent_folder(&pool, "a", "Sent").await;
+        settings::set_bool(
+            &pool,
+            "account.a.save_sent_copy",
+            false,
+        )
+        .await
+        .unwrap();
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(imap_caps());
+
+        send_op(&engine, "a", &src, &t8_draft("d4")).await.unwrap();
+
+        let calls = src.recorded_calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "save_sent_copy=false must skip append; got {calls:?}"
+        );
+        assert!(matches!(calls[0], RecordedCall::Send { .. }));
+    }
+
+    /// Default-true invariant: when the `save_sent_copy` key is ABSENT (None),
+    /// `send_op` MUST still append. This pins the "None → true" rule so a
+    /// fresh install with no settings row keeps saving Sent copies.
+    #[tokio::test]
+    async fn send_op_appends_when_save_sent_copy_key_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_sent_folder(&pool, "a", "Sent").await;
+        // Intentionally DO NOT set the key — asserts the None-default-true path.
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(imap_caps());
+
+        send_op(&engine, "a", &src, &t8_draft("d5")).await.unwrap();
+
+        let calls = src.recorded_calls();
+        assert_eq!(
+            calls.len(),
+            2,
+            "absent key (default-true) must still append; got {calls:?}"
+        );
+        // Verify the key really was absent (sanity: confirms the default-true
+        // path is what fired, not a stale row).
+        let v = settings::get_bool(&pool, "account.a.save_sent_copy")
+            .await
+            .unwrap();
+        assert!(v.is_none(), "precondition: key really absent");
     }
 }

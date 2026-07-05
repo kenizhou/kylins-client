@@ -31,6 +31,15 @@ pub enum RecordedCall {
     Send {
         raw_bytes: Vec<u8>,
     },
+    /// IMAP APPEND call recorded by `send_op`'s best-effort Sent-append step (T8).
+    /// Captures the folder's `remote_id`, the raw MIME bytes, and the flag list
+    /// so tests can assert the append happened with `\Seen` against the Sent
+    /// folder.
+    Append {
+        folder: String,
+        raw_bytes: Vec<u8>,
+        flags: Vec<String>,
+    },
 }
 
 /// Preload folders + a pool of messages. `sync_folder` drains messages matching the
@@ -42,6 +51,10 @@ pub struct MockSource {
     pending: Arc<Mutex<Vec<RemoteMessage>>>,
     /// Mutation calls recorded in invocation order. Read via `recorded_calls()`.
     calls: Arc<Mutex<Vec<RecordedCall>>>,
+    /// When true, `append` returns `SourceError::Other`. Used by T8's
+    /// `send_op_append_failure_does_not_fail_op` test to verify the best-effort
+    /// invariant: an append failure must NOT fail the op (send already succeeded).
+    fail_append: bool,
 }
 
 impl MockSource {
@@ -51,6 +64,7 @@ impl MockSource {
             folders,
             pending: Arc::new(Mutex::new(messages)),
             calls: Arc::new(Mutex::new(vec![])),
+            fail_append: false,
         }
     }
 
@@ -59,9 +73,18 @@ impl MockSource {
         self
     }
 
-    /// Snapshot of recorded mutation calls (set_flags / move / delete / send) in
-    /// the order they were invoked. Used by `exec_via_source` tests to assert the
-    /// correct MailSource method was dispatched with the expected arguments.
+    /// Force `append` to return `Err(SourceError::Other(...))` on every call, so
+    /// the T8 best-effort invariant ("append failure never fails the op") can be
+    /// exercised. Send + other methods are unaffected.
+    pub fn with_fail_append(mut self, fail: bool) -> Self {
+        self.fail_append = fail;
+        self
+    }
+
+    /// Snapshot of recorded mutation calls (set_flags / move / delete / send /
+    /// append) in the order they were invoked. Used by `exec_via_source` and
+    /// `send_op` tests to assert the correct MailSource method was dispatched
+    /// with the expected arguments.
     pub fn recorded_calls(&self) -> Vec<RecordedCall> {
         self.calls.lock().unwrap().clone()
     }
@@ -163,11 +186,20 @@ impl MailSource for MockSource {
     }
     async fn append(
         &self,
-        _folder: &RemoteFolder,
-        _raw: &[u8],
-        _flags: &[&str],
+        folder: &RemoteFolder,
+        raw: &[u8],
+        flags: &[&str],
     ) -> Result<(), SourceError> {
-        Ok(())
+        self.calls.lock().unwrap().push(RecordedCall::Append {
+            folder: folder.remote_id.clone(),
+            raw_bytes: raw.to_vec(),
+            flags: flags.iter().map(|s| (*s).to_string()).collect(),
+        });
+        if self.fail_append {
+            Err(SourceError::Other("mock append failure".into()))
+        } else {
+            Ok(())
+        }
     }
     async fn send(&self, raw_mime: &[u8]) -> Result<(), SourceError> {
         self.calls.lock().unwrap().push(RecordedCall::Send {

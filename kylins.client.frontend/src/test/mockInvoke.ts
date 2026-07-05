@@ -189,6 +189,23 @@ export function defaultDbResult(cmd: string, args: Record<string, unknown> | und
     case 'db_get_contact_ids_for_group':
       return [];
 
+    // tasks
+    case 'db_get_tasks_for_account':
+    case 'db_get_tasks_for_thread':
+    case 'db_get_task_tags':
+      return [];
+    case 'db_get_task_by_id':
+      return null;
+    case 'db_insert_task':
+      return 'task-1';
+    case 'db_update_task':
+    case 'db_delete_task':
+    case 'db_toggle_task_completed':
+    case 'db_create_task_tag':
+    case 'db_update_task_tag_color':
+    case 'db_delete_task_tag':
+      return undefined;
+
     // signatures / drafts / aliases / calendar / scheduled / templates /
     // contact_sync_state / image_allowlist / ai_cache / search — sane empty
     // defaults so any component calling them during render doesn't blow up.

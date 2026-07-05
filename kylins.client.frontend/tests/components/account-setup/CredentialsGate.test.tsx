@@ -8,6 +8,7 @@ describe('CredentialsGate', () => {
     const { queryByLabelText, getByPlaceholderText, queryByTestId } = render(
       <CredentialsGate
         config={getProvider('gmail')}
+        displayName=""
         email=""
         password=""
         advancedClientId=""
@@ -15,6 +16,7 @@ describe('CredentialsGate', () => {
         onChange={() => {}}
         onSignIn={() => {}}
         onManualSetup={() => {}}
+        onBack={() => {}}
         canSubmit={false}
       />,
     );
@@ -28,6 +30,7 @@ describe('CredentialsGate', () => {
     const { getByLabelText, getByText, queryByTestId } = render(
       <CredentialsGate
         config={getProvider('yahoo')}
+        displayName=""
         email=""
         password=""
         advancedClientId=""
@@ -35,12 +38,13 @@ describe('CredentialsGate', () => {
         onChange={() => {}}
         onSignIn={onSignIn}
         onManualSetup={() => {}}
+        onBack={() => {}}
         canSubmit
       />,
     );
     expect(getByLabelText(/password/i)).toBeInTheDocument();
     expect(queryByTestId('kylins-mark')).not.toBeInTheDocument();
-    fireEvent.click(getByText(/sign in/i));
+    fireEvent.click(getByText(/continue/i));
     expect(onSignIn).toHaveBeenCalled();
   });
 
@@ -49,6 +53,7 @@ describe('CredentialsGate', () => {
     const { container } = render(
       <CredentialsGate
         config={getProvider('yahoo')}
+        displayName=""
         email=""
         password=""
         advancedClientId=""
@@ -56,6 +61,7 @@ describe('CredentialsGate', () => {
         onChange={() => {}}
         onSignIn={onSignIn}
         onManualSetup={() => {}}
+        onBack={() => {}}
         canSubmit
       />,
     );
@@ -67,6 +73,7 @@ describe('CredentialsGate', () => {
     const { getByText } = render(
       <CredentialsGate
         config={getProvider('yahoo')}
+        displayName=""
         email=""
         password=""
         advancedClientId=""
@@ -74,6 +81,7 @@ describe('CredentialsGate', () => {
         onChange={() => {}}
         onSignIn={() => {}}
         onManualSetup={() => {}}
+        onBack={() => {}}
         canSubmit={false}
         errors={{ email: 'Enter your email address.', password: 'Enter your password.' }}
       />,

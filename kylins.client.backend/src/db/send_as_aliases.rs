@@ -90,6 +90,18 @@ pub async fn list_for_account(pool: &SqlitePool, account_id: &str) -> Result<Vec
     Ok(rows.iter().map(row_to_alias).collect())
 }
 
+/// Return just the email addresses for an account's aliases.
+pub async fn emails_for_account(pool: &SqlitePool, account_id: &str) -> Result<Vec<String>, String> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT email FROM send_as_aliases WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|(email,)| email).collect())
+}
+
 /// Insert an alias. Returns the new id. If `is_default`, clears prior defaults
 /// for the account first.
 pub async fn insert(pool: &SqlitePool, input: CreateAliasInput) -> Result<String, String> {

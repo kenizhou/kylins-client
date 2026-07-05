@@ -7,19 +7,30 @@
 
 import { Button } from 'react-aria-components';
 import { useComposerStore } from '@/stores/composerStore';
+import { cleanupAttachments } from '@/services/composer/attachments';
 
 export function UndoSendToast() {
   const undoSendVisible = useComposerStore((s) => s.undoSendVisible);
   const undoSendTimer = useComposerStore((s) => s.undoSendTimer);
+  const undoStagingDraftId = useComposerStore((s) => s.undoStagingDraftId);
   const setUndoSendTimer = useComposerStore((s) => s.setUndoSendTimer);
   const setUndoSendVisible = useComposerStore((s) => s.setUndoSendVisible);
+  const setUndoStagingDraftId = useComposerStore((s) => s.setUndoStagingDraftId);
 
   if (!undoSendVisible) return null;
 
-  const handleUndo = () => {
+  const handleUndo = async () => {
     if (undoSendTimer) {
       clearTimeout(undoSendTimer);
       setUndoSendTimer(null);
+    }
+    if (undoStagingDraftId) {
+      try {
+        await cleanupAttachments(undoStagingDraftId);
+      } catch {
+        // Best-effort cleanup of staged attachments for a canceled send.
+      }
+      setUndoStagingDraftId(null);
     }
     setUndoSendVisible(false);
   };

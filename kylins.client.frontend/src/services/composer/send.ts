@@ -7,19 +7,22 @@
 // EAS SendMail for Exchange) with exponential backoff. The invoke resolving
 // means "queued for send"; the UI treats that as success.
 //
-// Previously this module did the SMTP/EAS transport inline + fell back to the
-// JS offline queue on network error. That responsibility now lives in the
-// engine, so the per-provider transports (`smtpSender`, `imapProvider`,
-// `easProvider`) and the JS `OfflineQueue` are no longer referenced here —
-// they remain in the tree as the engine's `MailSource` implementations.
+// Send-flow hardening (T7+T7b): the IPC payload is `{ type: 'send', draft }`
+// where `draft: SendDraft` is a structured object. The backend builds the
+// RFC5322 MIME bytes from it (Stalwart `mail-builder`) — no base64 crosses
+// IPC for attachments/inline images; they are file paths under
+// `<appData>/outbox-attachments/{stagingDraftId}/`. See `buildSendDraft`.
 
 import { invoke } from '@tauri-apps/api/core';
-import { deleteDraft, type DraftInput } from './drafts';
-import { inlineCss } from './juiceInline';
-import { buildRawEmail, type EmailAttachment } from '@/utils/emailBuilder';
+import type { DraftInput } from './drafts';
+import { buildSendDraft } from './buildSendDraft';
+import { newDraftId } from './attachments';
 import { useAccountStore } from '@/stores/accountStore';
-import { formatRecipients } from '@/features/composer/contacts';
-import { stripSignature } from '@/features/composer/signaturePlacement';
+import { useUIStore } from '@/stores/uiStore';
+import { useToastStore } from '@/stores/toastStore';
+import { upsertContact } from '@/services/db/contacts';
+import { getSettingBool } from '@/services/settings';
+import { SETTING_KEYS } from '@/services/settingsKeys';
 
 export interface SendResult {
   success: boolean;
@@ -29,91 +32,74 @@ export interface SendResult {
 /** Dispatched on a successful send so the UI can refresh the Sent folder. */
 export const SEND_COMPLETE_EVENT = 'mail:send-complete';
 
-/** Map a DraftInput to the shape `buildRawEmail` expects. */
-function inputToEmailDraft(input: DraftInput, fallbackFrom: string) {
-  const attachments: EmailAttachment[] = (input.attachments ?? []).map((a) => ({
-    filename: a.filename,
-    mimeType: a.mimeType,
-    content: a.content,
-  }));
-  // Recipient[] → RFC address strings at the MIME boundary. Reply-To only when set.
-  const replyTo =
-    input.replyTo && input.replyTo.length > 0 ? formatRecipients(input.replyTo) : undefined;
-
-  const extraHeaders: Record<string, string> = { ...(input.extraHeaders ?? {}) };
-  if (input.importance && input.importance !== 'normal') {
-    extraHeaders['X-Priority'] = input.importance === 'high' ? '1' : '5';
-    extraHeaders['Importance'] = input.importance;
-  }
-  if (input.requestReadReceipt) {
-    extraHeaders['Disposition-Notification-To'] = input.fromEmail ?? fallbackFrom;
-  }
-  if (input.requestDeliveryReceipt) {
-    extraHeaders['Return-Receipt-To'] = input.fromEmail ?? fallbackFrom;
-  }
-  if (input.preventCopy) {
-    extraHeaders['X-Classification-Prevent-Copy'] = 'true';
-  }
-
-  return {
-    from: input.fromEmail ?? fallbackFrom,
-    to: formatRecipients(input.to),
-    cc: input.cc && input.cc.length > 0 ? formatRecipients(input.cc) : undefined,
-    bcc: input.bcc && input.bcc.length > 0 ? formatRecipients(input.bcc) : undefined,
-    replyTo,
-    subject: input.subject,
-    // Inline <style> blocks for email-client fidelity, then unwrap any baked-in
-    // <signature> tag so recipients see the signature content without the
-    // non-standard wrapper element.
-    htmlBody: stripSignature(inlineCss(input.bodyHtml)),
-    inReplyTo: input.inReplyToMessageId ?? undefined,
-    threadId: input.threadId ?? undefined,
-    attachments: attachments.length > 0 ? attachments : undefined,
-    extraHeaders: Object.keys(extraHeaders).length > 0 ? extraHeaders : undefined,
-  };
-}
-
 /**
- * Send a draft. Builds the raw MIME, then enqueues it through the sync engine
- * via `sync_apply_mutation` (`{ type: 'send', rawBase64url }`). The engine
- * owns the actual transport + retry; this function treats the invoke resolve
- * as "queued/sent". On success, deletes the persisted draft (if `draftId` is
- * given) and dispatches {@link SEND_COMPLETE_EVENT} so the UI refreshes the
- * Sent folder. On invoke failure, keeps the draft and returns a structured
- * `success: false` result — the engine does NOT auto-retry a failed enqueue,
- * so the user can retry explicitly.
+ * Send a draft. Builds a structured `SendDraft` (file-backed attachments +
+ * inline images + extra headers), then enqueues it through the sync engine
+ * via `sync_apply_mutation` (`{ type: 'send', draft }`). The engine owns the
+ * actual transport + retry; this function treats the invoke resolve as
+ * "queued/sent" and dispatches {@link SEND_COMPLETE_EVENT}.
+ *
+ * T7b: the caller is responsible for deleting the persisted `local_drafts`
+ * row on success (the composer owns the draft-row lifecycle and the row id
+ * is distinct from `stagingDraftId`). On invoke failure, this function
+ * returns a structured `success: false` result — the engine does NOT
+ * auto-retry a failed enqueue, so the user can retry explicitly.
+ *
+ * `stagingDraftId` is used as the on-disk outbox folder name AND
+ * `SendDraft.draftId` (the T8 backend cleanup target). When omitted, a fresh
+ * `newDraftId()` is generated so attachment files still land under a stable
+ * per-send directory. The composer should always pass its
+ * `state.stagingDraftId` so pick-time staging and send-time `SendDraft.draftId`
+ * agree.
  */
 export async function sendEmail(
   accountId: string,
   input: DraftInput,
-  draftId?: string | null,
+  stagingDraftId?: string | null,
 ): Promise<SendResult> {
   const account = useAccountStore.getState().accounts.find((a) => a.id === accountId);
   if (!account) {
     return { success: false, message: `No account found for id ${accountId}` };
   }
 
-  const rawBase64Url = buildRawEmail(inputToEmailDraft(input, account.email));
+  const setProgress = useUIStore.getState().setSendProgress;
+  setProgress({ active: true, message: 'Sending…' });
 
-  let result: SendResult;
+  const sendDraftId = stagingDraftId ?? newDraftId();
+  const draft = await buildSendDraft(
+    input,
+    sendDraftId,
+    account.email,
+    account.displayName ?? undefined,
+  );
+
   try {
     await invoke('sync_apply_mutation', {
       accountId,
-      op: { type: 'send', rawBase64url: rawBase64Url },
+      op: { type: 'send', draft },
     });
-    result = { success: true, message: 'Queued for send' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    setProgress({ active: false });
+    useToastStore.getState().push(`Send failed: ${message}`, 'error');
     return { success: false, message };
   }
 
-  if (!result.success) {
-    return result;
+  // Record every outgoing recipient in the contacts DB immediately so they
+  // appear in autocomplete before the Sent folder syncs back.
+  const autoExtract = await getSettingBool(SETTING_KEYS.autoExtractContactsFromMail);
+  if (autoExtract !== false) {
+    const allRecipients = [...input.to, ...(input.cc ?? []), ...(input.bcc ?? [])];
+    for (const recipient of allRecipients) {
+      if (!recipient.email) continue;
+      const displayName = recipient.name !== recipient.email ? recipient.name : null;
+      upsertContact(recipient.email, displayName).catch(() => {
+        // Best-effort; do not block the send flow on contact write failures.
+      });
+    }
   }
 
-  if (draftId) {
-    await deleteDraft(draftId);
-  }
+  setProgress({ active: false });
   window.dispatchEvent(new Event(SEND_COMPLETE_EVENT));
-  return result;
+  return { success: true, message: 'Queued for send' };
 }

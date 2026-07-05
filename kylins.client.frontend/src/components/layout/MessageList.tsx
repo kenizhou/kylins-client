@@ -6,7 +6,9 @@ import type { ColumnDef } from '../../features/view/types';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
+import { useAutoHideScrollbar, autoHideScrollbarClass } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
@@ -22,7 +24,7 @@ import {
   FileTextIcon,
   ReplyIcon,
   ReplyAllIcon,
-  ForwardIcon,
+  MailSendIcon,
   TagIcon,
   SearchIcon,
   PreferencesMailRulesIcon,
@@ -200,6 +202,7 @@ export function MessageList() {
   const density = useViewStore((s) => s.messageListDensity);
   const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
   const conversationView = useViewStore((s) => s.conversationView);
+  const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
 
   const selectedFolder = useFolderStore((s) => s.selected);
   const threads = useThreadStore((s) => s.threads);
@@ -248,7 +251,7 @@ export function MessageList() {
   // rate-limited. See `hooks/useViewportBodyPrefetch.ts`.
   useViewportBodyPrefetch({
     virtualizer,
-    threads,
+    items,
     accountId: selectedFolder?.accountId ?? null,
   });
 
@@ -272,6 +275,7 @@ export function MessageList() {
 
   const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
   const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+  useAutoHideScrollbar(scrollRef);
 
   const showEmpty = !isLoading && items.length === 0;
 
@@ -282,7 +286,8 @@ export function MessageList() {
 
   const menuItems = useMemo(() => {
     if (!menu) return [];
-    const accountEmail = accounts.find((a) => a.id === menu.thread.accountId)?.email ?? null;
+    const account = accounts.find((a) => a.id === menu.thread.accountId) ?? null;
+    const replyMode = defaultReplyBehavior === 'reply-all' ? 'replyAll' : 'reply';
     return [
       { label: 'Copy', icon: CopyIcon, disabled: true },
       { label: 'Quick Print', icon: FileTextIcon, disabled: true },
@@ -290,17 +295,26 @@ export function MessageList() {
       {
         label: 'Reply',
         icon: ReplyIcon,
-        onSelect: () => void openComposerForThread(menu.thread, 'reply', accountEmail),
+        onSelect: () => {
+          if (!account) return;
+          void openComposerForThread(menu.thread, replyMode, account);
+        },
       },
       {
         label: 'Reply All',
         icon: ReplyAllIcon,
-        onSelect: () => void openComposerForThread(menu.thread, 'replyAll', accountEmail),
+        onSelect: () => {
+          if (!account) return;
+          void openComposerForThread(menu.thread, 'replyAll', account);
+        },
       },
       {
         label: 'Forward',
-        icon: ForwardIcon,
-        onSelect: () => void openComposerForThread(menu.thread, 'forward', accountEmail),
+        icon: MailSendIcon,
+        onSelect: () => {
+          if (!account) return;
+          void openComposerForThread(menu.thread, 'forward', account);
+        },
       },
       {
         label: menu.thread.isRead ? 'Mark as Unread' : 'Mark as Read',
@@ -331,7 +345,7 @@ export function MessageList() {
       },
       { label: 'Archive', icon: ArchiveIcon, disabled: true },
     ];
-  }, [menu, accounts, markThreadRead, toggleThreadStarred, deleteThread]);
+  }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
     <div className="message-list flex flex-col h-full bg-[var(--card)]">
@@ -358,7 +372,7 @@ export function MessageList() {
       <div
         ref={scrollRef}
         tabIndex={0}
-        className="flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+        className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
         onKeyDown={(e) => {
           if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
           e.preventDefault();

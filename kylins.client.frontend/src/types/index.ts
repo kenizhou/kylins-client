@@ -64,6 +64,7 @@ export interface Account {
   authMethod?: AuthMethod;
   imapPassword?: string;
   imapUsername?: string;
+  smtpUsername?: string;
   oauthProvider?: string;
   oauthClientId?: string;
   oauthClientSecret?: string;
@@ -104,6 +105,7 @@ export interface DbAccountRow {
   auth_method?: string | null;
   imap_password?: string | null;
   imap_username?: string | null;
+  smtp_username?: string | null;
   oauth_provider?: string | null;
   oauth_client_id?: string | null;
   oauth_client_secret?: string | null;

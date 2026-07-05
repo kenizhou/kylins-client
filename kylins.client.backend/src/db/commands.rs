@@ -778,6 +778,104 @@ pub async fn db_delete_calendar_event(
     calendar_events::delete(&pool, &id).await
 }
 
+// ---- tasks ----
+
+use crate::db::tasks::{self, Task, TaskTag, UpsertTaskInput};
+
+#[tauri::command]
+pub async fn db_get_tasks_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    include_completed: bool,
+) -> Result<Vec<Task>, String> {
+    tasks::list_for_account(&pool, &account_id, include_completed).await
+}
+
+#[tauri::command]
+pub async fn db_get_tasks_for_thread(
+    pool: State<'_, SqlitePool>,
+    thread_account_id: String,
+    thread_id: String,
+) -> Result<Vec<Task>, String> {
+    tasks::list_for_thread(&pool, &thread_account_id, &thread_id).await
+}
+
+#[tauri::command]
+pub async fn db_get_task_by_id(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<Option<Task>, String> {
+    tasks::get_by_id(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_insert_task(
+    pool: State<'_, SqlitePool>,
+    input: UpsertTaskInput,
+) -> Result<String, String> {
+    tasks::insert(&pool, input).await
+}
+
+#[tauri::command]
+pub async fn db_update_task(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    updates: UpsertTaskInput,
+) -> Result<(), String> {
+    tasks::update(&pool, &id, updates).await
+}
+
+#[tauri::command]
+pub async fn db_delete_task(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    tasks::delete(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_toggle_task_completed(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    completed: bool,
+) -> Result<(), String> {
+    tasks::toggle_completed(&pool, &id, completed).await
+}
+
+#[tauri::command]
+pub async fn db_get_task_tags(
+    pool: State<'_, SqlitePool>,
+    account_id: Option<String>,
+) -> Result<Vec<TaskTag>, String> {
+    tasks::list_tags(&pool, account_id.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_create_task_tag(
+    pool: State<'_, SqlitePool>,
+    tag: String,
+    account_id: Option<String>,
+    color: Option<String>,
+) -> Result<(), String> {
+    tasks::create_tag(&pool, &tag, account_id.as_deref(), color.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_update_task_tag_color(
+    pool: State<'_, SqlitePool>,
+    tag: String,
+    account_id: Option<String>,
+    color: Option<String>,
+) -> Result<(), String> {
+    tasks::update_tag_color(&pool, &tag, account_id.as_deref(), color.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_delete_task_tag(
+    pool: State<'_, SqlitePool>,
+    tag: String,
+    account_id: Option<String>,
+) -> Result<(), String> {
+    tasks::delete_tag(&pool, &tag, account_id.as_deref()).await
+}
+
 // ---- scheduled_emails ----
 
 use crate::db::scheduled_emails::{self, InsertScheduledEmailInput, ScheduledEmail};

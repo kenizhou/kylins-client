@@ -123,11 +123,16 @@ describe('mapMessageToMailMessage', () => {
         is_read: 0,
         is_starred: 0,
         body_text: 'txt',
+        reply_to: 'Reply Team <reply@x.com>, noreply@y.com',
       },
       '<p>html</p>',
     );
     expect(m.from).toEqual({ name: 'Bob', address: 'b@x.com' });
     expect(m.to).toEqual([{ name: 'c@y.com', address: 'c@y.com' }]);
+    expect(m.replyTo).toEqual([
+      { name: 'Reply Team', address: 'reply@x.com' },
+      { name: 'noreply@y.com', address: 'noreply@y.com' },
+    ]);
     expect(m.html).toBe('<p>html</p>');
     expect(m.text).toBe('txt');
     expect(m.threadId).toBe('t1');

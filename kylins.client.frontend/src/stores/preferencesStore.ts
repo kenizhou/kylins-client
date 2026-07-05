@@ -67,6 +67,15 @@ const BOOL_FIELDS: Record<string, BoolField> = {
   },
   cacheAutoCleanupEnabled: { key: SETTING_KEYS.cacheAutoCleanupEnabled, defaultValue: false },
   shareDiagnosticsData: { key: SETTING_KEYS.shareDiagnosticsData, defaultValue: false },
+  autoExtractContactsFromMail: {
+    key: SETTING_KEYS.autoExtractContactsFromMail,
+    defaultValue: true,
+  },
+  autoExtractContactsFromReceived: {
+    key: SETTING_KEYS.autoExtractContactsFromReceived,
+    defaultValue: false,
+  },
+  alwaysShowCcBcc: { key: SETTING_KEYS.alwaysShowCcBcc, defaultValue: false },
 };
 
 const STRING_FIELDS: Record<string, StringField> = {
@@ -148,6 +157,8 @@ export interface PreferencesState {
   setCheckGrammar: (value: boolean) => void;
   spellcheckLanguage: string;
   setSpellcheckLanguage: (value: string) => void;
+  alwaysShowCcBcc: boolean;
+  setAlwaysShowCcBcc: (value: boolean) => void;
 
   // Notifications
   showNotificationsForNewUnread: boolean;
@@ -179,6 +190,12 @@ export interface PreferencesState {
   // Privacy & Security
   shareDiagnosticsData: boolean;
   setShareDiagnosticsData: (value: boolean) => void;
+
+  // Contacts
+  autoExtractContactsFromMail: boolean;
+  setAutoExtractContactsFromMail: (value: boolean) => void;
+  autoExtractContactsFromReceived: boolean;
+  setAutoExtractContactsFromReceived: (value: boolean) => void;
 }
 
 const defaultState = Object.fromEntries([
@@ -329,6 +346,10 @@ export const usePreferencesStore = create<PreferencesState>((set) => ({
     set({ spellcheckLanguage: value });
     persist(SETTING_KEYS.spellcheckLanguage, value);
   },
+  setAlwaysShowCcBcc: (value) => {
+    set({ alwaysShowCcBcc: value });
+    persist(SETTING_KEYS.alwaysShowCcBcc, value);
+  },
 
   setShowNotificationsForNewUnread: (value) => {
     set({ showNotificationsForNewUnread: value });
@@ -371,5 +392,14 @@ export const usePreferencesStore = create<PreferencesState>((set) => ({
   setShareDiagnosticsData: (value) => {
     set({ shareDiagnosticsData: value });
     persist(SETTING_KEYS.shareDiagnosticsData, value);
+  },
+
+  setAutoExtractContactsFromMail: (value) => {
+    set({ autoExtractContactsFromMail: value });
+    persist(SETTING_KEYS.autoExtractContactsFromMail, value);
+  },
+  setAutoExtractContactsFromReceived: (value) => {
+    set({ autoExtractContactsFromReceived: value });
+    persist(SETTING_KEYS.autoExtractContactsFromReceived, value);
   },
 }));

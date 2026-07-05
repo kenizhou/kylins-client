@@ -1,76 +1,42 @@
 import { useEffect, useState } from 'react';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
-import { MailIcon, ReplyFilledIcon, ReplyAllFilledIcon, ForwardFilledIcon } from '../icons';
-import { IconButton } from '../ui/IconButton';
+import { MailIcon } from '../icons';
 import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
+import { useThreadStore } from '../../stores/threadStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
-import { fetchInlineImages } from '../../services/db/attachments';
+import { fetchAttachment, fetchInlineImages, getAttachments } from '../../services/db/attachments';
+import { upsertContact } from '../../services/db/contacts';
 import { InlineReply } from '../email/InlineReply';
-import { formatFullDate } from '../../utils/formatDate';
-import { getInitials } from '../../data/demoMessages';
+import { MessageHeader } from '../../features/viewer/MessageHeader';
+import { RsvpCard } from '../../features/viewer/RsvpCard';
+import { base64ToBytes } from '../../utils/base64';
+import { archiveThread, trashThread, junkThread } from '../../services/mail/actions';
 import { useClassification } from '../../features/classification/useClassification';
-import { isProminent, levelStyle } from '../../features/classification/classificationStyle';
+import { isProminent } from '../../features/classification/classificationStyle';
 import { ClassificationBanner } from '../../features/classification/components/ClassificationBanner';
 import { ClassificationWatermark } from '../../features/classification/components/ClassificationWatermark';
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../features/classification/components/SecurityChips';
-
-function hashString(str: string): number {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = (h << 5) - h + str.charCodeAt(i);
-    h |= 0;
-  }
-  return Math.abs(h);
-}
-
-function senderGradient(name: string): string {
-  const hue = hashString(name) % 360;
-  return `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 40) % 360} 70% 45%))`;
-}
-
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  s /= 100;
-  l /= 100;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number) =>
-    l - a * Math.max(-1, Math.min(((n + h / 30) % 12) - 3, 9 - ((n + h / 30) % 12), 1));
-  return [f(0), f(8), f(4)];
-}
-
-function luminance(r: number, g: number, b: number): number {
-  const values = [r, g, b].map((v) =>
-    v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4),
-  );
-  return 0.2126 * (values[0] ?? 0) + 0.7152 * (values[1] ?? 0) + 0.0722 * (values[2] ?? 0);
-}
-
-function avatarTextColor(name: string): string {
-  const hue = hashString(name) % 360;
-  const [r, g, b] = hslToRgb(hue, 70, 55);
-  return luminance(r, g, b) > 0.55 ? '#0f172a' : '#ffffff';
-}
-
-function recipientList(recipients: { name: string; address: string }[] | undefined): string {
-  if (!recipients || recipients.length === 0) return '';
-  const first = recipients[0];
-  if (!first) return '';
-  if (recipients.length === 1) return `${first.name} <${first.address}>`;
-  return `${first.name} <${first.address}> +${recipients.length - 1} more`;
-}
+import { IcalHelper, type ParsedEvent } from '../../services/calendar/icalHelper';
 
 export function ReadingPane() {
   const message = useViewStore((s) => s.selectedMessage);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
-  const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
+  const account = activeAccountId ? (accounts.find((a) => a.id === activeAccountId) ?? null) : null;
+  const accountEmail = account?.email ?? null;
+  const accountDisplayName = account?.displayName ?? null;
   const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
   const { getLevelById } = useClassification();
+  const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
+  const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
   const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
+  const [contactAdded, setContactAdded] = useState(false);
+  const [inviteEvents, setInviteEvents] = useState<ParsedEvent[]>([]);
   // Reset per-message ephemeral state when the selected message changes. Uses
   // the prev-value render pattern (setState-during-render to correct stale
   // state) rather than setState-in-effect (the project's eslint rule
@@ -80,6 +46,10 @@ export function ReadingPane() {
     setActiveMsgId(message?.id);
     setComposeMode(null);
     setCidMap(new Map());
+    setInviteEvents([]);
+  }
+  if (!message?.id && inviteEvents.length > 0) {
+    setInviteEvents([]);
   }
 
   // Inline `cid:` image resolution. When the selected message changes, fetch
@@ -108,6 +78,44 @@ export function ReadingPane() {
     };
   }, [message?.id, activeAccountId]);
 
+  // Calendar-invite detection: parse any text/calendar attachment whose METHOD
+  // is REQUEST and render an RSVP card above the message body.
+  useEffect(() => {
+    const id = message?.id;
+    const acct = activeAccountId;
+    if (!id || !acct) return;
+    let cancelled = false;
+    getAttachments(acct, id)
+      .then(async (rows) => {
+        if (cancelled) return;
+        const calendarRows = rows.filter((r) =>
+          r.mimeType?.toLowerCase().startsWith('text/calendar'),
+        );
+        const events: ParsedEvent[] = [];
+        for (const row of calendarRows) {
+          try {
+            const partId = row.imapPartId ?? row.id;
+            const bytes = await fetchAttachment(acct, id, partId);
+            const decoded = new TextDecoder('utf-8', { fatal: false }).decode(
+              base64ToBytes(bytes.base64),
+            );
+            const parsed = IcalHelper.parseEvents(decoded);
+            events.push(...parsed.filter((ev) => ev.method === 'REQUEST'));
+          } catch (e) {
+            console.error('[reading-pane] failed to parse calendar attachment', row.id, e);
+          }
+        }
+        setInviteEvents(events);
+      })
+      .catch((e) => {
+        console.error('[reading-pane] getAttachments failed', e);
+        setInviteEvents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [message?.id, activeAccountId]);
+
   if (!message) {
     return (
       <div className="flex h-full flex-col items-center justify-center bg-[var(--card)] min-w-0 text-[var(--muted-text)]">
@@ -118,7 +126,12 @@ export function ReadingPane() {
           <p className="text-lg font-medium text-[var(--foreground)]">No message selected</p>
           <p className="mt-1 text-sm">Select a message from the list to read it here.</p>
         </div>
-        <InjectedComponentSet role="reading-pane:footer" containersRequired={false} />
+        <InjectedComponentSet
+          role="reading-pane:footer"
+          containersRequired={false}
+          message={message}
+          accountId={activeAccountId}
+        />
       </div>
     );
   }
@@ -141,105 +154,72 @@ export function ReadingPane() {
   const handleReplyAll = () => setComposeMode('replyAll');
   const handleForward = () => setComposeMode('forward');
 
+  async function handleAddContact() {
+    if (!message) return;
+    const name = message.from.name === message.from.address ? null : message.from.name;
+    await upsertContact(message.from.address, name);
+    setContactAdded(true);
+    window.setTimeout(() => setContactAdded(false), 2000);
+  }
+
   const isSuspicious = message.subject?.toLowerCase().includes('verify your account') ?? false;
 
   const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
   const prominent = level ? isProminent(level) : false;
-  const style = level ? levelStyle(level) : null;
 
   return (
     <div className="reading-pane relative flex h-full min-w-0 flex-col bg-[var(--card)]">
       {prominent && level && <ClassificationBanner level={level} position="top" />}
 
-      <div
-        className="reading-pane-header border-b border-[var(--border)] px-5 pt-4 pb-3"
-        style={prominent && style ? { backgroundColor: style.tint } : undefined}
-      >
-        <h1 className="reading-pane-subject min-w-0 text-[22px] font-semibold leading-[1.25] tracking-tight text-[var(--text)]">
-          {message.subject}
-        </h1>
-
-        {level && (
-          <div className="mt-2 flex items-center gap-2">
-            <ClassificationBadge level={level} />
-            <SecurityChips
-              isEncrypted={message.isEncrypted}
-              isSigned={message.isSigned}
-              variant="label"
-            />
-            {message.preventCopy && (
-              <span className="text-[11px] text-[var(--muted-text)]">Prevent Copy</span>
-            )}
-            {message.readReceiptRequested && (
-              <span className="text-[11px] text-[var(--muted-text)]">Read Receipt</span>
-            )}
-          </div>
-        )}
-
-        <div className="reading-pane-sender-row mt-3 flex items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-1 items-start gap-3">
-            <div
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold shadow-sm"
-              style={{
-                background: senderGradient(message.from.name),
-                color: avatarTextColor(message.from.name),
-              }}
-              aria-hidden="true"
-            >
-              {getInitials(message.from.name)}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <span className="font-semibold text-[var(--text)]">{message.from.name}</span>
-                <span className="text-sm text-[var(--muted-text)]">{message.from.address}</span>
-              </div>
-              <div className="mt-0.5 text-sm text-[var(--muted-text)]">
-                <span className="text-[var(--muted-text)]">To:</span>{' '}
-                <span className="text-[var(--text)]">{recipientList(message.to)}</span>
-              </div>
-              <div className="mt-0.5 text-xs text-[var(--muted-text)]">
-                {formatFullDate(message.date)}
-              </div>
-            </div>
-          </div>
-
-          <div className="reading-pane-actions mt-0.5 flex flex-wrap items-center gap-1 shrink-0">
-            <IconButton
-              size="md"
-              label="Reply"
-              title="Reply"
-              onClick={handleReply}
-              icon={
-                <span className="text-[var(--primary)]">
-                  <ReplyFilledIcon size={18} />
-                </span>
-              }
-            />
-            <IconButton
-              size="md"
-              label="Reply all"
-              title="Reply all"
-              onClick={handleReplyAll}
-              icon={
-                <span className="text-[var(--primary)]">
-                  <ReplyAllFilledIcon size={18} />
-                </span>
-              }
-            />
-            <IconButton
-              size="md"
-              label="Forward"
-              title="Forward"
-              onClick={handleForward}
-              icon={
-                <span className="text-[var(--primary)]">
-                  <ForwardFilledIcon size={18} />
-                </span>
-              }
-            />
-          </div>
+      {level && (
+        <div className="reading-pane-classification-row mt-2 flex items-center gap-2 px-5 pt-4">
+          <ClassificationBadge level={level} />
+          <SecurityChips
+            isEncrypted={message.isEncrypted}
+            isSigned={message.isSigned}
+            variant="label"
+          />
+          {message.preventCopy && (
+            <span className="text-[11px] text-[var(--muted-text)]">Prevent Copy</span>
+          )}
+          {message.readReceiptRequested && (
+            <span className="text-[11px] text-[var(--muted-text)]">Read Receipt</span>
+          )}
         </div>
-      </div>
+      )}
+
+      <MessageHeader
+        message={message}
+        extraActions={
+          <InjectedComponentSet
+            role="reading-pane:actions"
+            containersRequired={false}
+            message={message}
+            accountId={activeAccountId}
+          />
+        }
+        onReply={handleReply}
+        onReplyAll={handleReplyAll}
+        onForward={handleForward}
+        onArchive={() => {
+          if (!selectedThread) return;
+          void archiveThread(selectedThread);
+        }}
+        onDelete={() => {
+          if (!selectedThread) return;
+          void trashThread(selectedThread);
+        }}
+        onJunk={() => {
+          if (!selectedThread) return;
+          void junkThread(selectedThread);
+        }}
+        onMarkUnread={() => {
+          if (!selectedThread) return;
+          void markThreadRead(selectedThread, false);
+        }}
+        onAddContact={handleAddContact}
+        contactAdded={contactAdded}
+      />
 
       <main
         className="relative flex-1 overflow-auto p-5 leading-[1.6] text-[var(--text)]"
@@ -247,6 +227,19 @@ export function ReadingPane() {
         onContextMenu={message.preventCopy ? (e) => e.preventDefault() : undefined}
       >
         {prominent && level && <ClassificationWatermark level={level} identity={accountEmail} />}
+        {inviteEvents.length > 0 && activeAccountId && accountEmail && (
+          <div className="mb-4 flex flex-col gap-3">
+            {inviteEvents.map((ev) => (
+              <RsvpCard
+                key={ev.uid}
+                event={ev}
+                accountId={activeAccountId}
+                accountEmail={accountEmail}
+                accountDisplayName={accountDisplayName}
+              />
+            ))}
+          </div>
+        )}
         <AttachmentList
           accountId={activeAccountId}
           messageId={message.id}
@@ -264,7 +257,12 @@ export function ReadingPane() {
         />
       </main>
       {prominent && level && <ClassificationBanner level={level} position="bottom" />}
-      <InjectedComponentSet role="reading-pane:footer" containersRequired={false} />
+      <InjectedComponentSet
+        role="reading-pane:footer"
+        containersRequired={false}
+        message={message}
+        accountId={activeAccountId}
+      />
     </div>
   );
 }

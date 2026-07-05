@@ -195,6 +195,17 @@ pub fn run() {
             db::commands::db_insert_calendar_event,
             db::commands::db_update_calendar_event,
             db::commands::db_delete_calendar_event,
+            db::commands::db_get_tasks_for_account,
+            db::commands::db_get_tasks_for_thread,
+            db::commands::db_get_task_by_id,
+            db::commands::db_insert_task,
+            db::commands::db_update_task,
+            db::commands::db_delete_task,
+            db::commands::db_toggle_task_completed,
+            db::commands::db_get_task_tags,
+            db::commands::db_create_task_tag,
+            db::commands::db_update_task_tag_color,
+            db::commands::db_delete_task_tag,
             db::commands::db_get_pending_scheduled_emails,
             db::commands::db_get_scheduled_emails_for_account,
             db::commands::db_insert_scheduled_email,
@@ -303,7 +314,15 @@ pub fn run() {
                 app.manage(pool.clone());
                 // SyncEngine owns one polling worker per account. The frontend starts
                 // it (sync_start) once accounts are loaded; events flow via AppHandle.
-                let engine = sync_engine::engine::SyncEngine::new_tauri(pool, app.handle().clone());
+                // `data_dir` is the SAME path the frontend resolves via
+                // `@tauri-apps/api/path`'s `appDataDir()` — threaded through so
+                // `send_op`'s attachment cleanup removes the dir the T7 frontend
+                // staged under `<appData>/outbox-attachments/{draft_id}/`.
+                let engine = sync_engine::engine::SyncEngine::new_tauri(
+                    pool,
+                    app.handle().clone(),
+                    data_dir,
+                );
                 app.manage(engine);
             }
 

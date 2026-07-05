@@ -17,7 +17,7 @@ describe('AccountSetupFlow', () => {
     );
     expect(getByText('Welcome to Kylins Mail')).toBeInTheDocument();
     fireEvent.click(getByText('Yahoo'));
-    expect(getByRole('heading', { name: /Add your account/i })).toBeInTheDocument();
+    expect(getByRole('heading', { name: /Add your Yahoo account/i })).toBeInTheDocument();
   });
 
   it('announces the current step via a polite live region', () => {
@@ -36,7 +36,7 @@ describe('AccountSetupFlow', () => {
       <AccountSetupFlow variant="modal" onComplete={vi.fn()} />,
     );
     fireEvent.click(getByText('Yahoo'));
-    const heading = getByRole('heading', { name: /Add your account/i });
+    const heading = getByRole('heading', { name: /Add your Yahoo account/i });
     expect(heading).toHaveAttribute('tabIndex', '-1');
     expect(heading).toHaveFocus();
   });

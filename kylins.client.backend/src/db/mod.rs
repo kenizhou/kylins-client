@@ -33,6 +33,7 @@ pub mod send_as_aliases;
 pub mod settings;
 pub mod signatures;
 pub mod sync_state;
+pub mod tasks;
 pub mod templates;
 pub mod threads;
 
@@ -246,7 +247,7 @@ mod tests {
                 .await
                 .unwrap();
             sqlx::query(
-                "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, foo TEXT)",
+                "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, imap_username TEXT, foo TEXT)",
             )
             .execute(&pool)
             .await

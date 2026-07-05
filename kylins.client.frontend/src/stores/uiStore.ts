@@ -13,7 +13,7 @@ export interface UIState {
   inspectorPaneVisible: boolean;
   activeToolWindow: string | null;
   activeMenuCategory: string | null;
-  activeApp: 'mail' | 'calendar' | 'contacts';
+  activeApp: 'mail' | 'calendar' | 'contacts' | 'tasks';
   accountSetupOpen: boolean;
   readerZoom: number;
   /** Count of pending sync operations awaiting replay (0 when fully synced). */
@@ -24,6 +24,9 @@ export interface UIState {
   syncStateByAccount: Record<string, string>;
   /** Sum of all pendingByAccount values. Updated on every setPendingForAccount. */
   aggregatedPending: number;
+  /** Send progress shown in the status bar while an email is being queued/sent. */
+  sendProgress: { active: boolean; message?: string };
+  setSendProgress: (progress: { active: boolean; message?: string }) => void;
   /**
    * Accounts currently in a server-imposed rate-limit cooldown (Phase 3f).
    * The viewport body-prefetch hook skips any account in this set — prefetch
@@ -34,7 +37,7 @@ export interface UIState {
   rateLimitedAccountIds: Set<string>;
   setTheme: (theme: ThemeMode) => void;
   setSkin: (skin: SkinId) => void;
-  setActiveApp: (app: 'mail' | 'calendar' | 'contacts') => void;
+  setActiveApp: (app: 'mail' | 'calendar' | 'contacts' | 'tasks') => void;
   setAccountSetupOpen: (open: boolean) => void;
   setReaderZoom: (zoom: number) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -70,6 +73,8 @@ export const useUIStore = create<UIState>((set) => ({
   pendingByAccount: {},
   syncStateByAccount: {},
   aggregatedPending: 0,
+  sendProgress: { active: false },
+  setSendProgress: (sendProgress) => set({ sendProgress }),
   rateLimitedAccountIds: new Set<string>(),
   setTheme: (theme) => set({ theme }),
   setSkin: (skin) => set({ skin }),

@@ -438,6 +438,17 @@ pub async fn apply_mutation_inner(
     account_id: String,
     op: MutationOp,
 ) -> Result<(), String> {
+    let op_type = op.op_type();
+    // For Send the draft_id is the load-bearing trace id; for the other ops
+    // the per-message resource_ids identify the affected rows.
+    let trace_id = match &op {
+        MutationOp::Send { draft } => format!("draft_id={}", draft.draft_id),
+        _ => format!("affected={}", op.resource_id()),
+    };
+    log::info!(
+        "[send] apply_mutation_inner ENTER account_id={account_id} op_type={op_type} {trace_id}"
+    );
+
     // 1. Optimistic local write (single transaction; rolls back on error).
     let affected = op.local_writes(pool, &account_id).await?;
 
@@ -450,12 +461,21 @@ pub async fn apply_mutation_inner(
     };
     for rid in &ids {
         let params = op.encode_params(rid);
+        log::info!(
+            "[send] enqueued op account_id={account_id} op_type={op_type} resource_id={rid}"
+        );
         queue::enqueue(pool, &account_id, op.op_type(), rid, &params).await?;
     }
 
     // 3. Nudge the worker to replay (best-effort, non-blocking). The worker
     //    drains the queue in Task 4; for now this just kicks a folder sync.
+    log::info!(
+        "[send] nudging worker account_id={account_id} op_type={op_type} (SyncNow → run_sync_round)"
+    );
     engine.sync_account_now(account_id.clone()).await;
+    log::info!(
+        "[send] apply_mutation_inner EXIT account_id={account_id} op_type={op_type}"
+    );
     Ok(())
 }
 

@@ -1,10 +1,26 @@
-import { MenuTrigger, Button, Popover, Menu, MenuItem, DialogTrigger } from 'react-aria-components';
-import { useState } from 'react';
+import {
+  Button,
+  Popover,
+  Menu,
+  MenuItem,
+  DialogTrigger,
+  Provider,
+  ButtonContext,
+  PopoverContext,
+  MenuContext,
+  OverlayTriggerStateContext,
+  RootMenuTriggerStateContext,
+} from 'react-aria-components';
+import { useId, useRef, useState } from 'react';
+import { useMenuTrigger } from 'react-aria';
+import { useMenuTriggerState } from 'react-stately';
 import {
   MailAddIcon,
   ReplyIcon,
   ReplyAllIcon,
   MailSendIcon,
+  ReplyFilledIcon,
+  ReplyAllFilledIcon,
   CaretDownIcon,
   DeleteIcon,
   MoveIcon,
@@ -27,6 +43,7 @@ import {
 } from '../../../utils/composerActions';
 import { useViewStore } from '../../../features/view/viewStore';
 import { useAccountStore } from '../../../stores/accountStore';
+import { usePreferencesStore } from '../../../stores/preferencesStore';
 import { useThreadStore } from '../../../stores/threadStore';
 import { useFolderStore } from '../../../stores/folderStore';
 import { useClassification } from '../../../features/classification/useClassification';
@@ -50,8 +67,89 @@ interface SplitMenuItem {
   onClick: () => void;
 }
 
+interface SplitButtonProps {
+  main: React.ReactNode;
+  menu: React.ReactNode;
+  menuLabel: string;
+  disabled?: boolean;
+  caretClassName?: string;
+}
+
+/** Split button whose dropdown popover is anchored to the full button width,
+ *  not just the caret half. The main action stays on the left half; only the
+ *  caret opens the menu. */
+function SplitButton({
+  main,
+  menu,
+  menuLabel,
+  disabled = false,
+  caretClassName = '',
+}: SplitButtonProps) {
+  const groupRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const triggerId = useId();
+  const state = useMenuTriggerState({});
+  const { menuTriggerProps, menuProps } = useMenuTrigger(
+    { type: 'menu', isDisabled: disabled },
+    state,
+    triggerRef,
+  );
+
+  return (
+    <Provider
+      values={[
+        [OverlayTriggerStateContext, state],
+        [RootMenuTriggerStateContext, state],
+        [MenuContext, menuProps],
+        [
+          PopoverContext,
+          {
+            triggerRef: groupRef,
+            placement: 'bottom start',
+            'aria-labelledby': triggerId,
+          } as never,
+        ],
+      ]}
+    >
+      <div
+        ref={groupRef}
+        data-open={state.isOpen}
+        className="split-button group relative flex items-stretch rounded-md text-[var(--text)] transition-colors"
+      >
+        {main}
+        <Provider
+          values={[
+            [
+              ButtonContext,
+              {
+                ...menuTriggerProps,
+                id: triggerId,
+                ref: triggerRef,
+              } as never,
+            ],
+          ]}
+        >
+          <Button
+            isDisabled={disabled}
+            aria-label={menuLabel}
+            className={`my-auto flex h-11 items-center rounded-r px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 ${caretClassName}`}
+          >
+            <CaretDownIcon size={10} />
+          </Button>
+        </Provider>
+      </div>
+      {state.isOpen && (
+        <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+          {menu}
+        </Popover>
+      )}
+    </Provider>
+  );
+}
+
 interface SplitRibbonButtonProps {
   icon: React.ReactNode;
+  selectedIcon?: React.ReactNode;
   label: string;
   disabled?: boolean;
   title?: string;
@@ -61,6 +159,7 @@ interface SplitRibbonButtonProps {
 
 function SplitRibbonButton({
   icon,
+  selectedIcon,
   label,
   disabled,
   title,
@@ -68,46 +167,43 @@ function SplitRibbonButton({
   items,
 }: SplitRibbonButtonProps) {
   return (
-    <div className="relative flex items-stretch">
-      <Button
-        isDisabled={disabled}
-        onPress={primary}
-        aria-label={title ?? label}
-        className="flex items-center gap-1.5 rounded-l px-2.5 h-11 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent"
-      >
-        {icon}
-        <span className="whitespace-nowrap">{label}</span>
-      </Button>
-      <MenuTrigger>
+    <SplitButton
+      disabled={disabled}
+      menuLabel={`${label} options`}
+      caretClassName="border-r border-[var(--border)]"
+      main={
         <Button
           isDisabled={disabled}
-          className="my-auto flex h-11 items-center rounded-r border-r border-[var(--border)] px-1.5 text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
-          aria-label={`${label} options`}
+          onPress={primary}
+          aria-label={title ?? label}
+          className="flex items-center gap-1.5 rounded-l px-2.5 h-11 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent"
         >
-          <CaretDownIcon size={10} className="opacity-70" />
+          <span className="icon-default">{icon}</span>
+          {selectedIcon && <span className="icon-selected">{selectedIcon}</span>}
+          <span className="whitespace-nowrap">{label}</span>
         </Button>
-        <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
-          <Menu
-            aria-label={`${label} options`}
-            items={items}
-            onAction={(key) => {
-              const item = items.find((_, idx) => String(idx) === key);
-              item?.onClick();
-            }}
-            className="outline-none"
-          >
-            {(item) => (
-              <MenuItem
-                id={String(items.indexOf(item))}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
-              >
-                <span className="flex-1 whitespace-nowrap">{item.label}</span>
-              </MenuItem>
-            )}
-          </Menu>
-        </Popover>
-      </MenuTrigger>
-    </div>
+      }
+      menu={
+        <Menu
+          aria-label={`${label} options`}
+          items={items}
+          onAction={(key) => {
+            const item = items.find((_, idx) => String(idx) === key);
+            item?.onClick();
+          }}
+          className="outline-none"
+        >
+          {(item) => (
+            <MenuItem
+              id={String(items.indexOf(item))}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+            >
+              <span className="flex-1 whitespace-nowrap">{item.label}</span>
+            </MenuItem>
+          )}
+        </Menu>
+      }
+    />
   );
 }
 
@@ -146,7 +242,8 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   const selectedFolder = useFolderStore((s) => s.selected);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
-  const accountEmail = accounts.find((a) => a.id === activeAccountId)?.email ?? null;
+  const account = accounts.find((a) => a.id === activeAccountId) ?? null;
+  const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
   const { levels, getDefaultLevel, getLevelById } = useClassification();
   const [moveOpen, setMoveOpen] = useState(false);
 
@@ -172,33 +269,37 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   };
 
   const handleReply = () => {
-    if (!selectedMessage) return;
-    openReplyComposer(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    if (defaultReplyBehavior === 'reply-all') {
+      void openReplyAllComposer(selectedMessage, account);
+    } else {
+      void openReplyComposer(selectedMessage, account);
+    }
   };
 
   const handleReplyWithAttachments = () => {
-    if (!selectedMessage) return;
-    openReplyComposerWithAttachments(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openReplyComposerWithAttachments(selectedMessage, account);
   };
 
   const handleReplyAll = () => {
-    if (!selectedMessage) return;
-    openReplyAllComposer(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openReplyAllComposer(selectedMessage, account);
   };
 
   const handleReplyAllWithAttachments = () => {
-    if (!selectedMessage) return;
-    openReplyAllComposerWithAttachments(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openReplyAllComposerWithAttachments(selectedMessage, account);
   };
 
   const handleForward = () => {
-    if (!selectedMessage) return;
-    openForwardComposer(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openForwardComposer(selectedMessage, account);
   };
 
   const handleForwardAsAttachment = () => {
-    if (!selectedMessage) return;
-    openForwardComposerAsAttachment(selectedMessage, accountEmail);
+    if (!selectedMessage || !account) return;
+    void openForwardComposerAsAttachment(selectedMessage, account);
   };
 
   const hasMessage = selectedMessage != null;
@@ -212,48 +313,40 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
     <RibbonShell>
       {!viewer && (
         <RibbonGroup>
-          <div className="relative flex items-stretch">
-            <RibbonButton icon={<MailAddIcon size={18} />} onClick={handleNewEmail}>
-              New Email
-            </RibbonButton>
-            <MenuTrigger>
-              <Button
-                className="my-auto flex h-11 items-center rounded-r px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+          <SplitButton
+            menuLabel="Choose classification"
+            main={
+              <RibbonButton icon={<MailAddIcon size={18} />} onClick={handleNewEmail}>
+                New Email
+              </RibbonButton>
+            }
+            menu={
+              <Menu
                 aria-label="Choose classification"
+                items={levels}
+                onAction={(key) => {
+                  const level = levels.find((l) => l.id === key);
+                  if (level) openComposerForLevel(level);
+                }}
+                className="outline-none"
               >
-                <CaretDownIcon size={10} />
-              </Button>
-              <Popover className="min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
-                <Menu
-                  aria-label="Choose classification"
-                  items={levels}
-                  onAction={(key) => {
-                    const level = levels.find((l) => l.id === key);
-                    if (level) openComposerForLevel(level);
-                  }}
-                  className="outline-none"
-                >
-                  {(level) => (
-                    <ClassificationMenuItem
-                      key={level.id}
-                      level={level}
-                      onAction={() => openComposerForLevel(level)}
-                    />
-                  )}
-                </Menu>
-              </Popover>
-            </MenuTrigger>
-          </div>
+                {(level) => (
+                  <ClassificationMenuItem
+                    key={level.id}
+                    level={level}
+                    onAction={() => openComposerForLevel(level)}
+                  />
+                )}
+              </Menu>
+            }
+          />
         </RibbonGroup>
       )}
 
       <RibbonGroup>
         <SplitRibbonButton
-          icon={
-            <span className="text-[var(--primary)]">
-              <ReplyIcon size={18} />
-            </span>
-          }
+          icon={<ReplyIcon size={18} />}
+          selectedIcon={<ReplyFilledIcon size={18} className="text-[var(--primary)]" />}
           label="Reply"
           disabled={!hasMessage}
           primary={handleReply}
@@ -263,11 +356,8 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
           ]}
         />
         <SplitRibbonButton
-          icon={
-            <span className="text-[var(--primary)]">
-              <ReplyAllIcon size={18} />
-            </span>
-          }
+          icon={<ReplyAllIcon size={18} />}
+          selectedIcon={<ReplyAllFilledIcon size={18} className="text-[var(--primary)]" />}
           label="Reply all"
           disabled={!hasMessage}
           primary={handleReplyAll}
@@ -277,11 +367,8 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
           ]}
         />
         <SplitRibbonButton
-          icon={
-            <span className="text-[var(--primary)]">
-              <MailSendIcon size={18} />
-            </span>
-          }
+          icon={<MailSendIcon size={18} />}
+          selectedIcon={<MailSendIcon size={18} className="text-[var(--primary)]" />}
           label="Forward"
           disabled={!hasMessage}
           primary={handleForward}

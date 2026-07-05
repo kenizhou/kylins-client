@@ -49,8 +49,8 @@ pub struct SendDraft {
     pub cc: Vec<AddressSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bcc: Vec<AddressSpec>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply_to: Option<AddressSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reply_to: Vec<AddressSpec>,
     pub subject: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub html_body: Option<String>,
@@ -112,8 +112,8 @@ pub async fn build_mime(draft: &SendDraft) -> Result<Vec<u8>, String> {
     if !draft.bcc.is_empty() {
         b = b.bcc(to_address_list(&draft.bcc));
     }
-    if let Some(rt) = &draft.reply_to {
-        b = b.reply_to(to_address(rt));
+    if !draft.reply_to.is_empty() {
+        b = b.reply_to(to_address_list(&draft.reply_to));
     }
 
     b = b.subject(draft.subject.clone());

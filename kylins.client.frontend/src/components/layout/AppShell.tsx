@@ -12,6 +12,7 @@ import { Composer } from '../composer/Composer';
 import { UndoSendToast } from '../composer/UndoSendToast';
 import { CalendarPage } from '../calendar/CalendarPage';
 import { ContactsPage } from '../contacts/ContactsPage';
+import { TasksPage } from '../tasks/TasksPage';
 
 function MainContent({ children }: { children: React.ReactNode }) {
   return (
@@ -33,12 +34,14 @@ export function AppShell() {
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
         <MainContent>
-          {commandRibbonVisible && <CommandRibbon />}
+          {commandRibbonVisible && activeApp !== 'contacts' && <CommandRibbon />}
           <div className="flex flex-1 overflow-hidden">
             {activeApp === 'calendar' ? (
               <CalendarPage />
             ) : activeApp === 'contacts' ? (
               <ContactsPage />
+            ) : activeApp === 'tasks' ? (
+              <TasksPage />
             ) : (
               <ReadingPaneLayout
                 folderPaneVisible={folderPaneVisible}

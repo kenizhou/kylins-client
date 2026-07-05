@@ -117,6 +117,7 @@ export function buildOAuthImapAccount(
     smtpPort: p.smtpPort,
     smtpSecurity: p.smtpSecurity,
     imapUsername: userInfo.email,
+    smtpUsername: userInfo.email,
   };
 }
 
@@ -124,15 +125,18 @@ export function buildImapAccount(
   config: PasswordProviderConfig,
   email: string,
   password: string,
+  displayName?: string,
 ): CreateAccountInput {
   const p = presetsFor(config);
   return {
     email,
+    displayName,
     provider: 'imap',
     setupProviderId: config.id,
     authMethod: 'password',
     imapPassword: password,
     imapUsername: email,
+    smtpUsername: email,
     imapHost: p?.imapHost,
     imapPort: p?.imapPort,
     imapSecurity: p?.imapSecurity,

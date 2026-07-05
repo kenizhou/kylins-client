@@ -161,6 +161,78 @@
   background: transparent;
 }
 
+/* ---- Auto-hide scrollbar (track always reserves space, thumb only while scrolling) ---- */
+.kylins-auto-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.kylins-auto-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.kylins-auto-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.kylins-auto-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: transparent;
+}
+.kylins-auto-scrollbar.is-scrolling {
+  scrollbar-color: color-mix(in srgb, var(--muted-text) 40%, transparent) transparent;
+}
+.kylins-auto-scrollbar.is-scrolling::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-text) 40%, transparent);
+}
+
+/* ---- Folder pane: stable scrollbar gutter so selected rows fill the full width ---- */
+.folder-pane-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+/* Extend the selected row background into the scrollbar gutter so the
+   highlight runs all the way to the pane edge. The 6px strip matches the
+   .kylins-auto-scrollbar WebKit scrollbar width. */
+.folder-pane-selected-row {
+  position: relative;
+}
+.folder-pane-selected-row::after {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background-color: inherit;
+  pointer-events: none;
+}
+
+.split-button[data-open='true'] {
+  background-color: var(--selected);
+  color: var(--selected-text);
+}
+.split-button[data-open='true'] > button {
+  background-color: transparent;
+  color: inherit;
+}
+.split-button[data-open='true'] > button:hover {
+  background-color: transparent;
+}
+
+.split-button .icon-default {
+  display: inline-flex;
+}
+.split-button .icon-selected {
+  display: none;
+}
+.split-button[data-open='true'] .icon-default {
+  display: none;
+}
+.split-button[data-open='true'] .icon-selected {
+  display: inline-flex;
+}
+
 /* ---- Folder pane drawer for compact widths ---- */
 .folder-pane-drawer {
   position: absolute;

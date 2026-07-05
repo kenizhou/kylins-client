@@ -19,7 +19,7 @@ export function smtpConfigFromAccount(account: Account): RustSmtpConfig {
     host: account.smtpHost ?? '',
     port: account.smtpPort ?? 587,
     security: account.smtpSecurity ?? 'starttls',
-    username: account.imapUsername ?? account.email,
+    username: account.smtpUsername ?? account.imapUsername ?? account.email,
     password: account.imapPassword ?? '',
     auth_method: account.authMethod ?? 'password',
     accept_invalid_certs: account.acceptInvalidCerts ?? false,

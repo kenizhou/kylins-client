@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
-import { Button, Input, TextField } from 'react-aria-components';
+import { Button, Input, TextField, Checkbox } from 'react-aria-components';
 
 import { RecipientField } from '@/features/composer/RecipientField';
 import type { MoveTarget } from '@/features/composer/RecipientField';
@@ -28,11 +28,13 @@ import { FromSelector } from './FromSelector';
 import { ClassificationSelector } from '@/features/composer/ClassificationSelector';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
+import { useUIStore } from '@/stores/uiStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
 import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
+import { cleanupAttachments, stageAttachmentBytes } from '@/services/composer/attachments';
 import { invoke } from '@tauri-apps/api/core';
 import { upsertContact } from '@/services/db/contacts';
 import { insertScheduledEmail } from '@/services/db/scheduledEmails';
@@ -48,16 +50,15 @@ import { interpolateVariables } from '@/utils/templateVariables';
 import { formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
 import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
-import { readFileAsBase64 } from '@/utils/fileUtils';
 import { getAttachments, fetchAttachment } from '@/services/db/attachments';
 import {
   MaximizeIcon,
   RestoreIcon,
   PopOutIcon,
   PlusIcon,
-  WarningIcon,
   CloseIcon,
   SendIcon,
+  SpinnerIcon,
 } from '../icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
@@ -88,6 +89,27 @@ function buildMinimalEml(subject: string, body: string): string {
   return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
 }
 
+/**
+ * Decode a base64 string into bytes. Uses `atob` (Tauri webview + jsdom) with
+ * a Node `Buffer` fallback so it works in tests. Used only at the seed
+ * boundary (forwarding original-message attachments) where the DB layer
+ * already stores attachment bytes as base64; the decoded bytes are written
+ * straight to disk via `stageAttachmentBytes`, so no base64 lingers in
+ * composer state.
+ */
+function base64ToBytes(base64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const B = (globalThis as any).Buffer;
+  if (B) return new Uint8Array(B.from(base64, 'base64'));
+  throw new Error('No base64 decoder available (atob nor Buffer found)');
+}
+
 function newAttachmentId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -106,8 +128,8 @@ export function Composer({ windowed = false }: ComposerProps) {
   const to = useComposerStore((s) => s.to);
   const cc = useComposerStore((s) => s.cc);
   const bcc = useComposerStore((s) => s.bcc);
+  const replyTo = useComposerStore((s) => s.replyTo);
   const subject = useComposerStore((s) => s.subject);
-  const showCcBcc = useComposerStore((s) => s.showCcBcc);
   const fromEmail = useComposerStore((s) => s.fromEmail);
   const viewMode = useComposerStore((s) => s.viewMode);
   const signatureHtml = useComposerStore((s) => s.signatureHtml);
@@ -120,10 +142,11 @@ export function Composer({ windowed = false }: ComposerProps) {
   const setTo = useComposerStore((s) => s.setTo);
   const setCc = useComposerStore((s) => s.setCc);
   const setBcc = useComposerStore((s) => s.setBcc);
+  const setReplyTo = useComposerStore((s) => s.setReplyTo);
   const setSubject = useComposerStore((s) => s.setSubject);
-  const setShowCcBcc = useComposerStore((s) => s.setShowCcBcc);
   const setFromEmail = useComposerStore((s) => s.setFromEmail);
   const setViewMode = useComposerStore((s) => s.setViewMode);
+  const setIncludeOriginalAttachments = useComposerStore((s) => s.setIncludeOriginalAttachments);
   const addAttachment = useComposerStore((s) => s.addAttachment);
   const originalMessageId = useComposerStore((s) => s.originalMessageId);
   const includeOriginalAttachments = useComposerStore((s) => s.includeOriginalAttachments);
@@ -143,11 +166,21 @@ export function Composer({ windowed = false }: ComposerProps) {
   const checkSpelling = usePreferencesStore((s) => s.checkSpelling);
   const undoSendDuration = usePreferencesStore((s) => s.undoSendDuration);
   const messageSentSound = usePreferencesStore((s) => s.messageSentSound);
+  const alwaysShowCcBcc = usePreferencesStore((s) => s.alwaysShowCcBcc);
 
   const sendingRef = useRef(false);
+  const sendProgressActive = useUIStore((s) => s.sendProgress.active);
   const attachmentSeededRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
+  const [ccExpanded, setCcExpanded] = useState(() => alwaysShowCcBcc || cc.length > 0);
+  const [bccExpanded, setBccExpanded] = useState(() => alwaysShowCcBcc || bcc.length > 0);
+  const [replyToExpanded, setReplyToExpanded] = useState(
+    () => alwaysShowCcBcc || replyTo.length > 0,
+  );
+  const showCc = ccExpanded || alwaysShowCcBcc || cc.length > 0;
+  const showBcc = bccExpanded || alwaysShowCcBcc || bcc.length > 0;
+  const showReplyTo = replyToExpanded || alwaysShowCcBcc || replyTo.length > 0;
   const [isDragging, setIsDragging] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
@@ -167,21 +200,33 @@ export function Composer({ windowed = false }: ComposerProps) {
     async function seed() {
       attachmentSeededRef.current = true;
 
+      // T7b: every staged attachment lands under the per-session outbox
+      // directory (`stagingDraftId`), and only the resulting `filePath` is
+      // kept on the ComposerAttachment. No base64 lingers in composer state.
+      const stagingDraftId = useComposerStore.getState().stagingDraftId;
+
       if (includeOriginalAttachments && activeAccountId) {
         try {
           const rows = await getAttachments(activeAccountId, messageId);
           for (const row of rows) {
-            if (cancelled) break;
+            if (cancelled) return;
             const partId = row.imapPartId || row.id;
-            const bytes = await fetchAttachment(activeAccountId, messageId, partId);
-            if (cancelled) break;
+            const fetched = await fetchAttachment(activeAccountId, messageId, partId);
+            if (cancelled) return;
+            // DB stores fetched attachment bytes as base64; decode once and
+            // stage to disk so the composer never carries the payload.
+            const staged = await stageAttachmentBytes(
+              stagingDraftId,
+              row.filename || 'attachment',
+              fetched.mimeType || row.mimeType || 'application/octet-stream',
+              base64ToBytes(fetched.base64),
+            );
             addAttachment({
               id: newAttachmentId(),
-              file: new File([], row.filename || 'attachment'),
-              filename: row.filename || 'attachment',
-              mimeType: bytes.mimeType || row.mimeType || 'application/octet-stream',
+              filename: staged.filename,
+              mimeType: staged.mimeType,
               size: row.size,
-              content: bytes.base64,
+              filePath: staged.filePath,
             });
           }
         } catch (err) {
@@ -193,15 +238,20 @@ export function Composer({ windowed = false }: ComposerProps) {
         try {
           const body = originalMessageText ?? htmlToPlainText(originalMessageHtml ?? '');
           const eml = buildMinimalEml(originalMessageSubject ?? 'Forwarded message', body);
-          const content = btoa(unescape(encodeURIComponent(eml)));
           const filename = `${(originalMessageSubject ?? 'message').replace(/[^a-z0-9]/gi, '_')}.eml`;
+          const bytes = new TextEncoder().encode(eml);
+          const staged = await stageAttachmentBytes(
+            stagingDraftId,
+            filename,
+            'message/rfc822',
+            bytes,
+          );
           addAttachment({
             id: newAttachmentId(),
-            file: new File([], filename),
-            filename,
-            mimeType: 'message/rfc822',
-            size: content.length,
-            content,
+            filename: staged.filename,
+            mimeType: staged.mimeType,
+            size: bytes.length,
+            filePath: staged.filePath,
           });
         } catch (err) {
           console.error('[Composer] failed to build forward-as-attachment', err);
@@ -375,15 +425,29 @@ export function Composer({ windowed = false }: ComposerProps) {
       setIsDragging(false);
       const files = e.dataTransfer.files;
       if (!files || files.length === 0) return;
+      const stagingDraftId = useComposerStore.getState().stagingDraftId;
       for (const file of Array.from(files)) {
-        const content = await readFileAsBase64(file);
+        // T7b: stage the file to disk under the per-session outbox directory
+        // and keep only the resulting `filePath` on the ComposerAttachment.
+        // We read the drop payload as an ArrayBuffer (NOT base64) so a 200 MB
+        // attachment never becomes a ~267 MB base64 string in JS memory; the
+        // bytes go straight to disk and the Uint8Array is released.
+        // The Tauri webview disables `dragDropEnabled` in tauri.conf.json, so
+        // dropped File objects do not expose a `path` property here — we must
+        // read bytes via the File API and write them through `stageAttachmentBytes`.
+        const buf = await file.arrayBuffer();
+        const staged = await stageAttachmentBytes(
+          stagingDraftId,
+          file.name,
+          file.type || 'application/octet-stream',
+          new Uint8Array(buf),
+        );
         addAttachment({
-          id: crypto.randomUUID(),
-          file,
-          filename: file.name,
-          mimeType: file.type || 'application/octet-stream',
+          id: newAttachmentId(),
+          filename: staged.filename,
+          mimeType: staged.mimeType,
           size: file.size,
-          content,
+          filePath: staged.filePath,
         });
       }
     },
@@ -406,24 +470,31 @@ export function Composer({ windowed = false }: ComposerProps) {
 
     const html = getFullHtml();
     const currentDraftId = state.draftId;
+    const currentStagingDraftId = state.stagingDraftId;
+
+    const selectedAlias = aliases.find((a) => a.email === (state.fromEmail ?? activeAccount.email));
 
     const input = {
       accountId: activeAccountId,
       to: state.to,
       cc: state.cc.length > 0 ? state.cc : undefined,
       bcc: state.bcc.length > 0 ? state.bcc : undefined,
+      replyTo: state.replyTo.length > 0 ? state.replyTo : undefined,
       subject: state.subject,
       bodyHtml: html,
       fromEmail: state.fromEmail ?? activeAccount.email,
+      fromName: selectedAlias?.displayName ?? activeAccount.displayName ?? '',
       threadId: state.threadId,
       inReplyToMessageId: state.inReplyToMessageId,
       signatureId: state.signatureId,
+      // T7b: regular attachments pass through `filePath` (no base64). The
+      // backend MIME builder streams the bytes from disk at send time.
       attachments:
         state.attachments.length > 0
           ? state.attachments.map((a) => ({
               filename: a.filename,
               mimeType: a.mimeType,
-              content: a.content,
+              filePath: a.filePath,
               size: a.size,
             }))
           : undefined,
@@ -440,10 +511,25 @@ export function Composer({ windowed = false }: ComposerProps) {
     const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
 
     state.setUndoSendVisible(true);
+    state.setUndoStagingDraftId(currentStagingDraftId);
 
     const timer = setTimeout(async () => {
       try {
-        await sendEmail(activeAccountId, input, currentDraftId);
+        const result = await sendEmail(activeAccountId, input, currentStagingDraftId);
+        if (!result.success) {
+          console.error('[composer] send failed:', result.message);
+          return;
+        }
+        // T7b: the persisted `local_drafts` row id is distinct from the
+        // staging id; sendEmail handles outbox cleanup via the T8 backend,
+        // the composer owns the drafts-row deletion.
+        if (currentDraftId) {
+          try {
+            await deleteDraft(currentDraftId);
+          } catch {
+            /* ignore — best-effort */
+          }
+        }
         if (messageSentSound) {
           // TODO: play actual sent sound once a sound asset is bundled.
           console.log('[composer] message sent sound');
@@ -465,7 +551,14 @@ export function Composer({ windowed = false }: ComposerProps) {
 
     state.setUndoSendTimer(timer);
     closeComposer();
-  }, [activeAccountId, activeAccount, closeComposer, getFullHtml]);
+  }, [
+    activeAccountId,
+    activeAccount,
+    closeComposer,
+    getFullHtml,
+    undoSendDuration,
+    messageSentSound,
+  ]);
 
   const handleSchedule = useCallback(
     async (scheduledAt: number) => {
@@ -474,13 +567,17 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.to.length === 0) return;
 
       const html = getFullHtml();
+      // T7b: schedule metadata persists path-backed refs (no base64). The
+      // staged files remain under the per-session outbox directory; a future
+      // scheduled-send worker would stream them at the scheduled time.
       const attachmentData =
         state.attachments.length > 0
           ? JSON.stringify(
               state.attachments.map((a) => ({
                 filename: a.filename,
                 mimeType: a.mimeType,
-                content: a.content,
+                filePath: a.filePath,
+                size: a.size,
               })),
             )
           : null;
@@ -539,7 +636,9 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const handleDiscard = useCallback(async () => {
     stopAutoSave();
-    const currentDraftId = useComposerStore.getState().draftId;
+    const state = useComposerStore.getState();
+    const currentDraftId = state.draftId;
+    const currentStagingDraftId = state.stagingDraftId;
     if (currentDraftId) {
       try {
         await deleteDraft(currentDraftId);
@@ -547,12 +646,33 @@ export function Composer({ windowed = false }: ComposerProps) {
         /* ignore */
       }
     }
+    // T7b: best-effort cleanup of any staged attachment files. On send-success
+    // the T8 backend cleans the same directory; on user discard we do it here.
+    // Per-attachment removal mid-compose can leave orphans, so we clean the
+    // whole outbox folder at discard.
+    try {
+      await cleanupAttachments(currentStagingDraftId);
+    } catch {
+      /* ignore — best-effort */
+    }
     closeComposer();
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
 
   const handleClose = useCallback(async () => {
     stopAutoSave();
+    const state = useComposerStore.getState();
+    const currentDraftId = state.draftId;
+    const currentStagingDraftId = state.stagingDraftId;
+    // Best-effort cleanup of staged attachments for unsaved drafts. Saved drafts
+    // keep their filePath references, so we leave the outbox directory alone.
+    if (!currentDraftId) {
+      try {
+        await cleanupAttachments(currentStagingDraftId);
+      } catch {
+        /* ignore — best-effort */
+      }
+    }
     closeComposer();
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
@@ -591,16 +711,22 @@ export function Composer({ windowed = false }: ComposerProps) {
   }, [handleSend, handleSendAndCloseWindow, windowed]);
 
   const handleMoveRecipient = useCallback(
-    (recipient: Recipient, from: 'to' | 'cc' | 'bcc', toField: MoveTarget) => {
+    (recipient: Recipient, from: 'to' | 'cc' | 'bcc' | 'replyTo', toField: MoveTarget) => {
       const eqEmail = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-      const lists = { to, cc, bcc };
-      const setters = { to: setTo, cc: setCc, bcc: setBcc };
+      const lists = { to, cc, bcc, replyTo };
+      const setters = { to: setTo, cc: setCc, bcc: setBcc, replyTo: setReplyTo };
       setters[from](lists[from].filter((r) => !eqEmail(r.email, recipient.email)));
+      if (toField === 'replyTo') {
+        if (!replyTo.some((r) => eqEmail(r.email, recipient.email))) {
+          setReplyTo([...replyTo, recipient]);
+        }
+        return;
+      }
       if (!lists[toField].some((r) => eqEmail(r.email, recipient.email))) {
         setters[toField]([...lists[toField], recipient]);
       }
     },
-    [to, cc, bcc, setTo, setCc, setBcc],
+    [to, cc, bcc, replyTo, setTo, setCc, setBcc, setReplyTo],
   );
 
   const handlePopOutComposer = useCallback(async () => {
@@ -613,6 +739,8 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.to.length > 0) params.set('to', formatRecipients(state.to).join(','));
       if (state.cc.length > 0) params.set('cc', formatRecipients(state.cc).join(','));
       if (state.bcc.length > 0) params.set('bcc', formatRecipients(state.bcc).join(','));
+      if (state.replyTo.length > 0)
+        params.set('replyTo', formatRecipients(state.replyTo).join(','));
       if (state.subject) params.set('subject', state.subject);
       if (state.threadId) params.set('threadId', state.threadId);
       if (state.inReplyToMessageId) params.set('inReplyToMessageId', state.inReplyToMessageId);
@@ -660,6 +788,14 @@ export function Composer({ windowed = false }: ComposerProps) {
     }
   }, [editor, closeComposer]);
 
+  const handleAddressBlockBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    if (alwaysShowCcBcc) return;
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    if (cc.length === 0) setCcExpanded(false);
+    if (bcc.length === 0) setBccExpanded(false);
+    if (replyTo.length === 0) setReplyToExpanded(false);
+  };
+
   if (!isOpen) return null;
 
   const isFullpage = windowed || viewMode === 'fullpage';
@@ -673,7 +809,6 @@ export function Composer({ windowed = false }: ComposerProps) {
           : 'New Message';
   const savedLabel = isSaving ? 'Saving...' : lastSavedAt ? 'Draft saved' : null;
 
-  const requiresClassification = !classificationId;
   const prominent = isProminent(currentLevel);
 
   const composerPanel = (
@@ -744,22 +879,61 @@ export function Composer({ windowed = false }: ComposerProps) {
             <CommandRibbon mode="compose" />
           </div>
 
-          {requiresClassification && (
-            <div className="shrink-0 bg-[var(--amber)] px-3 py-1.5 text-[11px] font-semibold text-[var(--amber-foreground,#111827)]">
-              <span className="inline-flex items-center gap-1.5">
-                <WarningIcon size={14} />
-                <span>Select a classification before sending.</span>
-              </span>
-            </div>
-          )}
-
           {/* Address fields */}
           <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
-            <FromSelector
-              aliases={aliases}
-              selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
-              onChange={(alias) => setFromEmail(alias.email)}
-            />
+            <div className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                {aliases.length > 1 ? (
+                  <FromSelector
+                    aliases={aliases}
+                    selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
+                    onChange={(alias) => setFromEmail(alias.email)}
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                    <span className="w-8 shrink-0 text-xs font-medium text-[var(--muted-text)]">
+                      From
+                    </span>
+                    <span className="min-w-0 truncate">
+                      {aliases[0]?.displayName
+                        ? `${aliases[0].displayName} <${aliases[0].email}>`
+                        : (aliases[0]?.email ?? activeAccount?.email ?? '')}
+                    </span>
+                  </div>
+                )}
+              </div>
+              {!alwaysShowCcBcc && (
+                <div className="flex items-center gap-2 text-xs text-[var(--muted-text)]">
+                  <span className="text-[var(--border)]" aria-hidden="true">
+                    |
+                  </span>
+                  {!showCc && (
+                    <Button
+                      onPress={() => setCcExpanded(true)}
+                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Cc
+                    </Button>
+                  )}
+                  {!showBcc && (
+                    <Button
+                      onPress={() => setBccExpanded(true)}
+                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Bcc
+                    </Button>
+                  )}
+                  {!showReplyTo && (
+                    <Button
+                      onPress={() => setReplyToExpanded(true)}
+                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      &gt;&gt;
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
             <RecipientField
               label="To"
               recipients={to}
@@ -768,41 +942,55 @@ export function Composer({ windowed = false }: ComposerProps) {
               moveTargets={[
                 { label: 'Cc', target: 'cc' },
                 { label: 'Bcc', target: 'bcc' },
+                { label: 'Reply-To', target: 'replyTo' },
               ]}
               onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
             />
-            {showCcBcc ? (
-              <>
-                <RecipientField
-                  label="Cc"
-                  recipients={cc}
-                  onChange={setCc}
-                  placeholder="Cc recipients"
-                  moveTargets={[
-                    { label: 'To', target: 'to' },
-                    { label: 'Bcc', target: 'bcc' },
-                  ]}
-                  onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
-                />
-                <RecipientField
-                  label="Bcc"
-                  recipients={bcc}
-                  onChange={setBcc}
-                  placeholder="Bcc recipients"
-                  moveTargets={[
-                    { label: 'To', target: 'to' },
-                    { label: 'Cc', target: 'cc' },
-                  ]}
-                  onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-                />
-              </>
-            ) : (
-              <Button
-                onPress={() => setShowCcBcc(true)}
-                className="kylins-link ml-10 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                Cc / Bcc
-              </Button>
+            {(showCc || showBcc || showReplyTo || alwaysShowCcBcc) && (
+              <div className="space-y-1" onBlur={handleAddressBlockBlur}>
+                {showCc && (
+                  <RecipientField
+                    label="Cc"
+                    recipients={cc}
+                    onChange={setCc}
+                    placeholder="Cc recipients"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Bcc', target: 'bcc' },
+                      { label: 'Reply-To', target: 'replyTo' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+                  />
+                )}
+                {showBcc && (
+                  <RecipientField
+                    label="Bcc"
+                    recipients={bcc}
+                    onChange={setBcc}
+                    placeholder="Bcc recipients"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Cc', target: 'cc' },
+                      { label: 'Reply-To', target: 'replyTo' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
+                  />
+                )}
+                {showReplyTo && (
+                  <RecipientField
+                    label="Reply-To"
+                    recipients={replyTo}
+                    onChange={setReplyTo}
+                    placeholder="Reply-To address"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Cc', target: 'cc' },
+                      { label: 'Bcc', target: 'bcc' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'replyTo', target)}
+                  />
+                )}
+              </div>
             )}
           </div>
 
@@ -836,6 +1024,17 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       {/* Attachments */}
       <div className="border-t border-[var(--border)]">
+        {originalMessageId && !forwardAsAttachment && (
+          <div className="flex items-center gap-2 px-4 py-1.5">
+            <Checkbox
+              isSelected={includeOriginalAttachments}
+              onChange={setIncludeOriginalAttachments}
+              className="flex items-center gap-2 text-xs text-[var(--foreground)]"
+            >
+              Include original attachments
+            </Checkbox>
+          </div>
+        )}
         <AttachmentPicker />
       </div>
 
@@ -860,20 +1059,19 @@ export function Composer({ windowed = false }: ComposerProps) {
         <div className="flex items-center gap-2">
           <Button
             onPress={handleDiscard}
+            isDisabled={sendProgressActive}
             className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             Discard
           </Button>
           <Button
             onPress={windowed ? handleSendAndCloseWindow : handleSend}
-            isDisabled={to.length === 0 || requiresClassification}
-            aria-label={
-              requiresClassification ? 'Select a classification before sending' : undefined
-            }
+            isDisabled={to.length === 0 || sendProgressActive}
+            aria-label={undefined}
             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <SendIcon size={14} />
-            Send
+            {sendProgressActive ? <SpinnerIcon size={14} /> : <SendIcon size={14} />}
+            {sendProgressActive ? 'Sending…' : 'Send'}
           </Button>
         </div>
       </div>
@@ -907,7 +1105,7 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   return (
     <div className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center p-4 pointer-events-none">
-      <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={closeComposer} />
+      <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={handleClose} />
       {composerPanel}
     </div>
   );

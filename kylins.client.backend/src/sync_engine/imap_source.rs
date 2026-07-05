@@ -1135,10 +1135,34 @@ impl MailSource for ImapSource {
     }
 
     async fn send(&self, raw_mime: &[u8]) -> Result<(), SourceError> {
-        smtp_client::send_raw_email(&self.smtp_config(), raw_mime)
-            .await
-            .map(|_| ())
-            .map_err(other)
+        let smtp = self.smtp_config();
+        log::info!(
+            "[send] ImapSource::send ENTER account_id={} host={}:{} ({} bytes)",
+            self.account.id,
+            smtp.host,
+            smtp.port,
+            raw_mime.len()
+        );
+        match smtp_client::send_raw_email(&smtp, raw_mime).await {
+            Ok(_res) => {
+                log::info!(
+                    "[send] ImapSource::send OK account_id={} via {}:{}",
+                    self.account.id,
+                    smtp.host,
+                    smtp.port
+                );
+                Ok(())
+            }
+            Err(e) => {
+                log::warn!(
+                    "[send] ImapSource::send ERR account_id={} via {}:{}: {e}",
+                    self.account.id,
+                    smtp.host,
+                    smtp.port
+                );
+                Err(other(e))
+            }
+        }
     }
 
     /// Long-lived IDLE on `folder`. Blocks until the server signals a change

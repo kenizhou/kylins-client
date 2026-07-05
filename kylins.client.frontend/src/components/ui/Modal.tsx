@@ -9,7 +9,7 @@ export interface ModalProps {
   subtitle?: string;
   icon?: React.ComponentType<{ size?: number }>;
   footer?: React.ReactNode;
-  size?: 'md' | 'lg' | 'xl' | 'full';
+  size?: 'md' | 'lg' | 'xl' | 'full' | 'auto';
   className?: string;
   contentClassName?: string;
   disableBackdropClose?: boolean;
@@ -20,6 +20,7 @@ const SIZE_CLASSES: Record<NonNullable<ModalProps['size']>, string> = {
   lg: 'w-full max-w-[920px] h-[680px] max-h-[90vh]',
   xl: 'w-full max-w-[1100px] h-[760px] max-h-[92vh]',
   full: 'w-[92vw] h-[92vh]',
+  auto: 'w-auto h-auto max-w-[min(90vw,1200px)] max-h-[90vh]',
 };
 
 export function Modal({

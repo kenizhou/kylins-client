@@ -7,9 +7,7 @@
 // mailed (that MIME wiring is deferred with emailBuilder — see TODO).
 
 import { IcalHelper, type PartStat } from './icalHelper';
-import type { SendAsAlias } from '@/services/db/sendAsAliases';
 
-/** The actionable RSVP responses a user can choose. */
 export type RsvpPartStat = Extract<PartStat, 'ACCEPTED' | 'TENTATIVE' | 'DECLINED'>;
 
 export interface RsvpInput {
@@ -20,7 +18,7 @@ export interface RsvpInput {
   end?: Date;
   allDay?: boolean;
   organizerEmail: string;
-  responder: SendAsAlias;
+  responder: { email: string; displayName?: string | null };
   partstat: RsvpPartStat;
   sequence?: number;
 }

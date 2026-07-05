@@ -30,7 +30,15 @@ const baseInput: DraftInput = {
   threadId: 'thread-1',
   inReplyToMessageId: '<orig@example.com>',
   signatureId: 'sig-1',
-  attachments: [{ filename: 'a.txt', mimeType: 'text/plain', content: 'YQ==', size: 1 }],
+  // T7b: attachments are path-backed. No base64 `content` on the regular path.
+  attachments: [
+    {
+      filename: 'a.txt',
+      mimeType: 'text/plain',
+      filePath: '/appdata/outbox-attachments/draft-1/a.txt',
+      size: 1,
+    },
+  ],
 };
 
 describe('composer/drafts', () => {

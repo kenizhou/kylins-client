@@ -519,17 +519,38 @@ impl MailSource for EasSource {
         // here because `send_command` does not currently surface CommandStatus
         // for SendMail; it would be applied at that layer when it does.
         use crate::eas::types::SendMailRequest;
-        let mut client = EasClient::new(self.eas_config());
+        let cfg = self.eas_config();
+        log::info!(
+            "[send] EasSource::send ENTER account_id={} url={} ({} bytes, save_to_sent=true)",
+            self.account.id,
+            cfg.url,
+            raw_mime.len()
+        );
+        let mut client = EasClient::new(cfg.clone());
         let req = SendMailRequest {
             mime: raw_mime.to_vec(),
             save_to_sent: true,
             client_id: Some(format!("SendMail-{}", uuid::Uuid::new_v4())),
         };
-        client
-            .send_mail(&req)
-            .await
-            .map(|_| ())
-            .map_err(map_eas_error)
+        match client.send_mail(&req).await {
+            Ok(_) => {
+                log::info!(
+                    "[send] EasSource::send OK account_id={} via {}",
+                    self.account.id,
+                    cfg.url
+                );
+                Ok(())
+            }
+            Err(e) => {
+                let mapped = map_eas_error(e);
+                log::warn!(
+                    "[send] EasSource::send ERR account_id={} via {}: {mapped}",
+                    self.account.id,
+                    cfg.url
+                );
+                Err(mapped)
+            }
+        }
     }
 
     /// Long-poll the server for changes on the monitored collections. EAS Ping
