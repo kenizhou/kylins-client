@@ -89,6 +89,8 @@ export const DEFAULT_VIEW_STATE: ViewState = {
   messageListDensity: 'normal',
   visibleColumnIds: DEFAULT_MESSAGE_LIST_COLUMNS.filter((c) => c.defaultVisible).map((c) => c.id),
   panelSizes: DEFAULT_PANEL_SIZES,
+  calendarPaneVisible: true,
+  calendarPaneSize: 22,
 };
 
 export const COLUMN_REGISTRY = new Map(DEFAULT_MESSAGE_LIST_COLUMNS.map((c) => [c.id, c]));

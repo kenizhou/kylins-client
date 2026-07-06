@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
+use crate::db::calendars;
+
 /// Calendar event row. Mirrors TS `DbCalendarEvent` (snake_case JSON keys).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -127,7 +129,47 @@ pub async fn list_in_range(
     Ok(rows.iter().map(row_to_event).collect())
 }
 
-/// Get an event by id.
+/// Events potentially visible in `[range_start, range_end]` for a set of
+/// calendars. A row is included if its single occurrence overlaps the range OR
+/// its recurrence window overlaps. `calendar_ids` must be non-empty.
+pub async fn list_in_range_for_calendars(
+    pool: &SqlitePool,
+    calendar_ids: &[String],
+    range_start: i64,
+    range_end: i64,
+) -> Result<Vec<CalendarEvent>, String> {
+    if calendar_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // range_start = $1, range_end = $2, calendar_ids = $3..$n
+    let placeholders: Vec<String> = (0..calendar_ids.len())
+        .map(|i| format!("${}", i + 3))
+        .collect();
+
+    let sql = format!(
+        "SELECT * FROM calendar_events
+         WHERE calendar_id IN ({})
+           AND (
+             (start_time <= $2 AND end_time >= $1)
+             OR (recurrence_start IS NOT NULL AND recurrence_end IS NOT NULL
+                 AND recurrence_start <= $2 AND recurrence_end >= $1)
+           )
+         ORDER BY start_time ASC",
+        placeholders.join(", ")
+    );
+
+    let mut q = sqlx::query(&sql)
+        .bind(range_start)
+        .bind(range_end);
+    for id in calendar_ids {
+        q = q.bind(id);
+    }
+
+    let rows = q.fetch_all(pool).await.map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(row_to_event).collect())
+}
+
 pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Option<CalendarEvent>, String> {
     let row = sqlx::query("SELECT * FROM calendar_events WHERE id = $1")
         .bind(id)
@@ -135,6 +177,21 @@ pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Option<CalendarEve
         .await
         .map_err(|e| e.to_string())?;
     Ok(row.as_ref().map(row_to_event))
+}
+
+/// Resolve the calendar an event should be attached to. If the caller did not
+/// supply a calendar_id, fall back to the account's primary calendar, creating
+/// a default local calendar when necessary. Events without a calendar_id are
+/// invisible to the composite calendar view.
+async fn resolve_calendar_id(pool: &SqlitePool, account_id: &str, calendar_id: Option<String>) -> Result<Option<String>, String> {
+    if let Some(id) = calendar_id {
+        return Ok(Some(id));
+    }
+    if let Some(id) = calendars::primary_for_account(pool, account_id).await? {
+        return Ok(Some(id));
+    }
+    calendars::seed_default_for_account(pool, account_id).await?;
+    calendars::primary_for_account(pool, account_id).await
 }
 
 /// Insert an event. Returns its id. Mirrors `insertCalendarEvent` including the
@@ -153,6 +210,7 @@ pub async fn insert(pool: &SqlitePool, input: UpsertCalendarEventInput) -> Resul
     let start_time = input.start_time.unwrap_or(0);
     let end_time = input.end_time.unwrap_or(0);
     let is_all_day = input.is_all_day.unwrap_or(false);
+    let calendar_id = resolve_calendar_id(pool, &account_id, input.calendar_id.unwrap_or(None)).await?;
 
     sqlx::query(
         "INSERT INTO calendar_events
@@ -164,7 +222,7 @@ pub async fn insert(pool: &SqlitePool, input: UpsertCalendarEventInput) -> Resul
     .bind(&id)
     .bind(&account_id)
     .bind(&google_event_id)
-    .bind(input.calendar_id.unwrap_or(None))
+    .bind(&calendar_id)
     .bind(input.remote_event_id.unwrap_or(None))
     .bind(&uid)
     .bind(input.summary.unwrap_or(None))

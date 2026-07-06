@@ -507,6 +507,13 @@ pub async fn create(pool: &SqlitePool, input: CreateAccountInput) -> Result<Acco
         log::warn!("[accounts] failed to seed default signature for {id}: {e}");
     }
 
+    // Seed a default local calendar for the account. Best-effort: a failure here
+    // is logged but does not fail account creation (matches the signature-seed
+    // pattern above).
+    if let Err(e) = crate::db::calendars::seed_default_for_account(pool, &id).await {
+        log::warn!("[accounts] failed to seed default calendar for {id}: {e}");
+    }
+
     get_by_id(pool, &id)
         .await?
         .ok_or_else(|| "insert failed: row not found after create".to_string())

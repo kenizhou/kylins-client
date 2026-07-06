@@ -11,6 +11,8 @@ import { ReadingPaneLayout } from '../../features/view/components/ReadingPaneLay
 import { Composer } from '../composer/Composer';
 import { UndoSendToast } from '../composer/UndoSendToast';
 import { CalendarPage } from '../calendar/CalendarPage';
+import { CalendarPane } from '../calendar/CalendarPane';
+import { CalendarLayout } from '../../features/view/components/CalendarLayout';
 import { ContactsPage } from '../contacts/ContactsPage';
 import { TasksPage } from '../tasks/TasksPage';
 
@@ -37,7 +39,9 @@ export function AppShell() {
           {commandRibbonVisible && activeApp !== 'contacts' && <CommandRibbon />}
           <div className="flex flex-1 overflow-hidden">
             {activeApp === 'calendar' ? (
-              <CalendarPage />
+              <CalendarLayout folderPane={<CalendarPane />}>
+                <CalendarPage />
+              </CalendarLayout>
             ) : activeApp === 'contacts' ? (
               <ContactsPage />
             ) : activeApp === 'tasks' ? (

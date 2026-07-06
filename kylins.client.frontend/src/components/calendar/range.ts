@@ -42,14 +42,24 @@ export function dayKey(d: Date): string {
   ).padStart(2, '0')}`;
 }
 
-/** Group occurrences into a Map<dayKey, Occurrence[]> (unsorted). */
+/** Group occurrences into a Map<dayKey, Occurrence[]> (unsorted).
+ *  Multi-day events appear under every day they span.
+ */
 export function groupOccurrencesByDay(occurrences: Occurrence[]): Map<string, Occurrence[]> {
   const m = new Map<string, Occurrence[]>();
   for (const o of occurrences) {
-    const k = dayKey(o.start);
-    const arr = m.get(k);
-    if (arr) arr.push(o);
-    else m.set(k, [o]);
+    const startDay = startOfDay(o.start);
+    const end = o.end ?? o.start;
+    // Events ending exactly at midnight belong to the previous day; events
+    // ending after midnight also belong to that day.
+    const lastDay =
+      end.getTime() > startDay.getTime() ? startOfDay(new Date(end.getTime() - 1)) : startDay;
+    for (let d = new Date(startDay); d.getTime() <= lastDay.getTime(); d = addDays(d, 1)) {
+      const k = dayKey(d);
+      const arr = m.get(k);
+      if (arr) arr.push(o);
+      else m.set(k, [o]);
+    }
   }
   return m;
 }

@@ -726,6 +726,7 @@ pub async fn db_search_messages(
 // ---- calendar_events ----
 
 use crate::db::calendar_events::{self, CalendarEvent, UpsertCalendarEventInput};
+use crate::db::calendars::{self, Calendar, UpsertCalendarInput};
 
 #[tauri::command]
 pub async fn db_get_calendar_events_for_account(
@@ -776,6 +777,82 @@ pub async fn db_delete_calendar_event(
     id: String,
 ) -> Result<(), String> {
     calendar_events::delete(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_get_calendar_events_in_range_for_calendars(
+    pool: State<'_, SqlitePool>,
+    calendar_ids: Vec<String>,
+    range_start: i64,
+    range_end: i64,
+) -> Result<Vec<CalendarEvent>, String> {
+    calendar_events::list_in_range_for_calendars(&pool, &calendar_ids, range_start, range_end).await
+}
+
+// ---- calendars ----
+
+#[tauri::command]
+pub async fn db_get_all_calendars(pool: State<'_, SqlitePool>) -> Result<Vec<Calendar>, String> {
+    calendars::list_all(&pool).await
+}
+
+#[tauri::command]
+pub async fn db_get_calendars_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+) -> Result<Vec<Calendar>, String> {
+    calendars::list_for_account(&pool, &account_id).await
+}
+
+#[tauri::command]
+pub async fn db_get_calendar_by_id(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<Option<Calendar>, String> {
+    calendars::get_by_id(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_create_calendar(
+    pool: State<'_, SqlitePool>,
+    input: UpsertCalendarInput,
+) -> Result<Calendar, String> {
+    let id = calendars::insert(&pool, input).await?;
+    calendars::get_by_id(&pool, &id)
+        .await?
+        .ok_or_else(|| "insert failed: calendar row not found after create".to_string())
+}
+
+#[tauri::command]
+pub async fn db_update_calendar(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    updates: UpsertCalendarInput,
+) -> Result<(), String> {
+    calendars::update(&pool, &id, updates).await
+}
+
+#[tauri::command]
+pub async fn db_delete_calendar(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    calendars::delete(&pool, &id).await
+}
+
+#[tauri::command]
+pub async fn db_set_calendar_visible(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    visible: bool,
+) -> Result<(), String> {
+    calendars::set_visible(&pool, &id, visible).await
+}
+
+#[tauri::command]
+pub async fn db_set_primary_calendar(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    account_id: String,
+) -> Result<(), String> {
+    calendars::set_primary(&pool, &id, &account_id).await
 }
 
 // ---- tasks ----

@@ -58,6 +58,18 @@ export async function getCalendarEventsInRange(
   });
 }
 
+export async function getCalendarEventsInRangeForCalendars(
+  calendarIds: string[],
+  rangeStart: number,
+  rangeEnd: number,
+): Promise<DbCalendarEvent[]> {
+  return invoke<DbCalendarEvent[]>('db_get_calendar_events_in_range_for_calendars', {
+    calendarIds,
+    rangeStart,
+    rangeEnd,
+  });
+}
+
 export async function getCalendarEventById(id: string): Promise<DbCalendarEvent | null> {
   return invoke<DbCalendarEvent | null>('db_get_calendar_event_by_id', { id });
 }

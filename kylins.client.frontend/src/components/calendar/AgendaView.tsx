@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useCalendarStore } from '@/stores/calendarStore';
 import { groupOccurrencesByDay } from './range';
-import { CalendarIcon } from '../icons';
+import { CalendarIcon } from '@/components/icons';
 
 export function AgendaView() {
   const occurrences = useCalendarStore((s) => s.occurrences);
@@ -27,7 +27,8 @@ export function AgendaView() {
   return (
     <div className="flex-1 overflow-auto p-4">
       {[...byDay.entries()].map(([k, items]) => {
-        const date = new Date(k);
+        const [year, month, day] = k.split('-') as [string, string, string];
+        const date = new Date(Number(year), Number(month) - 1, Number(day));
         return (
           <div key={k} className="mb-3">
             <div className="sticky top-0 z-10 mb-1 bg-[var(--background)] pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-[var(--muted-text)]">
