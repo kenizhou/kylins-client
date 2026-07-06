@@ -41,6 +41,8 @@ export interface ViewStore extends ViewState {
   setSelectedMessage: (message: MailMessage | null) => void;
   setReadingPanePosition: (position: ReadingPanePosition) => void;
   setFolderPaneVisible: (visible: boolean) => void;
+  setCalendarPaneVisible: (visible: boolean) => void;
+  setCalendarPaneSize: (size: number) => void;
   setCommandRibbonVisible: (visible: boolean) => void;
   setStatusBarVisible: (visible: boolean) => void;
   setConversationView: (enabled: boolean) => void;
@@ -60,6 +62,8 @@ export const useViewStore = create<ViewStore>((set) => ({
   setSelectedMessage: (selectedMessage) => set({ selectedMessage }),
   setReadingPanePosition: (readingPanePosition) => set({ readingPanePosition }),
   setFolderPaneVisible: (folderPaneVisible) => set({ folderPaneVisible }),
+  setCalendarPaneVisible: (calendarPaneVisible) => set({ calendarPaneVisible }),
+  setCalendarPaneSize: (calendarPaneSize) => set({ calendarPaneSize }),
   setCommandRibbonVisible: (commandRibbonVisible) => set({ commandRibbonVisible }),
   setStatusBarVisible: (statusBarVisible) => set({ statusBarVisible }),
   setConversationView: (conversationView) => set({ conversationView }),

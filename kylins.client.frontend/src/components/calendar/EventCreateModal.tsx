@@ -1,18 +1,24 @@
 // Quick event-create modal. Builds a VEVENT via icalHelper and persists it
 // (with its ical_data) to calendar_events; the calendar store re-expands.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { IcalHelper } from '@/services/calendar/icalHelper';
 import { insertCalendarEvent } from '@/services/db/calendarEvents';
+import { useCalendarStore } from '@/stores/calendarStore';
 import { toUnixSeconds } from './range';
-import { CloseIcon } from '../icons';
+import { CloseIcon } from '@/components/icons';
 import {
   Button,
   Dialog,
   Input,
   Label,
+  ListBox,
+  ListBoxItem,
   Modal as RACModal,
   ModalOverlay,
+  Popover,
+  Select,
+  SelectValue,
   Switch,
   TextArea,
   TextField,
@@ -42,18 +48,52 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const calendars = useCalendarStore((s) => s.calendars);
+  const accountCalendars = useMemo(
+    () =>
+      calendars
+        .filter((c) => c.accountId === accountId)
+        .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
+    [calendars, accountId],
+  );
+  const defaultCalendarId =
+    accountCalendars.find((c) => c.isPrimary)?.id ?? accountCalendars[0]?.id ?? '';
+  const [calendarId, setCalendarId] = useState(defaultCalendarId);
+
+  // If the stored selection no longer matches the available calendars, fall
+  // back to the default without synchronously resetting state in an effect.
+  const effectiveCalendarId =
+    calendarId && accountCalendars.some((c) => c.id === calendarId)
+      ? calendarId
+      : defaultCalendarId;
+
   const onCloseRef = useRef(onClose);
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
 
   const handleSave = async () => {
-    if (!summary.trim()) return;
+    if (!summary.trim() || !effectiveCalendarId) return;
     setSaving(true);
     setError(null);
     try {
-      const startDate = new Date(start);
-      const endDate = new Date(end);
+      let startDate = new Date(start);
+      let endDate = new Date(end);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        setError('Please enter valid start and end dates.');
+        setSaving(false);
+        return;
+      }
+      if (endDate.getTime() <= startDate.getTime()) {
+        setError('End time must be after start time.');
+        setSaving(false);
+        return;
+      }
+      if (allDay) {
+        startDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+        endDate = new Date(startDate);
+        endDate.setDate(endDate.getDate() + 1);
+      }
       const uid = crypto.randomUUID();
       const ics = IcalHelper.generateICS({
         uid,
@@ -66,6 +106,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
       });
       await insertCalendarEvent({
         accountId,
+        calendarId: effectiveCalendarId,
         uid,
         summary,
         description: description || null,
@@ -85,6 +126,8 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
       setSaving(false);
     }
   };
+
+  const selectedCalendar = accountCalendars.find((c) => c.id === effectiveCalendarId);
 
   return (
     <ModalOverlay
@@ -124,6 +167,54 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                 className="h-11 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
               />
             </TextField>
+
+            <Select
+              selectedKey={effectiveCalendarId || undefined}
+              onSelectionChange={(key) => setCalendarId(key as string)}
+              isDisabled={accountCalendars.length === 0}
+              className="block"
+            >
+              <Label className="mb-1 block text-xs text-muted-text">Calendar</Label>
+              <Button className="flex h-11 w-full items-center justify-between rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring disabled:opacity-50">
+                <span className="flex items-center gap-2">
+                  {selectedCalendar && (
+                    <span
+                      className="h-3.5 w-3.5 rounded-full border border-border"
+                      style={{ backgroundColor: selectedCalendar.color || 'var(--primary)' }}
+                    />
+                  )}
+                  <SelectValue />
+                </span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </Button>
+              <Popover className="min-w-[var(--trigger-width)] rounded-md border border-border bg-surface py-1 shadow-lg">
+                <ListBox>
+                  {accountCalendars.map((cal) => (
+                    <ListBoxItem
+                      key={cal.id}
+                      id={cal.id}
+                      textValue={cal.displayName || 'Untitled calendar'}
+                      className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm text-foreground outline-none hover:bg-hover data-[selected=true]:bg-selected data-[selected=true]:text-selected-text"
+                    >
+                      <span
+                        className="h-3.5 w-3.5 rounded-full border border-border"
+                        style={{ backgroundColor: cal.color || 'var(--primary)' }}
+                      />
+                      {cal.displayName || 'Untitled calendar'}
+                    </ListBoxItem>
+                  ))}
+                </ListBox>
+              </Popover>
+            </Select>
 
             <Switch
               isSelected={allDay}
@@ -193,7 +284,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
               Cancel
             </Button>
             <Button
-              isDisabled={!summary.trim() || saving}
+              isDisabled={!summary.trim() || saving || !effectiveCalendarId}
               onPress={handleSave}
               className="flex h-11 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-fg transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >

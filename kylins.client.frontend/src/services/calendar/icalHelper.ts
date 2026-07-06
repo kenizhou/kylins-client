@@ -66,6 +66,12 @@ export interface ParsedEvent {
   method?: IcsMethod;
   /** Revision sequence number. */
   sequence?: number;
+  /** Local DB event id, if this was loaded from a stored row. */
+  eventId?: string;
+  /** Local DB calendar id, if this event belongs to a calendar. */
+  calendarId?: string;
+  /** Calendar color used when rendering occurrences. */
+  color?: string;
 }
 
 export interface Occurrence {
@@ -79,6 +85,12 @@ export interface Occurrence {
   allDay: boolean;
   /** True if this occurrence is an overridden exception. */
   isException?: boolean;
+  /** Local DB event id. */
+  eventId?: string;
+  /** Local DB calendar id. */
+  calendarId?: string;
+  /** Calendar color used when rendering this occurrence. */
+  color?: string;
 }
 
 export interface DateRange {
@@ -276,6 +288,9 @@ export const IcalHelper = {
           start: e.startDate.toJSDate(),
           end: e.endDate ? e.endDate.toJSDate() : undefined,
           allDay: e.startDate.isDate,
+          eventId: ev.eventId,
+          calendarId: ev.calendarId,
+          color: ev.color,
         });
       }
       for (const o of res.occurrences) {
@@ -287,6 +302,9 @@ export const IcalHelper = {
           allDay: o.startDate.isDate,
           recurrenceId: o.recurrenceId ? o.recurrenceId.toJSDate() : undefined,
           isException: o.recurrenceId !== null,
+          eventId: ev.eventId,
+          calendarId: ev.calendarId,
+          color: ev.color,
         });
       }
     }

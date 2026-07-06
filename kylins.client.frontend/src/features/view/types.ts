@@ -28,4 +28,8 @@ export interface ViewState {
   visibleColumnIds: string[];
   /** Persisted panel sizes per reading-pane position (percentages 0–100). */
   panelSizes: PanelSizeMap;
+  /** Whether the calendar folder pane is visible. Independent of the mail folder pane. */
+  calendarPaneVisible: boolean;
+  /** Width of the calendar folder pane as a percentage of the calendar layout. */
+  calendarPaneSize: number;
 }

@@ -45,6 +45,10 @@ export function isPanelSizeMap(value: unknown): value is PanelSizeMap {
   return true;
 }
 
+function isValidPaneSize(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 10 && value <= 80;
+}
+
 export function sanitizeViewState(partial: Record<string, unknown>): Partial<ViewState> {
   const sanitized: Partial<ViewState> = {};
 
@@ -53,6 +57,12 @@ export function sanitizeViewState(partial: Record<string, unknown>): Partial<Vie
   }
   if (isBoolean(partial.folderPaneVisible)) {
     sanitized.folderPaneVisible = partial.folderPaneVisible;
+  }
+  if (isBoolean(partial.calendarPaneVisible)) {
+    sanitized.calendarPaneVisible = partial.calendarPaneVisible;
+  }
+  if (isValidPaneSize(partial.calendarPaneSize)) {
+    sanitized.calendarPaneSize = partial.calendarPaneSize;
   }
   if (isBoolean(partial.commandRibbonVisible)) {
     sanitized.commandRibbonVisible = partial.commandRibbonVisible;
@@ -96,6 +106,8 @@ export async function saveViewSettings(state: ViewState): Promise<void> {
     JSON.stringify({
       readingPanePosition: state.readingPanePosition,
       folderPaneVisible: state.folderPaneVisible,
+      calendarPaneVisible: state.calendarPaneVisible,
+      calendarPaneSize: state.calendarPaneSize,
       commandRibbonVisible: state.commandRibbonVisible,
       statusBarVisible: state.statusBarVisible,
       conversationView: state.conversationView,

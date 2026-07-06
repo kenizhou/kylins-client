@@ -115,43 +115,20 @@ pub async fn request_bodies_inner(
 
     let mut updates: Vec<SnippetUpdate> = Vec::new();
 
-    // 3. Per folder: one batched fetch_bodies_batch call (IMAP), or per-message
-    //    fallback (EAS / non-IMAP).
+    // 3. Per folder: one batched fetch (IMAP via the persistent session
+    //    manager), or per-message fallback (EAS / non-IMAP).
     //
-    //    CONCURRENT-CONNECTION GUARD (mirrors the fix in imap_source::sync_folder
-    //    Stage 1.5): `fetch_bodies_batch` opens its OWN raw TCP connection and
-    //    holds it for the whole batch. If the persistent IMAP session is still
-    //    alive at the same time, the server sees 2 concurrent connections from
-    //    this client and kills one (`* BYE Connection closed. 14`), which can
-    //    cascade into the body fetch failing mid-batch. Disconnect the persistent
-    //    session BEFORE the raw batch connection opens. The session lazily
-    //    reconnects on the next `manager.execute(...)` call, so this is safe.
-    //    Only IMAP sources have a persistent session (EAS has none), and we only
-    //    disconnect once per `request_bodies_inner` call (not per folder) since
-    //    the first disconnect already guarantees no concurrency for subsequent
-    //    folders in the same batch.
-    let mut persistent_session_disconnected = false;
+    //    The persistent session is reused for every body batch, so we avoid the
+    //    raw-fallback path's fresh connect + LOGIN per folder. That is the fix
+    //    for Yahoo's `a1 NO [LIMIT] LOGIN Rate limit hit` during body prefetch.
     for (folder, mid_uids) in by_folder {
         match src.imap_config_for_folder(&folder).await {
             Ok(Some(config)) => {
                 let uids: Vec<u32> = mid_uids.iter().map(|(_, u)| *u).collect();
-                // Disconnect the persistent session ONCE before the first raw
-                // batch fetch in this call. Subsequent folders reuse the already-
-                // disconnected state (no-op when already None).
-                if !persistent_session_disconnected {
-                    log::info!(
-                        "[sync] request_bodies: disconnecting persistent IMAP session for {account_id} before fetch_bodies_batch (concurrent-connection guard)"
-                    );
-                    engine.session_manager.disconnect_account(account_id).await;
-                    persistent_session_disconnected = true;
-                }
-                match crate::mail::imap::client::fetch_bodies_batch(
-                    &config,
-                    &folder,
-                    &uids,
-                    50,
-                )
-                .await
+                match engine
+                    .session_manager
+                    .fetch_bodies_batch(account_id, &config, &folder, &uids, 50)
+                    .await
                 {
                     Ok(fetched) => {
                         // Index fetched bodies by uid for O(1) lookup.

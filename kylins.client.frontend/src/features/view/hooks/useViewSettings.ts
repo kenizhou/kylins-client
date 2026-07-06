@@ -11,6 +11,8 @@ export function useViewSettings() {
   const messageListDensity = useViewStore((s) => s.messageListDensity);
   const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
   const panelSizes = useViewStore((s) => s.panelSizes);
+  const calendarPaneVisible = useViewStore((s) => s.calendarPaneVisible);
+  const calendarPaneSize = useViewStore((s) => s.calendarPaneSize);
   const setHydrated = useViewStore((s) => s.setHydrated);
   const isHydrated = useViewStore((s) => s.isHydrated);
 
@@ -32,6 +34,8 @@ export function useViewSettings() {
     saveViewSettings({
       readingPanePosition,
       folderPaneVisible,
+      calendarPaneVisible,
+      calendarPaneSize,
       commandRibbonVisible,
       statusBarVisible,
       conversationView,
@@ -42,6 +46,8 @@ export function useViewSettings() {
   }, [
     readingPanePosition,
     folderPaneVisible,
+    calendarPaneVisible,
+    calendarPaneSize,
     commandRibbonVisible,
     statusBarVisible,
     conversationView,

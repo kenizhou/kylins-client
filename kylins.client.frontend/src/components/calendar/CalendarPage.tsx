@@ -1,6 +1,6 @@
 // Calendar container: owns the create-event modal, derives the visible range
-// from the store's cursor+view, and loads+expands occurrences for the active
-// account. Renders the active view component.
+// from the store's cursor+view, and loads+expands occurrences for the visible
+// calendars. Renders the active view component.
 
 import { useEffect, useState } from 'react';
 import { useCalendarStore } from '@/stores/calendarStore';
@@ -12,7 +12,7 @@ import { WeekView } from './WeekView';
 import { DayView } from './DayView';
 import { AgendaView } from './AgendaView';
 import { EventCreateModal } from './EventCreateModal';
-import { CalendarIcon } from '../icons';
+import { CalendarIcon } from '@/components/icons';
 
 export function CalendarPage() {
   const currentDate = useCalendarStore((s) => s.currentDate);
@@ -20,21 +20,21 @@ export function CalendarPage() {
   const loading = useCalendarStore((s) => s.loading);
   const error = useCalendarStore((s) => s.error);
   const loadOccurrences = useCalendarStore((s) => s.loadOccurrences);
+  const loadCalendars = useCalendarStore((s) => s.loadCalendars);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const [showCreate, setShowCreate] = useState(false);
 
-  const reload = () => {
-    if (!activeAccountId) return;
-    const { start, end } = getViewRange(view, currentDate);
-    loadOccurrences(activeAccountId, toUnixSeconds(start), toUnixSeconds(end));
-  };
+  useEffect(() => {
+    if (activeAccountId) {
+      loadCalendars();
+    }
+  }, [loadCalendars, activeAccountId]);
 
   useEffect(() => {
-    reload();
-    // reload is stable enough (depends only on store actions + primitives); view
-    // and currentDate drive re-loads.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAccountId, currentDate, view, loadOccurrences]);
+    if (!activeAccountId) return;
+    const { start, end } = getViewRange(view, currentDate);
+    loadOccurrences(toUnixSeconds(start), toUnixSeconds(end));
+  }, [view, currentDate, activeAccountId, loadOccurrences]);
 
   if (!activeAccountId) {
     return (
@@ -72,7 +72,10 @@ export function CalendarPage() {
         <EventCreateModal
           accountId={activeAccountId}
           onClose={() => setShowCreate(false)}
-          onCreated={reload}
+          onCreated={() => {
+            const { start, end } = getViewRange(view, currentDate);
+            loadOccurrences(toUnixSeconds(start), toUnixSeconds(end));
+          }}
         />
       )}
     </div>

@@ -2,9 +2,18 @@
 
 import type { CalendarView } from '@/stores/calendarStore';
 import { useCalendarStore } from '@/stores/calendarStore';
-import { PlusIcon, ArrowLeftIcon, ArrowRightIcon } from '../icons';
+import { useViewStore } from '@/features/view/viewStore';
+import {
+  PlusIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  PanelLeftOpenIcon,
+  PanelLeftCloseIcon,
+} from '@/components/icons';
 import { addDays } from './range';
-import { Button, ToggleButton, ToggleButtonGroup } from 'react-aria-components';
+import { Button } from 'react-aria-components';
+import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { InjectedComponentSet } from '@/components/plugins/InjectedComponentSet';
 
 const VIEWS: { key: CalendarView; label: string }[] = [
   { key: 'month', label: 'Month' },
@@ -22,6 +31,8 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
   const view = useCalendarStore((s) => s.view);
   const setCurrentDate = useCalendarStore((s) => s.setCurrentDate);
   const setView = useCalendarStore((s) => s.setView);
+  const calendarPaneVisible = useViewStore((s) => s.calendarPaneVisible);
+  const setCalendarPaneVisible = useViewStore((s) => s.setCalendarPaneVisible);
 
   const shift = (delta: number) => {
     if (view === 'month') {
@@ -67,25 +78,21 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
       <h2 className="ml-1 text-base font-semibold text-foreground">{title}</h2>
 
       <div className="ml-auto flex items-center gap-2">
-        <ToggleButtonGroup
-          selectionMode="single"
-          selectedKeys={[view]}
-          onSelectionChange={(keys) => {
-            const next = Array.from(keys)[0];
-            if (next) setView(next as CalendarView);
-          }}
-          className="flex overflow-hidden rounded-md border border-border divide-x divide-border"
+        <Button
+          onPress={() => setCalendarPaneVisible(!calendarPaneVisible)}
+          aria-label={calendarPaneVisible ? 'Hide calendar pane' : 'Show calendar pane'}
+          className="flex h-11 w-11 items-center justify-center rounded-md border border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground"
         >
-          {VIEWS.map((v) => (
-            <ToggleButton
-              key={v.key}
-              id={v.key}
-              className="h-11 min-w-11 px-2.5 text-xs transition-colors selected:bg-primary selected:text-primary-fg text-foreground hover:bg-hover"
-            >
-              {v.label}
-            </ToggleButton>
-          ))}
-        </ToggleButtonGroup>
+          {calendarPaneVisible ? <PanelLeftCloseIcon size={16} /> : <PanelLeftOpenIcon size={16} />}
+        </Button>
+
+        <InjectedComponentSet role="calendar:toolbar:actions" containersRequired={false} />
+
+        <SegmentedControl
+          options={VIEWS.map((v) => ({ value: v.key, label: v.label }))}
+          value={view}
+          onChange={(next) => setView(next)}
+        />
         <Button
           onPress={onNewEvent}
           className="flex h-11 min-w-11 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-fg transition-colors hover:opacity-90"
