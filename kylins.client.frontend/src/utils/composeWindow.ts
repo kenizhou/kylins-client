@@ -14,6 +14,12 @@ export interface ComposeWindowOptions {
   inReplyToMessageId?: string | null;
   draftId?: string | null;
   fromEmail?: string | null;
+  /**
+   * Id of the account this compose should send from. Required for the popout
+   * window to resolve a real account in `sendEmail`; if omitted the popout
+   * falls back to `accounts[0]`.
+   */
+  accountId?: string;
   signatureId?: string | null;
   classificationId?: string | null;
   isEncrypted?: boolean;
@@ -88,6 +94,7 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
     if (opts.inReplyToMessageId) params.set('inReplyToMessageId', opts.inReplyToMessageId);
     if (opts.draftId) params.set('draftId', opts.draftId);
     if (opts.fromEmail) params.set('fromEmail', opts.fromEmail);
+    if (opts.accountId) params.set('accountId', opts.accountId);
     if (opts.signatureId) params.set('signatureId', opts.signatureId);
     if (opts.classificationId) params.set('classificationId', opts.classificationId);
     params.set('isEncrypted', opts.isEncrypted ? '1' : '0');
@@ -177,6 +184,7 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     inReplyToMessageId: params.get('inReplyToMessageId'),
     draftId: params.get('draftId') ?? undefined,
     fromEmail: params.get('fromEmail') ?? undefined,
+    accountId: params.get('accountId') ?? undefined,
     signatureId: params.get('signatureId') ?? undefined,
     classificationId: params.get('classificationId') ?? undefined,
     isEncrypted: params.get('isEncrypted') === '1',

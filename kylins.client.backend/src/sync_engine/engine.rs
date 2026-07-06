@@ -1,8 +1,11 @@
 // SyncEngine — process singleton that owns one AccountWorker (Tokio task) per active
-// account. Each worker runs a wakeable 60s poll: list_folders -> upsert labels ->
+// account. Each worker runs a wakeable poll: list_folders -> upsert labels ->
 // per-folder sync_folder(cursor) -> apply_folder_delta -> advance cursor -> emit
-// sync:* events. Phase 0 is poll-only; Phase 2 layers IMAP IDLE / EAS Ping on top via
-// the same MailSource trait.
+// sync:* events. The poll cadence is IDLE-aware: poll-only accounts tick every
+// `POLL_INTERVAL_SECS` (60s); accounts with an active IDLE watcher tick every
+// `IDLE_BACKSTOP_SECS` (300s) — IDLE covers INBOX realtime, and the long backstop
+// sweeps non-INBOX folders + recovers any IDLE gap. Phase 0 is poll-only; Phase 2
+// layers IMAP IDLE / EAS Ping on top via the same MailSource trait.
 //
 // `EventSink` is the test seam: TauriEmitter emits via AppHandle in production;
 // TestSink collects events for unit tests (so the engine is drivable without a WebView).
@@ -22,13 +25,18 @@ use crate::db::{accounts, contacts, labels, messages, send_as_aliases, sync_stat
 use crate::mail::imap::session_manager::ImapSessionManager;
 use crate::sync_engine::{source_for_account, Cursor, MailSource, RemoteFolder};
 
-// 30s poll interval (interim measure). IDLE is the preferred push path, but
-// on servers that kill one of the two concurrent connections (persistent
-// session + IDLE) the IDLE watcher may fail more often than the 60s poll can
-// recover from. 30s keeps the worst-case staleness bounded while the
-// persistent-connection + IDLE coexistence is hardened. Revisit once IDLE is
-// observed stable alongside the persistent session (Task 5+).
-const POLL_INTERVAL_SECS: u64 = 30;
+// Poll-only cadence: the tick used for accounts without IDLE, or whose IDLE
+// watcher isn't currently running. IDLE remains the preferred push path; this
+// is the backstop for non-INBOX folders + the realtime path when the server
+// (or our client) doesn't keep an IDLE socket alive.
+const POLL_INTERVAL_SECS: u64 = 60;
+
+// IDLE-aware backstop: when an account has an active IDLE watcher (covering
+// INBOX realtime), the poll loop slows down to this cadence. The poll then
+// only needs to sweep non-INBOX folders + recover any IDLE gap, so a 5-minute
+// worst-case staleness there is acceptable and avoids redundant work on top
+// of the push path.
+const IDLE_BACKSTOP_SECS: u64 = 300;
 
 // ---- Phase 3f Task 3: circuit-breaker thresholds + cooldowns ----
 //
@@ -160,9 +168,11 @@ enum SyncOp {
 
 /// Realtime strategy picked from a source's `Capabilities` after the first
 /// sync round populates the caps cache. `Idle` spawns the per-account IDLE
-/// watcher (Task 3); `Poll` keeps the 60s sweep as the only push path. The
-/// poll loop runs in BOTH cases — it stays as the background sweep for
-/// non-INBOX folders + the fallback when IDLE is unavailable.
+/// watcher (Task 3); `Poll` keeps the `POLL_INTERVAL_SECS` (60s) sweep as the
+/// only push path. The poll loop runs in BOTH cases — under `Idle` it slows to
+/// `IDLE_BACKSTOP_SECS` (300s) since IDLE covers INBOX realtime and the poll
+/// only needs to sweep non-INBOX folders + recover IDLE gaps; under `Poll` it
+/// stays at 60s as the only push path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealtimeStrategy {
     /// Source advertises `IDLE` — spawn the watcher task on INBOX.
@@ -565,6 +575,15 @@ impl SyncEngine {
                 }
             };
 
+            // Capture whether an IDLE watcher is active BEFORE we move the
+            // `idle_watcher` JoinHandle into the workers map below — after that
+            // move the Option is consumed and we couldn't read it from the tick
+            // site. The poll cadence is IDLE-aware: with an active IDLE watcher
+            // (INBOX realtime push) the poll slows to IDLE_BACKSTOP_SECS as a
+            // long backstop for non-INBOX + IDLE-gap recovery; without IDLE it
+            // stays at the short POLL_INTERVAL_SECS as the only push path.
+            let has_idle = idle_watcher.is_some();
+
             // Publish the watcher JoinHandle so stop_all can abort it.
             {
                 let mut ws = engine.workers.lock().await;
@@ -573,7 +592,13 @@ impl SyncEngine {
                 }
             }
 
-            let mut tick = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
+            let poll_secs = if has_idle { IDLE_BACKSTOP_SECS } else { POLL_INTERVAL_SECS };
+            let mut tick = tokio::time::interval(Duration::from_secs(poll_secs));
+            log::info!(
+                "[sync] {aid} poll interval: {}s (IDLE {})",
+                poll_secs,
+                if has_idle { "active → long backstop" } else { "inactive → short poll" }
+            );
             // Drop the first immediate tick (we already synced above).
             tick.tick().await;
             // The channel may close if the Sender is dropped unexpectedly (the
@@ -581,7 +606,7 @@ impl SyncEngine {
             // returns; the clone in WorkerHandle *should* keep it alive, but
             // if it doesn't, `rx.recv()` returns None). Pre-fix, `None => break`
             // caused the worker to EXIT SILENTLY — sync stopped with no error.
-            // Now: switch to tick-only mode (the 60s poll continues regardless
+            // Now: switch to tick-only mode (the poll continues regardless
             // of channel state; SyncNow nudges are best-effort).
             let mut channel_open = true;
             loop {
@@ -596,7 +621,7 @@ impl SyncEngine {
                         op = rx.recv() => match op {
                             Some(SyncOp::SyncNow) => {
                                 log::info!(
-                                    "[send] worker {aid} received SyncNow → run_sync_round (will reach run_replay_round ONLY if list_folders + folder iteration succeed)"
+                                    "[send] worker {aid} received SyncNow → run_sync_round (run_replay_round runs FIRST at the top — queued Sends drain regardless of folder-sync health; then the receive round)"
                                 );
                                 let _ = run_sync_round(&engine, &aid, &provider).await;
                             }
@@ -1139,6 +1164,20 @@ async fn run_sync_round_with_source(
     provider: &str,
     src: &dyn MailSource,
 ) -> Result<(), String> {
+    // Drain queued operations (Send, etc.) FIRST, before any receive-side gates.
+    // Send uses a DIFFERENT transport (SMTP / EAS SendMail) than the receive poll
+    // (IMAP list_folders / EAS Ping), so a rate-limit, circuit-breaker cooldown, or
+    // flaky list_folders on the RECEIVE side must never be allowed to block SENDS
+    // indefinitely. Running replay at the top guarantees a queued Send fires on the
+    // next SyncNow nudge (the send path enqueues + nudges) regardless of folder-sync
+    // health. The Phase 3f rate-limit/breaker gates below still protect the RECEIVE
+    // round that follows.
+    log::info!(
+        "[send] {account_id} run_sync_round_with_source: draining replay queue FIRST \
+         (queued Sends fire here regardless of receive-side gates)"
+    );
+    run_replay_round(engine, account_id, src).await;
+
     // ---- Phase 3f Task 2: rate-limit short-circuit ----
     // A live `provider_rate_limit` row skips the round entirely. This is NOT
     // an error: the server told us to back off, so we emit a distinct state
@@ -1150,8 +1189,8 @@ async fn run_sync_round_with_source(
     match crate::db::rate_limit::get_rate_limit(&engine.pool, account_id).await {
         Ok(Some(retry_after)) => {
             log::warn!(
-                "[send] {account_id} run_sync_round_with_source: rate-limited, returning Ok \
-                 WITHOUT calling run_replay_round — Send op will sit in queue until window clears"
+                "[send] {account_id} run_sync_round_with_source: RECEIVE round rate-limited, \
+                 skipping folder sync (queued Sends already drained at the top via run_replay_round)"
             );
             engine.sink.emit_status(StatusEvent {
                 account_id: account_id.into(),
@@ -1177,9 +1216,9 @@ async fn run_sync_round_with_source(
     // escalate it further or the cooldown would never expire on a dead account).
     if let Some(cooldown_until) = breaker_cooldown(engine, account_id).await {
         log::warn!(
-            "[send] {account_id} run_sync_round_with_source: circuit breaker in cooldown \
-             (until={cooldown_until}), returning Ok WITHOUT calling run_replay_round — \
-             Send op will sit in queue until breaker clears"
+            "[send] {account_id} run_sync_round_with_source: RECEIVE round breaker in cooldown \
+             (until={cooldown_until}), skipping folder sync (queued Sends already drained at the \
+             top via run_replay_round)"
         );
         engine.sink.emit_status(StatusEvent {
             account_id: account_id.into(),
@@ -1203,8 +1242,8 @@ async fn run_sync_round_with_source(
         Err(e) => {
             log::warn!(
                 "[send] {account_id} run_sync_round_with_source: list_folders FAILED ({e}) \
-                 — returning Err WITHOUT calling run_replay_round. \
-                 Send op will sit in queue until list_folders succeeds."
+                 — receive round returns Err (queued Sends already drained at the top via \
+                 run_replay_round; only folder SYNC is skipped here)."
             );
             // Phase 3f Task 5: if the source signalled a rate limit, persist
             // the window so the NEXT round short-circuits at the top via the
@@ -1443,15 +1482,11 @@ async fn run_sync_round_with_source(
         detail: None,
     });
 
-    // Phase 1 Task 4: drain queued offline operations through the same source
-    // we just used for the sync round. Runs on every poll tick AND on SyncNow,
-    // since this is the tail of `run_sync_round_with_source`. Failures are
-    // logged + retained with backoff (see `run_replay_round`).
-    log::info!(
-        "[send] {account_id} run_sync_round_with_source reached the tail — \
-         calling run_replay_round NOW (this is where Send actually fires)"
-    );
-    run_replay_round(engine, account_id, src).await;
+    // NOTE: `run_replay_round` now runs at the TOP of this function (before the
+    // rate-limit/breaker/list_folders gates) so a queued Send is never blocked by
+    // a receive-side failure. See the rationale at the top of this function.
+    // (Previously this tail call was the only place Sends fired — a rate-limited,
+    // breaker-tripped, or flaky-list_folders account would starve Sends forever.)
 
     // Best-effort contact sync pass. A configured CardDAV/Google/EAS source is
     // independent of mail sync; failures are logged but do not fail the round.
@@ -2522,6 +2557,104 @@ mod tests {
         assert_eq!(qs.len(), 1, "exactly one queue event should fire");
         assert_eq!(qs[0].account_id, "a");
         assert_eq!(qs[0].pending, 0);
+    }
+
+    /// Regression for "replay tail-gating": `run_replay_round` MUST drain queued
+    /// ops even when the receive-side `list_folders` fails. Before the fix, replay
+    /// ran only at the TAIL of `run_sync_round_with_source` (after `list_folders`),
+    /// so a `list_folders` error starved ALL queued ops (Send/MarkRead/…)
+    /// indefinitely — the "replay worker never sends" symptom. Now replay runs at
+    /// the TOP, before the receive gates.
+    #[tokio::test]
+    async fn replay_drains_queue_even_when_list_folders_fails() {
+        use async_trait::async_trait;
+        struct OutageButFlagsOk;
+        #[async_trait]
+        impl MailSource for OutageButFlagsOk {
+            fn capabilities(&self) -> crate::sync_engine::Capabilities {
+                crate::sync_engine::Capabilities::default()
+            }
+            async fn list_folders(
+                &self,
+            ) -> Result<Vec<crate::sync_engine::RemoteFolder>, crate::sync_engine::SourceError>
+            {
+                Err(crate::sync_engine::SourceError::Other("simulated outage".into()))
+            }
+            async fn sync_folder(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _c: crate::sync_engine::Cursor,
+            ) -> Result<crate::sync_engine::FolderDelta, crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn fetch_body(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _u: u32,
+            ) -> Result<Option<String>, crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn set_flags(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _u: &[u32],
+                _flag: &str,
+                _add: bool,
+            ) -> Result<(), crate::sync_engine::SourceError> {
+                Ok(())
+            }
+            async fn move_messages(
+                &self,
+                _s: &crate::sync_engine::RemoteFolder,
+                _u: &[u32],
+                _d: &crate::sync_engine::RemoteFolder,
+            ) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn delete_messages(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _u: &[u32],
+            ) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn append(
+                &self,
+                _f: &crate::sync_engine::RemoteFolder,
+                _r: &[u8],
+                _fl: &[&str],
+            ) -> Result<(), crate::sync_engine::SourceError> {
+                Err(crate::sync_engine::SourceError::Unsupported)
+            }
+            async fn send(&self, _r: &[u8]) -> Result<(), crate::sync_engine::SourceError> {
+                Ok(())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_pending_markread(&pool, "a", "op-1", "msg-1", 42, true).await;
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+
+        // list_folders fails → pre-fix this returned Err BEFORE replay, stranding the op.
+        let res = run_sync_round_with_source(&engine, "a", "imap", &OutageButFlagsOk).await;
+        assert!(
+            res.is_err(),
+            "list_folders failure still returns Err for the receive round"
+        );
+
+        // But the queued op DRAINED anyway (replay ran at the TOP, before list_folders).
+        let (cnt,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM pending_operations WHERE account_id = 'a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            cnt, 0,
+            "queued op must drain even when list_folders fails (replay runs before receive gates)"
+        );
     }
 
     #[tokio::test]

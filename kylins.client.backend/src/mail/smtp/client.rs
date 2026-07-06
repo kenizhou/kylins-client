@@ -136,7 +136,22 @@ pub async fn send_raw_email(
             success: true,
             message: "Email sent successfully".to_string(),
         })
-        .map_err(|e| format!("SMTP send error: {}", e))
+        .map_err(|e| format!("SMTP send error: {}", full_error_chain(&e)))
+}
+
+/// Walk `std::error::Error::source()` so the underlying lettre root cause
+/// (auth rejection / TLS handshake / io) surfaces in the log + the String
+/// returned to the frontend. The default `{}` only prints the top-level
+/// message, which routinely hides the real reason a send failed.
+pub(crate) fn full_error_chain(e: &dyn std::error::Error) -> String {
+    let mut chain = format!("{e}");
+    let mut src = e.source();
+    while let Some(cause) = src {
+        chain.push_str(" → ");
+        chain.push_str(&cause.to_string());
+        src = cause.source();
+    }
+    chain
 }
 
 pub async fn test_connection(config: &SmtpConfig) -> Result<SmtpSendResult, String> {
@@ -153,7 +168,7 @@ pub async fn test_connection(config: &SmtpConfig) -> Result<SmtpSendResult, Stri
                 "Connection failed".to_string()
             },
         })
-        .map_err(|e| format!("SMTP test error: {}", e))
+        .map_err(|e| format!("SMTP test error: {}", full_error_chain(&e)))
 }
 
 #[cfg(test)]

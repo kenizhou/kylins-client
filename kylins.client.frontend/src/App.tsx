@@ -118,6 +118,20 @@ export default function App() {
             // Composer pop-out window: skip the heavy main-window startup
             // (migrations, plugin load, full account refresh). Just hydrate the
             // composer state from the URL params and become ready.
+
+            // Accounts must be loaded + the active account set so the composer's
+            // sendEmail(activeAccountId, …) resolves a real account. The main
+            // window does this in its full startup; the popout skips that, so do
+            // the minimum here. Without this, handleSend passes null accountId
+            // and the send aborts with "No account found for id null" (and the
+            // auto-saved draft is never deleted as a result).
+            await refreshAccounts();
+            const targetAccountId =
+              composeParams?.accountId ?? useAccountStore.getState().accounts[0]?.id ?? null;
+            if (targetAccountId) {
+              useAccountStore.getState().setActiveAccount(targetAccountId);
+            }
+
             if (isMounted.current && composeParams) {
               useComposerStore.getState().openComposer({
                 mode: composeParams.mode,

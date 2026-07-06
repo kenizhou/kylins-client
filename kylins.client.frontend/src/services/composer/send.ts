@@ -19,7 +19,6 @@ import { buildSendDraft } from './buildSendDraft';
 import { newDraftId } from './attachments';
 import { useAccountStore } from '@/stores/accountStore';
 import { useUIStore } from '@/stores/uiStore';
-import { useToastStore } from '@/stores/toastStore';
 import { upsertContact } from '@/services/db/contacts';
 import { getSettingBool } from '@/services/settings';
 import { SETTING_KEYS } from '@/services/settingsKeys';
@@ -29,7 +28,11 @@ export interface SendResult {
   message: string;
 }
 
-/** Dispatched on a successful send so the UI can refresh the Sent folder. */
+/**
+ * Dispatched as a `CustomEvent` on a successful send so the UI can refresh
+ * the Sent folder. The `detail` carries `{ accountId }` so a listener can
+ * nudge that account's sync. See `useSyncEvents` for the subscriber.
+ */
 export const SEND_COMPLETE_EVENT = 'mail:send-complete';
 
 /**
@@ -57,33 +60,63 @@ export async function sendEmail(
   input: DraftInput,
   stagingDraftId?: string | null,
 ): Promise<SendResult> {
+  console.log('[send-fe] sendEmail ENTER accountId=', accountId);
   const account = useAccountStore.getState().accounts.find((a) => a.id === accountId);
   if (!account) {
+    console.error('[send-fe] sendEmail ABORT no account for accountId=', accountId);
     return { success: false, message: `No account found for id ${accountId}` };
   }
+  console.log('[send-fe] sendEmail account resolved email=', account.email);
 
   const setProgress = useUIStore.getState().setSendProgress;
   setProgress({ active: true, message: 'Sending…' });
 
   const sendDraftId = stagingDraftId ?? newDraftId();
-  const draft = await buildSendDraft(
-    input,
-    sendDraftId,
-    account.email,
-    account.displayName ?? undefined,
+  console.log('[send-fe] sendEmail buildSendDraft start sendDraftId=', sendDraftId);
+  let draft;
+  try {
+    draft = await buildSendDraft(
+      input,
+      sendDraftId,
+      account.email,
+      account.displayName ?? undefined,
+    );
+  } catch (err) {
+    // Preserve original behavior: buildSendDraft failures reject the whole
+    // sendEmail promise (the composer's handleSend catch surfaces a toast).
+    // We only log here; no structured-failure conversion.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[send-fe] sendEmail buildSendDraft THREW (re-throwing):', message);
+    setProgress({ active: false });
+    throw err;
+  }
+  console.log(
+    '[send-fe] sendEmail buildSendDraft OK draft keys=',
+    Object.keys(draft),
+    'attachments=',
+    draft.attachments?.length ?? 0,
   );
 
+  // Only log the payload shape (keys), never the whole draft — it can carry
+  // file paths + large bodies we don't want on the console.
+  const payload = { accountId, op: { type: 'send', draft } };
+  console.log(
+    '[send-fe] sendEmail invoke sync_apply_mutation payload keys=',
+    Object.keys(payload),
+    'op.type=',
+    (payload.op as { type: string }).type,
+  );
   try {
-    await invoke('sync_apply_mutation', {
-      accountId,
-      op: { type: 'send', draft },
-    });
+    await invoke('sync_apply_mutation', payload);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     setProgress({ active: false });
-    useToastStore.getState().push(`Send failed: ${message}`, 'error');
+    // Surface failure via console for debugging; the caller (composer) owns
+    // the user-facing toast so we don't double-toast on this path.
+    console.error('[send-fe] sendEmail invoke REJECTED:', message);
     return { success: false, message };
   }
+  console.log('[send-fe] sendEmail invoke RESOLVED (queued)');
 
   // Record every outgoing recipient in the contacts DB immediately so they
   // appear in autocomplete before the Sent folder syncs back.
@@ -100,6 +133,17 @@ export async function sendEmail(
   }
 
   setProgress({ active: false });
-  window.dispatchEvent(new Event(SEND_COMPLETE_EVENT));
+  // Carry the accountId so listeners can nudge that account's sync (the
+  // appended Sent copy appears without waiting for the next poll round).
+  console.log(
+    '[send-fe] sendEmail dispatching SEND_COMPLETE_EVENT accountId=',
+    accountId,
+    'eventName=',
+    SEND_COMPLETE_EVENT,
+    'windowLabel=',
+    typeof window !== 'undefined' ? window.location.search : 'no-window',
+  );
+  window.dispatchEvent(new CustomEvent(SEND_COMPLETE_EVENT, { detail: { accountId } }));
+  console.log('[send-fe] sendEmail RETURN success (queued for send)');
   return { success: true, message: 'Queued for send' };
 }

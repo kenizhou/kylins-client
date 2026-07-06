@@ -107,6 +107,7 @@ export async function buildComposerOpenOptions(
     subject,
     bodyHtml,
     fromEmail,
+    accountId: account.id,
     threadId: message.threadId ?? message.id,
     inReplyToMessageId: isForward ? null : (message.messageId ?? null),
     classificationId: message.classificationId ?? undefined,
