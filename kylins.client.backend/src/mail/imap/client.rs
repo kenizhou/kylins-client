@@ -219,6 +219,13 @@ pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<ImapFolder>, 
     Ok(folders)
 }
 
+/// `SYNC_FETCH_QUERY` wrapped in the outer `()` that RFC 3501 requires for a
+/// multi-item fetch-att list. Kept as a small helper so `fetch_messages` and the
+/// regression test share the exact same wrapping logic.
+pub fn sync_fetch_query_wrapped() -> String {
+    format!("({SYNC_FETCH_QUERY})")
+}
+
 pub async fn fetch_messages(
     session: &mut ImapSession,
     folder: &str,
@@ -244,9 +251,10 @@ pub async fn fetch_messages(
         mailbox.uid_next.unwrap_or(0),
     );
 
+    let query = sync_fetch_query_wrapped();
     let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
         let stream = session
-            .uid_fetch(uid_range, SYNC_FETCH_QUERY)
+            .uid_fetch(uid_range, &query)
             .await
             .map_err(|e| format!("UID FETCH {folder} uids={uid_range} failed: {e}"))?;
         Ok::<_, String>(stream.collect::<Vec<_>>().await)
@@ -287,10 +295,10 @@ pub async fn fetch_messages(
                 continue;
             }
         };
-        let raw = match fetch.body() {
+        let raw = match fetch.header() {
             Some(b) => b,
             None => {
-                log::warn!("IMAP FETCH {folder}: UID {uid} has no body");
+                log::warn!("IMAP FETCH {folder}: UID {uid} has no header");
                 continue;
             }
         };
@@ -325,6 +333,11 @@ pub async fn fetch_messages(
     })
 }
 
+/// Multi-item FETCH query used by `fetch_message_body`. Wrapped in `()` per RFC 3501.
+pub(crate) fn message_body_fetch_query() -> &'static str {
+    "(UID FLAGS BODY.PEEK[])"
+}
+
 pub async fn fetch_message_body(
     session: &mut ImapSession,
     folder: &str,
@@ -338,7 +351,7 @@ pub async fn fetch_message_body(
     let uid_str = uid.to_string();
     let fetches: Vec<_> = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
         let stream = session
-            .uid_fetch(&uid_str, "UID FLAGS BODY.PEEK[]")
+            .uid_fetch(&uid_str, message_body_fetch_query())
             .await
             .map_err(|e| format!("UID FETCH failed: {e}"))?;
         Ok::<_, String>(stream.collect::<Vec<_>>().await)
@@ -443,6 +456,11 @@ fn fetch_changed_flags_response_from_fetches(
     (changes, max_modseq.max(mailbox_highest_modseq))
 }
 
+/// Multi-item FETCH query used by `fetch_changed_flags`. Wrapped in `()` per RFC 3501.
+pub(crate) fn changed_flags_fetch_query(since_modseq: u64) -> String {
+    format!("(UID FLAGS MODSEQ (CHANGEDSINCE {since_modseq}))")
+}
+
 /// CONDSTORE flag-delta fetch (RFC 7162 §3.1). Returns messages whose metadata
 /// changed since `since_modseq`, plus the next modseq cursor (max of returned
 /// modseqs and the mailbox HIGHESTMODSEQ, so a no-change round still advances).
@@ -473,7 +491,7 @@ pub async fn fetch_changed_flags(
     // CHANGEDSINCE is a modifier on the FETCH, not a separate command. The query
     // mirrors what the brief specifies: UID + FLAGS + the MODSEQ of each returned
     // message, scoped to messages changed since `since_modseq`.
-    let query = format!("UID FLAGS MODSEQ (CHANGEDSINCE {since_modseq})");
+    let query = changed_flags_fetch_query(since_modseq);
     // The timeout wraps an async block whose body is `Result<Vec<Result<Fetch,
     // Error>>, String>` (the outer String = transport/timeout error; each inner
     // Result = one Fetch stream item). The two `?`s unwrap: (1) the timeout's
@@ -909,6 +927,12 @@ pub async fn search_folder(
     })
 }
 
+/// Multi-item FETCH query used by the legacy `sync_folder` full-body prefetch path.
+/// Wrapped in `()` per RFC 3501.
+pub(crate) fn prefetch_bodies_fetch_query() -> &'static str {
+    "(UID FLAGS INTERNALDATE BODY.PEEK[])"
+}
+
 pub async fn sync_folder(
     session: &mut ImapSession,
     folder: &str,
@@ -968,7 +992,7 @@ pub async fn sync_folder(
 
         let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
             let stream = session
-                .uid_fetch(&uid_set, "UID FLAGS INTERNALDATE BODY.PEEK[]")
+                .uid_fetch(&uid_set, prefetch_bodies_fetch_query())
                 .await
                 .map_err(|e| format!("UID FETCH {folder} uids={uid_set} failed: {e}"))?;
             Ok::<_, String>(stream.collect::<Vec<_>>().await)
@@ -2797,6 +2821,58 @@ mod tests {
         assert!(SYNC_FETCH_QUERY.contains("FLAGS"));
         assert!(SYNC_FETCH_QUERY.contains("INTERNALDATE"));
         assert!(SYNC_FETCH_QUERY.contains("RFC822.SIZE"));
+    }
+
+    /// RFC 3501 requires a multi-item fetch-att list to be wrapped in parentheses.
+    /// Yahoo (and other strict servers) reject the unparenthesized form, causing
+    /// async-imap to return 0 items and forcing a raw-TCP fallback LOGIN storm.
+    #[test]
+    fn sync_fetch_query_wrapped_is_parenthesized() {
+        let q = super::sync_fetch_query_wrapped();
+        assert!(
+            q.starts_with('(') && q.ends_with(')'),
+            "multi-item FETCH query must be wrapped in parentheses per RFC 3501; got: {q}"
+        );
+        assert!(
+            q.contains("BODY.PEEK[HEADER.FIELDS"),
+            "wrapped query must still be the headers-only sync query; got: {q}"
+        );
+    }
+
+    /// `fetch_message_body` uses a multi-item FETCH list and must be parenthesized.
+    #[test]
+    fn message_body_fetch_query_is_parenthesized() {
+        let q = super::message_body_fetch_query();
+        assert!(
+            q.starts_with('(') && q.ends_with(')'),
+            "multi-item FETCH query must be wrapped in parentheses per RFC 3501; got: {q}"
+        );
+        assert!(q.contains("BODY.PEEK[]"), "query must fetch the full body; got: {q}");
+    }
+
+    /// `fetch_changed_flags` uses a multi-item FETCH list and must be parenthesized.
+    #[test]
+    fn changed_flags_fetch_query_is_parenthesized() {
+        let q = super::changed_flags_fetch_query(12345);
+        assert!(
+            q.starts_with('(') && q.ends_with(')'),
+            "multi-item FETCH query must be wrapped in parentheses per RFC 3501; got: {q}"
+        );
+        assert!(
+            q.contains("CHANGEDSINCE 12345"),
+            "query must scope the CHANGEDSINCE modifier; got: {q}"
+        );
+    }
+
+    /// The legacy prefetch path uses a multi-item FETCH list and must be parenthesized.
+    #[test]
+    fn prefetch_bodies_fetch_query_is_parenthesized() {
+        let q = super::prefetch_bodies_fetch_query();
+        assert!(
+            q.starts_with('(') && q.ends_with(')'),
+            "multi-item FETCH query must be wrapped in parentheses per RFC 3501; got: {q}"
+        );
+        assert!(q.contains("BODY.PEEK[]"), "query must fetch the full body; got: {q}");
     }
 
     #[test]
