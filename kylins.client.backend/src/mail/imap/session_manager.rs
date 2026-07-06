@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 
 use crate::mail::imap::client as imap_client;
 use crate::mail::imap::client::ImapStream;
-use crate::mail::imap::types::ImapConfig;
+use crate::mail::imap::types::{FetchedBody, ImapConfig};
 
 /// NOOP keepalive interval. async-imap sessions live in a `Mutex<Option<_>>`
 /// with no IDLE; without periodic traffic the server idle-times the TCP
@@ -353,6 +353,44 @@ impl ImapSessionManager {
         // or continues to attempt 2 which must Surface. Sentinel for the type
         // system; if hit it indicates a logic bug, not a recoverable state.
         Err("imap execute: exhausted retries without resolution".into())
+    }
+
+    /// Fetch full message bodies in batches using the account's persistent
+    /// session. The folder is SELECTed by `execute()` before the op runs, so the
+    /// per-chunk fetch only issues `UID FETCH <set> (UID BODY.PEEK[])`. Reuses
+    /// the existing session instead of opening a fresh raw connection + LOGIN for
+    /// every batch, which is the root cause of Yahoo's `LOGIN Rate limit hit`
+    /// storm during body prefetch.
+    ///
+    /// `chunk_size` is capped to 50 by the caller's contract; 0 is normalized to
+    /// 50 here defensively. The op is idempotent w.r.t. its captures, so the
+    /// reconnect-once path in `execute()` can safely retry the whole batch on a
+    /// transient connection error.
+    pub async fn fetch_bodies_batch(
+        &self,
+        account_id: &str,
+        config: &ImapConfig,
+        folder: &str,
+        uids: &[u32],
+        chunk_size: usize,
+    ) -> Result<Vec<FetchedBody>, String> {
+        let folder_owned = folder.to_string();
+        let uids = uids.to_vec();
+        let chunk_size = if chunk_size == 0 { 50 } else { chunk_size };
+        self.execute(account_id, config, Some(folder), move |session| {
+            let folder = folder_owned.clone();
+            let uids = uids.clone();
+            Box::pin(async move {
+                imap_client::fetch_bodies_batch_on_session(
+                    session,
+                    &folder,
+                    &uids,
+                    chunk_size,
+                )
+                .await
+            })
+        })
+        .await
     }
 
     /// Get-or-insert the per-account `Handle`. Cheap `Arc` clone out.

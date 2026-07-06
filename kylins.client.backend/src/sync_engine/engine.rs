@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -217,6 +218,14 @@ pub struct SyncEngine {
     /// through the engine (rather than re-resolving it via a Tauri handle)
     /// keeps `send_op` testable without an `AppHandle` — tests pass a tempdir.
     pub data_dir: PathBuf,
+    /// Number of times `spawn_worker` has actually been invoked. Test-only
+    /// diagnostic for detecting duplicate-spawn races in `ensure_worker`.
+    workers_spawned: AtomicUsize,
+    /// Guards
+    /// `ensure_worker` against the classic check-then-act race where two
+    /// concurrent callers both see an absent worker and both call
+    /// `spawn_worker`, producing duplicate worker tasks.
+    workers_starting: Arc<Mutex<HashSet<String>>>,
 }
 
 impl SyncEngine {
@@ -243,6 +252,8 @@ impl SyncEngine {
             breakers: Mutex::new(HashMap::new()),
             session_manager: Arc::new(ImapSessionManager::new()),
             data_dir,
+            workers_spawned: AtomicUsize::new(0),
+            workers_starting: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -259,6 +270,12 @@ impl SyncEngine {
     #[cfg(test)]
     pub async fn worker_count(&self) -> usize {
         self.workers.lock().await.len()
+    }
+
+    /// Test-only accessor for how many times `spawn_worker` was invoked.
+    #[cfg(test)]
+    pub fn spawned_count(&self) -> usize {
+        self.workers_spawned.load(Ordering::Relaxed)
     }
 
     /// Spawn a worker for every active account.
@@ -321,20 +338,73 @@ impl SyncEngine {
 
     /// Ensure a worker exists for the account (no-op if already running).
     pub async fn ensure_worker(self: &Arc<Self>, account_id: String) {
+        // Fast path: worker already registered. This avoids taking the
+        // `workers_starting` lock on the hot path.
         if self.workers.lock().await.contains_key(&account_id) {
             log::info!(
                 "[send] ensure_worker account_id={account_id}: worker already running (no-op)"
             );
             return;
         }
+
+        // Critical section: atomically check whether a spawn is already in
+        // flight and, if not, reserve the slot. This prevents two concurrent
+        // callers from both passing the workers-map check and invoking
+        // `spawn_worker`, which would create duplicate worker tasks.
+        struct StartingGuard {
+            account_id: String,
+            set: Arc<Mutex<HashSet<String>>>,
+        }
+        impl Drop for StartingGuard {
+            fn drop(&mut self) {
+                // `try_lock` is used because `spawn_worker` is async and a panic
+                // during it would run Drop while the same task may or may not
+                // hold the mutex. The critical section is tiny, so the lock is
+                // essentially always free here.
+                if let Ok(mut starting) = self.set.try_lock() {
+                    starting.remove(&self.account_id);
+                }
+            }
+        }
+
+        let guard = {
+            let mut starting = self.workers_starting.lock().await;
+            if self.workers.lock().await.contains_key(&account_id)
+                || starting.contains(&account_id)
+            {
+                None
+            } else {
+                starting.insert(account_id.clone());
+                Some(StartingGuard {
+                    account_id: account_id.clone(),
+                    set: Arc::clone(&self.workers_starting),
+                })
+            }
+        };
+
+        let Some(_guard) = guard else {
+            log::info!(
+                "[send] ensure_worker account_id={account_id}: worker already starting (no-op)"
+            );
+            return;
+        };
+
         log::info!(
             "[send] ensure_worker account_id={account_id}: NO worker yet → spawning"
         );
-        self.spawn_worker(account_id).await;
+        self.spawn_worker(account_id.clone()).await;
+
+        // The StartingGuard removes the reservation when it drops, even if
+        // `spawn_worker` panicked, so a future re-spawn is never permanently
+        // blocked.
     }
 
     async fn spawn_worker(self: &Arc<Self>, account_id: String) {
         log::info!("[send] spawn_worker ENTER account_id={account_id}");
+        // Diagnostic: every actual spawn increments this counter so tests can
+        // detect the double-spawn race in `ensure_worker` even though the
+        // workers map later dedupes by account_id.
+        self.workers_spawned.fetch_add(1, Ordering::Relaxed);
         // Validate the account + capture provider up front (skip silently if missing).
         let acc = match accounts::get_by_id(&self.pool, &account_id).await {
             Ok(Some(a)) => a,
@@ -1569,6 +1639,40 @@ mod tests {
             engine.worker_count().await,
             1,
             "start() must not spawn duplicate workers for the same account"
+        );
+    }
+
+    /// Regression: two concurrent ensure_worker calls must produce exactly one
+    /// worker. Without a guard, both can pass the contains_key check before either
+    /// inserts its placeholder, spawning duplicate workers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_worker_is_race_free() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        let engine_for_count = Arc::clone(&engine);
+
+        let engine2 = Arc::clone(&engine);
+        let (a1, a2) = ("a".to_string(), "a".to_string());
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move { engine.ensure_worker(a1).await }),
+            tokio::spawn(async move { engine2.ensure_worker(a2).await }),
+        );
+        r1.unwrap();
+        r2.unwrap();
+
+        assert_eq!(
+            engine_for_count.worker_count().await,
+            1,
+            "concurrent ensure_worker calls must not spawn duplicate workers"
+        );
+        assert_eq!(
+            engine_for_count.spawned_count(),
+            1,
+            "concurrent ensure_worker calls must not invoke spawn_worker more than once"
         );
     }
 

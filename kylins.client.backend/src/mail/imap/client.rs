@@ -147,26 +147,50 @@ fn build_tls_connector(accept_invalid_certs: bool) -> Result<native_tls::TlsConn
 type ImapSession = Session<ImapStream>;
 
 pub async fn connect(config: &ImapConfig) -> Result<ImapSession, String> {
-    tokio::time::timeout(OVERALL_CONNECT_TIMEOUT, connect_inner(config))
+    let mut session = tokio::time::timeout(OVERALL_CONNECT_TIMEOUT, connect_inner(config))
         .await
         .map_err(|_| format!(
             "IMAP connection to {}:{} timed out after {}s — check your server settings or network connection",
             config.host, config.port, OVERALL_CONNECT_TIMEOUT.as_secs()
-        ))?
+        ))??;
+    log_capabilities(&mut session).await;
+    Ok(session)
+}
+
+/// Diagnostic helper: query and log the full server capability set once,
+/// right after a connection is established. Called from both TLS and STARTTLS
+/// connect paths so we can verify IDLE/CONDSTORE/etc. on every fresh connection
+/// without flooding the log on every subsequent command.
+async fn log_capabilities(session: &mut ImapSession) {
+    match session.capabilities().await {
+        Ok(caps) => {
+            let cap_strings: Vec<String> = caps.iter().map(|c| format!("{:?}", c)).collect();
+            log::info!(
+                "[imap] raw capabilities ({}): {}",
+                cap_strings.len(),
+                cap_strings.join(" ")
+            );
+        }
+        Err(e) => {
+            log::warn!("[imap] capability query after connect failed: {e}");
+        }
+    }
 }
 
 async fn connect_inner(config: &ImapConfig) -> Result<ImapSession, String> {
     if config.security == "starttls" {
-        return connect_starttls(config).await;
+        let session = connect_starttls(config).await?;
+        return Ok(session);
     }
     let stream = connect_stream(config).await?;
     let client = Client::new(stream);
-    tokio::time::timeout(AUTH_TIMEOUT, authenticate(client, config))
+    let session = tokio::time::timeout(AUTH_TIMEOUT, authenticate(client, config))
         .await
         .map_err(|_| format!(
             "IMAP authentication timed out after {}s — check your server settings or network connection",
             AUTH_TIMEOUT.as_secs()
-        ))?
+        ))??;
+    Ok(session)
 }
 
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<ImapFolder>, String> {
@@ -381,6 +405,107 @@ pub async fn fetch_message_body(
     )
 }
 
+/// Typed body prefetch against an already-SELECTed `Session`. Used by
+/// `ImapSessionManager::execute` so on-demand body batches reuse the persistent
+/// IMAP session instead of opening a fresh raw connection (and fresh LOGIN) per
+/// batch. `BODY.PEEK[]` keeps the message unread; `(UID BODY.PEEK[])` ensures the
+/// response includes the UID so we can match it back to the caller's uid list.
+pub async fn fetch_bodies_batch_on_session(
+    session: &mut ImapSession,
+    folder: &str,
+    uids: &[u32],
+    chunk_size: usize,
+) -> Result<Vec<FetchedBody>, String> {
+    if uids.is_empty() {
+        return Ok(vec![]);
+    }
+    let chunk_size = if chunk_size == 0 { 50 } else { chunk_size };
+
+    log::info!(
+        "FETCH BODIES BATCH (managed): {folder}, {} UID(s) in chunks of {chunk_size}",
+        uids.len()
+    );
+
+    let parser = MessageParser::default();
+    let mut out: Vec<FetchedBody> = Vec::new();
+    let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
+
+    for chunk in &chunks {
+        let range = uid_set_raw(chunk);
+        let fetch_result = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
+            let stream = session
+                .uid_fetch(&range, "(UID BODY.PEEK[])")
+                .await
+                .map_err(|e| format!("UID FETCH {folder} uids={range} failed: {e}"))?;
+            Ok::<_, String>(stream.collect::<Vec<_>>().await)
+        })
+        .await
+        .map_err(|_| {
+            format!(
+                "UID FETCH {folder} timed out after {}s",
+                IMAP_FETCH_TIMEOUT.as_secs()
+            )
+        });
+
+        let fetches: Vec<_> = match fetch_result {
+            Ok(Ok(rows)) => rows.into_iter().filter_map(|r| r.ok()).collect(),
+            Ok(Err(e)) | Err(e) => {
+                log::warn!(
+                    "fetch_bodies_batch_on_session {folder}: chunk {range} failed ({e}); \
+                     returning {} of {} UID(s) already fetched",
+                    out.len(),
+                    uids.len()
+                );
+                break;
+            }
+        };
+
+        for fetch in fetches {
+            let uid = match fetch.uid {
+                Some(u) => u,
+                None => {
+                    log::warn!("fetch_bodies_batch_on_session {folder}: FETCH response missing UID; skipping");
+                    continue;
+                }
+            };
+            let raw = match fetch.body() {
+                Some(b) => b,
+                None => {
+                    log::warn!("fetch_bodies_batch_on_session {folder}: UID {uid} has no body; skipping");
+                    continue;
+                }
+            };
+            let parsed = match parser.parse(raw) {
+                Some(m) => m,
+                None => {
+                    log::warn!(
+                        "fetch_bodies_batch_on_session {folder}: UID {uid} parse failed; skipping"
+                    );
+                    continue;
+                }
+            };
+            let body_text = parsed.body_text(0).map(|s| s.to_string());
+            let body_html = parsed.body_html(0).map(|s| s.to_string());
+            let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
+            let attachments = extract_attachments(&parsed, uid);
+            out.push(FetchedBody {
+                uid,
+                body_html,
+                body_text,
+                snippet,
+                attachments,
+            });
+        }
+    }
+
+    log::info!(
+        "FETCH BODIES BATCH (managed) {folder}: {}/{} UID(s) fetched",
+        out.len(),
+        uids.len()
+    );
+    Ok(out)
+}
+
 pub async fn fetch_new_uids(
     session: &mut ImapSession,
     folder: &str,
@@ -456,9 +581,12 @@ fn fetch_changed_flags_response_from_fetches(
     (changes, max_modseq.max(mailbox_highest_modseq))
 }
 
-/// Multi-item FETCH query used by `fetch_changed_flags`. Wrapped in `()` per RFC 3501.
+/// Multi-item FETCH query used by `fetch_changed_flags`. The fetch-att list is
+/// wrapped in `()` per RFC 3501; the `CHANGEDSINCE` modifier is a separate
+/// parenthetical per RFC 7162 §3.1. Nesting `CHANGEDSINCE` inside the fetch-att
+/// list is a protocol error that strict servers (Yahoo) reject.
 pub(crate) fn changed_flags_fetch_query(since_modseq: u64) -> String {
-    format!("(UID FLAGS MODSEQ (CHANGEDSINCE {since_modseq}))")
+    format!("(UID FLAGS MODSEQ) (CHANGEDSINCE {since_modseq})")
 }
 
 /// CONDSTORE flag-delta fetch (RFC 7162 §3.1). Returns messages whose metadata
@@ -1628,178 +1756,6 @@ pub struct InlineCidPart {
     pub base64: String,
 }
 
-/// Viewport-aware batch body prefetch. ONE connect + login + SELECT + chunked
-/// `UID FETCH <uid-set> BODY.PEEK[]` + LOGOUT (reuses `raw_fetch_folder`'s
-/// single-connection skeleton — never per-UID reconnects). `BODY.PEEK[]` (not
-/// `BODY[]`) so prefetch does not set `\Seen`. Chunks at `chunk_size` (50 is the
-/// recommended cap — see plan Global Constraints). Best-effort: on mid-batch
-/// error (server drop), logs and returns what was fetched so far.
-///
-/// The connect/login/SELECT/LOGOUT sequence mirrors `raw_fetch_folder` exactly
-/// rather than factoring it out, because the chunk loop here issues a different
-/// FETCH command (`BODY.PEEK[]`, no `(SYNC_FETCH_QUERY)` parens) and reuses
-/// `raw_parse_fetch_responses` — the shared surface is the four raw helpers
-/// (`raw_connect_starttls`/`connect_stream`/`raw_send_and_wait`/
-/// `raw_parse_fetch_responses`), which is exactly the reuse the brief requires.
-pub async fn fetch_bodies_batch(
-    config: &ImapConfig,
-    folder: &str,
-    uids: &[u32],
-    chunk_size: usize,
-) -> Result<Vec<FetchedBody>, String> {
-    if uids.is_empty() {
-        return Ok(vec![]);
-    }
-    let chunk_size = if chunk_size == 0 { 50 } else { chunk_size };
-
-    log::info!(
-        "FETCH BODIES BATCH: {}:{} {folder}, {} UID(s) in chunks of {chunk_size}",
-        config.host,
-        config.port,
-        uids.len()
-    );
-
-    // 1. connect (+ greeting), 2. login — identical to raw_fetch_folder.
-    let stream = if config.security == "starttls" {
-        raw_connect_starttls(config).await?
-    } else {
-        connect_stream(config).await?
-    };
-    let mut reader = BufReader::new(stream);
-    if config.security != "starttls" {
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| format!("greeting: {e}"))?;
-    }
-    let login_cmd = if config.auth_method == "oauth2" {
-        let xoauth2 = format!(
-            "user={}\x01auth=Bearer {}\x01\x01",
-            config.username, config.password
-        );
-        let b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            xoauth2.as_bytes(),
-        );
-        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
-    } else {
-        format!(
-            "a1 LOGIN \"{}\" \"{}\"\r\n",
-            config.username, config.password
-        )
-    };
-    raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
-
-    // 3. SELECT once for the whole batch. The SELECT response (EXISTS/UIDVALIDITY)
-    //    is ignored here — bodies don't need folder_status, only the cursor
-    //    matters and the caller already knows the folder.
-    let select_cmd = format!("a2 SELECT \"{folder}\"\r\n");
-    let _ = raw_send_and_wait(&mut reader, select_cmd.as_bytes(), "a2").await?;
-
-    // 4. UID FETCH each chunk on the SAME connection. Fresh IMAP tag per chunk
-    //    (a3, a4, ...). BODY.PEEK[] — NEVER BODY[] (prefetch must not set \Seen).
-    //    Parse via raw_parse_fetch_responses (handles literal-size framing),
-    //    then re-parse each body with MessageParser to extract text/html/snippet.
-    let parser = MessageParser::default();
-    let mut out: Vec<FetchedBody> = Vec::new();
-    let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
-    let mut tag_index = 3u32;
-
-    for (i, chunk) in chunks.iter().enumerate() {
-        let range = uid_set_raw(chunk);
-        let tag = format!("a{tag_index}");
-        // (UID BODY.PEEK[]) — NEVER plain BODY.PEEK[]. RFC 3501: a UID FETCH
-        // response only includes UID if it was requested as an item. With plain
-        // BODY.PEEK[], Exchange replies `* N FETCH (BODY[] {size}` — no UID —
-        // and raw_parse_fetch_responses then can't extract the UID, discards the
-        // literal, and skips the message (`parsed 0 bodies`, every uid "not in
-        // batch result"). Requesting UID explicitly yields `UID <u> BODY[] {size}`.
-        // BODY.PEEK (not BODY) so prefetch does not set \Seen.
-        let fetch_cmd = format!("{tag} UID FETCH {range} (UID BODY.PEEK[])\r\n");
-
-        // Protocol trace: log the UID FETCH (UID BODY.PEEK[]) command at DEBUG.
-        log::debug!("C: {tag} UID FETCH {range} (UID BODY.PEEK[])");
-
-        if let Err(e) = reader.get_mut().write_all(fetch_cmd.as_bytes()).await {
-            log::warn!(
-                "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}): write failed: {e}; returning {} fetched so far",
-                i + 1,
-                out.len()
-            );
-            break;
-        }
-        match raw_parse_fetch_responses(&mut reader, &tag).await {
-            Ok(raw_messages) => {
-                log::debug!(
-                    "S: {tag} OK (BODIES BATCH chunk {} uids {range}: {} body(ies))",
-                    i + 1,
-                    raw_messages.len()
-                );
-                for raw_msg in &raw_messages {
-                    // body_text(0) / body_html(0): per mail-parser 0.9.4, these
-                    // return the first text/html part AND auto-convert when one
-                    // representation is missing (HTML→text and vice-versa), so an
-                    // HTML-only message still yields a body_text for the snippet.
-                    // This is the same call shape `parse_message` uses (see lines
-                    // ~2061-2062), keeping the two body-extraction paths
-                    // consistent — no divergent parsing here.
-                    let parsed = match parser.parse(&raw_msg.body) {
-                        Some(p) => p,
-                        None => {
-                            log::warn!(
-                                "fetch_bodies_batch {folder}: UID {} parse failed; skipping",
-                                raw_msg.uid
-                            );
-                            continue;
-                        }
-                    };
-                    let body_text = parsed.body_text(0).map(|s| s.to_string());
-                    let body_html = parsed.body_html(0).map(|s| s.to_string());
-                    let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
-                    // Extract attachment metadata from the SAME parsed message
-                    // (no extra fetch) so the engine can persist it to the
-                    // `attachments` table for the reading-pane list + inline
-                    // cid: resolution. Same helper `parse_message` uses.
-                    let attachments = extract_attachments(&parsed, raw_msg.uid);
-                    out.push(FetchedBody {
-                        uid: raw_msg.uid,
-                        body_html,
-                        body_text,
-                        snippet,
-                        attachments,
-                    });
-                }
-                log::info!(
-                    "FETCH BODIES BATCH {folder} chunk {} (uids {range}): parsed {} bodies",
-                    i + 1,
-                    raw_messages.len()
-                );
-            }
-            Err(e) => {
-                log::debug!("S: {tag} <error: {e}> (BODIES BATCH chunk {})", i + 1);
-                log::warn!(
-                    "[sync] fetch_bodies_batch {folder} chunk {} (uids {range}) failed: {e}; returning {} fetched so far",
-                    i + 1,
-                    out.len()
-                );
-                break;
-            }
-        }
-        tag_index = tag_index.saturating_add(1);
-    }
-
-    // 5. best-effort LOGOUT (ignore errors — connection may already be closed).
-    let _ = reader.get_mut().write_all(b"LOGOUT\r\n").await;
-
-    log::info!(
-        "FETCH BODIES BATCH {folder}: {}/{} UID(s) fetched",
-        out.len(),
-        uids.len()
-    );
-    Ok(out)
-}
-
 pub async fn raw_fetch_diagnostic(
     config: &ImapConfig,
     folder: &str,
@@ -2335,12 +2291,14 @@ async fn connect_starttls(config: &ImapConfig) -> Result<ImapSession, String> {
         .map_err(|e| format!("TLS upgrade after STARTTLS failed: {e}"))?;
 
     let client = Client::new(ImapStream::Tls(tls));
-    tokio::time::timeout(AUTH_TIMEOUT, authenticate(client, config))
+    let mut session = tokio::time::timeout(AUTH_TIMEOUT, authenticate(client, config))
         .await
         .map_err(|_| format!(
             "IMAP authentication timed out after {}s — check your server settings or network connection",
             AUTH_TIMEOUT.as_secs()
-        ))?
+        ))??;
+    log_capabilities(&mut session).await;
+    Ok(session)
 }
 
 async fn authenticate(
@@ -2850,17 +2808,15 @@ mod tests {
         assert!(q.contains("BODY.PEEK[]"), "query must fetch the full body; got: {q}");
     }
 
-    /// `fetch_changed_flags` uses a multi-item FETCH list and must be parenthesized.
+    /// `fetch_changed_flags` uses a multi-item FETCH list and must be parenthesized,
+    /// with the RFC 7162 `CHANGEDSINCE` modifier in its own parenthetical.
     #[test]
     fn changed_flags_fetch_query_is_parenthesized() {
         let q = super::changed_flags_fetch_query(12345);
-        assert!(
-            q.starts_with('(') && q.ends_with(')'),
-            "multi-item FETCH query must be wrapped in parentheses per RFC 3501; got: {q}"
-        );
-        assert!(
-            q.contains("CHANGEDSINCE 12345"),
-            "query must scope the CHANGEDSINCE modifier; got: {q}"
+        assert_eq!(
+            q,
+            "(UID FLAGS MODSEQ) (CHANGEDSINCE 12345)",
+            "multi-item FETCH query must wrap fetch-atts and put CHANGEDSINCE in a separate parenthetical per RFC 7162; got: {q}"
         );
     }
 
