@@ -255,6 +255,12 @@ impl SyncEngine {
         Self::with_data_dir(pool, Arc::new(TauriSink(app)), data_dir)
     }
 
+    /// Test-only accessor for the number of running workers.
+    #[cfg(test)]
+    pub async fn worker_count(&self) -> usize {
+        self.workers.lock().await.len()
+    }
+
     /// Spawn a worker for every active account.
     pub async fn start(self: &Arc<Self>) -> Result<(), String> {
         let accs = accounts::get_all(&self.pool).await?;
@@ -265,7 +271,7 @@ impl SyncEngine {
             active.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")
         );
         for a in &active {
-            self.spawn_worker(a.id.clone()).await;
+            self.ensure_worker(a.id.clone()).await;
         }
         Ok(())
     }
@@ -1542,6 +1548,27 @@ mod tests {
                 highest_uid: 1,
                 highest_modseq: 0
             }
+        );
+    }
+
+    /// Regression: SyncEngine::start must be idempotent. Duplicate startup calls
+    /// (e.g. React StrictMode double-mount) should not spawn overlapping workers.
+    #[tokio::test]
+    async fn start_is_idempotent_for_active_accounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+
+        engine.start().await.unwrap();
+        engine.start().await.unwrap();
+
+        assert_eq!(
+            engine.worker_count().await,
+            1,
+            "start() must not spawn duplicate workers for the same account"
         );
     }
 
