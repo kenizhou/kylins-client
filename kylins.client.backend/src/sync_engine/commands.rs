@@ -461,7 +461,8 @@ mod tests {
     use super::*;
     use crate::db::init_db;
     use crate::sync_engine::engine::{
-        BodiesWrittenEvent, DeltaEvent, EventSink, NewMailEvent, QueueEvent, StatusEvent, SyncEngine,
+        BodiesWrittenEvent, DeltaEvent, EventSink, NewMailEvent, QueueEvent, SendResultEvent,
+        StatusEvent, SyncEngine,
     };
     use std::sync::{Arc, Mutex};
 
@@ -474,6 +475,7 @@ mod tests {
         fn emit_status(&self, _: StatusEvent) {}
         fn emit_queue(&self, _: QueueEvent) {}
         fn emit_bodies_written(&self, _: BodiesWrittenEvent) {}
+        fn emit_send_result(&self, _: SendResultEvent) {}
     }
 
     async fn seed_account(pool: &SqlitePool, id: &str) {
@@ -730,6 +732,7 @@ mod tests {
         fn emit_bodies_written(&self, e: BodiesWrittenEvent) {
             self.bodies.lock().unwrap().push(e);
         }
+        fn emit_send_result(&self, _: SendResultEvent) {}
     }
 
     /// Pure folder-grouping sanity: given a list of (message_id, folder, uid)

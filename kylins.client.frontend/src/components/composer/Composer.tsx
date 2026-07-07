@@ -37,6 +37,7 @@ import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
 import { cleanupAttachments, stageAttachmentBytes } from '@/services/composer/attachments';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { upsertContact } from '@/services/db/contacts';
 import { insertScheduledEmail } from '@/services/db/scheduledEmails';
 import { getDefaultSignature, signatureContextForComposerMode } from '@/services/db/signatures';
@@ -778,17 +779,52 @@ export function Composer({ windowed = false }: ComposerProps) {
     function handleInsertLink() {
       setShowLinkDialog(true);
     }
+    // Attach button: open the OS file picker, then stage each picked file via
+    // the backend `stage_picked_attachment` command. The frontend fs scope
+    // only covers appData, so the copy of an arbitrary picked path must go
+    // through Rust (std::fs has full access). The resulting `filePath` lives
+    // on the ComposerAttachment and is streamed into the MIME builder at send.
+    async function handleAttachRequested() {
+      try {
+        const selected = await open({ multiple: true });
+        if (!selected) return;
+        const paths = Array.isArray(selected) ? selected : [selected];
+        if (paths.length === 0) return;
+        const stagingDraftId = useComposerStore.getState().stagingDraftId;
+        for (const path of paths) {
+          const filename = path.split(/[\\/]/).pop() ?? path;
+          const staged = await invoke<{ filePath: string; mimeType: string; size: number }>(
+            'stage_picked_attachment',
+            { srcPath: path, draftId: stagingDraftId, filename },
+          );
+          addAttachment({
+            id: newAttachmentId(),
+            filename,
+            mimeType: staged.mimeType,
+            size: staged.size,
+            filePath: staged.filePath,
+          });
+        }
+      } catch (err) {
+        console.error('[Composer] attach pick failed', err);
+        useToastStore
+          .getState()
+          .push(`Attach failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
 
     window.addEventListener('composer:send-requested', handleSendRequested);
     window.addEventListener('composer:schedule-requested', handleScheduleRequested);
     window.addEventListener('composer:insert-link', handleInsertLink);
+    window.addEventListener('composer:attach-requested', handleAttachRequested);
 
     return () => {
       window.removeEventListener('composer:send-requested', handleSendRequested);
       window.removeEventListener('composer:schedule-requested', handleScheduleRequested);
       window.removeEventListener('composer:insert-link', handleInsertLink);
+      window.removeEventListener('composer:attach-requested', handleAttachRequested);
     };
-  }, [handleSend, handleSendAndCloseWindow, windowed]);
+  }, [handleSend, handleSendAndCloseWindow, windowed, addAttachment]);
 
   const handleMoveRecipient = useCallback(
     (recipient: Recipient, from: 'to' | 'cc' | 'bcc' | 'replyTo', toField: MoveTarget) => {

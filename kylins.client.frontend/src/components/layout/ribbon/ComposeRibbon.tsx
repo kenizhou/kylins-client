@@ -171,7 +171,12 @@ export function ComposeRibbon() {
       </RibbonGroup>
 
       <RibbonGroup>
-        <RibbonButton icon={<AttachmentIcon size={17} />}>Attach</RibbonButton>
+        <RibbonButton
+          icon={<AttachmentIcon size={17} />}
+          onClick={() => window.dispatchEvent(new Event('composer:attach-requested'))}
+        >
+          Attach
+        </RibbonButton>
         <RibbonButton
           icon={<LinkIcon size={17} />}
           onClick={() => window.dispatchEvent(new Event('composer:insert-link'))}

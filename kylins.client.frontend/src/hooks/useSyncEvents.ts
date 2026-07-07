@@ -61,53 +61,53 @@ export function useSyncEvents(): void {
     if (!isTauri) return;
     const unlisteners: Array<() => void> = [];
 
-    // Send-complete (window event from services/composer/send.ts): a send was
-    // enqueued by the backend. Show a success toast + nudge that account's
-    // sync so the appended Sent copy appears in the folder list without
-    // waiting for the next poll round. The actual SMTP/EAS transport fires
-    // moments later via the replay worker, so "Message sent" runs slightly
-    // ahead of the true transport result (sends almost always succeed within
-    // a second or two; durable per-send tracking is the separate Outbox
-    // feature). This is a DOM CustomEvent (not a Tauri event), so we
-    // subscribe via window.addEventListener and push cleanup into the same
-    // unlisteners array used by the Tauri listen() cleanups below.
-    const onSendComplete = (e: Event) => {
-      const detail = (e as CustomEvent<{ accountId?: string }>).detail;
+    // SEND_COMPLETE = the send was enqueued (invoke resolved). Turn the
+    // StatusBar "Sending…" spinner ON; the actual SMTP/EAS transport fires
+    // asynchronously in the backend. `sync:send-result` (onSendResult) turns
+    // the spinner OFF + shows the Sent/Failed toast + nudges the Sent sync.
+    // (send.ts also sets the spinner for the same-window inline case; this
+    // listener covers popout sends crossing into the main window.)
+    const onSendComplete = (e: { payload: { accountId?: string } }) => {
       console.log(
-        '[send-fe] onSendComplete RECEIVED accountId=',
-        detail?.accountId,
-        'window=',
-        typeof window !== 'undefined' ? window.location.search : 'no-window',
+        '[send-fe] onSendComplete RECEIVED (send enqueued) accountId=',
+        e.payload?.accountId,
       );
-      useToastStore.getState().push('Message sent', 'success');
-      console.log('[send-fe] onSendComplete pushed "Message sent" success toast');
-      const accountId = detail?.accountId;
-      if (accountId) {
-        console.log('[send-fe] onSendComplete invoking sync_account_now accountId=', accountId);
-        invoke('sync_account_now', { accountId })
-          .then(() => console.log('[send-fe] onSendComplete sync_account_now OK'))
-          .catch((err) => {
-            /* best-effort nudge; the next poll round will still pick it up */
-            console.log(
-              '[send-fe] onSendComplete sync_account_now FAILED (best-effort):',
-              err instanceof Error ? err.message : String(err),
-            );
+      useUIStore.getState().setSendProgress({ active: true, message: 'Sending…' });
+    };
+
+    // sync:send-result = the backend replay worker finished the SMTP/EAS send
+    // (success or failure). Turn the spinner OFF + toast + nudge the Sent sync.
+    const onSendResult = (e: {
+      payload: { accountId?: string; draftId?: string; success?: boolean; error?: string | null };
+    }) => {
+      const { accountId, success, error } = e.payload;
+      console.log('[send-fe] onSendResult RECEIVED success=', success, 'accountId=', accountId);
+      useUIStore.getState().setSendProgress({ active: false });
+      if (success) {
+        useToastStore.getState().push('Message sent', 'success');
+        if (accountId) {
+          invoke('sync_account_now', { accountId }).catch(() => {
+            /* best-effort; the next poll round still picks up the Sent copy */
           });
+        }
       } else {
-        console.log('[send-fe] onSendComplete no accountId in detail — skipping sync nudge');
+        useToastStore.getState().push(`Send failed: ${error ?? 'unknown error'}`, 'error');
       }
     };
-    window.addEventListener(SEND_COMPLETE_EVENT, onSendComplete);
-    console.log(
-      '[send-fe] SEND_COMPLETE_EVENT listener REGISTERED on window eventName=',
-      SEND_COMPLETE_EVENT,
-      'window=',
-      typeof window !== 'undefined' ? window.location.search : 'no-window',
-    );
-    unlisteners.push(() => window.removeEventListener(SEND_COMPLETE_EVENT, onSendComplete));
 
     (async () => {
       try {
+        unlisteners.push(await listen<{ accountId?: string }>(SEND_COMPLETE_EVENT, onSendComplete));
+        console.log('[send-fe] SEND_COMPLETE_EVENT listener registered (Tauri app-level)');
+        unlisteners.push(
+          await listen<{
+            accountId?: string;
+            draftId?: string;
+            success?: boolean;
+            error?: string | null;
+          }>('sync:send-result', onSendResult),
+        );
+        console.log('[send-fe] sync:send-result listener registered');
         unlisteners.push(
           await listen<{ accountId: string; labelId?: string; table?: string }>(
             'sync:delta',

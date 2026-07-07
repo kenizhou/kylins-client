@@ -69,6 +69,7 @@ pub fn run() {
             commands::read_text_file,
             commands::write_text_file,
             commands::write_binary_file,
+            commands::stage_picked_attachment,
             commands::get_autostart_state,
             commands::set_autostart_enabled,
             commands::send_desktop_notification,

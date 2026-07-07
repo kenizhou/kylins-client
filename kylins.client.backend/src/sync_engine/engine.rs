@@ -128,6 +128,19 @@ pub struct BodiesWrittenEvent {
     pub updates: Vec<SnippetUpdate>,
 }
 
+/// Emitted by `send_op` after a queued Send op's transport result is known.
+/// The frontend listens on `sync:send-result` to surface send feedback
+/// (toast on success, error banner on failure) without re-polling the queue.
+/// `error` is `Some(message)` only when `success` is false; `None` otherwise.
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SendResultEvent {
+    pub account_id: String,
+    pub draft_id: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 /// Emit seam. Production impl wraps a Tauri `AppHandle`; tests collect into vectors.
 pub trait EventSink: Send + Sync {
     fn emit_delta(&self, evt: DeltaEvent);
@@ -139,6 +152,12 @@ pub trait EventSink: Send + Sync {
     /// `sync:bodies-written` and patches `thread.snippet` in place
     /// (scroll-preserving — react-virtualized #1837).
     fn emit_bodies_written(&self, evt: BodiesWrittenEvent);
+    /// Emitted by `send_op` once the transport result of a queued Send is
+    /// known. The frontend listens on `sync:send-result` and surfaces
+    /// toast/error-banner feedback accordingly. `success=true` fires before
+    /// the best-effort Sent-append so an append failure never flips a
+    /// successful send to a failure signal (the send itself succeeded).
+    fn emit_send_result(&self, evt: SendResultEvent);
 }
 
 struct TauriSink(AppHandle);
@@ -157,6 +176,9 @@ impl EventSink for TauriSink {
     }
     fn emit_bodies_written(&self, e: BodiesWrittenEvent) {
         let _ = self.0.emit("sync:bodies-written", e);
+    }
+    fn emit_send_result(&self, e: SendResultEvent) {
+        let _ = self.0.emit("sync:send-result", e);
     }
 }
 
@@ -891,9 +913,20 @@ async fn send_op(
                 "[send] build_mime ERR draft_id={}: {e}",
                 draft.draft_id
             );
-            return Err(crate::sync_engine::SourceError::Other(format!(
-                "build_mime: {e}"
-            )));
+            // Surface failure to the frontend BEFORE the op is mark_failed's
+            // + retried. The error string carries the build error verbatim.
+            let err_msg = format!("build_mime: {e}");
+            log::info!(
+                "[send] {account_id} emit sync:send-result success=false draft_id={}",
+                draft.draft_id
+            );
+            engine.sink.emit_send_result(SendResultEvent {
+                account_id: account_id.into(),
+                draft_id: draft.draft_id.clone(),
+                success: false,
+                error: Some(err_msg.clone()),
+            });
+            return Err(crate::sync_engine::SourceError::Other(err_msg));
         }
     };
 
@@ -906,12 +939,43 @@ async fn send_op(
         src_send_label(src)
     );
     match src.send(&mime).await {
-        Ok(()) => log::info!("[send] src.send OK draft_id={}", draft.draft_id),
+        Ok(()) => {
+            log::info!("[send] src.send OK draft_id={}", draft.draft_id);
+            // Surface success to the frontend now — BEFORE the best-effort
+            // Sent-append + cleanup. The invariant: an append failure or a
+            // cleanup failure must NEVER flip this to a failure signal, so
+            // we emit success=true at the exact point the transport resolved
+            // Ok (the send itself succeeded; everything below is best-effort).
+            log::info!(
+                "[send] {account_id} emit sync:send-result success=true draft_id={}",
+                draft.draft_id
+            );
+            engine.sink.emit_send_result(SendResultEvent {
+                account_id: account_id.into(),
+                draft_id: draft.draft_id.clone(),
+                success: true,
+                error: None,
+            });
+        }
         Err(e) => {
             log::warn!(
                 "[send] src.send ERR draft_id={}: {e} (op will mark_failed + retry)",
                 draft.draft_id
             );
+            // Surface failure BEFORE returning Err so the frontend can show
+            // an immediate error banner (the replay worker will separately
+            // mark_failed + schedule backoff on the returned Err).
+            let err_msg = e.to_string();
+            log::info!(
+                "[send] {account_id} emit sync:send-result success=false draft_id={}",
+                draft.draft_id
+            );
+            engine.sink.emit_send_result(SendResultEvent {
+                account_id: account_id.into(),
+                draft_id: draft.draft_id.clone(),
+                success: false,
+                error: Some(err_msg),
+            });
             return Err(e);
         }
     }
@@ -1550,6 +1614,7 @@ mod tests {
         statuses: std::sync::Mutex<Vec<StatusEvent>>,
         queues: std::sync::Mutex<Vec<QueueEvent>>,
         bodies_written: std::sync::Mutex<Vec<BodiesWrittenEvent>>,
+        send_results: std::sync::Mutex<Vec<SendResultEvent>>,
     }
     impl TestSink {
         fn new() -> Self {
@@ -1559,6 +1624,7 @@ mod tests {
                 statuses: std::sync::Mutex::new(vec![]),
                 queues: std::sync::Mutex::new(vec![]),
                 bodies_written: std::sync::Mutex::new(vec![]),
+                send_results: std::sync::Mutex::new(vec![]),
             }
         }
     }
@@ -1577,6 +1643,9 @@ mod tests {
         }
         fn emit_bodies_written(&self, e: BodiesWrittenEvent) {
             self.bodies_written.lock().unwrap().push(e);
+        }
+        fn emit_send_result(&self, e: SendResultEvent) {
+            self.send_results.lock().unwrap().push(e);
         }
     }
 
@@ -3175,5 +3244,145 @@ mod tests {
             .await
             .unwrap();
         assert!(v.is_none(), "precondition: key really absent");
+    }
+
+    // ---- sync:send-result emission ----
+    //
+    // `send_op` must emit a `SendResultEvent` on the three outcomes so the
+    // frontend can surface toast / error-banner feedback without re-polling
+    // the queue. Pins:
+    //   - success: exactly one event, success=true, error=None, BEFORE the
+    //     best-effort Sent-append + cleanup (so an append failure never
+    //     produces a duplicate or flips the signal).
+    //   - transport failure: exactly one event, success=false, error=Some(..),
+    //     emitted BEFORE the Err return so the frontend sees the failure
+    //     immediately (rather than waiting for the next replay round to mark
+    //     it failed).
+    // The recording `TestSink` (above) captures `SendResultEvent`s; the
+    // MockSource is extended with `with_fail_send` to drive the transport Err
+    // without spinning up a real SMTP socket.
+
+    /// Happy path: `src.send` Ok → exactly one `SendResultEvent` with
+    /// `success=true, error=None`, carrying the draft_id and account_id the
+    /// frontend needs to reconcile the originating composer tab.
+    #[tokio::test]
+    async fn send_op_emits_send_result_success_on_transport_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        // EAS caps so the Sent-append is SKIPPED — isolates the success-emit
+        // assertion (the only event captured should be the success, not an
+        // append-side artifact).
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(eas_caps());
+
+        send_op(&engine, "a", &src, &t8_draft("ok-1"))
+            .await
+            .expect("send_op should succeed when src.send is Ok");
+
+        let evts = sink.send_results.lock().unwrap().clone();
+        assert_eq!(
+            evts.len(),
+            1,
+            "exactly one send-result event on success; got {evts:?}"
+        );
+        assert_eq!(evts[0].account_id, "a");
+        assert_eq!(evts[0].draft_id, "ok-1");
+        assert!(evts[0].success);
+        assert!(
+            evts[0].error.is_none(),
+            "success event must carry error=None"
+        );
+    }
+
+    /// Failure path: `src.send` Err → exactly one `SendResultEvent` with
+    /// `success=false, error=Some(..)` BEFORE `send_op` returns Err. The
+    /// transport error string must be surfaced verbatim so the frontend banner
+    /// can display it (e.g. "SMTP relay denied: auth required").
+    #[tokio::test]
+    async fn send_op_emits_send_result_failure_on_transport_err() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        // MockSource with fail_send=true → src.send returns SourceError::Other.
+        let src = MockSource::new(vec![], vec![])
+            .with_caps(eas_caps())
+            .with_fail_send(true);
+
+        let res = send_op(&engine, "a", &src, &t8_draft("fail-1")).await;
+        assert!(res.is_err(), "fail_send must surface as Err");
+
+        let evts = sink.send_results.lock().unwrap().clone();
+        assert_eq!(
+            evts.len(),
+            1,
+            "exactly one send-result event on failure; got {evts:?}"
+        );
+        assert_eq!(evts[0].account_id, "a");
+        assert_eq!(evts[0].draft_id, "fail-1");
+        assert!(
+            !evts[0].success,
+            "transport failure must emit success=false"
+        );
+        let err = evts[0]
+            .error
+            .as_ref()
+            .expect("failure event must carry error=Some(..)");
+        assert!(
+            err.contains("mock send failure"),
+            "error string should carry the transport error verbatim; got: {err}"
+        );
+    }
+
+    /// Best-effort invariant pinned at the event level: a Sent-append failure
+    /// after a successful send MUST NOT emit a second `SendResultEvent` (and
+    /// certainly not a failure event). The single success signal was already
+    /// emitted at the moment `src.send` resolved Ok; everything below is
+    /// best-effort and must not corrupt the success feedback.
+    #[tokio::test]
+    async fn send_op_does_not_emit_second_send_result_on_append_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_sent_folder(&pool, "a", "Sent").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        // IMAP caps + fail_append → send succeeds, append fails. The op must
+        // still return Ok (best-effort) and emit exactly ONE success event.
+        let src = MockSource::new(vec![], vec![])
+            .with_caps(imap_caps())
+            .with_fail_append(true);
+
+        send_op(&engine, "a", &src, &t8_draft("ok-append-fails"))
+            .await
+            .expect("append failure must NOT fail the op");
+
+        let evts = sink.send_results.lock().unwrap().clone();
+        assert_eq!(
+            evts.len(),
+            1,
+            "append failure must not emit a second send-result event; got {evts:?}"
+        );
+        assert!(
+            evts[0].success,
+            "the single event must be the original success signal"
+        );
     }
 }
