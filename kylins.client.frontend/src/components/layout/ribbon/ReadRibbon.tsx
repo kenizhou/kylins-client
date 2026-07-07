@@ -255,6 +255,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
 
   const openComposerForLevel = (level: ClassificationLevel) => {
     openComposerWindow({
+      accountId: activeAccountId ?? undefined,
       classificationId: level.id,
       ...defaultSecurityForLevel(level.id),
     });
@@ -263,6 +264,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   const handleNewEmail = () => {
     const level = getDefaultLevel();
     openComposerWindow({
+      accountId: activeAccountId ?? undefined,
       classificationId: level.id,
       ...defaultSecurityForLevel(level.id),
     });

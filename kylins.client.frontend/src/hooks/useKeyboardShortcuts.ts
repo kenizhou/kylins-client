@@ -15,6 +15,7 @@ import { useShortcutStore } from '../stores/shortcutStore';
 import { usePreferencesStore } from '../stores/preferencesStore';
 import { useViewStore } from '../features/view/viewStore';
 import { useUIStore } from '../stores/uiStore';
+import { useAccountStore } from '../stores/accountStore';
 import { openComposerWindow } from '../utils/composeWindow';
 import { DEMO_MESSAGES } from '../data/demoMessages';
 import { isMac } from '../utils/platform';
@@ -49,7 +50,10 @@ function runDocumentCommand(command: string): void {
 }
 
 const ACTION_REGISTRY: Record<string, () => void | Promise<void>> = {
-  'app:new-mail': () => openComposerWindow(),
+  'app:new-mail': () =>
+    openComposerWindow({
+      accountId: useAccountStore.getState().activeAccountId ?? undefined,
+    }),
   'app:add-account': () => useUIStore.getState().setAccountSetupOpen(true),
   'app:preferences': () => usePreferencesStore.getState().openPreferences('General'),
   'app:print': () => window.print(),

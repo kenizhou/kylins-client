@@ -20,6 +20,8 @@ import { useFolderStore } from '../stores/folderStore';
 import { useThreadStore } from '../stores/threadStore';
 import { useAccountStore } from '../stores/accountStore';
 import { useUIStore } from '../stores/uiStore';
+import { useToastStore } from '../stores/toastStore';
+import { SEND_COMPLETE_EVENT } from '../services/composer/send';
 import { notifyNewMailBatchDeduped } from '../services/notifications/notificationManager';
 
 /**
@@ -58,6 +60,51 @@ export function useSyncEvents(): void {
   useEffect(() => {
     if (!isTauri) return;
     const unlisteners: Array<() => void> = [];
+
+    // Send-complete (window event from services/composer/send.ts): a send was
+    // enqueued by the backend. Show a success toast + nudge that account's
+    // sync so the appended Sent copy appears in the folder list without
+    // waiting for the next poll round. The actual SMTP/EAS transport fires
+    // moments later via the replay worker, so "Message sent" runs slightly
+    // ahead of the true transport result (sends almost always succeed within
+    // a second or two; durable per-send tracking is the separate Outbox
+    // feature). This is a DOM CustomEvent (not a Tauri event), so we
+    // subscribe via window.addEventListener and push cleanup into the same
+    // unlisteners array used by the Tauri listen() cleanups below.
+    const onSendComplete = (e: Event) => {
+      const detail = (e as CustomEvent<{ accountId?: string }>).detail;
+      console.log(
+        '[send-fe] onSendComplete RECEIVED accountId=',
+        detail?.accountId,
+        'window=',
+        typeof window !== 'undefined' ? window.location.search : 'no-window',
+      );
+      useToastStore.getState().push('Message sent', 'success');
+      console.log('[send-fe] onSendComplete pushed "Message sent" success toast');
+      const accountId = detail?.accountId;
+      if (accountId) {
+        console.log('[send-fe] onSendComplete invoking sync_account_now accountId=', accountId);
+        invoke('sync_account_now', { accountId })
+          .then(() => console.log('[send-fe] onSendComplete sync_account_now OK'))
+          .catch((err) => {
+            /* best-effort nudge; the next poll round will still pick it up */
+            console.log(
+              '[send-fe] onSendComplete sync_account_now FAILED (best-effort):',
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+      } else {
+        console.log('[send-fe] onSendComplete no accountId in detail — skipping sync nudge');
+      }
+    };
+    window.addEventListener(SEND_COMPLETE_EVENT, onSendComplete);
+    console.log(
+      '[send-fe] SEND_COMPLETE_EVENT listener REGISTERED on window eventName=',
+      SEND_COMPLETE_EVENT,
+      'window=',
+      typeof window !== 'undefined' ? window.location.search : 'no-window',
+    );
+    unlisteners.push(() => window.removeEventListener(SEND_COMPLETE_EVENT, onSendComplete));
 
     (async () => {
       try {

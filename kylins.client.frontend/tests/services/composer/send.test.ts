@@ -112,13 +112,16 @@ describe('composer/send', () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it('dispatches SEND_COMPLETE_EVENT on success', async () => {
-    const seen: string[] = [];
-    const handler = (e: Event) => seen.push(e.type);
+  it('dispatches SEND_COMPLETE_EVENT on success as a CustomEvent with accountId', async () => {
+    const seen: Array<{ type: string; detail: unknown }> = [];
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ accountId?: string }>;
+      seen.push({ type: e.type, detail: ce.detail });
+    };
     window.addEventListener(SEND_COMPLETE_EVENT, handler);
     try {
       await sendEmail('acc-1', baseInput, 'draft-1');
-      expect(seen).toEqual([SEND_COMPLETE_EVENT]);
+      expect(seen).toEqual([{ type: SEND_COMPLETE_EVENT, detail: { accountId: 'acc-1' } }]);
     } finally {
       window.removeEventListener(SEND_COMPLETE_EVENT, handler);
     }

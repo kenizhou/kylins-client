@@ -29,6 +29,7 @@ import { ClassificationSelector } from '@/features/composer/ClassificationSelect
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
 import { useUIStore } from '@/stores/uiStore';
+import { useToastStore } from '@/stores/toastStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
 import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
@@ -459,11 +460,49 @@ export function Composer({ windowed = false }: ComposerProps) {
   // unwrapped at the send boundary (services/composer/send strips it).
   const getFullHtml = useCallback(() => editor?.getHTML() ?? '', [editor]);
 
+  const closeWindowIfWindowed = useCallback(async () => {
+    if (!windowed) return;
+    try {
+      await getCurrentWindow().close();
+    } catch {
+      /* ignore in non-Tauri contexts */
+    }
+  }, [windowed]);
+
   const handleSend = useCallback(async () => {
-    if (!activeAccountId || !activeAccount || sendingRef.current) return;
+    console.log(
+      '[send-fe] handleSend ENTER stagingDraftId=',
+      useComposerStore.getState().stagingDraftId,
+      'toCount=',
+      useComposerStore.getState().to.length,
+      'sendingRef=',
+      sendingRef.current,
+      'windowed=',
+      windowed,
+      'hasLocation=',
+      typeof window !== 'undefined' ? window.location.search : 'no-window',
+    );
+    if (!activeAccountId || !activeAccount || sendingRef.current) {
+      console.log(
+        '[send-fe] handleSend early-return activeAccountId=',
+        activeAccountId,
+        'activeAccount=',
+        !!activeAccount,
+        'sendingRef=',
+        sendingRef.current,
+      );
+      return;
+    }
     const state = useComposerStore.getState();
-    if (state.to.length === 0) return;
-    if (!state.classificationId) return;
+    if (state.to.length === 0) {
+      console.log('[send-fe] handleSend validation FAIL: no recipients');
+      return;
+    }
+    if (!state.classificationId) {
+      console.log('[send-fe] handleSend validation FAIL: no classificationId');
+      return;
+    }
+    console.log('[send-fe] handleSend validation OK');
 
     sendingRef.current = true;
     stopAutoSave();
@@ -508,21 +547,28 @@ export function Composer({ windowed = false }: ComposerProps) {
       preventCopy: state.preventCopy,
     };
 
-    const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
-
-    state.setUndoSendVisible(true);
-    state.setUndoStagingDraftId(currentStagingDraftId);
-
-    const timer = setTimeout(async () => {
+    // Core send: enqueue + delete the persisted draft + upsert recipients.
+    // Returns true on success. Shared by the immediate (windowed) path and the
+    // deferred (inline undo) path.
+    const performSend = async (): Promise<boolean> => {
+      console.log('[send-fe] handleSend performSend calling sendEmail accountId=', activeAccountId);
       try {
         const result = await sendEmail(activeAccountId, input, currentStagingDraftId);
+        console.log(
+          '[send-fe] handleSend sendEmail RESULT success=',
+          result.success,
+          'message=',
+          result.message,
+        );
         if (!result.success) {
-          console.error('[composer] send failed:', result.message);
-          return;
+          console.error('[send-fe] handleSend send failed:', result.message);
+          useToastStore.getState().push(`Send failed: ${result.message}`, 'error');
+          console.log('[send-fe] handleSend pushed error toast');
+          return false;
         }
-        // T7b: the persisted `local_drafts` row id is distinct from the
-        // staging id; sendEmail handles outbox cleanup via the T8 backend,
-        // the composer owns the drafts-row deletion.
+        // T7b: the persisted `local_drafts` row id is distinct from the staging
+        // id; sendEmail handles outbox cleanup via the T8 backend, the composer
+        // owns the drafts-row deletion.
         if (currentDraftId) {
           try {
             await deleteDraft(currentDraftId);
@@ -532,7 +578,7 @@ export function Composer({ windowed = false }: ComposerProps) {
         }
         if (messageSentSound) {
           // TODO: play actual sent sound once a sound asset is bundled.
-          console.log('[composer] message sent sound');
+          console.log('[send-fe] handleSend message sent sound (stub)');
         }
         // TODO: send-and-archive (needs viewer archiveThread) — when enabled,
         // archive the thread here if the setting is on and state.threadId is set.
@@ -541,23 +587,63 @@ export function Composer({ windowed = false }: ComposerProps) {
             upsertContact(r.email, r.email !== r.name ? r.name : null),
           ),
         );
+        return true;
       } catch (err) {
-        console.error('Failed to send email:', err);
-      } finally {
-        useComposerStore.getState().setUndoSendVisible(false);
-        sendingRef.current = false;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[send-fe] handleSend sendEmail THREW:', message);
+        useToastStore.getState().push(`Send failed: ${message}`, 'error');
+        console.log('[send-fe] handleSend pushed error toast (from catch)');
+        return false;
       }
-    }, delay);
+    };
 
+    if (windowed) {
+      // Popout: send NOW and close on success (no undo timer — matches Outlook).
+      // Undo-send is a main-window/inline feature (the UndoSendToast lives in
+      // AppShell, which the popout doesn't render), and deferring the send is
+      // unsafe in a window that's about to close. Keep the window open on
+      // failure so the user can retry.
+      console.log('[send-fe] handleSend IMMEDIATE (windowed) — no undo timer');
+      const ok = await performSend();
+      sendingRef.current = false;
+      console.log('[send-fe] handleSend immediate done ok=', ok);
+      if (ok) {
+        console.log('[send-fe] handleSend windowed send succeeded → closing popout');
+        await closeWindowIfWindowed();
+      }
+      return;
+    }
+
+    // Inline (main window): defer the send by the undo window so the user can
+    // cancel via the UndoSendToast (rendered in AppShell, which persists).
+    const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
+    state.setUndoSendVisible(true);
+    state.setUndoStagingDraftId(currentStagingDraftId);
+    console.log(
+      '[send-fe] handleSend undoSendVisible=true delayMs=',
+      delay,
+      'stagingDraftId=',
+      currentStagingDraftId,
+    );
+    const timer = setTimeout(async () => {
+      console.log('[send-fe] handleSend undo-timer FIRED');
+      await performSend();
+      useComposerStore.getState().setUndoSendVisible(false);
+      sendingRef.current = false;
+      console.log('[send-fe] handleSend undo-timer done');
+    }, delay);
     state.setUndoSendTimer(timer);
+    console.log('[send-fe] handleSend undo-timer SCHEDULED; closing composer');
     closeComposer();
   }, [
     activeAccountId,
     activeAccount,
     closeComposer,
+    closeWindowIfWindowed,
     getFullHtml,
-    undoSendDuration,
     messageSentSound,
+    undoSendDuration,
+    windowed,
   ]);
 
   const handleSchedule = useCallback(
@@ -625,15 +711,6 @@ export function Composer({ windowed = false }: ComposerProps) {
     [activeAccountId, closeComposer, getFullHtml, setShowSchedule],
   );
 
-  const closeWindowIfWindowed = useCallback(async () => {
-    if (!windowed) return;
-    try {
-      await getCurrentWindow().close();
-    } catch {
-      /* ignore in non-Tauri contexts */
-    }
-  }, [windowed]);
-
   const handleDiscard = useCallback(async () => {
     stopAutoSave();
     const state = useComposerStore.getState();
@@ -677,10 +754,13 @@ export function Composer({ windowed = false }: ComposerProps) {
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
 
+  // Windowed Send: delegate to handleSend. The popout window is now closed
+  // INSIDE handleSend's undo-timer finally block (after sendEmail succeeds) —
+  // closing here would destroy the window (and the pending timer) before the
+  // deferred send fires.
   const handleSendAndCloseWindow = useCallback(async () => {
     await handleSend();
-    await closeWindowIfWindowed();
-  }, [handleSend, closeWindowIfWindowed]);
+  }, [handleSend]);
 
   // Listen for menubar/ribbon action requests so the same handlers work whether
   // the user clicks the panel footer, the compose ribbon, or the menu bar.
