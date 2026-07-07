@@ -2,12 +2,15 @@
 //
 // `db_get_attachments` lists the metadata rows persisted by the body-fetch
 // path (`request_bodies_inner` → `db::attachments::upsert_attachments`).
-// `sync_fetch_attachment` fetches ONE part's bytes (base64) for download, and
+// `sync_fetch_attachment` fetches ONE part, caches it as a file under
+// `<appData>/attachment-cache/`, and returns the file path (no base64 over
+// IPC — the receive-path counterpart to T7b's send-path staging).
 // `sync_fetch_inline_images` fetches every inline `cid:` part in a single
 // round-trip so the reading pane can build a `cid -> data:` URL map.
 //
-// DTOs match the Rust serde (camelCase) in `db/attachments.rs` and
-// `sync_engine/commands.rs` (`AttachmentBytes`, `InlineCidPart`).
+// DTOs match the Rust serde (camelCase) in `db/attachments.rs`,
+// `sync_engine/commands.rs` (`InlineCidPart`), and `attachment_cache.rs`
+// (`CachedAttachment`).
 
 import { invoke } from '@tauri-apps/api/core';
 
@@ -24,13 +27,20 @@ export interface AttachmentRow {
   imapPartId?: string | null;
 }
 
-/** Decoded attachment bytes (mirrors `AttachmentBytes`). */
-export interface AttachmentBytes {
+/** Cached attachment (mirrors `attachment_cache::CachedAttachment`). The
+ * `filePath` is absolute, under `<appData>/attachment-cache/`. The caller
+ * either `copyFile`s it into the draft outbox (forward) or
+ * `copy_cached_attachment`s it to a user-chosen save location (download). */
+export interface CachedAttachment {
+  filePath: string;
+  filename: string;
   mimeType: string;
-  base64: string;
+  size: number;
 }
 
-/** One inline `cid:` part (mirrors `InlineCidPart`). */
+/** One inline `cid:` part (mirrors `InlineCidPart`). Still base64 — inline
+ * images are small (signature logos, emojis); a future enhancement could cache
+ * them as files + serve via `convertFileSrc`. */
 export interface InlineCidPart {
   contentId: string;
   mimeType: string;
@@ -42,13 +52,15 @@ export function getAttachments(accountId: string, messageId: string): Promise<At
   return invoke<AttachmentRow[]>('db_get_attachments', { accountId, messageId });
 }
 
-/** Fetch ONE attachment part's bytes (base64) by IMAP section, for download. */
+/** Fetch ONE attachment part — cache-check → fetch-on-miss → return a file
+ * path (no base64). First call fetches from IMAP + writes to disk; subsequent
+ * calls return the cached path immediately (no network). */
 export function fetchAttachment(
   accountId: string,
   messageId: string,
   partId: string,
-): Promise<AttachmentBytes> {
-  return invoke<AttachmentBytes>('sync_fetch_attachment', { accountId, messageId, partId });
+): Promise<CachedAttachment> {
+  return invoke<CachedAttachment>('sync_fetch_attachment', { accountId, messageId, partId });
 }
 
 /** Fetch every inline `cid:` part for a message in one round-trip. */

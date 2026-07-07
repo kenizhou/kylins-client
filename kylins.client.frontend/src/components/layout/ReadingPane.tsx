@@ -12,7 +12,7 @@ import { upsertContact } from '../../services/db/contacts';
 import { InlineReply } from '../email/InlineReply';
 import { MessageHeader } from '../../features/viewer/MessageHeader';
 import { RsvpCard } from '../../features/viewer/RsvpCard';
-import { base64ToBytes } from '../../utils/base64';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { archiveThread, trashThread, junkThread } from '../../services/mail/actions';
 import { useClassification } from '../../features/classification/useClassification';
 import { isProminent } from '../../features/classification/classificationStyle';
@@ -33,7 +33,11 @@ export function ReadingPane() {
   const { getLevelById } = useClassification();
   const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
-  const [composeMode, setComposeMode] = useState<'reply' | 'replyAll' | 'forward' | null>(null);
+  // Inline reply/forward mode is held in viewStore (not local state) so the
+  // AppShell's CommandRibbon can observe it and flip to compose mode (Attach
+  // button reachable) while an inline reply is open in the reading pane.
+  const inlineReplyMode = useViewStore((s) => s.inlineReplyMode);
+  const setInlineReplyMode = useViewStore((s) => s.setInlineReplyMode);
   const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
   const [contactAdded, setContactAdded] = useState(false);
   const [inviteEvents, setInviteEvents] = useState<ParsedEvent[]>([]);
@@ -44,7 +48,7 @@ export function ReadingPane() {
   const [activeMsgId, setActiveMsgId] = useState<string | undefined>(message?.id);
   if (message?.id !== activeMsgId) {
     setActiveMsgId(message?.id);
-    setComposeMode(null);
+    setInlineReplyMode(null);
     setCidMap(new Map());
     setInviteEvents([]);
   }
@@ -95,10 +99,8 @@ export function ReadingPane() {
         for (const row of calendarRows) {
           try {
             const partId = row.imapPartId ?? row.id;
-            const bytes = await fetchAttachment(acct, id, partId);
-            const decoded = new TextDecoder('utf-8', { fatal: false }).decode(
-              base64ToBytes(bytes.base64),
-            );
+            const fetched = await fetchAttachment(acct, id, partId);
+            const decoded = await readTextFile(fetched.filePath);
             const parsed = IcalHelper.parseEvents(decoded);
             events.push(...parsed.filter((ev) => ev.method === 'REQUEST'));
           } catch (e) {
@@ -137,22 +139,22 @@ export function ReadingPane() {
   }
 
   // Inline reply / forward (Outlook-style) takes over the reading pane.
-  if (composeMode) {
+  if (inlineReplyMode) {
     return (
       <InlineReply
         message={message}
-        mode={composeMode}
+        mode={inlineReplyMode}
         accountId={activeAccountId}
         accountEmail={accountEmail}
-        onClose={() => setComposeMode(null)}
-        onSent={() => setComposeMode(null)}
+        onClose={() => setInlineReplyMode(null)}
+        onSent={() => setInlineReplyMode(null)}
       />
     );
   }
 
-  const handleReply = () => setComposeMode('reply');
-  const handleReplyAll = () => setComposeMode('replyAll');
-  const handleForward = () => setComposeMode('forward');
+  const handleReply = () => setInlineReplyMode('reply');
+  const handleReplyAll = () => setInlineReplyMode('replyAll');
+  const handleForward = () => setInlineReplyMode('forward');
 
   async function handleAddContact() {
     if (!message) return;

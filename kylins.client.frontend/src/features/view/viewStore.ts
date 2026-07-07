@@ -36,9 +36,17 @@ export interface MailMessage {
 
 export interface ViewStore extends ViewState {
   selectedMessage: MailMessage | null;
+  /**
+   * Active inline-reply/forward mode in the ReadingPane, or null when not
+   * composing. Mirrored by AppShell so the main CommandRibbon can flip to
+   * compose mode (Attach button reachable) while an inline reply is open.
+   * Transient — never persisted (not part of ViewState).
+   */
+  inlineReplyMode: 'reply' | 'replyAll' | 'forward' | null;
   /** True once persisted settings have been loaded. */
   isHydrated: boolean;
   setSelectedMessage: (message: MailMessage | null) => void;
+  setInlineReplyMode: (mode: 'reply' | 'replyAll' | 'forward' | null) => void;
   setReadingPanePosition: (position: ReadingPanePosition) => void;
   setFolderPaneVisible: (visible: boolean) => void;
   setCalendarPaneVisible: (visible: boolean) => void;
@@ -57,9 +65,11 @@ export interface ViewStore extends ViewState {
 export const useViewStore = create<ViewStore>((set) => ({
   ...DEFAULT_VIEW_STATE,
   selectedMessage: null,
+  inlineReplyMode: null,
   isHydrated: false,
 
   setSelectedMessage: (selectedMessage) => set({ selectedMessage }),
+  setInlineReplyMode: (inlineReplyMode) => set({ inlineReplyMode }),
   setReadingPanePosition: (readingPanePosition) => set({ readingPanePosition }),
   setFolderPaneVisible: (folderPaneVisible) => set({ folderPaneVisible }),
   setCalendarPaneVisible: (calendarPaneVisible) => set({ calendarPaneVisible }),
@@ -75,7 +85,8 @@ export const useViewStore = create<ViewStore>((set) => ({
     })),
   setHydrated: (isHydrated) => set({ isHydrated }),
 
-  resetToDefaults: () => set({ ...DEFAULT_VIEW_STATE, selectedMessage: null }),
+  resetToDefaults: () =>
+    set({ ...DEFAULT_VIEW_STATE, selectedMessage: null, inlineReplyMode: null }),
 
   hydrate: (partial) =>
     set((current) => ({

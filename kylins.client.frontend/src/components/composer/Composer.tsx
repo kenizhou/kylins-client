@@ -35,7 +35,11 @@ import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
-import { cleanupAttachments, stageAttachmentBytes } from '@/services/composer/attachments';
+import {
+  cleanupAttachments,
+  stageAttachment,
+  stageAttachmentBytes,
+} from '@/services/composer/attachments';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { upsertContact } from '@/services/db/contacts';
@@ -89,27 +93,6 @@ function htmlToPlainText(html: string): string {
 
 function buildMinimalEml(subject: string, body: string): string {
   return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
-}
-
-/**
- * Decode a base64 string into bytes. Uses `atob` (Tauri webview + jsdom) with
- * a Node `Buffer` fallback so it works in tests. Used only at the seed
- * boundary (forwarding original-message attachments) where the DB layer
- * already stores attachment bytes as base64; the decoded bytes are written
- * straight to disk via `stageAttachmentBytes`, so no base64 lingers in
- * composer state.
- */
-function base64ToBytes(base64: string): Uint8Array {
-  if (typeof atob === 'function') {
-    const bin = atob(base64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const B = (globalThis as any).Buffer;
-  if (B) return new Uint8Array(B.from(base64, 'base64'));
-  throw new Error('No base64 decoder available (atob nor Buffer found)');
 }
 
 function newAttachmentId(): string {
@@ -213,22 +196,22 @@ export function Composer({ windowed = false }: ComposerProps) {
           for (const row of rows) {
             if (cancelled) return;
             const partId = row.imapPartId || row.id;
+            // sync_fetch_attachment returns a cached file path (no base64
+            // over IPC). Copy the cached file into the draft outbox so the
+            // backend MIME builder streams it at send time.
             const fetched = await fetchAttachment(activeAccountId, messageId, partId);
             if (cancelled) return;
-            // DB stores fetched attachment bytes as base64; decode once and
-            // stage to disk so the composer never carries the payload.
-            const staged = await stageAttachmentBytes(
+            const destPath = await stageAttachment(
               stagingDraftId,
+              fetched.filePath,
               row.filename || 'attachment',
-              fetched.mimeType || row.mimeType || 'application/octet-stream',
-              base64ToBytes(fetched.base64),
             );
             addAttachment({
               id: newAttachmentId(),
-              filename: staged.filename,
-              mimeType: staged.mimeType,
+              filename: row.filename || 'attachment',
+              mimeType: fetched.mimeType || row.mimeType || 'application/octet-stream',
               size: row.size,
-              filePath: staged.filePath,
+              filePath: destPath,
             });
           }
         } catch (err) {
@@ -499,8 +482,13 @@ export function Composer({ windowed = false }: ComposerProps) {
       console.log('[send-fe] handleSend validation FAIL: no recipients');
       return;
     }
-    if (!state.classificationId) {
-      console.log('[send-fe] handleSend validation FAIL: no classificationId');
+    // Fall back to the default classification level so a fresh compose (where
+    // the user hasn't touched the ClassificationSelector) still sends. The
+    // selector already displays the default visually via currentLevel; this
+    // makes the send path agree with the display rather than silently bailing.
+    const effectiveClassificationId = state.classificationId ?? getDefaultLevel().id;
+    if (!effectiveClassificationId) {
+      console.log('[send-fe] handleSend validation FAIL: no classificationId and no default');
       return;
     }
     console.log('[send-fe] handleSend validation OK');
@@ -538,7 +526,7 @@ export function Composer({ windowed = false }: ComposerProps) {
               size: a.size,
             }))
           : undefined,
-      classificationId: state.classificationId,
+      classificationId: effectiveClassificationId,
       isEncrypted: state.isEncrypted,
       isSigned: state.isSigned,
       importance: state.importance,
@@ -642,6 +630,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     closeComposer,
     closeWindowIfWindowed,
     getFullHtml,
+    getDefaultLevel,
     messageSentSound,
     undoSendDuration,
     windowed,

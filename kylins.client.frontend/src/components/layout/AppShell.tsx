@@ -28,6 +28,11 @@ export function AppShell() {
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
   const commandRibbonVisible = useViewStore((s) => s.commandRibbonVisible);
   const statusBarVisible = useViewStore((s) => s.statusBarVisible);
+  // When an inline reply/forward is active in the ReadingPane, flip the main
+  // CommandRibbon to compose mode so the Attach button (and other compose
+  // actions) are reachable. The modal Composer renders its own internal
+  // ComposeRibbon and does not affect this flag.
+  const inlineReplyMode = useViewStore((s) => s.inlineReplyMode);
   const activeApp = useUIStore((s) => s.activeApp);
 
   return (
@@ -36,7 +41,9 @@ export function AppShell() {
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
         <MainContent>
-          {commandRibbonVisible && activeApp !== 'contacts' && <CommandRibbon />}
+          {commandRibbonVisible && activeApp !== 'contacts' && (
+            <CommandRibbon mode={inlineReplyMode ? 'compose' : 'read'} />
+          )}
           <div className="flex flex-1 overflow-hidden">
             {activeApp === 'calendar' ? (
               <CalendarLayout folderPane={<CalendarPane />}>

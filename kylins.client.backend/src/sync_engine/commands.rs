@@ -281,7 +281,10 @@ pub async fn request_bodies_inner(
     Ok(())
 }
 
-/// Decoded attachment bytes (base64) returned by `sync_fetch_attachment`.
+/// Decoded attachment bytes (base64) returned by `sync_fetch_attachment` for
+/// the inline-images path (small payloads — signature logos, emojis). The
+/// regular attachment fetch now returns [`CachedAttachment`] (a file path, no
+/// base64) — see `attachment_cache::get_or_fetch`.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentBytes {
@@ -316,29 +319,98 @@ async fn resolve_imap_for_message(
     Ok((folder, uid, config))
 }
 
-/// Testable core of [`sync_fetch_attachment`]. Resolves the message's
-/// folder+uid+config, fetches the part, returns decoded bytes as base64.
+/// Testable core of [`sync_fetch_attachment`]. Cache-check → fetch-on-miss →
+/// return a file path (no base64 over IPC). The first call fetches the MIME
+/// part from IMAP, writes the decoded bytes to
+/// `<appData>/attachment-cache/{account_id}/{shard}/{message_id}/`, and records
+/// `local_path` in the `attachments` row; subsequent calls return the cached
+/// path immediately (no network). See `attachment_cache` module + the design
+/// spec for the full layout.
 pub async fn sync_fetch_attachment_inner(
     engine: Arc<SyncEngine>,
     pool: &SqlitePool,
     account_id: &str,
     message_id: &str,
     part_id: &str,
-) -> Result<AttachmentBytes, String> {
+) -> Result<crate::attachment_cache::CachedAttachment, String> {
+    use crate::attachment_cache as cache;
+
+    // 1. Look up the attachment metadata (id, filename, mime_type, size,
+    //    local_path). If we have no row at all, the part_id is unknown —
+    //    treat as a miss but with a synthesized filename.
+    let meta = attachments::get_attachment_meta(pool, account_id, message_id, part_id)
+        .await
+        .map_err(|e| format!("lookup attachment meta for {message_id}/{part_id}: {e}"))?;
+
+    let cache_root = engine.data_dir.join("attachment-cache");
+
+    // 2. Cache hit: local_path set AND file exists → return immediately.
+    if let Some(ref meta) = meta {
+        if let Some(ref local_path) = meta.local_path {
+            let path = std::path::Path::new(local_path);
+            if path.exists() && cache::path_is_within_cache(path, &cache_root) {
+                return Ok(cache::CachedAttachment {
+                    file_path: local_path.clone(),
+                    filename: meta.filename.clone().unwrap_or_else(|| "attachment".to_string()),
+                    mime_type: meta
+                        .mime_type
+                        .clone()
+                        .unwrap_or_else(|| "application/octet-stream".to_string()),
+                    size: meta.size,
+                });
+            }
+        }
+    }
+
+    // 3. Cache miss: fetch the part from IMAP (current path: full message
+    //    fetch + MIME parse — Phase C will switch to BODY.PEEK[part]).
     let (folder, uid, config) =
         resolve_imap_for_message(&engine, pool, account_id, message_id).await?;
     let (mime_type, data) =
         crate::mail::imap::client::fetch_attachment_bytes(&config, &folder, uid, part_id).await?;
-    let base64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &data,
+
+    // 4. Compute the cache path + write the file.
+    let attachment_id = meta
+        .as_ref()
+        .map(|m| m.id.clone())
+        .unwrap_or_else(|| format!("{account_id}_{message_id}_{part_id}"));
+    let filename = meta
+        .as_ref()
+        .and_then(|m| m.filename.clone())
+        .unwrap_or_else(|| "attachment".to_string());
+    let size = if data.len() as i64 > 0 {
+        data.len() as i64
+    } else {
+        meta.as_ref().map(|m| m.size).unwrap_or(0)
+    };
+
+    let file_path = cache::cache_file_path(
+        &cache_root,
+        account_id,
+        message_id,
+        &attachment_id,
+        &filename,
     );
-    Ok(AttachmentBytes { mime_type, base64 })
+    let written = cache::write_cache_file(&file_path, &data)?;
+
+    // 5. Record local_path + cache_size so the next call is a cache hit.
+    let path_str = file_path.to_string_lossy().into_owned();
+    if let Err(e) = attachments::set_cached_path(pool, &attachment_id, &path_str, written as i64).await {
+        log::warn!("[attachment-cache] failed to record local_path for {attachment_id}: {e} — file cached but will be re-fetched next time");
+    }
+
+    Ok(cache::CachedAttachment {
+        file_path: path_str,
+        filename,
+        mime_type,
+        size,
+    })
 }
 
-/// Fetch a single attachment part (by IMAP section `part_id`) as base64 for
-/// download. Resolves the account's IMAP config server-side so the frontend
-/// only needs accountId + messageId + partId.
+/// Fetch a single attachment part (by IMAP section `part_id`), returning a
+/// cached file path (no base64 over IPC). Resolves the account's IMAP config
+/// server-side so the frontend only needs accountId + messageId + partId.
+/// First call fetches + caches; subsequent calls return the path (no network).
 #[tauri::command]
 pub async fn sync_fetch_attachment(
     engine: State<'_, Arc<SyncEngine>>,
@@ -346,7 +418,7 @@ pub async fn sync_fetch_attachment(
     account_id: String,
     message_id: String,
     part_id: String,
-) -> Result<AttachmentBytes, String> {
+) -> Result<crate::attachment_cache::CachedAttachment, String> {
     sync_fetch_attachment_inner(engine.inner().clone(), pool.inner(), &account_id, &message_id, &part_id)
         .await
 }

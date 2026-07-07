@@ -15,6 +15,7 @@ use tauri_plugin_autostart::MacosLauncher;
 // rotation under normal use. Targets: LogDir (OS log dir) + Stdout (dev console).
 use tauri_plugin_log::{Target, TargetKind, RotationStrategy, TimezoneStrategy};
 
+pub mod attachment_cache;
 pub mod commands;
 pub mod crypto;
 pub mod db;
@@ -76,6 +77,7 @@ pub fn run() {
             commands::request_notification_permission,
             commands::get_cache_size,
             commands::clear_cache,
+            commands::copy_cached_attachment,
             commands::reveal_logs_directory,
             oauth::start_oauth_server,
             oauth::oauth_exchange_token,

@@ -15,9 +15,10 @@ import { buildComposerExtensions } from '@/features/composer/editorExtensions';
 import { RecipientField } from '@/features/composer/RecipientField';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { sendEmail } from '@/services/composer/send';
-import { stageAttachmentBytes, newDraftId } from '@/services/composer/attachments';
+import { stageAttachment, newDraftId } from '@/services/composer/attachments';
 import { getAttachments, fetchAttachment, fetchInlineImages } from '@/services/db/attachments';
-import { base64ToBytes } from '@/utils/base64';
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import type { ComposerAttachment } from '@/stores/composerStore';
 import { buildReplyQuote, buildForwardQuote } from '@/features/composer/prepareBodyForQuoting';
 import {
@@ -87,6 +88,12 @@ export function InlineReply({
   const [replyToRecipients, setReplyToRecipients] = useState<Recipient[]>([]);
   const [includeOriginalAttachments, setIncludeOriginalAttachments] = useState(true);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // Single stagingDraftId for the component's lifetime: pick-time staging,
+  // forward-seed staging, and send-time SendDraft.draftId all share this id so
+  // backend cleanup (<appData>/outbox-attachments/{draftId}/) targets the right
+  // dir. Previously the forward-seed effect generated its own id and sendEmail
+  // generated yet another → staged files leaked.
+  const [stagingDraftId] = useState(() => newDraftId());
   const attachmentSeededRef = useRef(false);
   const inlineImagesSeededRef = useRef(false);
   const alwaysShowCcBcc = usePreferencesStore((s) => s.alwaysShowCcBcc);
@@ -149,27 +156,27 @@ export function InlineReply({
     let cancelled = false;
     async function seed() {
       attachmentSeededRef.current = true;
-      const stagingDraftId = newDraftId();
       try {
         const rows = await getAttachments(accountId_, messageId);
         const seeded: ComposerAttachment[] = [];
         for (const row of rows) {
           if (cancelled) return;
           const partId = row.imapPartId || row.id;
+          // sync_fetch_attachment returns a cached file path (no base64
+          // over IPC). Copy the cached file into the draft outbox.
           const fetched = await fetchAttachment(accountId_, messageId, partId);
           if (cancelled) return;
-          const staged = await stageAttachmentBytes(
+          const destPath = await stageAttachment(
             stagingDraftId,
+            fetched.filePath,
             row.filename || 'attachment',
-            fetched.mimeType || row.mimeType || 'application/octet-stream',
-            base64ToBytes(fetched.base64),
           );
           seeded.push({
             id: newAttachmentId(),
-            filename: staged.filename,
-            mimeType: staged.mimeType,
+            filename: row.filename || 'attachment',
+            mimeType: fetched.mimeType || row.mimeType || 'application/octet-stream',
             size: row.size,
-            filePath: staged.filePath,
+            filePath: destPath,
           });
         }
         if (!cancelled) setAttachments((prev) => [...prev, ...seeded]);
@@ -181,7 +188,46 @@ export function InlineReply({
     return () => {
       cancelled = true;
     };
-  }, [isForward, accountId, message.messageId, includeOriginalAttachments]);
+  }, [isForward, accountId, message.messageId, includeOriginalAttachments, stagingDraftId]);
+
+  // Attach-button bridge: while an inline reply is open, the main window's
+  // CommandRibbon flips to compose mode (driven by viewStore.inlineReplyMode),
+  // so its Attach button is reachable. ComposeRibbon dispatches the
+  // `composer:attach-requested` window event; this listener mirrors the modal
+  // Composer's handleAttachRequested (Composer.tsx) — opens the OS file picker,
+  // stages each picked file via the backend `stage_picked_attachment` command
+  // into this reply's stagingDraftId outbox dir, and adds a chip.
+  useEffect(() => {
+    const handleAttachRequested = async () => {
+      try {
+        const selected = await open({ multiple: true });
+        if (!selected) return;
+        const paths = Array.isArray(selected) ? selected : [selected];
+        if (paths.length === 0) return;
+        for (const path of paths) {
+          const filename = path.split(/[\\/]/).pop() ?? path;
+          const staged = await invoke<{ filePath: string; mimeType: string; size: number }>(
+            'stage_picked_attachment',
+            { srcPath: path, draftId: stagingDraftId, filename },
+          );
+          setAttachments((prev) => [
+            ...prev,
+            {
+              id: newAttachmentId(),
+              filename,
+              mimeType: staged.mimeType,
+              size: staged.size,
+              filePath: staged.filePath,
+            },
+          ]);
+        }
+      } catch (err) {
+        console.error('[InlineReply] attach pick failed', err);
+      }
+    };
+    window.addEventListener('composer:attach-requested', handleAttachRequested);
+    return () => window.removeEventListener('composer:attach-requested', handleAttachRequested);
+  }, [stagingDraftId]);
 
   // _fromContactForReply). Falls back to the account address.
   const accounts = useAccountStore((s) => s.accounts);
@@ -281,32 +327,36 @@ export function InlineReply({
     }
     setStatus('sending');
     setErrorMsg(null);
-    const result = await sendEmail(accountId, {
+    const result = await sendEmail(
       accountId,
-      to: toRecipients,
-      cc: ccRecipients.length > 0 ? ccRecipients : undefined,
-      bcc: bccRecipients.length > 0 ? bccRecipients : undefined,
-      replyTo: replyToRecipients.length > 0 ? replyToRecipients : undefined,
-      subject,
-      bodyHtml: editor.getHTML(),
-      fromEmail: fromEmail ?? accountEmail ?? undefined,
-      threadId: message.threadId ?? null,
-      // A forward is a new branch of the conversation, not a reply, so it
-      // carries no In-Reply-To header.
-      inReplyToMessageId: isForward ? null : (message.messageId ?? null),
-      classificationId: message.classificationId,
-      isEncrypted: message.isEncrypted,
-      isSigned: message.isSigned,
-      attachments:
-        attachments.length > 0
-          ? attachments.map((a) => ({
-              filename: a.filename,
-              mimeType: a.mimeType,
-              filePath: a.filePath,
-              size: a.size,
-            }))
-          : undefined,
-    });
+      {
+        accountId,
+        to: toRecipients,
+        cc: ccRecipients.length > 0 ? ccRecipients : undefined,
+        bcc: bccRecipients.length > 0 ? bccRecipients : undefined,
+        replyTo: replyToRecipients.length > 0 ? replyToRecipients : undefined,
+        subject,
+        bodyHtml: editor.getHTML(),
+        fromEmail: fromEmail ?? accountEmail ?? undefined,
+        threadId: message.threadId ?? null,
+        // A forward is a new branch of the conversation, not a reply, so it
+        // carries no In-Reply-To header.
+        inReplyToMessageId: isForward ? null : (message.messageId ?? null),
+        classificationId: message.classificationId,
+        isEncrypted: message.isEncrypted,
+        isSigned: message.isSigned,
+        attachments:
+          attachments.length > 0
+            ? attachments.map((a) => ({
+                filename: a.filename,
+                mimeType: a.mimeType,
+                filePath: a.filePath,
+                size: a.size,
+              }))
+            : undefined,
+      },
+      stagingDraftId,
+    );
     if (result.success) {
       setStatus('sent');
       onSent();
@@ -330,6 +380,7 @@ export function InlineReply({
     message.messageId,
     isForward,
     onSent,
+    stagingDraftId,
   ]);
 
   // Pop out to the full modal composer (Mailspring-style), carrying the inline
@@ -465,8 +516,19 @@ export function InlineReply({
             />
           </TextField>
         </div>
+      </div>
+
+      <EditorToolbar editor={editor} onRequestLink={() => setShowLinkDialog(true)} />
+
+      <div className="kylins-editor-scroll flex-1 overflow-auto">
+        <EditorContent editor={editor} />
+      </div>
+
+      {/* Attachments — mirrors the modal Composer layout (below editor, above
+          footer) so inline reply and popout composer stay visually consistent. */}
+      <div className="border-t border-[var(--border)]">
         {isForward && (
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 px-4 py-1.5">
             <Checkbox
               isSelected={includeOriginalAttachments}
               onChange={(selected) => {
@@ -480,30 +542,28 @@ export function InlineReply({
             >
               <span className="text-xs">Include original attachments</span>
             </Checkbox>
+          </div>
+        )}
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 px-4 py-1.5">
             {attachments.map((att) => (
               <span
                 key={att.id}
-                className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[10px] text-[var(--foreground)]"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
               >
-                <span className="max-w-[120px] truncate">{att.filename}</span>
+                <span className="max-w-[150px] truncate">{att.filename}</span>
                 <button
                   type="button"
                   onClick={() => setAttachments((prev) => prev.filter((a) => a.id !== att.id))}
-                  className="text-[var(--muted-text)] hover:text-[var(--foreground)]"
+                  className="text-[var(--muted-text)] outline-none hover:text-[var(--foreground)] focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label={`Remove ${att.filename}`}
                 >
-                  <CloseIcon size={10} />
+                  <CloseIcon size={12} />
                 </button>
               </span>
             ))}
           </div>
         )}
-      </div>
-
-      <EditorToolbar editor={editor} onRequestLink={() => setShowLinkDialog(true)} />
-
-      <div className="kylins-editor-scroll flex-1 overflow-auto">
-        <EditorContent editor={editor} />
       </div>
 
       {/* Send bar */}

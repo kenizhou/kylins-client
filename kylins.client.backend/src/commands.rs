@@ -129,10 +129,10 @@ pub async fn stage_picked_attachment(
 }
 
 /// Strip path separators and shell-dangerous characters from a user-supplied
-/// filename so it is safe to join onto the outbox directory. Rejects `.` and
-/// `..` (which would otherwise traverse the directory tree) and any name that
-/// becomes empty after sanitization; both fall back to `attachment`.
-fn sanitize_attachment_filename(name: &str) -> String {
+/// filename so it is safe to join onto the outbox/cache directory. Rejects `.`
+/// and `..` (which would otherwise traverse the directory tree) and any name
+/// that becomes empty after sanitization; both fall back to `attachment`.
+pub(crate) fn sanitize_attachment_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| match c {
@@ -292,6 +292,28 @@ pub fn clear_cache(app: tauri::AppHandle) -> Result<(), String> {
             std::fs::remove_file(&path).map_err(|e| format!("failed to remove {path:?}: {e}"))?;
         }
     }
+    Ok(())
+}
+
+/// Copy a cached attachment file to a user-chosen save location. The frontend
+/// `@tauri-apps/plugin-fs` scope only covers appData; the cache lives under
+/// appData but the save destination is arbitrary (the user's Downloads, a USB
+/// stick, etc.), so the copy goes through `std::fs` which has full access.
+/// This is the receive-path counterpart to `stage_picked_attachment` (send
+/// path) — both exist because the frontend fs plugin can't bridge appData →
+/// arbitrary-disk.
+#[tauri::command]
+pub fn copy_cached_attachment(src_path: String, dest_path: String) -> Result<(), String> {
+    let src = std::path::Path::new(&src_path);
+    if !src.exists() {
+        return Err(format!("source file not found: {src_path}"));
+    }
+    if let Some(parent) = std::path::Path::new(&dest_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create dest dir {parent:?}: {e}"))?;
+    }
+    std::fs::copy(src, &dest_path)
+        .map_err(|e| format!("failed to copy {src_path} -> {dest_path}: {e}"))?;
     Ok(())
 }
 
