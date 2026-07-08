@@ -12,7 +12,7 @@ import { upsertContact } from '../../services/db/contacts';
 import { InlineReply } from '../email/InlineReply';
 import { MessageHeader } from '../../features/viewer/MessageHeader';
 import { RsvpCard } from '../../features/viewer/RsvpCard';
-import { readTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile, readFile } from '@tauri-apps/plugin-fs';
 import { archiveThread, trashThread, junkThread } from '../../services/mail/actions';
 import { useClassification } from '../../features/classification/useClassification';
 import { isProminent } from '../../features/classification/classificationStyle';
@@ -66,13 +66,33 @@ export function ReadingPane() {
     const id = message?.id;
     const acct = activeAccountId;
     if (!id || !acct) return;
+    // Gate: skip the full-message IMAP fetch (`BODY.PEEK[]`) unless the body
+    // actually contains inline `cid:` image references. Without this, EVERY
+    // selection triggers a full-message download — even for plain-text messages
+    // with no inline images — because `fetchInlineImages` opens a new connection
+    // + fetches the entire message just to check for CID parts.
+    const body = message?.html;
+    if (!body || !/\bcid:/i.test(body)) {
+      setCidMap(new Map());
+      return;
+    }
     let cancelled = false;
     fetchInlineImages(acct, id)
-      .then((parts) => {
+      .then(async (parts) => {
         if (cancelled) return;
         const m = new Map<string, string>();
         for (const p of parts) {
-          m.set(p.contentId, `data:${p.mimeType};base64,${p.base64}`);
+          try {
+            // Read the cached file → Blob → object URL. Avoids base64 in the
+            // HTML (Blob URL, not data:) AND avoids the finicky asset-protocol
+            // (convertFileSrc scope/URL-format issues on Windows). The fs
+            // plugin's appData scope already covers the attachment-cache dir.
+            const bytes = await readFile(p.filePath);
+            const blob = new Blob([bytes], { type: p.mimeType });
+            m.set(p.contentId, URL.createObjectURL(blob));
+          } catch (e) {
+            console.error('[reading-pane] failed to load inline image', p.filePath, e);
+          }
         }
         setCidMap(m);
       })

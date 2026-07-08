@@ -181,6 +181,55 @@ pub async fn get_attachment_meta(
     }))
 }
 
+/// One inline `cid:` part row, including cache state. Used by
+/// `sync_fetch_inline_images_inner` to cache-check inline images (every part
+/// with `is_inline = 1 AND content_id IS NOT NULL`). `local_path` is `None`
+/// when the part has never been fetched (or the cache file was removed
+/// externally); the caller fetches + writes on miss.
+#[derive(Debug, Clone)]
+pub struct InlineCidPartRow {
+    pub id: String,
+    pub content_id: String,
+    pub filename: Option<String>,
+    pub mime_type: Option<String>,
+    pub size: i64,
+    pub local_path: Option<String>,
+}
+
+/// List every inline CID part for a message (`is_inline = 1 AND content_id IS
+/// NOT NULL`), including the cache pointer (`local_path`). This is the
+/// cache-check query for `sync_fetch_inline_images_inner`: if every returned
+/// row has a `local_path` whose file exists, the inline images are fully cached
+/// and no IMAP fetch is needed. Returns an empty vec if the message has no
+/// inline CID parts (or no attachment rows at all yet).
+pub async fn list_inline_cid_parts(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Vec<InlineCidPartRow>, String> {
+    let rows = sqlx::query(
+        "SELECT id, content_id, filename, mime_type, size, local_path \
+         FROM attachments \
+         WHERE account_id = ? AND message_id = ? AND is_inline = 1 AND content_id IS NOT NULL",
+    )
+    .bind(account_id)
+    .bind(message_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| InlineCidPartRow {
+            id: r.try_get("id").unwrap_or_default(),
+            content_id: r.try_get("content_id").unwrap_or_default(),
+            filename: r.try_get("filename").ok().flatten(),
+            mime_type: r.try_get("mime_type").ok().flatten(),
+            size: r.try_get("size").unwrap_or(0),
+            local_path: r.try_get("local_path").ok().flatten(),
+        })
+        .collect())
+}
+
 /// Record the cached file path + size for an attachment, marking it as cached
 /// (`cached_at` = now in epoch seconds). Called after the fetch-on-miss path
 /// writes the file to disk.

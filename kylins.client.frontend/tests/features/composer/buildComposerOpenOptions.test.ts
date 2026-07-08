@@ -7,6 +7,9 @@ import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 
+const { mockReadFile } = vi.hoisted(() => ({ mockReadFile: vi.fn() }));
+vi.mock('@tauri-apps/plugin-fs', () => ({ readFile: mockReadFile }));
+
 beforeEach(() => wireDefaultDbResults(mockInvoke));
 
 const account: Account = {
@@ -81,10 +84,13 @@ describe('buildComposerOpenOptions', () => {
   });
 
   it('forward: prefixes subject, quotes body, seeds attachments, replaces cid refs', async () => {
+    // cachedImageToDataUrl reads the cached file; mock readFile to return
+    // known bytes ([72, 73] = "HI" → base64 "SEk=").
+    mockReadFile.mockResolvedValue(new Uint8Array([72, 73]));
     mockInvoke.mockImplementation(async (cmd: string, _args?: Record<string, unknown>) => {
       if (cmd === 'db_get_aliases_for_account') return [];
       if (cmd === 'sync_fetch_inline_images') {
-        return [{ contentId: 'img-1', mimeType: 'image/png', base64: 'base64data' }];
+        return [{ contentId: 'img-1', filePath: '/cache/img-1.png', mimeType: 'image/png', size: 2 }];
       }
       return wireDefaultDbResults.length ? undefined : undefined;
     });
@@ -94,7 +100,7 @@ describe('buildComposerOpenOptions', () => {
     const opts = await buildComposerOpenOptions({ account, message, mode: 'forward' });
     expect(opts.subject).toBe('Fwd: Hello');
     expect(opts.bodyHtml).toContain('gmail_quote');
-    expect(opts.bodyHtml).toContain('data:image/png;base64,base64data');
+    expect(opts.bodyHtml).toContain('data:image/png;base64,SEk=');
     expect(opts.originalMessageId).toBe('<mid-1@example.com>');
     expect(opts.includeOriginalAttachments).toBe(true);
     expect(opts.forwardAsAttachment).toBeUndefined();

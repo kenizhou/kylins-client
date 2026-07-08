@@ -117,7 +117,13 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         // upsert) then re-read. Best-effort: on failure we render whatever the
         // cache has (null body → reading pane shows the text fallback).
         let body = await getMessageBody(thread.accountId, latest.id);
+        console.log(
+          '[select] latestId=', latest.id,
+          'accountId=', thread.accountId,
+          'body=', body ? `${body.bodyHtml?.length ?? 'null'} chars` : 'null',
+        );
         if (!body || body.bodyHtml == null) {
+          console.log('[select] CACHE MISS for', latest.id, '— triggering sync_request_bodies');
           try {
             await invoke('sync_request_bodies', {
               accountId: thread.accountId,

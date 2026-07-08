@@ -245,6 +245,7 @@ pub fn run() {
             sync_engine::commands::sync_fetch_attachment,
             sync_engine::commands::sync_fetch_inline_images,
             sync_engine::commands::sync_apply_mutation,
+            sync_engine::commands::reconcile_attachment_cache,
         ])
         .setup(|app| {
             {

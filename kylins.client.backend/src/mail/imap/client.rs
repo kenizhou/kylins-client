@@ -2,7 +2,6 @@
 // Licensed under Apache-2.0. See ATTRIBUTIONS.md.
 
 use async_imap::{types::Flag, Authenticator, Client, Session};
-use base64::Engine;
 use futures::StreamExt;
 use mail_parser::{MessageParser, MimeHeaders};
 use std::time::Duration;
@@ -1583,12 +1582,15 @@ fn build_login_cmd(config: &ImapConfig) -> String {
 
 /// Open a raw IMAP connection, LOGIN, SELECT `folder`, then `UID FETCH <uid>
 /// (UID BODY.PEEK[])` and parse the single returned message with mail_parser.
-/// Used by `fetch_attachment_bytes` and the `sync_fetch_inline_images` command
-/// to obtain the parsed MIME tree (so a specific part can be located by section
-/// and decoded). Single connection lifecycle (connect → login → select → fetch
-/// → drop), like `fetch_bodies_batch`. Raw (NOT async-imap) because async-imap
-/// returns 0 items on this server. Returns `Ok(None)` if the server sent no
-/// FETCH response for the UID.
+/// Used by `fetch_inline_cid_parts` (the `sync_fetch_inline_images` command) to
+/// obtain the parsed MIME tree so all CID-tagged inline parts can be located
+/// and extracted in one pass. `fetch_attachment_bytes` no longer uses this
+/// path — it now uses `fetch_part_bytes_inner` (BODY.PEEK[<part>] partial fetch)
+/// instead of downloading the full message just to extract one part. Single
+/// connection lifecycle (connect → login → select → fetch → drop), like
+/// `fetch_bodies_batch`. Raw (NOT async-imap) because async-imap returns 0
+/// items on this server. Returns `Ok(None)` if the server sent no FETCH
+/// response for the UID.
 async fn fetch_parsed_message(
     config: &ImapConfig,
     folder: &str,
@@ -1640,37 +1642,195 @@ async fn fetch_parsed_message(
 }
 
 /// Fetch ONE attachment part by IMAP MIME section (`part_id`, e.g. "1.2") and
-/// return its decoded bytes + mime type. Fetches the FULL message via
-/// `fetch_parsed_message`, locates the part via `build_imap_section_map`, and
-/// returns mail_parser's already-decoded bytes (mail_parser handles
-/// Content-Transfer-Encoding: base64 / quoted-printable). Whole-message fetch
-/// (not `BODY[section]`) because raw `BODY[section]` returns transfer-encoded
-/// bytes that we'd have to decode ourselves; letting mail_parser decode is
-/// simpler and matches what `parse_message`/`fetch_bodies_batch` already do.
+/// return its decoded bytes + mime type. Uses `BODY.PEEK[<part_id>.MIME]` (part
+/// headers) + `BODY.PEEK[<part_id>]` (transfer-encoded body) — partial fetch —
+/// instead of `BODY.PEEK[]` (full message). A 50KB attachment in a 20MB message
+/// downloads just the part bytes (50KB + a tiny header literal), not the full
+/// 20MB. Thunderbird's approach.
+///
+/// Two FETCHes on one raw connection (each goes through `raw_parse_fetch_responses`):
+///
+/// 1. `a3 UID FETCH {uid} (UID BODY.PEEK[{part_id}.MIME])` — small literal
+///    containing Content-Type, Content-Transfer-Encoding, Content-Disposition,
+///    Content-ID. Per RFC 3501 §6.4.5 the `.MIME` suffix returns the MIME
+///    headers of the part followed by a blank line.
+/// 2. `a4 UID FETCH {uid} (UID BODY.PEEK[{part_id}])` — the transfer-encoded
+///    body bytes of the leaf part.
+///
+/// `decode_part_bytes` (pure helper, unit-tested) then concatenates the two
+/// into a single-part RFC5322 wrapper and lets mail_parser handle the
+/// transfer-encoding decode (base64 / quoted-printable / 7bit / 8bit / binary).
+///
+/// Both fetches are PEEK so the message is NOT marked \Seen. The cache miss-path
+/// (`attachment_cache::get_or_fetch` → `sync_engine::commands::fetch_attachment`)
+/// calls this function; its interface is unchanged from the previous full-message
+/// implementation.
 pub async fn fetch_attachment_bytes(
     config: &ImapConfig,
     folder: &str,
     uid: u32,
     part_id: &str,
 ) -> Result<(String, Vec<u8>), String> {
-    let message = fetch_parsed_message(config, folder, uid)
-        .await?
-        .ok_or_else(|| format!("UID {uid} in {folder}: no parseable message"))?;
-    let section_map = build_imap_section_map(&message);
-    let target_part_idx = section_map
-        .iter()
-        .find(|(_, section)| section.as_str() == part_id)
-        .map(|(&idx, _)| idx)
-        .ok_or_else(|| {
-            format!(
-                "Section {part_id} not found in UID {uid} (known sections: {:?})",
-                section_map.values().collect::<Vec<_>>()
-            )
-        })?;
+    match fetch_part_bytes_inner(config, folder, uid, part_id).await? {
+        Some(result) => Ok(result),
+        None => Err(format!(
+            "UID {uid} part {part_id} in {folder}: server returned no FETCH response \
+             (message deleted, UID not in folder, or part_id wrong)"
+        )),
+    }
+}
+
+/// Raw-connection core for [`fetch_attachment_bytes`]. Returns
+/// `Ok(Some((mime_type, decoded_bytes)))` on success, `Ok(None)` if the server
+/// sent no FETCH response for the UID (so the caller can produce a precise
+/// error message). Factored as a separate fn so the Option/Err distinction is
+/// explicit and the public API stays simple.
+///
+/// `part_id` validation is here, not in the public wrapper, so internal callers
+/// (when/if any) also get the guard. The check rejects anything that isn't a
+/// dotted numeric path — guards against command injection since `part_id` is
+/// interpolated raw into the FETCH command string (no quoting in IMAP section
+/// syntax to lean on).
+async fn fetch_part_bytes_inner(
+    config: &ImapConfig,
+    folder: &str,
+    uid: u32,
+    part_id: &str,
+) -> Result<Option<(String, Vec<u8>)>, String> {
+    log::info!(
+        "FETCH PART: {}:{} {folder} UID {uid} part {part_id}",
+        config.host,
+        config.port
+    );
+
+    // part_id is a dotted numeric path like "1", "2", "1.2", "2.1.3". We send
+    // it raw inside an IMAP FETCH command, so guard against anything that could
+    // break out of the BODY[...] brackets (newline, space, ']', etc.) — even
+    // though a well-behaved caller passes a server-returned section string,
+    // defense in depth is cheap here.
+    if part_id.is_empty()
+        || part_id
+            .chars()
+            .any(|c| !c.is_ascii_digit() && c != '.')
+    {
+        return Err(format!(
+            "Invalid IMAP part_id {part_id:?}: must be a non-empty dotted numeric path \
+             (e.g. \"1\", \"1.2\", \"2.1.3\")"
+        ));
+    }
+
+    // 1. connect + greeting + login + SELECT — same pattern as
+    //    `fetch_parsed_message`. Single connection lifecycle for both FETCHes.
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+    raw_send_and_wait(&mut reader, build_login_cmd(config).as_bytes(), "a1").await?;
+    let _ = raw_send_and_wait(
+        &mut reader,
+        format!("a2 SELECT \"{folder}\"\r\n").as_bytes(),
+        "a2",
+    )
+    .await?;
+
+    // 2. FETCH the part's MIME headers. `.MIME` per RFC 3501 §6.4.5 returns
+    //    the MIME headers of the named part followed by a blank line — i.e.
+    //    Content-Type, Content-Transfer-Encoding, Content-Disposition,
+    //    Content-ID. This literal is small (typically <1KB) and is what lets
+    //    us decode the body literal in the second fetch.
+    let mime_cmd = format!("a3 UID FETCH {uid} (UID BODY.PEEK[{part_id}.MIME])\r\n");
+    log::debug!("C: a3 UID FETCH {uid} (UID BODY.PEEK[{part_id}.MIME])");
+    reader
+        .get_mut()
+        .write_all(mime_cmd.as_bytes())
+        .await
+        .map_err(|e| format!("write .MIME fetch: {e}"))?;
+    let mime_raws = raw_parse_fetch_responses(&mut reader, "a3").await?;
+    let mime_headers = match mime_raws.into_iter().next() {
+        Some(r) => r.body,
+        None => return Ok(None),
+    };
+
+    // 3. FETCH the part body. `BODY.PEEK[<part>]` (no suffix) on a leaf part
+    //    returns the transfer-encoded body bytes (base64 / QP / etc. as they
+    //    appear on the wire). For a multipart section this would return the
+    //    rendered multipart body, but `part_id` is always a leaf for
+    //    attachments — the section comes from `extract_attachments` which only
+    //    emits leaf part indices.
+    let body_cmd = format!("a4 UID FETCH {uid} (UID BODY.PEEK[{part_id}])\r\n");
+    log::debug!("C: a4 UID FETCH {uid} (UID BODY.PEEK[{part_id}])");
+    reader
+        .get_mut()
+        .write_all(body_cmd.as_bytes())
+        .await
+        .map_err(|e| format!("write body fetch: {e}"))?;
+    let body_raws = raw_parse_fetch_responses(&mut reader, "a4").await?;
+    let encoded_body = match body_raws.into_iter().next() {
+        Some(r) => r.body,
+        None => return Ok(None),
+    };
+
+    // 4. best-effort LOGOUT (ignore errors — connection may already be closed
+    //    by the server after the tagged OK).
+    let _ = reader.get_mut().write_all(b"a5 LOGOUT\r\n").await;
+
+    // 5. Pure decode: combine headers + blank-line separator + encoded body
+    //    into a single-part RFC5322 wrapper, let mail_parser decode the
+    //    transfer encoding.
+    let (mime_type, data) = decode_part_bytes(&mime_headers, &encoded_body)?;
+    Ok(Some((mime_type, data)))
+}
+
+/// Pure helper: given the raw bytes of a MIME part's headers (the
+/// `BODY.PEEK[<part>.MIME]` literal) and its transfer-encoded body bytes
+/// (the `BODY.PEEK[<part>]` literal), decode the body according to its
+/// Content-Transfer-Encoding and return `(mime_type, decoded_bytes)`.
+///
+/// Wraps the two literals into a single-part RFC5322 message and lets
+/// `mail_parser` handle the transfer-encoding decode (base64, quoted-printable,
+/// 7bit, 8bit, binary — all per RFC 2045). The `.MIME` literal from a compliant
+/// IMAP server already ends with the blank-line separator (`\r\n\r\n`); we add
+/// it defensively if a server trims it, so mail_parser sees a proper
+/// header/body boundary.
+///
+/// Pure (no I/O) so the decode logic is unit-testable without a socket — see
+/// the `tests::decode_part_bytes_*` cases below for base64 / quoted-printable /
+/// 7bit / binary / missing-separator coverage.
+fn decode_part_bytes(
+    mime_headers: &[u8],
+    encoded_body: &[u8],
+) -> Result<(String, Vec<u8>), String> {
+    let mut wrapped = Vec::with_capacity(mime_headers.len() + 4 + encoded_body.len());
+    wrapped.extend_from_slice(mime_headers);
+    // The .MIME literal from a compliant IMAP server already ends with the
+    // blank-line separator (`\r\n\r\n`). Be defensive: if it's missing
+    // (e.g. a server that strips trailing CRLF), append it so mail_parser
+    // sees a proper header/body boundary. Without this, the first body line
+    // would be parsed as a header and the body would come back empty/garbled.
+    if !ends_with_crlf_crlf(&wrapped) {
+        wrapped.extend_from_slice(b"\r\n\r\n");
+    }
+    wrapped.extend_from_slice(encoded_body);
+
+    let parser = MessageParser::default();
+    let message = parser
+        .parse(&wrapped)
+        .ok_or("Failed to parse wrapped MIME part (mail_parser returned None)")?;
+
     let part = message
         .parts
-        .get(target_part_idx)
-        .ok_or_else(|| format!("Part index {target_part_idx} out of range for UID {uid}"))?;
+        .first()
+        .ok_or("Wrapped MIME part has no root part")?;
+
     let mime_type = part
         .content_type()
         .map(|ct| {
@@ -1679,6 +1839,7 @@ pub async fn fetch_attachment_bytes(
             format!("{ctype}/{subtype}")
         })
         .unwrap_or_else(|| "application/octet-stream".to_string());
+
     let data = match &part.body {
         mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
             d.as_ref().to_vec()
@@ -1687,20 +1848,32 @@ pub async fn fetch_attachment_bytes(
         mail_parser::PartType::Html(h) => h.as_bytes().to_vec(),
         mail_parser::PartType::Message(m) => m.raw_message.as_ref().to_vec(),
         mail_parser::PartType::Multipart(_) => {
-            return Err(format!(
-                "Section {part_id} is a multipart container, not a leaf part (UID {uid})"
-            ));
+            return Err(
+                "Wrapped MIME part parsed as multipart — expected a leaf part \
+                 (headers + body). The server may have returned a multipart \
+                 container section; caller should pass a leaf part_id."
+                    .to_string(),
+            );
         }
     };
     Ok((mime_type, data))
 }
 
+/// Pure helper: true if `b` ends with `\r\n\r\n` (the MIME header/body blank
+/// separator). Used by `decode_part_bytes` to decide whether to insert a separator.
+fn ends_with_crlf_crlf(b: &[u8]) -> bool {
+    b.len() >= 4 && &b[b.len() - 4..] == b"\r\n\r\n"
+}
+
 /// Fetch all inline parts that carry a `Content-ID` (the parts referenced by
 /// `cid:` in an HTML body) for a message in ONE round-trip — returns each as
-/// `(content_id, mime_type, base64-bytes)`. Used by `sync_fetch_inline_images`
-/// so the reading pane can build a `cid -> data:` URL map without N full-message
-/// fetches. Fetches the full message once via `fetch_parsed_message` and walks
-/// the parsed MIME tree. Best-effort: parts that fail to extract are skipped.
+/// `(content_id, mime_type, decoded-bytes)`. Used by `sync_fetch_inline_images`
+/// so the reading pane can cache inline images as files + render via
+/// `convertFileSrc` without N full-message fetches. Fetches the full message
+/// once via `fetch_parsed_message` and walks the parsed MIME tree. Best-effort:
+/// parts that fail to extract are skipped. Returns the **decoded** bytes
+/// (mail_parser handles base64/quoted-printable); the caller writes them to a
+/// cache file — no base64 crosses IPC.
 pub async fn fetch_inline_cid_parts(
     config: &ImapConfig,
     folder: &str,
@@ -1737,23 +1910,24 @@ pub async fn fetch_inline_cid_parts(
             mail_parser::PartType::Message(m) => m.raw_message.as_ref().to_vec(),
             mail_parser::PartType::Multipart(_) => continue,
         };
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
         out.push(InlineCidPart {
             content_id,
             mime_type,
-            base64: b64,
+            bytes: data,
         });
     }
     Ok(out)
 }
 
-/// One inline `cid:` part returned by [`fetch_inline_cid_parts`].
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+/// One inline `cid:` part returned by [`fetch_inline_cid_parts`]. Internal type
+/// (not serialized over IPC) — the caller (`sync_fetch_inline_images_inner`)
+/// writes `bytes` to a cache file and returns a [`CachedInlineImage`] (file
+/// path) to the frontend.
+#[derive(Debug, Clone)]
 pub struct InlineCidPart {
     pub content_id: String,
     pub mime_type: String,
-    pub base64: String,
+    pub bytes: Vec<u8>,
 }
 
 pub async fn raw_fetch_diagnostic(
@@ -2682,9 +2856,11 @@ fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capabilities_from_strs, derive_snippet, extract_starttls_injection,
-        fetch_changed_flags_response_from_fetches, uid_set_raw, SYNC_FETCH_QUERY,
+        capabilities_from_strs, decode_part_bytes, derive_snippet, ends_with_crlf_crlf,
+        extract_starttls_injection, fetch_changed_flags_response_from_fetches, uid_set_raw,
+        SYNC_FETCH_QUERY,
     };
+    use base64::Engine;
 
     // ---------- derive_snippet (pure preview-text helper for fetch_bodies_batch) ----------
     //
@@ -2922,5 +3098,142 @@ mod tests {
         // this for not containing "OK", but the helper returns None rather than
         // panic. The caller's "OK" check catches it first.
         assert_eq!(extract_starttls_injection(b"garbage"), None);
+    }
+
+    // ---------- decode_part_bytes (pure transfer-encoding decode) ----------
+    //
+    // `fetch_attachment_bytes` was rewritten in Task C from "fetch full message
+    // + parse MIME tree + extract one part" to "BODY.PEEK[<part>] partial
+    // fetch" (Thunderbird's approach). The partial-fetch path gets back TWO
+    // literals from the IMAP server — the part's MIME headers (Content-Type,
+    // Content-Transfer-Encoding, etc.) and the transfer-encoded body bytes —
+    // and `decode_part_bytes` is the pure helper that combines + decodes them.
+    // The live IMAP round trip can't be unit-tested (needs a socket), so the
+    // regression coverage lives here on the pure decoder.
+    //
+    // Base64 + QP + 7bit + binary are the four Content-Transfer-Encodings the
+    // attachment path realistically sees (QP is common for text with non-ASCII,
+    // base64 for binary, 7bit/8bit for plain text). mail_parser handles all of
+    // them; these tests pin the behaviour so a future mail_parser version that
+    // breaks one of these paths doesn't silently regress attachment downloads.
+
+    #[test]
+    fn decode_part_bytes_base64_text() {
+        // "Hello, world!" base64-encoded; the .MIME literal from a real server
+        // ends in the blank-line separator (\r\n\r\n).
+        let headers = b"Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n";
+        let body = b"SGVsbG8sIHdvcmxkIQ==";
+        let (mime, data) = decode_part_bytes(headers, body).expect("base64 decode should succeed");
+        assert_eq!(mime, "text/plain");
+        assert_eq!(data, b"Hello, world!");
+    }
+
+    #[test]
+    fn decode_part_bytes_base64_binary_attachment() {
+        // Realistic attachment: application/pdf with base64 body that decodes
+        // to PDF magic bytes. Confirms the decoder handles non-text payloads.
+        let headers = b"Content-Type: application/pdf; name=\"doc.pdf\"\r\n\
+                        Content-Transfer-Encoding: base64\r\n\
+                        Content-Disposition: attachment; filename=\"doc.pdf\"\r\n\r\n";
+        let pdf_bytes = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(pdf_bytes);
+        let (mime, data) =
+            decode_part_bytes(headers, encoded.as_bytes()).expect("base64 binary decode");
+        assert_eq!(mime, "application/pdf");
+        assert_eq!(data, pdf_bytes);
+    }
+
+    #[test]
+    fn decode_part_bytes_quoted_printable_utf8() {
+        // "café" in quoted-printable: =C3=A9 is the UTF-8 for é.
+        let headers = b"Content-Type: text/plain; charset=utf-8\r\n\
+                        Content-Transfer-Encoding: quoted-printable\r\n\r\n";
+        let body = b"caf=C3=A9";
+        let (mime, data) =
+            decode_part_bytes(headers, body).expect("quoted-printable decode should succeed");
+        assert_eq!(mime, "text/plain");
+        assert_eq!(data, "café".as_bytes());
+    }
+
+    #[test]
+    fn decode_part_bytes_7bit_passthrough() {
+        // 7bit content has no transfer encoding to undo — bytes flow through
+        // unchanged. Confirms the decoder doesn't munge plain ASCII.
+        let headers = b"Content-Type: text/plain\r\nContent-Transfer-Encoding: 7bit\r\n\r\n";
+        let body = b"plain ascii text, no encoding";
+        let (mime, data) = decode_part_bytes(headers, body).expect("7bit decode");
+        assert_eq!(mime, "text/plain");
+        assert_eq!(data, body);
+    }
+
+    #[test]
+    fn decode_part_bytes_adds_separator_when_missing() {
+        // Defensive path: a server that strips the trailing blank-line separator
+        // would otherwise cause mail_parser to parse the first body line as a
+        // header. decode_part_bytes must insert \r\n\r\n between headers and body.
+        // Headers here end with just one \r\n (no blank line).
+        let headers = b"Content-Type: text/plain\r\nContent-Transfer-Encoding: base64";
+        let body = b"SGk="; // "Hi"
+        let (mime, data) = decode_part_bytes(headers, body).expect("separator insertion path");
+        assert_eq!(mime, "text/plain");
+        assert_eq!(data, b"Hi");
+    }
+
+    #[test]
+    fn decode_part_bytes_empty_body() {
+        // An empty attachment (zero-byte file) is a valid leaf part. The decode
+        // should succeed with empty bytes, not error — Phase A's cache layer
+        // depends on this to write a 0-byte cache file rather than fail.
+        let headers = b"Content-Type: application/octet-stream\r\n\
+                        Content-Transfer-Encoding: base64\r\n\r\n";
+        let body = b"";
+        let (mime, data) = decode_part_bytes(headers, body).expect("empty body decode");
+        assert_eq!(mime, "application/octet-stream");
+        assert!(data.is_empty(), "empty body should decode to empty bytes");
+    }
+
+    #[test]
+    fn decode_part_bytes_html_part() {
+        // An HTML text part rather than a binary attachment — the body type
+        // cycles through mail_parser's PartType::Html arm. Confirms the
+        // match-arm mapping is correct for non-text/plain, non-binary parts.
+        let headers = b"Content-Type: text/html; charset=utf-8\r\n\
+                        Content-Transfer-Encoding: quoted-printable\r\n\r\n";
+        // =3D is QP for =, so this is "<html>=</html>"
+        let body = b"<html>=3D</html>";
+        let (mime, data) = decode_part_bytes(headers, body).expect("html part decode");
+        assert_eq!(mime, "text/html");
+        assert_eq!(data, b"<html>=</html>");
+    }
+
+    #[test]
+    fn decode_part_bytes_invalid_base64_returns_error_or_clean_recovery() {
+        // Invalid base64 body — mail_parser may either return an error or
+        // produce partial/garbled bytes. We don't pin the exact behaviour,
+        // but we DO assert the function doesn't panic. Either Err or a
+        // best-effort Ok is acceptable; the caller logs and surfaces the
+        // failure up to the attachment-cache miss-path.
+        let headers = b"Content-Type: application/octet-stream\r\n\
+                        Content-Transfer-Encoding: base64\r\n\r\n";
+        let body = b"!!!not valid base64!!!";
+        let _ = decode_part_bytes(headers, body); // must not panic
+    }
+
+    // ---------- ends_with_crlf_crlf ----------
+
+    #[test]
+    fn ends_with_crlf_crlf_detects_separator() {
+        assert!(ends_with_crlf_crlf(b"\r\n\r\n"));
+        assert!(ends_with_crlf_crlf(b"foo\r\n\r\n"));
+        assert!(ends_with_crlf_crlf(b"Content-Type: x\r\n\r\n"));
+    }
+
+    #[test]
+    fn ends_with_crlf_crlf_rejects_short_or_wrong() {
+        assert!(!ends_with_crlf_crlf(b""));
+        assert!(!ends_with_crlf_crlf(b"\r\n"));
+        assert!(!ends_with_crlf_crlf(b"\r\n\r")); // truncated
+        assert!(!ends_with_crlf_crlf(b"\n\n")); // LF only, not CRLF
+        assert!(!ends_with_crlf_crlf(b"foo")); // no separator at all
     }
 }
