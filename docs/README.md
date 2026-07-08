@@ -23,6 +23,7 @@
 | Document | Description |
 |----------|-------------|
 | [mail-sync-engine-research.md](sync-engine/mail-sync-engine-research.md) | Research on IMAP/EAS sync approaches |
+| [attachment-caching-research.md](attachment-caching-research.md) | How Velo, Thunderbird & Mailspring store/cache attachments |
 | [sync-engine-design.md](sync-engine/sync-engine-design.md) | Sync engine specification (phases, architecture) |
 | [sync-engine-phase0.md](sync-engine/sync-engine-phase0.md) | Phase 0: baseline poll-based sync |
 | [sync-engine-phase1.md](sync-engine/sync-engine-phase1.md) | Phase 1: mutations + offline queue |

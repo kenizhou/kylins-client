@@ -35,8 +35,13 @@ import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
-import { cleanupAttachments, stageAttachmentBytes } from '@/services/composer/attachments';
+import {
+  cleanupAttachments,
+  stageAttachment,
+  stageAttachmentBytes,
+} from '@/services/composer/attachments';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { upsertContact } from '@/services/db/contacts';
 import { insertScheduledEmail } from '@/services/db/scheduledEmails';
 import { getDefaultSignature, signatureContextForComposerMode } from '@/services/db/signatures';
@@ -88,27 +93,6 @@ function htmlToPlainText(html: string): string {
 
 function buildMinimalEml(subject: string, body: string): string {
   return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
-}
-
-/**
- * Decode a base64 string into bytes. Uses `atob` (Tauri webview + jsdom) with
- * a Node `Buffer` fallback so it works in tests. Used only at the seed
- * boundary (forwarding original-message attachments) where the DB layer
- * already stores attachment bytes as base64; the decoded bytes are written
- * straight to disk via `stageAttachmentBytes`, so no base64 lingers in
- * composer state.
- */
-function base64ToBytes(base64: string): Uint8Array {
-  if (typeof atob === 'function') {
-    const bin = atob(base64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const B = (globalThis as any).Buffer;
-  if (B) return new Uint8Array(B.from(base64, 'base64'));
-  throw new Error('No base64 decoder available (atob nor Buffer found)');
 }
 
 function newAttachmentId(): string {
@@ -212,22 +196,22 @@ export function Composer({ windowed = false }: ComposerProps) {
           for (const row of rows) {
             if (cancelled) return;
             const partId = row.imapPartId || row.id;
+            // sync_fetch_attachment returns a cached file path (no base64
+            // over IPC). Copy the cached file into the draft outbox so the
+            // backend MIME builder streams it at send time.
             const fetched = await fetchAttachment(activeAccountId, messageId, partId);
             if (cancelled) return;
-            // DB stores fetched attachment bytes as base64; decode once and
-            // stage to disk so the composer never carries the payload.
-            const staged = await stageAttachmentBytes(
+            const destPath = await stageAttachment(
               stagingDraftId,
+              fetched.filePath,
               row.filename || 'attachment',
-              fetched.mimeType || row.mimeType || 'application/octet-stream',
-              base64ToBytes(fetched.base64),
             );
             addAttachment({
               id: newAttachmentId(),
-              filename: staged.filename,
-              mimeType: staged.mimeType,
+              filename: row.filename || 'attachment',
+              mimeType: fetched.mimeType || row.mimeType || 'application/octet-stream',
               size: row.size,
-              filePath: staged.filePath,
+              filePath: destPath,
             });
           }
         } catch (err) {
@@ -498,8 +482,13 @@ export function Composer({ windowed = false }: ComposerProps) {
       console.log('[send-fe] handleSend validation FAIL: no recipients');
       return;
     }
-    if (!state.classificationId) {
-      console.log('[send-fe] handleSend validation FAIL: no classificationId');
+    // Fall back to the default classification level so a fresh compose (where
+    // the user hasn't touched the ClassificationSelector) still sends. The
+    // selector already displays the default visually via currentLevel; this
+    // makes the send path agree with the display rather than silently bailing.
+    const effectiveClassificationId = state.classificationId ?? getDefaultLevel().id;
+    if (!effectiveClassificationId) {
+      console.log('[send-fe] handleSend validation FAIL: no classificationId and no default');
       return;
     }
     console.log('[send-fe] handleSend validation OK');
@@ -537,7 +526,7 @@ export function Composer({ windowed = false }: ComposerProps) {
               size: a.size,
             }))
           : undefined,
-      classificationId: state.classificationId,
+      classificationId: effectiveClassificationId,
       isEncrypted: state.isEncrypted,
       isSigned: state.isSigned,
       importance: state.importance,
@@ -641,6 +630,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     closeComposer,
     closeWindowIfWindowed,
     getFullHtml,
+    getDefaultLevel,
     messageSentSound,
     undoSendDuration,
     windowed,
@@ -778,17 +768,52 @@ export function Composer({ windowed = false }: ComposerProps) {
     function handleInsertLink() {
       setShowLinkDialog(true);
     }
+    // Attach button: open the OS file picker, then stage each picked file via
+    // the backend `stage_picked_attachment` command. The frontend fs scope
+    // only covers appData, so the copy of an arbitrary picked path must go
+    // through Rust (std::fs has full access). The resulting `filePath` lives
+    // on the ComposerAttachment and is streamed into the MIME builder at send.
+    async function handleAttachRequested() {
+      try {
+        const selected = await open({ multiple: true });
+        if (!selected) return;
+        const paths = Array.isArray(selected) ? selected : [selected];
+        if (paths.length === 0) return;
+        const stagingDraftId = useComposerStore.getState().stagingDraftId;
+        for (const path of paths) {
+          const filename = path.split(/[\\/]/).pop() ?? path;
+          const staged = await invoke<{ filePath: string; mimeType: string; size: number }>(
+            'stage_picked_attachment',
+            { srcPath: path, draftId: stagingDraftId, filename },
+          );
+          addAttachment({
+            id: newAttachmentId(),
+            filename,
+            mimeType: staged.mimeType,
+            size: staged.size,
+            filePath: staged.filePath,
+          });
+        }
+      } catch (err) {
+        console.error('[Composer] attach pick failed', err);
+        useToastStore
+          .getState()
+          .push(`Attach failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
 
     window.addEventListener('composer:send-requested', handleSendRequested);
     window.addEventListener('composer:schedule-requested', handleScheduleRequested);
     window.addEventListener('composer:insert-link', handleInsertLink);
+    window.addEventListener('composer:attach-requested', handleAttachRequested);
 
     return () => {
       window.removeEventListener('composer:send-requested', handleSendRequested);
       window.removeEventListener('composer:schedule-requested', handleScheduleRequested);
       window.removeEventListener('composer:insert-link', handleInsertLink);
+      window.removeEventListener('composer:attach-requested', handleAttachRequested);
     };
-  }, [handleSend, handleSendAndCloseWindow, windowed]);
+  }, [handleSend, handleSendAndCloseWindow, windowed, addAttachment]);
 
   const handleMoveRecipient = useCallback(
     (recipient: Recipient, from: 'to' | 'cc' | 'bcc' | 'replyTo', toField: MoveTarget) => {

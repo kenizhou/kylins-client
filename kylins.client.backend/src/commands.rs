@@ -8,6 +8,7 @@ use crate::mail::imap::types::{
 };
 use crate::mail::smtp::client as smtp_client;
 use crate::mail::smtp::types::{SmtpConfig, SmtpSendResult};
+use serde::Serialize;
 use tauri::Manager;
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_notification::NotificationExt as _;
@@ -71,6 +72,121 @@ pub fn write_binary_file(path: String, data_base64: String) -> Result<(), String
     )
     .map_err(|e| format!("invalid base64: {e}"))?;
     std::fs::write(&path, bytes).map_err(|e| format!("failed to write {path}: {e}"))
+}
+
+/// Result of staging a picked attachment: the absolute destination path the
+/// frontend should reference on the `ComposerAttachment`, plus the inferred
+/// mime type and the byte size, so the chip can render without a second IPC
+/// round-trip.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedAttachment {
+    pub file_path: String,
+    pub mime_type: String,
+    pub size: u64,
+}
+
+/// Stage a file picked via the dialog (`@tauri-apps/plugin-dialog` `open`)
+/// into the per-draft outbox under `<appData>/outbox-attachments/{draft_id}/`.
+///
+/// The dialog returns paths the frontend `@tauri-apps/plugin-fs` capability
+/// cannot read — the `fs:allow-appdata-read/write-recursive` scope in
+/// `capabilities/default.json` only covers `$APPDATA`, so an arbitrary source
+/// path picked from anywhere on disk cannot be `copyFile`'d by the frontend.
+/// This command does the copy via `std::fs` which has full filesystem access.
+///
+/// The filename is sanitized (path separators / reserved chars stripped)
+/// before joining onto the outbox so a hostile `filename` cannot escape the
+/// directory. Returns the absolute dest path, the mime type inferred from the
+/// extension, and the byte size from dest metadata.
+#[tauri::command]
+pub async fn stage_picked_attachment(
+    src_path: String,
+    draft_id: String,
+    filename: String,
+    app: tauri::AppHandle,
+) -> Result<StagedAttachment, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    let outbox = data_dir
+        .join("outbox-attachments")
+        .join(&draft_id);
+    std::fs::create_dir_all(&outbox)
+        .map_err(|e| format!("failed to create outbox dir {outbox:?}: {e}"))?;
+    let safe_name = sanitize_attachment_filename(&filename);
+    let dest = outbox.join(&safe_name);
+    std::fs::copy(&src_path, &dest)
+        .map_err(|e| format!("failed to copy attachment {src_path:?} -> {dest:?}: {e}"))?;
+    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    let mime_type = infer_mime_type(&safe_name);
+    Ok(StagedAttachment {
+        file_path: dest.to_string_lossy().into_owned(),
+        mime_type,
+        size,
+    })
+}
+
+/// Strip path separators and shell-dangerous characters from a user-supplied
+/// filename so it is safe to join onto the outbox/cache directory. Rejects `.`
+/// and `..` (which would otherwise traverse the directory tree) and any name
+/// that becomes empty after sanitization; both fall back to `attachment`.
+pub(crate) fn sanitize_attachment_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "attachment".to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// Map a filename extension to a mime type. Covers the common document,
+/// image, archive, and media types a user is likely to attach; unknown
+/// extensions fall back to `application/octet-stream`.
+fn infer_mime_type(filename: &str) -> String {
+    let lower = filename.to_ascii_lowercase();
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    match ext {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "zip" => "application/zip",
+        "7z" => "application/x-7z-compressed",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "html" | "htm" => "text/html",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "eml" => "message/rfc822",
+        _ => "application/octet-stream",
+    }
+    .to_owned()
 }
 
 // ---------- Startup / notification / storage commands ----------
@@ -176,6 +292,28 @@ pub fn clear_cache(app: tauri::AppHandle) -> Result<(), String> {
             std::fs::remove_file(&path).map_err(|e| format!("failed to remove {path:?}: {e}"))?;
         }
     }
+    Ok(())
+}
+
+/// Copy a cached attachment file to a user-chosen save location. The frontend
+/// `@tauri-apps/plugin-fs` scope only covers appData; the cache lives under
+/// appData but the save destination is arbitrary (the user's Downloads, a USB
+/// stick, etc.), so the copy goes through `std::fs` which has full access.
+/// This is the receive-path counterpart to `stage_picked_attachment` (send
+/// path) — both exist because the frontend fs plugin can't bridge appData →
+/// arbitrary-disk.
+#[tauri::command]
+pub fn copy_cached_attachment(src_path: String, dest_path: String) -> Result<(), String> {
+    let src = std::path::Path::new(&src_path);
+    if !src.exists() {
+        return Err(format!("source file not found: {src_path}"));
+    }
+    if let Some(parent) = std::path::Path::new(&dest_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create dest dir {parent:?}: {e}"))?;
+    }
+    std::fs::copy(src, &dest_path)
+        .map_err(|e| format!("failed to copy {src_path} -> {dest_path}: {e}"))?;
     Ok(())
 }
 

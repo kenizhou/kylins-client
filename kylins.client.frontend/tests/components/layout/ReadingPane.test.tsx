@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, waitFor, act, screen } from '@testing-library/react';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { ReadingPane } from '../../../src/components/layout/ReadingPane';
 import { useViewStore } from '../../../src/features/view/viewStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
@@ -24,12 +25,10 @@ vi.mock('../../../src/features/viewer/RsvpCard', () => ({
   RsvpCard: ({ event }: { event: { summary?: string } }) => (
     <div data-testid="rsvp-card">{event.summary ?? 'Meeting request'}</div>
   ),
-  base64ToBytes: (base64: string) => {
-    const bin = atob(base64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes;
-  },
+}));
+
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  readTextFile: vi.fn(),
 }));
 
 vi.mock('../../../src/services/db/attachments', () => ({
@@ -123,9 +122,12 @@ describe('ReadingPane', () => {
       },
     ]);
     vi.mocked(fetchAttachment).mockResolvedValue({
+      filePath: '/appdata/attachment-cache/acc-1/ms/msg-1/invite.ics',
+      filename: 'invite.ics',
       mimeType: 'text/calendar; method=REQUEST',
-      base64: btoa(ics),
+      size: ics.length,
     });
+    vi.mocked(readTextFile).mockResolvedValue(ics);
 
     render(<ReadingPane />);
     act(() => {

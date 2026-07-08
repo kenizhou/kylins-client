@@ -4,9 +4,9 @@
 // (resolved by ReadingPane's cidMap → EmailRenderer).
 //
 // Metadata comes from `db_get_attachments` (persisted by the body-fetch path).
-// Bytes come from `sync_fetch_attachment` (raw IMAP `BODY.PEEK[]` + part
-// extract) and are written via the `write_binary_file` command (the app does
-// not bundle the @tauri-apps/plugin-fs JS package).
+// The download path uses `sync_fetch_attachment` (returns a cached file path,
+// no base64 over IPC) → `copy_cached_attachment` (std::fs copy to the
+// user-chosen save location, since plugin-fs can't write outside appData).
 
 import { useEffect, useState } from 'react';
 import { Paperclip } from '@phosphor-icons/react';
@@ -71,8 +71,8 @@ export function AttachmentList({ accountId, messageId, bodyHtml }: AttachmentLis
         filters: [{ name: 'All Files', extensions: ['*'] }],
       });
       if (!path) return;
-      const { base64 } = await fetchAttachment(accountId, messageId, att.imapPartId);
-      await invoke('write_binary_file', { path, dataBase64: base64 });
+      const { filePath } = await fetchAttachment(accountId, messageId, att.imapPartId);
+      await invoke('copy_cached_attachment', { srcPath: filePath, destPath: path });
     } catch (e) {
       console.error('[attachments] download failed', e);
     } finally {

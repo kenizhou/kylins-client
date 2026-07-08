@@ -14,6 +14,7 @@
 // `<appData>/outbox-attachments/{stagingDraftId}/`. See `buildSendDraft`.
 
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import type { DraftInput } from './drafts';
 import { buildSendDraft } from './buildSendDraft';
 import { newDraftId } from './attachments';
@@ -132,18 +133,21 @@ export async function sendEmail(
     }
   }
 
-  setProgress({ active: false });
+  // Leave sendProgress ACTIVE — the invoke resolving only means "queued", not
+  // "sent". The SMTP/EAS transport fires asynchronously in the backend replay
+  // worker; the `sync:send-result` Tauri event (emitted from send_op after
+  // src.send) clears the spinner + surfaces the Sent/Failed toast. Pre-send
+  // failures (buildSendDraft throw / invoke reject, handled above) still clear
+  // sendProgress, since nothing is in flight in those cases.
   // Carry the accountId so listeners can nudge that account's sync (the
   // appended Sent copy appears without waiting for the next poll round).
-  console.log(
-    '[send-fe] sendEmail dispatching SEND_COMPLETE_EVENT accountId=',
-    accountId,
-    'eventName=',
-    SEND_COMPLETE_EVENT,
-    'windowLabel=',
-    typeof window !== 'undefined' ? window.location.search : 'no-window',
-  );
-  window.dispatchEvent(new CustomEvent(SEND_COMPLETE_EVENT, { detail: { accountId } }));
+  // Emit a TAURI app-level event (not a window-scoped CustomEvent) so the
+  // listener in useSyncEvents — which lives in the MAIN window — hears it
+  // even when the send originated from the compose popout (which closes
+  // immediately on success). Best-effort fire-and-forget; the next poll round
+  // still picks up the Sent copy if this fails.
+  console.log('[send-fe] sendEmail emitting SEND_COMPLETE_EVENT accountId=', accountId);
+  void emit(SEND_COMPLETE_EVENT, { accountId }).catch(() => {});
   console.log('[send-fe] sendEmail RETURN success (queued for send)');
   return { success: true, message: 'Queued for send' };
 }

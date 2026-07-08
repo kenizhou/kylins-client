@@ -17,8 +17,9 @@ import type { DraftInput } from '../../../src/services/composer/drafts';
 
 // --- Mocks ---------------------------------------------------------------
 
-const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+const { mockInvoke, mockEmit } = vi.hoisted(() => ({ mockInvoke: vi.fn(), mockEmit: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
+vi.mock('@tauri-apps/api/event', () => ({ emit: mockEmit }));
 
 vi.mock('@tauri-apps/api/path', () => ({
   appDataDir: async () => '/appdata',
@@ -44,6 +45,8 @@ vi.mock('@/stores/accountStore', () => ({
 beforeEach(() => {
   mockInvoke.mockReset();
   mockInvoke.mockResolvedValue(undefined);
+  mockEmit.mockReset();
+  mockEmit.mockResolvedValue(undefined);
 });
 
 // --- Fixtures ------------------------------------------------------------
@@ -112,19 +115,9 @@ describe('composer/send', () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it('dispatches SEND_COMPLETE_EVENT on success as a CustomEvent with accountId', async () => {
-    const seen: Array<{ type: string; detail: unknown }> = [];
-    const handler = (e: Event) => {
-      const ce = e as CustomEvent<{ accountId?: string }>;
-      seen.push({ type: e.type, detail: ce.detail });
-    };
-    window.addEventListener(SEND_COMPLETE_EVENT, handler);
-    try {
-      await sendEmail('acc-1', baseInput, 'draft-1');
-      expect(seen).toEqual([{ type: SEND_COMPLETE_EVENT, detail: { accountId: 'acc-1' } }]);
-    } finally {
-      window.removeEventListener(SEND_COMPLETE_EVENT, handler);
-    }
+  it('emits SEND_COMPLETE_EVENT on success with accountId (Tauri app-level event)', async () => {
+    await sendEmail('acc-1', baseInput, 'draft-1');
+    expect(mockEmit).toHaveBeenCalledWith(SEND_COMPLETE_EVENT, { accountId: 'acc-1' });
   });
 
   it('synthesizes a draftId when none is passed (outbox folder still stable)', async () => {

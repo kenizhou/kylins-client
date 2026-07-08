@@ -55,6 +55,12 @@ pub struct MockSource {
     /// `send_op_append_failure_does_not_fail_op` test to verify the best-effort
     /// invariant: an append failure must NOT fail the op (send already succeeded).
     fail_append: bool,
+    /// When true, `send` returns `Err(SourceError::Other(...))` on every call.
+    /// Used by the `sync:send-result` failure-emission test to drive a
+    /// transport-level failure through `send_op` and assert the sink captures
+    /// `success=false`. Mirrors `fail_append`'s shape so the two failure paths
+    /// (append is best-effort, send is load-bearing) stay symmetric in the mock.
+    fail_send: bool,
 }
 
 impl MockSource {
@@ -65,6 +71,7 @@ impl MockSource {
             pending: Arc::new(Mutex::new(messages)),
             calls: Arc::new(Mutex::new(vec![])),
             fail_append: false,
+            fail_send: false,
         }
     }
 
@@ -78,6 +85,16 @@ impl MockSource {
     /// exercised. Send + other methods are unaffected.
     pub fn with_fail_append(mut self, fail: bool) -> Self {
         self.fail_append = fail;
+        self
+    }
+
+    /// Force `send` to return `Err(SourceError::Other(...))` on every call so
+    /// `send_op`'s failure-emission path (sync:send-result success=false) can
+    /// be exercised without spinning up a real SMTP/EAS transport. Other methods
+    /// (append, etc.) are unaffected — they still record + succeed, so the
+    /// failure is scoped to the send transport only.
+    pub fn with_fail_send(mut self, fail: bool) -> Self {
+        self.fail_send = fail;
         self
     }
 
@@ -205,6 +222,10 @@ impl MailSource for MockSource {
         self.calls.lock().unwrap().push(RecordedCall::Send {
             raw_bytes: raw_mime.to_vec(),
         });
-        Ok(())
+        if self.fail_send {
+            Err(SourceError::Other("mock send failure".into()))
+        } else {
+            Ok(())
+        }
     }
 }
