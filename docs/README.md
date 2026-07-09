@@ -6,7 +6,8 @@
 |----------|-------------|
 | [architecture.md](architecture.md) | System architecture overview |
 | [comparison-report.md](comparison-report.md) | Comparison with Velo, Mailspring, Thunderbird |
-| [design/](design/) | Visual design and main page design specs |
+| [design/AI_Security_Native_Architecture.md](design/AI_Security_Native_Architecture.md) | **Canonical** AI + security native full-stack plan (P0–P6) |
+| [design/](design/) | AI native research, memory, composer AI, competitor studies |
 | [specs/](specs/) | Detailed technical specifications |
 
 ## Frontend
