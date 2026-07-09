@@ -31,7 +31,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http://localhost:11434 http://localhost:1234 http://127.0.0.1:11434 http://127.0.0.1:1234; img-src 'self' data: blob: https:; font-src 'self' data:; frame-src 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http://localhost:11434 http://localhost:1234 http://127.0.0.1:11434 http://127.0.0.1:1234; img-src 'self' data: blob: https: asset: http://asset.localhost; font-src 'self' data:; frame-src 'self'",
+      "assetProtocol": {
+        "scope": [
+          "$APPDATA/attachment-cache/**",
+          "$APPDATA/outbox-attachments/**"
+        ]
+      }
     },
     "trayIcon": null
   },

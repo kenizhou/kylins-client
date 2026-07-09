@@ -182,9 +182,10 @@ impl EventSink for TauriSink {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum SyncOp {
     SyncNow,
+    ReplayNow,
     Shutdown,
 }
 
@@ -331,10 +332,22 @@ impl SyncEngine {
             "[send] sync_account_now ENTER account_id={account_id} (ensure_worker + nudge)"
         );
         self.ensure_worker(account_id.clone()).await;
-        self.nudge_worker(&account_id).await;
+        self.nudge_worker(&account_id, SyncOp::SyncNow).await;
     }
 
-    /// Send a `SyncNow` to the account's worker if one is running. Does NOT
+    /// Ensure a worker exists, then nudge it to process queued mutations ONLY
+    /// (replay, no folder sync, no `sync:status` flash). Used by
+    /// `sync_apply_mutation` so markRead / send ops don't trigger a full folder
+    /// sweep + StatusBar "syncing" indicator when the user selects a message.
+    pub async fn sync_replay_now(self: &Arc<Self>, account_id: String) {
+        log::info!(
+            "[send] sync_replay_now ENTER account_id={account_id} (ensure_worker + nudge ReplayNow)"
+        );
+        self.ensure_worker(account_id.clone()).await;
+        self.nudge_worker(&account_id, SyncOp::ReplayNow).await;
+    }
+
+    /// Send a `SyncOp` to the account's worker if one is running. Does NOT
     /// spawn a worker (unlike [`sync_account_now`]) — used by the IDLE-watcher
     /// task, which already lives inside the worker it wants to nudge, so
     /// re-running `ensure_worker` would be both redundant and (more
@@ -343,7 +356,7 @@ impl SyncEngine {
     /// the worker-loop future (which contains THIS watcher task) to be `Send`,
     /// creating a cycle. This helper breaks the cycle by only touching the
     /// workers map (cloning the sender out of the lock scope before awaiting).
-    async fn nudge_worker(self: &Arc<Self>, account_id: &str) {
+    async fn nudge_worker(self: &Arc<Self>, account_id: &str, op: SyncOp) {
         let tx = {
             let ws = self.workers.lock().await;
             ws.get(account_id).map(|w| w.tx.clone())
@@ -351,9 +364,9 @@ impl SyncEngine {
         match tx {
             Some(tx) => {
                 log::info!(
-                    "[send] nudge_worker account_id={account_id} sending SyncOp::SyncNow"
+                    "[send] nudge_worker account_id={account_id} sending {op:?}"
                 );
-                if tx.send(SyncOp::SyncNow).await.is_err() {
+                if tx.send(op).await.is_err() {
                     log::warn!(
                         "[send] nudge_worker account_id={account_id} mpsc send FAILED (worker gone?)"
                     );
@@ -576,7 +589,7 @@ impl SyncEngine {
                                         // already running — the watcher IS part of it —
                                         // and `sync_account_now`'s `ensure_worker` would
                                         // create a Send-cycle through `spawn_worker`.
-                                        engine2.nudge_worker(&aid2).await;
+                                        engine2.nudge_worker(&aid2, SyncOp::SyncNow).await;
                                     }
                                     Err(e) => {
                                         log::warn!(
@@ -646,6 +659,25 @@ impl SyncEngine {
                                     "[send] worker {aid} received SyncNow → run_sync_round (run_replay_round runs FIRST at the top — queued Sends drain regardless of folder-sync health; then the receive round)"
                                 );
                                 let _ = run_sync_round(&engine, &aid, &provider).await;
+                            }
+                            Some(SyncOp::ReplayNow) => {
+                                log::info!(
+                                    "[send] worker {aid} received ReplayNow → run_replay_round ONLY (no folder sync, no sync:status)"
+                                );
+                                match crate::sync_engine::source_for_account(
+                                    &engine.pool,
+                                    &aid,
+                                    &engine.session_manager,
+                                )
+                                .await
+                                {
+                                    Ok(src) => {
+                                        run_replay_round(&engine, &aid, src.as_ref()).await;
+                                    }
+                                    Err(e) => log::warn!(
+                                        "[sync] {aid} ReplayNow: source resolution failed: {e}"
+                                    ),
+                                }
                             }
                             Some(SyncOp::Shutdown) => {
                                 log::info!("[sync] {aid} worker received Shutdown; exiting");

@@ -16,7 +16,7 @@ import { RecipientField } from '@/features/composer/RecipientField';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { sendEmail } from '@/services/composer/send';
 import { stageAttachment, newDraftId } from '@/services/composer/attachments';
-import { getAttachments, fetchAttachment, fetchInlineImages } from '@/services/db/attachments';
+import { getAttachments, fetchAttachment, fetchInlineImages, cachedImageToDataUrl } from '@/services/db/attachments';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { ComposerAttachment } from '@/stores/composerStore';
@@ -296,9 +296,13 @@ export function InlineReply({
       try {
         const parts = await fetchInlineImages(accountId_, messageId);
         if (cancelled || parts.length === 0) return;
-        const cidMap = new Map(
-          parts.map((p) => [p.contentId, `data:${p.mimeType};base64,${p.base64}`]),
-        );
+        // Forward path: the send pipeline's `extractInlineImages` matches
+        // `data:` URLs to re-attach inline images as CID parts, so we read
+        // each cached file into a data URL here (not convertFileSrc).
+        const cidMap = new Map<string, string>();
+        for (const p of parts) {
+          cidMap.set(p.contentId, await cachedImageToDataUrl(p.filePath, p.mimeType));
+        }
         const html = applySignatureAboveQuote(buildForwardQuote(message, cidMap), signature);
         editor?.commands.setContent(html, { emitUpdate: false });
       } catch (err) {

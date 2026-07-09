@@ -60,7 +60,7 @@ pub async fn sync_request_bodies(
     account_id: String,
     message_ids: Vec<String>,
 ) -> Result<(), String> {
-    log::info!("[sync] sync_request_bodies called: account={}, ids={}", account_id, message_ids.len());
+    log::info!("[sync] sync_request_bodies called: account={}, ids=[{}] ({})", account_id, message_ids.join(","), message_ids.len());
     request_bodies_inner(engine.inner().clone(), pool.inner(), &account_id, &message_ids).await
 }
 
@@ -362,8 +362,9 @@ pub async fn sync_fetch_attachment_inner(
         }
     }
 
-    // 3. Cache miss: fetch the part from IMAP (current path: full message
-    //    fetch + MIME parse — Phase C will switch to BODY.PEEK[part]).
+    // 3. Cache miss: fetch the part from IMAP via BODY.PEEK[<part_id>] partial
+    //    fetch (Task C — Phase A's full-message fetch was replaced). Returns
+    //    the decoded attachment bytes + mime type.
     let (folder, uid, config) =
         resolve_imap_for_message(&engine, pool, account_id, message_id).await?;
     let (mime_type, data) =
@@ -423,30 +424,167 @@ pub async fn sync_fetch_attachment(
         .await
 }
 
-/// Testable core of [`sync_fetch_inline_images`]. Fetches the full message
-/// ONCE and returns every `Content-ID`-bearing inline part as
-/// `(content_id, mime_type, base64)` so the frontend can build a
-/// `cid -> data:` URL map in a single round-trip (not one fetch per image).
+/// Testable core of [`sync_fetch_inline_images`]. Cache-check → fetch-on-miss
+/// → return a list of `CachedInlineImage` (file paths, no base64 over IPC).
+///
+/// **Cache check:** queries `attachments` for inline CID parts
+/// (`is_inline = 1 AND content_id IS NOT NULL`). If every part has a
+/// `local_path` whose file exists (and is within the cache root), returns the
+/// paths immediately — no IMAP fetch. This is the "second open" fast path.
+///
+/// **Cache miss (any part uncached, or no attachment rows yet):** fetches the
+/// full message once via `fetch_inline_cid_parts` (raw IMAP `BODY.PEEK[]`),
+/// writes each CID part's decoded bytes to a cache file under
+/// `<appData>/attachment-cache/`, records `local_path` in the `attachments`
+/// row (so the next open is a cache hit), and returns the paths.
+///
+/// Matching: IMAP-fetched parts are matched to `attachments` rows by
+/// `content_id`. A part with no DB row (body not yet fetched) still gets a
+/// cache file (synthesized id) so the image renders, but its `local_path` can't
+/// be recorded — the next open re-fetches until the body-fetch path populates
+/// the row.
 pub async fn sync_fetch_inline_images_inner(
     engine: Arc<SyncEngine>,
     pool: &SqlitePool,
     account_id: &str,
     message_id: &str,
-) -> Result<Vec<crate::mail::imap::client::InlineCidPart>, String> {
+) -> Result<Vec<crate::attachment_cache::CachedInlineImage>, String> {
+    use crate::attachment_cache as cache;
+    use std::collections::HashMap;
+
+    let cache_root = engine.data_dir.join("attachment-cache");
+
+    // 1. Query DB for inline CID parts (is_inline=1, content_id NOT NULL).
+    let db_parts = attachments::list_inline_cid_parts(pool, account_id, message_id)
+        .await
+        .map_err(|e| format!("list inline parts for {message_id}: {e}"))?;
+
+    // 2. Cache check: every part has local_path set AND file exists AND within
+    //    cache root. If ALL parts are cached (and there's at least one), return
+    //    immediately — no IMAP fetch. This is the second-open fast path.
+    let mut cached: Vec<cache::CachedInlineImage> = Vec::new();
+    let mut all_cached = !db_parts.is_empty();
+    for part in &db_parts {
+        if let Some(ref lp) = part.local_path {
+            let path = std::path::Path::new(lp);
+            if path.exists() && cache::path_is_within_cache(path, &cache_root) {
+                cached.push(cache::CachedInlineImage {
+                    content_id: part.content_id.clone(),
+                    file_path: lp.clone(),
+                    mime_type: part
+                        .mime_type
+                        .clone()
+                        .unwrap_or_else(|| "application/octet-stream".to_string()),
+                    size: part.size as u64,
+                });
+                continue;
+            }
+        }
+        all_cached = false;
+    }
+    if all_cached {
+        return Ok(cached);
+    }
+
+    // 3. Cache miss → IMAP fetch. Fetches the full message once and extracts
+    //    all CID parts with their decoded bytes (no base64).
     let (folder, uid, config) =
         resolve_imap_for_message(&engine, pool, account_id, message_id).await?;
-    crate::mail::imap::client::fetch_inline_cid_parts(&config, &folder, uid).await
+    let fetched =
+        crate::mail::imap::client::fetch_inline_cid_parts(&config, &folder, uid).await?;
+
+    // Build content_id → db_part lookup for cache-path construction + DB update.
+    let db_by_cid: HashMap<&str, &attachments::InlineCidPartRow> =
+        db_parts.iter().map(|p| (p.content_id.as_str(), p)).collect();
+
+    let mut out: Vec<cache::CachedInlineImage> = Vec::with_capacity(fetched.len());
+    for f in fetched {
+        // Match to DB row by content_id for the cache filename + local_path
+        // update. A part with no row still gets cached to a synthesized path.
+        let (attachment_id, filename) = match db_by_cid.get(f.content_id.as_str()) {
+            Some(row) => (
+                row.id.clone(),
+                row.filename
+                    .clone()
+                    .unwrap_or_else(|| derive_inline_filename(&f.mime_type)),
+            ),
+            None => {
+                log::warn!(
+                    "[inline-cache] no attachments row for {}/{}/cid={}: \
+                     file cached but local_path not recorded",
+                    account_id,
+                    message_id,
+                    f.content_id
+                );
+                (
+                    format!("{account_id}_{message_id}_inline_{}", f.content_id),
+                    derive_inline_filename(&f.mime_type),
+                )
+            }
+        };
+
+        let file_path = cache::cache_file_path(
+            &cache_root,
+            account_id,
+            message_id,
+            &attachment_id,
+            &filename,
+        );
+        let written = cache::write_cache_file(&file_path, &f.bytes)?;
+        let path_str = file_path.to_string_lossy().into_owned();
+
+        // Record local_path so the next open is a cache hit. Only when we have
+        // a DB row to UPDATE (content_id matched).
+        if db_by_cid.contains_key(f.content_id.as_str()) {
+            if let Err(e) =
+                attachments::set_cached_path(pool, &attachment_id, &path_str, written as i64).await
+            {
+                log::warn!(
+                    "[inline-cache] failed to record local_path for {attachment_id}: {e}"
+                );
+            }
+        }
+
+        out.push(cache::CachedInlineImage {
+            content_id: f.content_id,
+            file_path: path_str,
+            mime_type: f.mime_type,
+            size: written,
+        });
+    }
+
+    Ok(out)
 }
 
-/// Fetch every inline `cid:` image for a message in one round-trip (so the
-/// reading pane can render inline images without N full-message fetches).
+/// Map a MIME type to a fallback filename for an inline image with no DB
+/// `filename` (e.g., a CID part whose Content-Disposition had no filename).
+/// Keeps the cache path debuggable (`inline-image.png` vs `inline-image.bin`).
+fn derive_inline_filename(mime_type: &str) -> String {
+    let ext = match mime_type {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        "image/x-icon" | "image/vnd.microsoft.icon" => "ico",
+        "image/tiff" => "tiff",
+        _ => "bin",
+    };
+    format!("inline-image.{ext}")
+}
+
+/// Fetch every inline `cid:` image for a message. Cache-check → fetch-on-miss
+/// → return file paths (no base64). First open fetches + caches; subsequent
+/// opens return cached paths immediately (no network). The frontend builds a
+/// `cid → convertFileSrc(path)` map for rendering.
 #[tauri::command]
 pub async fn sync_fetch_inline_images(
     engine: State<'_, Arc<SyncEngine>>,
     pool: State<'_, SqlitePool>,
     account_id: String,
     message_id: String,
-) -> Result<Vec<crate::mail::imap::client::InlineCidPart>, String> {
+) -> Result<Vec<crate::attachment_cache::CachedInlineImage>, String> {
     sync_fetch_inline_images_inner(engine.inner().clone(), pool.inner(), &account_id, &message_id)
         .await
 }
@@ -501,6 +639,28 @@ pub async fn apply_mutation_inner(
     // 1. Optimistic local write (single transaction; rolls back on error).
     let affected = op.local_writes(pool, &account_id).await?;
 
+    // 1b. Best-effort filesystem cleanup of per-message attachment cache dirs
+    //     for Delete. The DB rows cascade-delete (FK ON DELETE CASCADE); the
+    //     cache files on disk do NOT — without this the bytes leak every time
+    //     a message is deleted. Runs AFTER `local_writes` returns Ok so the
+    //     transaction is committed; cleanup failure does NOT fail the mutation
+    //     (the user's intent — delete the message — has already taken effect
+    //     locally). `ErrorKind::NotFound` is silently OK: the message may have
+    //     had no cached attachments (header-only fetch, never opened).
+    if let MutationOp::Delete { message_ids, .. } = &op {
+        let cache_root = engine.data_dir.join("attachment-cache");
+        for mid in message_ids {
+            let dir = crate::attachment_cache::message_cache_dir(&cache_root, &account_id, mid);
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!(
+                        "[attachment-cache] failed to clean up cache dir for {mid}: {e}"
+                    );
+                }
+            }
+        }
+    }
+
     // 2. Enqueue one row per affected message. Send has no message_id → one row
     //    keyed by a generated "send:{uuid}".
     let ids: Vec<String> = if affected.is_empty() {
@@ -516,16 +676,39 @@ pub async fn apply_mutation_inner(
         queue::enqueue(pool, &account_id, op.op_type(), rid, &params).await?;
     }
 
-    // 3. Nudge the worker to replay (best-effort, non-blocking). The worker
-    //    drains the queue in Task 4; for now this just kicks a folder sync.
+    // 3. Nudge the worker to replay ONLY (best-effort, non-blocking). Mutations
+    //    (markRead, send, etc.) don't need a full folder sync — just the replay
+    //    worker to process the queued op. This avoids a folder sweep + StatusBar
+    //    "syncing" flash when the user selects an unread message (markRead).
     log::info!(
-        "[send] nudging worker account_id={account_id} op_type={op_type} (SyncNow → run_sync_round)"
+        "[send] nudging worker account_id={account_id} op_type={op_type} (ReplayNow → run_replay_round ONLY)"
     );
-    engine.sync_account_now(account_id.clone()).await;
+    engine.sync_replay_now(account_id.clone()).await;
     log::info!(
         "[send] apply_mutation_inner EXIT account_id={account_id} op_type={op_type}"
     );
     Ok(())
+}
+
+/// Walk the attachment cache directory and remove orphan entries (message
+/// dirs whose `messages` row is gone), plus NULL out `attachments.local_path`
+/// values that point at files no longer on disk. Returns [`ReconcileStats`]
+/// describing what was cleaned up. Safe to call repeatedly — idempotent.
+///
+/// Intended as a startup backstop (Task D2 will wire it on app launch) and
+/// as the engine behind a future "Reclaim cache space" UI action. Not on any
+/// hot path — the reconcile pass is sync filesystem I/O + one indexed
+/// `messages` SELECT per on-disk message dir.
+///
+/// Delegates to [`crate::attachment_cache::reconcile_cache`] with
+/// `<data_dir>/attachment-cache/` as the cache root.
+#[tauri::command]
+pub async fn reconcile_attachment_cache(
+    engine: State<'_, Arc<SyncEngine>>,
+    pool: State<'_, SqlitePool>,
+) -> Result<crate::attachment_cache::ReconcileStats, String> {
+    let cache_root = engine.data_dir.join("attachment-cache");
+    crate::attachment_cache::reconcile_cache(&cache_root, pool.inner()).await
 }
 
 #[cfg(test)]
@@ -736,6 +919,117 @@ mod tests {
         .unwrap();
         assert_eq!(rid, mid);
         assert_eq!(op_type, "delete");
+    }
+
+    /// Task B1: deleting a message removes its per-message attachment cache
+    /// dir from disk (best-effort). The DB rows cascade-delete via FK; the
+    /// cache files on disk do NOT — without this cleanup the bytes would leak
+    /// every time a message is deleted. Verifies the exact scenario from the
+    /// B1 spec: a cache file exists on disk before the Delete op, and is gone
+    /// after.
+    ///
+    /// Uses [`SyncEngine::with_data_dir`] so the engine's `data_dir` matches
+    /// the tempdir the test seeds the cache under (`SyncEngine::new` defaults
+    /// `data_dir` to `std::env::temp_dir()`, which would NOT match and the
+    /// cleanup would target the wrong path — passing the test vacuously while
+    /// leaving the real tempdir cache intact).
+    #[tokio::test]
+    async fn apply_mutation_delete_cleans_up_attachment_cache_dir() {
+        use crate::attachment_cache::{cache_file_path, message_cache_dir};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_thread_with_message(&pool, "acct", "thr", "INBOX", 5).await;
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            Arc::new(NullSink),
+            tmp.path().to_path_buf(),
+        );
+
+        let mid = msg_id("acct", "INBOX", 5);
+        // Seed the per-message cache dir exactly as `sync_fetch_attachment`
+        // would: `<data_dir>/attachment-cache/{account}/{shard}/{mid}/...`.
+        let cache_root = tmp.path().join("attachment-cache");
+        let msg_cache_dir = message_cache_dir(&cache_root, "acct", &mid);
+        let cached_file = cache_file_path(
+            &cache_root,
+            "acct",
+            &mid,
+            "acct_imap-acct-INBOX-5_2",
+            "report.pdf",
+        );
+        std::fs::create_dir_all(&msg_cache_dir).unwrap();
+        std::fs::write(&cached_file, b"pretend-pdf-bytes").unwrap();
+        assert!(cached_file.exists(), "precondition: cached file exists");
+        assert!(msg_cache_dir.exists(), "precondition: cache dir exists");
+
+        let op = MutationOp::Delete {
+            message_ids: vec![mid.clone()],
+            folder_path: "INBOX".into(),
+            uids: vec![5],
+        };
+        apply_mutation_inner(engine, &pool, "acct".into(), op)
+            .await
+            .unwrap();
+
+        // Cache dir + file are gone (best-effort cleanup ran).
+        assert!(
+            !msg_cache_dir.exists(),
+            "per-message attachment cache dir must be removed on delete"
+        );
+        assert!(
+            !cached_file.exists(),
+            "cached attachment file must be removed on delete"
+        );
+
+        // Message row is gone too (cascade-delete contract from the original
+        // delete test — we re-assert here so a regression in either the FS
+        // cleanup OR the DB delete surfaces in this test).
+        let (mn,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(mn, 0);
+    }
+
+    /// Task B1 negative case: deleting a message whose attachment cache dir
+    /// does NOT exist (header-only fetch, never opened) must not fail the
+    /// mutation. The `ErrorKind::NotFound` branch is silently OK. Pins
+    /// acceptance criterion #2.
+    #[tokio::test]
+    async fn apply_mutation_delete_succeeds_when_cache_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_thread_with_message(&pool, "acct", "thr", "INBOX", 7).await;
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            Arc::new(NullSink),
+            tmp.path().to_path_buf(),
+        );
+        // Note: NO cache dir created under tmp/attachment-cache — the cleanup
+        // will hit NotFound and must swallow it silently.
+
+        let mid = msg_id("acct", "INBOX", 7);
+        let op = MutationOp::Delete {
+            message_ids: vec![mid.clone()],
+            folder_path: "INBOX".into(),
+            uids: vec![7],
+        };
+        apply_mutation_inner(engine, &pool, "acct".into(), op)
+            .await
+            .expect("delete must succeed when cache dir is absent");
+
+        // Message row gone — proves the mutation committed despite the
+        // NotFound from the cleanup attempt.
+        let (mn,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(mn, 0);
     }
 
     // ---- sync_request_bodies (on-demand body fetch) ----

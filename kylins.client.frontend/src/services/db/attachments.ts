@@ -5,14 +5,16 @@
 // `sync_fetch_attachment` fetches ONE part, caches it as a file under
 // `<appData>/attachment-cache/`, and returns the file path (no base64 over
 // IPC — the receive-path counterpart to T7b's send-path staging).
-// `sync_fetch_inline_images` fetches every inline `cid:` part in a single
-// round-trip so the reading pane can build a `cid -> data:` URL map.
+// `sync_fetch_inline_images` cache-checks every inline `cid:` part and returns
+// file paths — the reading pane renders via `convertFileSrc(filePath)` so
+// base64 never goes into the displayed HTML.
 //
 // DTOs match the Rust serde (camelCase) in `db/attachments.rs`,
-// `sync_engine/commands.rs` (`InlineCidPart`), and `attachment_cache.rs`
-// (`CachedAttachment`).
+// `sync_engine/commands.rs` (`CachedInlineImage`), and `attachment_cache.rs`
+// (`CachedAttachment`, `CachedInlineImage`).
 
 import { invoke } from '@tauri-apps/api/core';
+import { readFile } from '@tauri-apps/plugin-fs';
 
 /** One attachment-metadata row (mirrors `db::attachments::AttachmentRow`). */
 export interface AttachmentRow {
@@ -38,13 +40,15 @@ export interface CachedAttachment {
   size: number;
 }
 
-/** One inline `cid:` part (mirrors `InlineCidPart`). Still base64 — inline
- * images are small (signature logos, emojis); a future enhancement could cache
- * them as files + serve via `convertFileSrc`. */
-export interface InlineCidPart {
+/** One cached inline `cid:` image (mirrors `attachment_cache::CachedInlineImage`).
+ * The `filePath` is absolute, under `<appData>/attachment-cache/`. The reading
+ * pane renders it via `convertFileSrc(filePath)` (asset protocol URL) — no
+ * base64 in the HTML. */
+export interface CachedInlineImage {
   contentId: string;
+  filePath: string;
   mimeType: string;
-  base64: string;
+  size: number;
 }
 
 /** List attachment metadata for a message. */
@@ -63,9 +67,46 @@ export function fetchAttachment(
   return invoke<CachedAttachment>('sync_fetch_attachment', { accountId, messageId, partId });
 }
 
-/** Fetch every inline `cid:` part for a message in one round-trip. */
-export function fetchInlineImages(accountId: string, messageId: string): Promise<InlineCidPart[]> {
-  return invoke<InlineCidPart[]>('sync_fetch_inline_images', { accountId, messageId });
+/** Fetch every inline `cid:` image for a message. Cache-check → fetch-on-miss
+ * → return file paths (no base64). First call fetches from IMAP + writes cache
+ * files; subsequent calls return cached paths immediately (no network). */
+export function fetchInlineImages(
+  accountId: string,
+  messageId: string,
+): Promise<CachedInlineImage[]> {
+  return invoke<CachedInlineImage[]>('sync_fetch_inline_images', { accountId, messageId });
+}
+
+/**
+ * Read a cached inline image file and return a `data:` URL. Needed for the
+ * FORWARD path: the composer's send pipeline (`extractInlineImages`) matches
+ * `data:` URLs to re-attach inline images as CID parts, so the forward seed
+ * must use `data:` URLs (not `convertFileSrc` asset URLs). For DISPLAY in the
+ * reading pane, prefer `convertFileSrc(filePath)` directly — no base64.
+ */
+export async function cachedImageToDataUrl(
+  filePath: string,
+  mimeType: string,
+): Promise<string> {
+  const bytes = await readFile(filePath);
+  let base64: string;
+  if (typeof btoa === 'function') {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]!);
+    }
+    base64 = btoa(binary);
+  } else {
+    // Node/test fallback (Buffer is available in jsdom/Node contexts).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const B = (globalThis as any).Buffer;
+    if (B) {
+      base64 = B.from(bytes).toString('base64');
+    } else {
+      throw new Error('No base64 encoder available');
+    }
+  }
+  return `data:${mimeType};base64,${base64}`;
 }
 
 /**

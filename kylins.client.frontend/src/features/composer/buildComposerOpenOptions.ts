@@ -7,7 +7,7 @@ import type { MailMessage } from '@/features/view/viewStore';
 import type { ComposeWindowOptions } from '@/utils/composeWindow';
 import type { SendAsAlias } from '@/services/db/sendAsAliases';
 import { getAliasesForAccount, mapDbAlias, accountAsAlias } from '@/services/db/sendAsAliases';
-import { fetchInlineImages } from '@/services/db/attachments';
+import { fetchInlineImages, cachedImageToDataUrl } from '@/services/db/attachments';
 import { buildReplyQuote, buildForwardQuote } from './prepareBodyForQuoting';
 import { participantsForReply, participantsForReplyAll } from './recipientsForReply';
 import { resolveFromForReply } from './fromResolution';
@@ -86,9 +86,13 @@ export async function buildComposerOpenOptions(
   } else if (isForward) {
     const inlineParts = await fetchInlineImages(account.id, message.id);
     if (inlineParts.length > 0) {
-      cidMap = new Map(
-        inlineParts.map((p) => [p.contentId, `data:${p.mimeType};base64,${p.base64}`]),
-      );
+      // Forward path: the send pipeline's `extractInlineImages` matches `data:`
+      // URLs to re-attach inline images as CID parts, so we read each cached
+      // file into a data URL here (not convertFileSrc).
+      cidMap = new Map<string, string>();
+      for (const p of inlineParts) {
+        cidMap.set(p.contentId, await cachedImageToDataUrl(p.filePath, p.mimeType));
+      }
     }
     bodyHtml = buildForwardQuote(message, cidMap);
   } else {
