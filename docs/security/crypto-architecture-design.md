@@ -2,7 +2,7 @@
 
 > 基于 Thunderbird、proton-crypto-rs、rust-cryptoki 本地源码学习与 Web 深度研究的综合架构设计。  
 > 版本：v1.0（2026-07-09）  
-> 前置文档：`docs/superpowers/specs/2026-06-29-crypto-system-design.md`、`docs/superpowers/specs/2026-06-29-kylins-crypto-architecture-review.md`、`docs/openpgp-research-report.md`、`docs/proton-crypto-rs-learning-report.md`、`docs/thunderbird-smime-learning-report.md`
+> 前置文档：`docs/superpowers/specs/2026-06-29-crypto-system-design.md`、`docs/superpowers/specs/2026-06-29-kylins-crypto-architecture-review.md`、`docs/security/openpgp-crypto-ecosystem-analysis-report.md`、`docs/security/proton-crypto-rs-source-learning-report.md`、`docs/security/thunderbird-crypto-implementation-analysis-report.md`、`docs/security/proton-clients-security-analysis-report.md`、`docs/security/proton-webclients-security-analysis-report.md`
 
 ---
 
@@ -17,6 +17,7 @@
 | 借鉴 proton-crypto-rs | 采用其 `Provider`/`Builder`/`Profile` 三层结构、`CryptoError` 擦除、`secrecy` 生命周期 |
 | PKCS#11 / Smartcard / HSM | `rust-cryptoki` 封装 token 会话；S/MIME 走 token 原始 RSA/EC 运算；OpenPGP 走 `openpgp-card` 生态 |
 | Web 最佳实践 | RFC 9580/8551/9980 算法基线、Argon2 S2K、contact pinning、explicit-consent key discovery、async crypto tasks |
+| 部署形态 | A 形态（Kylins 客户端 + 第三方标准服务器）；邮件 E2EE；联系人/日历/任务**暂缓加密**（§11.6） |
 
 ---
 
@@ -654,7 +655,8 @@ pub struct PkPolicy {
 Layer 0: OS Keyring — Master Secret (256-bit，已存在)
 Layer 1: Account Master Key — HKDF(master_secret, account_id)
 Layer 2: Crypto Identity Key — S/MIME cert、PGP key、SM2 key
-Layer 3: Message Session Key — 每封邮件随机生成
+Layer 2.5: Object Key — 每联系人/日历一把（ContactKey/CalendarKey；邮件可复用 body session key 作为 object key），私钥被 Layer 2 identity key 加密；其下包裹各 part/card session key（见 §11.5）
+Layer 3: Part Session Key — 每个 part（body + 每个 attachment）独立随机生成；密文与接收方无关，仅 key wrapping 按接收方（见 §11.4）
 ```
 
 ### 10.2 数据表扩展
@@ -748,6 +750,219 @@ LockIcon + 签名状态
 | `multipart/encrypted; protocol="application/pgp-encrypted"` | PGP/MIME 加密 |
 | `multipart/signed; protocol="application/pgp-signature"` | PGP/MIME 签名 |
 | inline PGP blocks | PGP inline（兼容只读） |
+
+### 11.4 分片加密：让"加密粒度"对齐"存储/传输粒度"（借鉴 Proton split packages）
+
+**核心原则。** 一封邮件在 API/存储层是"一个 body + N 个独立 attachment 资源"，加密层应当一对一映射成"一个 body part + N 个 attachment part"，而不是把整棵 MIME 树揉成一个密文 blob。密文结构与存储/传输结构同构，是后续所有能力的前提。Proton 的实现正是如此：body 走 `crypto-inbox/src/message/*`，附件走 `crypto-inbox/src/attachment/*`，由 `mail-package-builder/src/packages.rs` 编排成 `Package{ body, addresses{ body_key_packet, attachment_key_packets } }`，几乎就是 `POST /mail/v4/messages` 的线格式。
+
+**模型：每 part 一把 session key，密文与接收方无关。**
+
+```text
+Message = { body: Part, attachments: Part[] }
+
+每个 Part:
+  plaintext ──(随机 session key SK_i, AES-256-GCM)──▶ ciphertext_i   (接收方无关，上传一次)
+  SK_i      ──(按接收方公钥/口令包装)─────────────▶ key_packet_i,r   (每接收方一份，几十字节)
+
+发送/转发：只重包 SK_i → key_packet_i,r'，ciphertext_i 原样复用，绝不对密文解密再重加密。
+草稿→发送：从草稿密文中 extract SK_i，重包给正式接收方即可。
+```
+
+对应到 Proton 代码：body 在 `message/packages.rs` 每次 `package_body_encrypt` 生成新 session key；附件在 `attachment/encrypt.rs:119-132` 单独 `generate_session_key()` 并自包 `key_packets`；`process_attachments`（`packages.rs:436-498`）按接收方只调 `encrypt_session_key_to_recipient`，附件 `data` 字节对每个接收方原样复用。
+
+**这样设计换来的能力（Kylins 应继承）：**
+
+1. **按 part 懒加载、按需解密。** 先拉 body 立刻渲染，附件按需下载/解密；不必为了看正文而下载 30MB 附件。解密路径必须因此解耦（body decryptor 与 attachment decryptor 独立）。
+2. **多接收方/转发零密文重传。** 同一 part 的 ciphertext 对所有接收方复用，差异只在 key packet；转发单个附件给新接收方只需重包那一把 `SK_i`。
+3. **大附件流式 + 按 part 施策。** 附件走 streaming（`encrypt_and_sign_to_writer` / `decrypt_from_reader`），分块、有进度、内存恒定；压缩/编码策略按 part 区分（body 文本可压、已压缩的媒体附件绝不压——压缩既浪费又泄漏尺寸）。§15.2 的"200MB 附件流式"依赖此解耦。
+4. **隔离爆破半径（compartmentalization）。** 把某附件转发给明文接收方时须向服务器暴露该 part 的 session key；因为 body 是另一把 key，**暴露附件 key 不连带暴露 body 或其它附件**。若整封邮件一把 key，"让某明文接收方能看附件"会同时失守整封邮件。
+5. **签名按 part 独立。** 每个附件自带 detached signature（及一份加密副本），被转发/引用时真实性可单独验证，不与 body 签名耦合；`LockIcon`/verification 按 part 聚合。
+6. **服务端可在不碰正文的前提下处理附件**（扫描、配额、过期、CDN 分发），E2EE 接收方下服务器仍学不到任何 session key。
+
+**对 Kylins 抽象的约束。** `CryptoProvider` 不应有"分片"与"单 blob"两套互不相干的加密逻辑；应统一以 **part 集合** 为输入，再按接收方能力选择**序列化策略**：
+
+```rust
+// crypto/types.rs（示意）
+pub enum PartKind { Body, Attachment { filename: String, mime: String, content_id: Option<String> } }
+pub struct Part { pub id: PartId, pub kind: PartKind, pub source: DataSource } // DataSource: bytes | stream
+pub struct EncryptedPart {
+    pub id: PartId,
+    pub ciphertext: DataSink,                 // 接收方无关
+    pub session_key: SessionKeyHandle,        // 仅用于按接收方重包
+    pub signature: Option<DetachedSignature>, // 按 part 独立
+}
+pub enum SerializationStrategy {
+    SplitPerPart,   // Proton 式：每 part 独立密文 + 每接收方 key wrap（E2EE 默认）
+    SingleMimeBlob, // RFC 3156 PGP/MIME 或 S/MIME EnvelopedData：整棵 MIME 一把 key（互操作）
+}
+
+pub trait CryptoProvider { /* ... */
+    fn encrypt_parts(&self, parts: &[Part], strategy: SerializationStrategy,
+                     recipients: &[Recipient]) -> Result<EncryptedMessage, CryptoError>;
+    fn decrypt_part(&self, part: &EncryptedPart, key: &Self::PrivateKey) -> Result<Part, CryptoError>;
+}
+```
+
+- **策略选择**复刻 Proton 在 `build_packages` 里按 `pgp_scheme` 分发的做法（`packages.rs:316-377`）：E2EE 给支持分片的对端用 `SplitPerPart`；外部 OpenPGP 客户端（Thunderbird/RNP、GnuPG）只认标准 PGP/MIME 单 blob，回落到 `SingleMimeBlob`；同一份草稿期各自加密的 part，出包时按策略走两条路。
+- **S/MIME 是天然单 blob**：CMS `EnvelopedData` 包裹整棵 MIME 树，part 集合退化为单 part。故"分片"作用于 **OpenPGP/E2EE 路径**；S/MIME 路径 part 数恒为 1，但走同一套 `encrypt_parts` 接口，不另开代码路径。
+- **存储/数据库**：`crypto_keys`（§10.2）存身份密钥；邮件密文与 key wrap 不落本地明文。附件密文可作为独立对象缓存/分发，与正文解耦生命周期。
+- **影响范围**：§3.1 `crypto/mime/` 输出从"单 blob"改为"part 集合"；§4 `Encryptor`/`Decryptor` 增加 part 维度与流式 `DataSource`；§10.1 密钥层级 Layer 3 由"每封邮件一把 session key"改为"每 part 一把"；§14 Phase 2 OpenPGP 需包含分片序列化与 PGP/MIME 单 blob 回落两条出包路径。
+
+### 11.5 统一对象模型：把"分片 + 分级保护"推广到所有 item 类型
+
+**核心原则（两条）。**
+
+1. **每个业务对象 = 一组 part + 一把对象密钥。** message / contact / calendar event / push payload 都建模为 `Object { parts, object_key }`：每 part 独立 session key（密文与接收方无关，§11.4）；对象密钥（ContactKey / CalendarKey / MessageKey）包裹各 part 的 session key，其私钥再被身份（address）密钥加密。于是"按 part 解密、按接收方重包、按对象授权"在三种 item 上是同一套逻辑，而不是三套加密。
+2. **按字段敏感度分级保护：服务器必须可读 ⇒ 仅签名；私密 ⇒ 签+加。** 不是"全加密"或"全明文"一刀切，而是逐字段选择 `Protection::{Cleartext, Signed, EncryptedAndSigned}`。这让服务器在不解密的前提下完成投递 / 提醒 / 读取收件人公钥，同时保证这些明文字段的完整性。
+
+**各 item 的具体方法（Proton clients 实证）。**
+
+| Item | 最小加密单元 | 分级（Protection） | 对象/会话密钥包装 | 源码锚点 |
+|---|---|---|---|---|
+| 邮件 body | body part | EncryptedAndSigned | 每收件方 key packet | `crypto-inbox/src/message/*` |
+| 邮件附件 | attachment part | EncryptedAndSigned（detached sig） | 每收件方 key packet | `crypto-inbox/src/attachment/encrypt.rs:119-132` |
+| 邮件主题 | 随 body part（每封一把，非每收件方） | EncryptedAndSigned（加密时） | 同 body session key | `crypto-inbox-mime/src/read.rs:151` |
+| 联系人 | vCard "card" | Cleartext / Signed（EMAIL、KEY/`X-PM-*` 偏好）/ EncryptedAndSigned（私有字段） | 每联系人 ContactKey → address key | `contacts-common/contact_card.rs`（`ContactCardType`）、`crypto-contact-keys/vcard_crypto.rs:38`（空解密密钥 ⇒ Signed card） |
+| 日历 | iCal part（shared / attendees / personal） | shared+personal：EncryptedAndSigned；attendees（ORGANIZER/ATTENDEE/调度）：Signed（服务器可投递邀请） | `ForCalendar`→CalendarKey（默认）；`ForAddress`→address key（Proton↔Proton 邀请） | `crypto-calendar/event_encryptor.rs:102-156`、`calendar-api/requests.rs:20`（`UpdateCalendarEventPersonalPart`） |
+| 推送 | 整条 payload | Encrypted（设备密钥） | 设备密钥 | `crypto-notifications/src/lib.rs:1` |
+| 密钥材料 | 每个私钥 | Encrypted（master key AES-256-GCM） | OS keyring master key | `crypto.rs`、`core-key-manager` |
+
+**加密主题（encrypted subject）的具体方法。** 邮件加密时主题也加密、且与 body 同属"每封一把"粒度（不按收件方分）：
+
+- 外层 RFC-822 `Subject:` 写占位符（Proton 用 `...` / `Encrypted Message`），真实主题放进加密 MIME 内层（PGP/MIME）或消息级加密字段（Proton package format），用 **body session key** 加密。
+- 接收时在解密后的内层 MIME 读出：`crypto-inbox-mime/src/read.rs:131-160` 处理 `decrypted_body`，`:151` 取 `encrypted_subject`；`tests/message.rs:369` 断言解密后 `encrypted_subject == "test mime"`。
+- 明文/对外发送时主题标准明文（与正文一致）。Proton Rust 端低层仍有 `TODO: Encrypted subject not yet implemented`（`read_js.rs:417/453`）；Kylins 实现时直接纳入，不留 TODO。
+- 对 Kylins：PGP/MIME 与 S/MIME 都把主题写入加密 MIME 内层并将外层头置占位符；主题为机密内容，**绝不写入外层明文头**；列表/索引展示只用解密后的内存值。
+
+**统一抽象（示意）。**
+
+```rust
+pub enum Protection {
+    Cleartext,           // 元数据；不签不加密
+    Signed,              // 明文 + 签名：服务器可读，完整性受保护（联系人 EMAIL/KEY、日历 attendees）
+    EncryptedAndSigned,  // 私密字段：先签后加（邮件 body/附件/主题、联系人私有 card、日历 shared/personal part）
+}
+
+pub struct ObjectKey { /* 每联系人/日历一把；邮件可复用 body session key 作为 object key */ }
+pub struct Part { id: PartId, kind: PartKind, source: DataSource, protection: Protection }
+
+// 分级密封：Cleartext 原样；Signed 仅签名；EncryptedAndSigned 用 part session key 加密并签名，
+// session key 再由 object_key 包装（object_key 私钥已被 identity key 加密，见 §10.1）。
+fn seal_part(p: &impl CryptoProvider, part: &Part, object_key: &ObjectKey)
+    -> Result<SealedPart, CryptoError>;
+```
+
+联系人 `ContactCardType::{Cleartext, Signed, EncryptedAndSigned}` 与日历 `ForCalendar/ForAddress` 都是这一模型的特例：前者是 `Protection` 的直接落地，后者是 object_key 包装目标的两种选择（日历共享密钥 vs 收件方地址密钥）。
+
+**对 Kylins 的范围与影响。**
+
+- MVP 只含邮件，但 `CryptoProvider` / `seal_part` 接口与 `Protection` 分级从第一天就按多 item 设计，避免未来加联系人/日历时再写一套加密。
+- §10.1 增加 Object Key 层；§14 把联系人/日历 E2EE 列为远期阶段、复用本节模型；§15.2 增加"按字段分级保护"与"主题加密"两条清单。
+- 本地缓存（SQLite）存密文 part / card / ICS，不做字段级 at-rest 再加密；at-rest 由 OS/磁盘与 §10 密钥层级负责。
+
+### 11.6 部署形态与互通决策：采用 A 形态，暂缓联系人/日历/任务加密
+
+**决策（当前版本）。** Kylins 采用 **A 形态：Kylins 客户端 + 第三方标准服务器**（Exchange / O365 / Gmail / Google Workspace / Coremail / 通用 IMAP-SMTP）。在此形态下：
+
+- **邮件**：做端到端加密；出站序列化一律回落 `SingleMimeBlob`（PGP/MIME 或 S/MIME；CN 场景用国密 S/MIME）。`SplitPerPart` 仅保留给未来同生态（Kylins↔Kylins / Kylins 自有后端），**永不上公网 SMTP**。
+- **联系人 / 日历 / 任务：暂缓 E2EE。** 当前版本以标准明文协议同步（CardDAV / CalDAV / iTIP / EAS / EWS + 传输层 TLS），保留服务器侧能力（freebusy、iTIP 投递、共享日历 ACL、服务器提醒、GAL/联系人搜索、recurrence 展开）。是否对这三类实施加密，**留待后续评估**（见下方"暂缓项"）。
+
+**为什么 A 形态下不加密联系人/日历/任务。** CardDAV / CalDAV / iTIP / EAS 的前提是服务器能解析内容；整对象加密会让服务器退化为哑 blob 存储，丧失 freebusy、调度投递、共享 ACL、提醒、GAL、recurrence 等核心能力——付费服务器功能大半作废，而客户端代偿（本地调度 / 搜索 / 提醒 / 群组密钥）的工程量是邮件加密的数倍。在"无自有同步后端"的前提下得不偿失。
+
+**A 形态下的邮件互通约束（必须遵守）。**
+
+| 服务器 | 出站加密形态 | 原生解密 | 主题 | 风险 |
+|---|---|---|---|---|
+| Exchange / O365（EWS/Graph/SMTP/EAS） | **S/MIME** 优先；PGP/MIME 仅当对端有 GpgOL 等插件 | S/MIME 原生；PGP 需插件 | S/MIME 主题**明文** | OME/Purview 门户加密与 PGP/S/MIME 不互通；EAS SmartForward 可能改写 MIME |
+| Gmail / Google Workspace（IMAP/SMTP/API） | PGP/MIME、S/MIME 都可传输；GWS 企业版托管 S/MIME | 网页版**不内联解密** | PGP/MIME 占位符 `'...'` | "机密模式"非真加密，UI 不得标为 E2EE |
+| Coremail（IMAP/SMTP/EAS） | S/MIME（CN 用**国密** profile）；PGP/MIME 可走 MIME | 取决于客户端/网关 | S/MIME 主题明文 | 企业 AV/DLP 网关可能剥离/隔离 `application/pgp-encrypted` 或加密附件 |
+
+硬规则：
+
+1. 出站永远 `SingleMimeBlob`（§11.4）；按收件方能力选 PGP/MIME 或 S/MIME。
+2. **加密主题按形态 + 按域可配**：PGP/MIME 默认启用（外层占位符）；S/MIME 默认关闭（头部保护支持零散）；可对 gov/企业域强制关闭。
+3. 加密邮件**不被服务器索引**——搜索只剩元数据；用本地加密搜索索引弥补（`encrypted-search`，§14 Phase 4）。
+4. 网关/DLP 可能剥离加密附件——维护**每域降级策略**（可加密 / 仅签名 / 必须明文），发前探测或用户确认。
+
+**暂缓项：联系人/日历/任务 E2EE（留待后续评估）。** 仅当未来引入 **B 形态——Kylins 自有零知识同步后端**（类 Proton：服务器为零知识 blob 仓 + 密钥目录 + 通知管道）时才启动。届时复用 §11.5 的 `Object{ parts, object_key, Protection }` 模型，需新增并评估：
+
+- 对象密钥与**群组密钥**（共享日历/联系人/任务列表），含成员变动的密钥轮换与前向安全成本。
+- 密钥目录（自有目录 或 WKD/Autocrypt）与多设备密钥共享。
+- 客户端代偿能力：本地加密搜索索引、客户端调度 / freebusy / 提醒 / recurrence 展开。
+- 逐项代价：日历最难（多方调度 + 时间触发），联系人次之（GAL/搜索），任务最简单（无调度）。
+
+**评估触发条件：** 出现明确的"自有同步后端"路线图，或目标用户对联系人/日历机密性有强需求且可接受失去服务器侧能力。在此之前，联系人/日历/任务保持明文 + TLS。
+
+**影响范围。** §1 增加"部署形态"目标行；§3 当前不引入联系人/日历加密后端；§10.1 Object Key 层作为未来能力保留（A 形态暂不实例化 ContactKey/CalendarKey/TaskKey）；§11.4 出站固定 `SingleMimeBlob`；§11.5 的 `Protection` 分级在 A 形态仅作用于邮件 part（联系人/日历的 Signed-only 分级待 B 形态启用）；§14 Phase 4 的"联系人/日历 E2EE"标注为暂缓，并新增"收件方能力发现与每域降级策略"；§15.2 增加 A 形态出站清单项；新增 §11.7（本地落盘形态）与 §11.8（本地加密搜索索引）。
+
+---
+
+### 11.7 本地落盘形态：分级落盘（graded at-rest），非整库加密、非全明文
+
+**原则。** 客户端本地既不是"整库全加密"，也不是"全明文"，而是**分级落盘**：加密对象以**服务器密文形态原样缓存**（不解密不写盘），元数据明文以便查询/列表，秘密进系统钥匙串或经主密钥包裹，解密后的明文只驻留易失内存。Proton Rust clients 即如此：`mail_stash`/`UserDb` 是普通 rusqlite、全树无 `PRAGMA key`/SQLCipher（无整库加密）；邮件 body/附件、联系人加密卡、日历 shared part 以服务器密文落盘，解密是独立的 read 路径（`crypto-inbox-mime` 产出内存 `ProcessedMimeResult`，`mail-uniffi` 暴露解密 DTO）；用户密钥/设备密钥/session 进 OS keychain（`mail_core_common::os::KeyChain`）。
+
+| 数据类别 | 本地落盘形态 | Kylins 处理 |
+|---|---|---|
+| 邮件 body / 每个附件 / 联系人加密卡 / 日历 shared part | **服务器密文原样**（PGP/MIME 密文或 S/MIME CMS  blob） | 缓存密文；解密在 Rust 侧即时进行，明文**不回写** SQLite |
+| 加密邮件主题 | 密文随 body；外层 `Subject:` 为占位符（`'...'`） | `messages.subject` 存服务器值（占位符）；真主题仅内存值 + 进加密索引，**绝不反向写回行**（见下） |
+| 元数据（ID、label/文件夹、已读/旗标、时间、收发件人）、明文/签名联系人卡、日历 attendee/signed part | **明文 SQLite** | 列表/排序/过滤所必需；不涉密字段可明文 |
+| 用户密钥口令、OAuth/IMAP 口令、设备密钥、session | **不进 SQLite**；经 `crypto.ts → Rust encrypt_secret`（keyring 主密钥 + AES-256-GCM） | 红线：plaintext 永不入 SQLite（与 CLAUDE.md 一致） |
+| 本地搜索索引 | **逐条 AES-GCM 加密**，索引密钥经主密钥包裹（见 §11.8） | 可选、可驱逐、可自毁 |
+| 整库（`mailclient.db`） | **不加密**（无 SQLCipher） | 与 Proton 一致；机密性靠"逐条信封 + keyring"，不靠整库加密 |
+
+**主题专题（明确结论）。** 本地邮件行只持有一列 `subject`（对应 Proton `messages` 表的 `#[DbField] subject: String`），其值为**服务器提供的主题**——加密邮件即占位符 `'...'`。真实主题在解密时进入内存对象（Proton `DecryptedMessage.pgp_subject`，经独立访问器 `get_pgp_subject()` 暴露，刻意与列表 `subject` 列分离），要么即时显示、要么喂给 §11.8 的加密索引；**不存在把解密主题回写 `messages` 行的代码路径**。Kylins 沿用：列表与排序只用服务器主题/占位符，真主题永不落明文行。
+
+**硬规则。**
+
+1. 机密（口令/token/私钥口令/索引密钥）一律 `encrypt_secret` 包裹，禁明文落 SQLite。
+2. 邮件/附件密文可缓存；解密产物（正文 HTML、解密主题、附件明文）只驻内存，进程退出/锁屏即清。
+3. 元数据可明文，但加密邮件的**明文主题**、**正文摘录**不得进入明文列表/缓存/日志。
+4. 需要本地全文检索时，正文/主题只能进 §11.8 的加密索引，不得另建明文索引或 FTS 明文表。
+
+---
+
+### 11.8 本地加密搜索索引（encrypted-search）：客户端扫描，非可搜索加密
+
+**定位。** 加密邮件不能被服务器索引（§11.6 硬规则 3），搜索只剩元数据；为恢复全文检索，引入**本地加密搜索索引**。先澄清一个根本事实：这不是密码学意义的"可搜索加密（SSE）"——服务器始终零知识、无法在密文上检索；本质是**把密文缓存到本地 → 查询时在客户端解密扫描 → 关键词匹配**，即"加密的本地缓存 + 客户端扫描"。这决定全部取舍：搜索是 O(N) 扫描、不能靠服务器加速、索引只放本地、且必须可自毁。Proton WebClients 的 `packages/encrypted-search` 即此模型（库 `ES:<userID>:DB`，逐条 AES-GCM，扫描式查询）。
+
+**密钥层级（Kylins 强化版）。** Proton 在 Web 端用 `CryptoProxy.encryptMessage` 把索引密钥 K 包裹到会话内 userKey 再存 `config.indexKey`（浏览器拿不到 OS keystore）。Kylins 有 OS keyring，更强：
+
+```
+OS keyring 主密钥（已有：keyring service=mailclient user=master-key）
+        │  AES-256-GCM（现有 encrypt_secret）
+        ▼
+  已包裹的索引密钥 K  ← 落 settings / es_config（nonce||ciphertext hex）
+        │  解锁时 decrypt_secret → K（仅内存）
+        ▼
+  IndexKey K（AES-GCM-128/256，进程内）
+        │  per-item 随机 IV
+        ▼
+  es_metadata / es_content（nonce||ciphertext hex）
+```
+
+- 新增 Rust 命令：`es_init`（生成 K 并 `encrypt_secret` 包裹落盘）、`es_seal_item` / `es_open_item`（逐条 AES-GCM）、`es_nuke`（删索引 + 擦 K）、`es_rekey`（主密钥轮换时重包 K）。
+- **K 永不明文落 SQLite**；登出/锁屏清内存 K；改密/主密钥轮换 → 索引不可解 → 重建（自毁性质，与 Proton 一致）。
+- 前端只驱动编排，明文不跨边界进 SQLite（沿用 CLAUDE.md 红线）。
+
+**存储结构（复用 SQLite）。** 可复用 `mailclient.db` 或独立 `es.db`，新增表（批量写走 `withTransaction()`，注意串行化避免锁泄漏）：
+
+| 表 | 键 | 值 | 说明 |
+|---|---|---|---|
+| `es_config` | 常量键 | `wrapped_index_key` / `size` / `enabled` / `limited` / `content_version` | 全局状态 + 已包裹 K |
+| `es_metadata` | message_local_id | `timepoint`, `nonce||ciphertext` | 列表/过滤用元数据，先建、尽量常驻 |
+| `es_content` | message_local_id | `nonce||ciphertext` | 正文/解密主题等可搜索内容，可驱逐 |
+| `es_events` | — | 同步游标 | 增量续传 |
+| `es_progress` | — | 时间戳 / recovery point | 断点续建 |
+
+`timepoint = [ts, seq]` 同时承担全局排序、驱逐顺序与续建游标。
+
+**两阶段建索引。** ① **metadata 先**：同步后后台任务分批取元数据 → `es_seal_item` → 写 `es_metadata`，记录 progress/recovery point，全程可中止；metadata 足以支撑列表与廉价过滤（标签/时间/收发件人）。② **content 后**：按 timepoint 取有序 ID → 有界并发地"取服务器密文 → 用 message key 解 body → 用 K 重新封进 `es_content`"；被删/不可达（NOT_FOUND）跳过；**content 可驱逐**——达配额时按 timepoint 删最老腾空间，装不下整库则置 `limited`，空间释放后再续建。增量由 `es_events` 游标续传。
+
+**查询路径（扫描而非索引）。** 规范化输入（去空白/去变音/统一引号撇号/lowercase/按空格与引号分词）→ 先用 `es_metadata` 做廉价过滤（`applyFilters`）→ 对候选 `es_open_item` 解密内容 → 多关键词 AND 匹配（所有关键词须在某字段出现）→ 流式增量返回 + timepoint 游标 + 结果上限。因无倒排索引，只做 substring/AND，不做相关度排序/前缀/模糊；metadata 过滤越狠，需解密内容越少。
+
+**隐私泄漏面（必须承认）。** 对**服务端**零知识成立（查询全本地、不发服务器）；对**本机磁盘取证**只保护内容机密性，不保护轮廓——`es_metadata` 暴露邮件数量/ID/时间分布，AES-GCM **不隐藏长度**（密文长≈明文长），`es_content` 存在性暴露"哪些被缓存"。这是 graded at-rest 的固有边界，非缺陷；高敏部署可整库加密或关闭索引。
+
+**A 形态映射与范围。** 仅索引**我们已能解密的邮件密文**（A 形态出站虽为 `SingleMimeBlob`，本地持有的仍是可解密的收件副本/发件留存）；主题用解密内存值进索引、不回写 `messages.subject`（§11.7）。范围**仅限邮件**；联系人/日历/任务按 §11.6 暂缓。删除/登出/改密触发 `es_nuke` 或重建。
 
 ---
 
@@ -853,6 +1068,8 @@ crypto_openpgp_keyring: 'crypto.openpgp.keyring',
 3. RFC 9980 后量子算法（ML-KEM / ML-DSA）实验支持。
 4. 企业 CA / LDAP / GAL 集成。
 5. 加密邮件搜索（本地索引解密后缓存）。
+6. 联系人/日历/任务 E2EE —— **暂缓，留待评估**：仅在 B 形态（自有零知识同步后端）启动；复用 §11.5 模型（详见 §11.6 暂缓项）。
+7. 收件方能力发现（WKD/Autocrypt/SMIMECapabilities）与每域降级策略（可加密/仅签名/明文），支撑 A 形态邮件互通（§11.6）。
 
 ---
 
@@ -877,6 +1094,17 @@ crypto_openpgp_keyring: 'crypto.openpgp.keyring',
 - [ ] 常量时间比较 MAC、指纹（`subtle`）。
 - [ ] 临时文件写入系统 temp dir，完成后立即删除。
 - [ ] 200MB 附件流式处理，内存峰值 < 100MB。
+- [ ] OpenPGP/E2EE 路径按 part 加密：body 与每个 attachment 独立 session key，密文与接收方无关、仅 key wrapping 按接收方（见 §11.4）。
+- [ ] 转发某 part 给明文接收方时只暴露该 part 的 session key，不连带暴露 body 或其它 part（分片隔离爆破半径）。
+- [ ] 解密按 part 解耦：可只下载/解密单个附件，不强制整封邮件下载解密。
+- [ ] 每个字段分级保护：服务器必须可读（联系人邮箱/固定公钥、日历 attendee）⇒ 仅签名（Signed）；私密字段 ⇒ 签+加（EncryptedAndSigned）；不"全加密/全明文"一刀切（见 §11.5）。
+- [ ] 加密邮件的主题写入加密 MIME 内层/消息级加密字段，外层头置占位符；列表与索引只用解密后的内存值（见 §11.5）。
+- [ ] A 形态出站一律 `SingleMimeBlob`（PGP/MIME 或 S/MIME）；`SplitPerPart` 不上公网 SMTP（见 §11.6）。
+- [ ] 加密主题按形态+按域开关：PGP/MIME 默认开、S/MIME 默认关；维护每域降级策略（可加密/仅签名/明文）（见 §11.6）。
+- [ ] 联系人/日历/任务当前明文 + TLS 同步；本地缓存按 §11.6 规则处理（密文 part 存密文、元数据/索引明文或另行加密）。
+- [ ] 本地落盘分级（§11.7）：密文对象存密文、元数据可明文、机密经 `encrypt_secret` 包裹、整库不加密；解密明文只驻内存，禁回写 SQLite。
+- [ ] 加密邮件的明文主题/正文摘录不得进入明文列表、缓存、日志或明文 FTS；`messages.subject` 仅存服务器值（占位符），真主题永不反向写回行（§11.7）。
+- [ ] 本地加密搜索索引（§11.8）：索引密钥 K 经 `encrypt_secret` 包裹、禁明文落盘；逐条随机 IV（AES-GCM）；禁建任何明文/确定性 token 倒排；content 可驱逐并设上限；登出/锁屏清 K、改密即索引失效重建。
 - [ ] 信任决策表仅追加，完整审计历史。
 - [ ] 解密后的 HTML 仍走 DOMPurify + sandboxed iframe。
 - [ ] key discovery 必须显式用户同意，不自动加密。
@@ -916,9 +1144,11 @@ crypto_openpgp_keyring: 'crypto.openpgp.keyring',
 
 - `docs/superpowers/specs/2026-06-29-crypto-system-design.md`
 - `docs/superpowers/specs/2026-06-29-kylins-crypto-architecture-review.md`
-- `docs/openpgp-research-report.md`
-- `docs/proton-crypto-rs-learning-report.md`
-- `docs/thunderbird-smime-learning-report.md`
+- `docs/security/openpgp-crypto-ecosystem-analysis-report.md`（已合并原 `openpgp-research-report.md`）
+- `docs/security/proton-crypto-rs-source-learning-report.md`（已合并原 `proton-crypto-rs-learning-report.md`）
+- `docs/security/thunderbird-crypto-implementation-analysis-report.md`（已合并原 `thunderbird-smime-learning-report.md`）
+- `docs/security/proton-clients-security-analysis-report.md`
+- `docs/security/proton-webclients-security-analysis-report.md`
 
 ---
 
