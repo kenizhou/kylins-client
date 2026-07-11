@@ -1,0 +1,76 @@
+[package]
+name = "crypto-smime"
+version = "0.1.0"
+edition = "2021"
+# Raised from 1.77.2 because the `cms` crate (Task 1) is edition 2024 / MSRV 1.85.
+# crypto-core stays at 1.77.2 (it does not depend on cms).
+rust-version = "1.85"
+
+[dependencies]
+crypto-core = { path = "../core" }
+# RustCrypto formats stack. NOTE: x509-cert 0.3 requires the signature v3 /
+# p256 0.14 / ecdsa 0.17 stack (its `builder` feature pulls signature v3, and
+# p256 0.13's SigningKey only impls signature v2 traits). Task 4 therefore
+# aligns smime to the v3 stack; this is scoped to this crate only.
+x509-cert = { version = "0.3", features = ["builder", "pem"] }
+der = "0.8"
+spki = "0.8"
+# `pem` + `alloc` are explicitly enabled so `DecodePrivateKey::from_pkcs8_pem`
+# (Task 5 `import_key`) and `PrivateKeyInfoOwned`/`EncodePrivateKey::to_pkcs8_der`
+# resolve directly from this crate (they're transitively on via p256, but relying
+# on that is fragile).
+pkcs8 = { version = "0.11", features = ["pem", "alloc"] }
+p256 = { version = "0.14", features = ["pkcs8", "pem"] }
+ecdsa = { version = "0.17", features = ["digest", "pem"] }
+signature = "3"
+# CMS builder (Plan 2b). `cms` is VENDORED at `../vendor/cms/` because the newest
+# published version (0.3.0-pre.2, Jan 2026) does NOT compile against the current
+# cipher 0.5.x / elliptic-curve 0.14.x line (API drift: cipher `crypto_common`→
+# `common`, elliptic-curve `to_encoded_point`→`to_sec1_point`). The vendored
+# snapshot is a post-pre.2 RustCrypto/formats checkout with those fixes, proven
+# by the Plan 2b spike. The `builder` feature pulls the SignedData/EnvelopedData
+# builders (aes, aes-kw, cbc, rsa, sha2, elliptic-curve/ecdh).
+#
+# SWITCH BACK to the official crate once a fixed version is published (any
+# 0.3.0 release — pre or stable — that compiles against current cipher/
+# elliptic-curve):
+#   1. Replace this line with:  cms = { version = "0.3", features = ["builder"] }
+#   2. `cargo update -p cms`  (then `cargo build`)
+#   3. `cargo test -p crypto-smime` + `cargo test -p crypto-smime --all-targets` +
+#      backend tests + clippy — if green, the public builder API our cms_build.rs
+#      uses matches the release (SignedDataBuilder, SignerInfoBuilder,
+#      KeyTrans/KeyAgreeRecipientInfoBuilder, ContentEncryptionAlgorithm).
+#   4. `rm -rf ../vendor/cms`
+# Tracked in .superpowers/sdd/progress.md (Plan 2b carry-forward) until done.
+cms = { path = "../vendor/cms", features = ["builder"] }
+# Generic-instantiated cipher / key-wrap types we pass to the cms builders
+# (Aes128 content cipher, AesKw<Aes192> key wrap). Must be direct deps because
+# we name the types, not just rely on cms's transitive use.
+aes = "0.9"
+aes-kw = "0.3"
+cbc = "0.2"
+# RSA recipients use PKCS#1v1.5 key transport (ktri). RC line pinned by cms 0.3.
+rsa = { version = "0.10.0-rc.18", features = ["sha2"] }
+const-oid = { version = "0.10", features = ["db"] }
+# sha2 must be 0.11 (ecdsa 0.17 / elliptic-curve 0.14 line) with the `oid`
+# feature, which provides `AssociatedOid for Sha256` — required by the
+# CertificateBuilder signing path for ECDSA P-256.
+sha2 = { version = "0.11", features = ["oid"] }
+# rand 0.10 provides rand_core 0.10, which is what elliptic-curve 0.14's
+# `Generate::generate_from_rng` expects (`CryptoRngCore` bound).
+rand = "0.10"
+x509-parser = "0.18"
+# PEM block parsing for import_key (Task 5) + PEM construction in tests.
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+thiserror = "1"
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+# Task 2 round-trip test does `use cipher::{BlockModeDecrypt, KeyIvInit};` and
+# `use cipher::block_padding::Pkcs7;` for the AES-128-CBC decrypt verification.
+# cipher is only transitive (via cms/cbc/aes) otherwise, so `use cipher::...`
+# would not resolve. Same 0.5.x line the vendored cms builder + cbc 0.2/aes 0.9 use.
+cipher = "0.5"

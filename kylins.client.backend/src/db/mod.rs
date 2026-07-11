@@ -17,9 +17,11 @@ pub mod ai_cache;
 pub mod attachments;
 pub mod calendar_events;
 pub mod calendars;
+pub mod collected_keys;
 pub mod commands;
 pub mod contact_sync_state;
 pub mod contacts;
+pub mod crypto_keys;
 pub mod drafts;
 pub mod image_allowlist;
 pub mod labels;
@@ -37,6 +39,7 @@ pub mod sync_state;
 pub mod tasks;
 pub mod templates;
 pub mod threads;
+pub mod trust_decisions;
 
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},

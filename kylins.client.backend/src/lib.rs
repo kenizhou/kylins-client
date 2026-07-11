@@ -20,6 +20,7 @@ pub mod commands;
 pub mod crypto;
 pub mod db;
 pub mod eas;
+pub mod keystore_bridge;
 pub mod mail;
 pub mod oauth;
 pub mod sync;
@@ -238,6 +239,15 @@ pub fn run() {
             db::commands::db_cache_ai_result,
             db::commands::db_get_rate_limit_info,
             db::commands::db_get_uncached_body_message_ids,
+            db::commands::db_upsert_crypto_key,
+            db::commands::db_get_crypto_key,
+            db::commands::db_list_crypto_keys_for_email,
+            db::commands::db_list_crypto_keys_for_account,
+            db::commands::db_put_trust_decision,
+            db::commands::db_get_trust_decision,
+            db::commands::db_stage_collected_key,
+            db::commands::db_list_collected_keys,
+            db::commands::db_remove_collected_key,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,

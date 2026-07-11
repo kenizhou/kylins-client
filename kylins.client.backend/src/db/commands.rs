@@ -1138,6 +1138,167 @@ pub async fn db_cache_ai_result(
     .await
 }
 
+// ---- crypto keys / trust / collected keys (Phase 1 Plan 1) ----
+//
+// Storage foundation for the Kylins crypto framework. `db_get_crypto_key`
+// returns the PUBLIC-facing [`CryptoKeyRow`] only (no private material —
+// `has_private` is a bool). The decrypting read (`get_crypto_key_full`) is an
+// in-Rust fn and is deliberately NOT exposed as a command: private key bytes
+// never cross the Tauri IPC boundary.
+
+use crate::db::collected_keys::{self, CollectedKeyRow};
+use crate::db::crypto_keys::{self, CryptoKeyRecord, CryptoKeyRow};
+use crate::db::trust_decisions::{self, TrustDecisionRow};
+
+use serde::Deserialize;
+
+/// CamelCase IPC input for [`db_put_trust_decision`]. Mirrors the positional
+/// args of [`trust_decisions::put_trust_decision`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustDecisionInput {
+    pub account_id: String,
+    pub peer_email: String,
+    pub standard: String,
+    pub fingerprint: String,
+    pub decision: String,
+    #[serde(default)]
+    pub evidence_json: Option<String>,
+}
+
+/// CamelCase IPC input for [`db_stage_collected_key`]. `public_data` is the
+/// raw key bytes (armored PGP / DER) as a byte array.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectedKeyInput {
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub peer_email: Option<String>,
+    #[serde(default)]
+    pub standard: Option<String>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    pub public_data: Vec<u8>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Upsert a crypto identity key/cert. Private material in
+/// `input.private_data` is encrypted at rest via `encrypt_with_aad` inside the
+/// db layer; only the public row is ever readable via a command.
+#[tauri::command]
+pub async fn db_upsert_crypto_key(
+    pool: State<'_, SqlitePool>,
+    input: CryptoKeyRecord,
+) -> Result<(), String> {
+    crypto_keys::upsert_crypto_key(&pool, &input).await
+}
+
+/// Return the PUBLIC-facing row for a key (`has_private` flag, no private
+/// bytes), or `None`. Private material is never returned across IPC.
+#[tauri::command]
+pub async fn db_get_crypto_key(
+    pool: State<'_, SqlitePool>,
+    standard: String,
+    fingerprint: String,
+) -> Result<Option<CryptoKeyRow>, String> {
+    crypto_keys::get_crypto_key_public(&pool, &standard, &fingerprint).await
+}
+
+/// List public-facing keys for `(standard, email)`.
+#[tauri::command]
+pub async fn db_list_crypto_keys_for_email(
+    pool: State<'_, SqlitePool>,
+    standard: String,
+    email: String,
+) -> Result<Vec<CryptoKeyRow>, String> {
+    crypto_keys::list_crypto_keys_for_email(&pool, &standard, &email).await
+}
+
+/// List public-facing keys for `(account_id, standard)`.
+#[tauri::command]
+pub async fn db_list_crypto_keys_for_account(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    standard: String,
+) -> Result<Vec<CryptoKeyRow>, String> {
+    crypto_keys::list_crypto_keys_for_account(&pool, &account_id, &standard).await
+}
+
+/// Append a trust decision (INSERT only — audit history is never mutated).
+#[tauri::command]
+pub async fn db_put_trust_decision(
+    pool: State<'_, SqlitePool>,
+    input: TrustDecisionInput,
+) -> Result<(), String> {
+    trust_decisions::put_trust_decision(
+        &pool,
+        &input.account_id,
+        &input.peer_email,
+        &input.standard,
+        &input.fingerprint,
+        &input.decision,
+        input.evidence_json.as_deref(),
+    )
+    .await
+}
+
+/// Return the latest trust decision for a peer key, or `None`.
+#[tauri::command]
+pub async fn db_get_trust_decision(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    peer_email: String,
+    standard: String,
+    fingerprint: String,
+) -> Result<Option<TrustDecisionRow>, String> {
+    trust_decisions::get_latest_trust_decision(
+        &pool,
+        &account_id,
+        &peer_email,
+        &standard,
+        &fingerprint,
+    )
+    .await
+}
+
+/// Stage a discovered (not-yet-accepted) key.
+#[tauri::command]
+pub async fn db_stage_collected_key(
+    pool: State<'_, SqlitePool>,
+    input: CollectedKeyInput,
+) -> Result<(), String> {
+    collected_keys::stage_collected_key(
+        &pool,
+        input.account_id.as_deref(),
+        input.peer_email.as_deref(),
+        input.standard.as_deref(),
+        input.fingerprint.as_deref(),
+        &input.public_data,
+        input.source.as_deref(),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// List staged keys for `(account_id, peer_email, standard)`.
+#[tauri::command]
+pub async fn db_list_collected_keys(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    peer_email: String,
+    standard: String,
+) -> Result<Vec<CollectedKeyRow>, String> {
+    collected_keys::list_collected_keys_for_peer(&pool, &account_id, &peer_email, &standard).await
+}
+
+/// Remove a staged key by id.
+#[tauri::command]
+pub async fn db_remove_collected_key(pool: State<'_, SqlitePool>, id: i64) -> Result<(), String> {
+    collected_keys::remove_collected_key(&pool, id).await
+}
+
 // ---- rate-limit (Phase 3f) ----
 
 /// Returns the account's current rate-limit window (`Some(retry_after)` epoch

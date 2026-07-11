@@ -58,6 +58,16 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"
+# Secret hygiene: zeroizing master key + constant-time comparison
+secrecy = "0.10"
+zeroize = "1"
+subtle = "2"
+# Crypto framework core (neutral envelope + KeyHandle + CryptoBackend trait).
+# Workspace lives at repo-root `kylins.client.crypto/` (sibling to backend/frontend).
+crypto-core = { path = "../kylins.client.crypto/core" }
+# S/MIME backend (lifecycle ops land in Plan 2 Group B; the dep is wired now so
+# the db-backed KeyStore bridge + future smoke tests can reference it).
+crypto-smime = { path = "../kylins.client.crypto/smime" }
 
 # Error handling for EAS client
 thiserror = "1"
@@ -90,6 +100,18 @@ uuid = { version = "1", features = ["v4"] }
 mail-parser = "0.9"
 # Temp dirs for db migration tests
 tempfile = "3"
+# S/MIME lifecycle smoke test (Plan 2 Task 6): re-parse exported cert DER to
+# assert SAN email + EKU emailProtection.
+x509-parser = "0.18"
+# Plan 2b Task 5: S/MIME sign lifecycle integration test parses the signed
+# ContentInfo DER to assert id-signed-data. `cms` reaches the backend only
+# transitively (via crypto-smime), so the test must name it as a direct dev-dep
+# to `use cms::...`. Same vendored snapshot path crypto-smime uses (identical
+# version). `const-oid` needs the `db` feature for `const_oid::db::rfc5911::*`;
+# `der` is needed for the `der::Decode` trait bound in the test.
+cms = { path = "../kylins.client.crypto/vendor/cms" }
+const-oid = { version = "0.10", features = ["db"] }
+der = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_UI_Shell"] }
@@ -97,3 +119,6 @@ windows = { version = "0.58", features = ["Win32_UI_Shell"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service"] }
 tray-item = { version = "0.10.0", default-features = false, features = ["ksni"] }
+# `cms` reaches the backend only transitively via crypto-smime, which sources it
+# from a vendored snapshot (see kylins.client.crypto/smime/Cargo.toml). No patch
+# or direct dep is needed here.

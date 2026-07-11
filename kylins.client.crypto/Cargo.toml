@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["core", "smime"]
+# `vendor/cms` is a vendored path dependency (the published cms 0.3.0-pre.2
+# doesn't compile vs the current cipher/elliptic-curve line — see
+# smime/Cargo.toml). Exclude it from workspace membership so `cargo test` /
+# `cargo build` at this root don't build or run the vendored crate's OWN tests
+# (one has a Windows CRLF fixture mismatch and is upstream code we don't own).
+# The path dep from `smime` still resolves normally.
+exclude = ["vendor/cms"]
+
+# NOTE: the `cms` crate is VENDORED at `vendor/cms/` and consumed via a path dep
+# in `smime/Cargo.toml`. Published cms 0.3.0-pre.2 (latest, Jan 2026) does not
+# compile against current cipher/elliptic-curve (API drift); the vendored
+# post-pre.2 snapshot has the fix. Swap smime back to `cms = "0.3"` from
+# crates.io once a fixed version ships (see smime/Cargo.toml for the procedure),
+# then `rm -rf vendor/cms`.
