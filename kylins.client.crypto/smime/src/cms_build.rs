@@ -78,8 +78,23 @@ pub(crate) fn build_signed_data(
         parameters: None,
     };
 
-    let signer_info_builder = SignerInfoBuilder::new(sid, digest_algorithm.clone(), &encap, None)
-        .map_err(|e| cms_err("signer info builder", e))?;
+    // For a detached signature (clear-sign multipart/signed), the cms builder
+    // takes a PRECOMPUTED digest of the external content via
+    // `external_message_digest` (it is NOT the raw content). For encapsulated
+    // (detached=false) the builder hashes `econtent` itself, so pass None.
+    let external_digest = if detached {
+        use sha2::Digest;
+        Some(sha2::Sha256::digest(payload).to_vec())
+    } else {
+        None
+    };
+    let signer_info_builder = SignerInfoBuilder::new(
+        sid,
+        digest_algorithm.clone(),
+        &encap,
+        external_digest.as_deref(),
+    )
+    .map_err(|e| cms_err("signer info builder", e))?;
 
     let content_info = SignedDataBuilder::new(&encap)
         .add_digest_algorithm(digest_algorithm)
@@ -296,6 +311,36 @@ mod tests {
         )
         .unwrap();
         vk.verify(&signed_attrs_der, &sig).expect("signature verifies");
+    }
+
+    /// detached=true must sign over the external payload: the SignedData's
+    /// messageDigest signed attribute must equal SHA-256(payload). (Was
+    /// degenerate before the `external_message_digest` fix — messageDigest was
+    /// absent; the detached path now passes the precomputed digest.)
+    #[test]
+    fn build_signed_data_detached_covers_external_payload() {
+        use sha2::Digest;
+        let built = crate::cert::build_self_signed_smime_cert("detached@kylins.com").unwrap();
+        let payload = b"external content to be clear-signed";
+        let der = build_signed_data(payload, true, &built.cert_der, &built.priv_pkcs8_der).unwrap();
+
+        let ci: ContentInfo = <ContentInfo as Decode>::from_der(&der).unwrap();
+        let sd: SignedData =
+            <SignedData as Decode>::from_der(ci.content.to_der().unwrap().as_slice()).unwrap();
+        assert_eq!(sd.encap_content_info.econtent, None, "detached ⇒ eContent absent");
+
+        let signer_info = sd.signer_infos.0.get(0).unwrap();
+        let signed_attrs = signer_info.signed_attrs.clone().expect("signed attrs present");
+        // Find the messageDigest attribute (OID 1.2.840.113549.1.9.4) and read its value.
+        let md = signed_attrs
+            .iter()
+            .find(|a| a.oid.to_string() == "1.2.840.113549.1.9.4")
+            .expect("messageDigest attribute present");
+        let md_val = md.values.get(0).unwrap();
+        // `md_val` is a der::Any wrapping an OCTET STRING. Decode the full
+        // TLV (not just the content bytes) to get the OctetString.
+        let md_octets: OctetString = md_val.decode_as().expect("decode messageDigest octet string");
+        assert_eq!(md_octets.as_bytes(), &sha2::Sha256::digest(payload)[..]);
     }
 
     /// RSA recipient: build EnvelopedData, then decrypt in-process by

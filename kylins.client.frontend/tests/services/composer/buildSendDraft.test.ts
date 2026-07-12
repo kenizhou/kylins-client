@@ -249,4 +249,24 @@ describe('composer/buildSendDraft', () => {
       { name: 'reply2', email: 'reply2@example.com' },
     ]);
   });
+
+  it('threads S/MIME crypto intent from the crypto options arg', async () => {
+    const draft = await buildSendDraft(
+      baseInput(),
+      'draft-crypto',
+      'fallback@example.com',
+      undefined,
+      { cryptoMethod: 'smime', sign: true, encrypt: true },
+    );
+    expect(draft.cryptoMethod).toBe('smime');
+    expect(draft.sign).toBe(true);
+    expect(draft.encrypt).toBe(true);
+  });
+
+  it('defaults cryptoMethod to none and sign/encrypt to false when no crypto options are passed', async () => {
+    const draft = await buildSendDraft(baseInput(), 'draft-1', 'fallback@example.com');
+    expect(draft.cryptoMethod).toBe('none');
+    expect(draft.sign).toBe(false);
+    expect(draft.encrypt).toBe(false);
+  });
 });

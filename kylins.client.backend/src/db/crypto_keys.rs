@@ -287,6 +287,34 @@ pub async fn list_crypto_keys_for_account(
     Ok(rows.iter().map(row_to_crypto_key).collect())
 }
 
+/// Minimal view of a default signing key — the bits `send_op`/`apply_crypto`
+/// need to build a `KeyHandleRef` and resolve the cert+key via
+/// [`get_crypto_key_full`]. Carries no private material.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct DefaultKeyRow {
+    pub standard: String,
+    pub fingerprint: String,
+    pub email: Option<String>,
+}
+
+/// The account's default S/MIME signing key, if one is flagged. Phase 1 uses a
+/// single default per account; multiple-standard selection arrives later.
+/// Returns just enough to build a `KeyHandleRef`; callers needing the cert/private
+/// blob follow up with [`get_crypto_key_full`] using the returned fingerprint.
+pub async fn get_default_signing_key(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Option<DefaultKeyRow>, sqlx::Error> {
+    sqlx::query_as::<_, DefaultKeyRow>(
+        "SELECT standard, fingerprint, email FROM crypto_keys
+         WHERE account_id = ? AND standard = 'smime' AND is_default_sign = 1
+         LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +524,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(full.private_data.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_default_signing_key_returns_the_flagged_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        // Two smime keys for acct; only fp-B is flagged as the default signing key.
+        let mut a = sample_record("acct", "fp-A");
+        a.row.is_default_sign = false;
+        let mut b = sample_record("acct", "fp-B");
+        b.row.is_default_sign = true;
+        upsert_crypto_key(&pool, &a).await.unwrap();
+        upsert_crypto_key(&pool, &b).await.unwrap();
+
+        let got = get_default_signing_key(&pool, "acct")
+            .await
+            .unwrap()
+            .expect("present");
+        assert_eq!(got.fingerprint, "fp-B");
+        assert_eq!(got.standard, "smime");
+    }
+
+    #[tokio::test]
+    async fn get_default_signing_key_none_when_no_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct2").await;
+        assert!(
+            get_default_signing_key(&pool, "acct2")
+                .await
+                .unwrap()
+                .is_none(),
+            "no default flagged -> None"
+        );
     }
 }

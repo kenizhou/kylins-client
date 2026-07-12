@@ -33,6 +33,19 @@ import { inlineCss } from './juiceInline';
 import { extractInlineImages, htmlToPlainText } from '@/utils/emailBuilder';
 
 /**
+ * Per-message crypto intent threaded into `buildSendDraft`. All fields
+ * optional — when absent the draft defaults to plain MIME (`cryptoMethod =
+ * 'none'`, `sign = false`, `encrypt = false`). The composer UI that actually
+ * SETS these toggles is Plan 4b; Plan 4a only requires the fields to flow
+ * through to the backend `SendDraft` so the send path can act on them.
+ */
+export interface SendCryptoOptions {
+  cryptoMethod?: 'none' | 'smime';
+  sign?: boolean;
+  encrypt?: boolean;
+}
+
+/**
  * Build the IPC-ready `SendDraft` from a composer `DraftInput`.
  *
  * @param input         The editable draft (composer store shape).
@@ -42,12 +55,16 @@ import { extractInlineImages, htmlToPlainText } from '@/utils/emailBuilder';
  *                      freshly-generated `newDraftId()`.
  * @param fallbackFrom  Sender address to use when `input.fromEmail` is null.
  * @param fallbackFromName  Sender display name to use when `input.fromName` is null.
+ * @param crypto        Optional S/MIME intent (sign/encrypt). Defaults to
+ *                      `none`/`false` — plain MIME. Meaningful only once
+ *                      Plan 4a Tasks 3–6 honor `cryptoMethod === 'smime'`.
  */
 export async function buildSendDraft(
   input: DraftInput,
   draftId: string,
   fallbackFrom: string,
   fallbackFromName?: string,
+  crypto?: SendCryptoOptions,
 ): Promise<SendDraft> {
   // 1. Prepare HTML body (inline styles + strip signature wrapper).
   const preparedHtml = stripSignature(inlineCss(input.bodyHtml));
@@ -109,6 +126,9 @@ export async function buildSendDraft(
     subject: input.subject,
     htmlBody: htmlWithCids,
     textBody: htmlToPlainText(htmlWithCids),
+    cryptoMethod: crypto?.cryptoMethod ?? 'none',
+    sign: crypto?.sign ?? false,
+    encrypt: crypto?.encrypt ?? false,
   };
   if (input.cc && input.cc.length > 0) draft.cc = input.cc.map(toAddress);
   if (input.bcc && input.bcc.length > 0) draft.bcc = input.bcc.map(toAddress);
