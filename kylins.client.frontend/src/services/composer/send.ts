@@ -16,7 +16,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import type { DraftInput } from './drafts';
-import { buildSendDraft } from './buildSendDraft';
+import { buildSendDraft, type SendCryptoOptions } from './buildSendDraft';
 import { newDraftId } from './attachments';
 import { useAccountStore } from '@/stores/accountStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -74,6 +74,14 @@ export async function sendEmail(
 
   const sendDraftId = stagingDraftId ?? newDraftId();
   console.log('[send-fe] sendEmail buildSendDraft start sendDraftId=', sendDraftId);
+  // Plan 4b Task 1: thread DraftInput.isEncrypted/isSigned → buildSendDraft's
+  // 5th `crypto` arg so the backend SendDraft carries the user's crypto intent
+  // (Plan 4a's apply_crypto then produces real S/MIME). When neither toggle is
+  // set we pass `undefined` and buildSendDraft applies its 'none'/false defaults.
+  const crypto: SendCryptoOptions | undefined =
+    input.isEncrypted || input.isSigned
+      ? { cryptoMethod: 'smime', sign: !!input.isSigned, encrypt: !!input.isEncrypted }
+      : undefined;
   let draft;
   try {
     draft = await buildSendDraft(
@@ -81,6 +89,7 @@ export async function sendEmail(
       sendDraftId,
       account.email,
       account.displayName ?? undefined,
+      crypto,
     );
   } catch (err) {
     // Preserve original behavior: buildSendDraft failures reject the whole

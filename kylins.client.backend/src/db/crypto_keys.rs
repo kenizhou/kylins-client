@@ -315,6 +315,67 @@ pub async fn get_default_signing_key(
     .await
 }
 
+/// Delete a key by `(account_id, standard, fingerprint)`. Idempotent: deleting
+/// a fingerprint that doesn't exist is a no-op (no error, no rows affected).
+/// Private material is removed along with the rest of the row.
+pub async fn delete_crypto_key(
+    pool: &SqlitePool,
+    account_id: &str,
+    standard: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM crypto_keys WHERE account_id = ? AND standard = ? AND fingerprint = ?",
+    )
+    .bind(account_id)
+    .bind(standard)
+    .bind(fingerprint)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Atomically set the default signing key for `(account_id, standard)`:
+/// un-flag every existing default in the scope, then flag the one identified by
+/// `fingerprint`. Errors if no row matches `(account_id, standard,
+/// fingerprint)` — surfacing a stale UI rather than silently leaving the
+/// account without a default. Both UPDATEs run in a single transaction; the
+/// un-flag is rolled back via the dropped (never-committed) transaction on the
+/// missing-fingerprint path.
+pub async fn set_default_signing_key(
+    pool: &SqlitePool,
+    account_id: &str,
+    standard: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE crypto_keys SET is_default_sign = 0 WHERE account_id = ? AND standard = ?")
+        .bind(account_id)
+        .bind(standard)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    let r = sqlx::query(
+        "UPDATE crypto_keys SET is_default_sign = 1
+         WHERE account_id = ? AND standard = ? AND fingerprint = ?",
+    )
+    .bind(account_id)
+    .bind(standard)
+    .bind(fingerprint)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if r.rows_affected() == 0 {
+        // Returning `Err` here drops `tx` without committing — the un-flag
+        // UPDATE above is rolled back by sqlx, so the prior default is left
+        // intact.
+        return Err(format!("no key for {account_id}/{standard}/{fingerprint}"));
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,6 +619,84 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "no default flagged -> None"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_crypto_key_removes_the_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        upsert_crypto_key(&pool, &sample_record("acct", "fp-del"))
+            .await
+            .unwrap();
+        delete_crypto_key(&pool, "acct", "smime", "fp-del")
+            .await
+            .unwrap();
+        let gone = get_crypto_key_public(&pool, "smime", "fp-del")
+            .await
+            .unwrap();
+        assert!(gone.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_default_signing_key_is_atomic_and_unflags_previous() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        let mut a = sample_record("acct", "fp-a");
+        a.row.is_default_sign = true;
+        let mut b = sample_record("acct", "fp-b");
+        b.row.is_default_sign = false;
+        upsert_crypto_key(&pool, &a).await.unwrap();
+        upsert_crypto_key(&pool, &b).await.unwrap();
+        set_default_signing_key(&pool, "acct", "smime", "fp-b")
+            .await
+            .unwrap();
+        let ra = get_crypto_key_public(&pool, "smime", "fp-a")
+            .await
+            .unwrap()
+            .unwrap();
+        let rb = get_crypto_key_public(&pool, "smime", "fp-b")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!ra.is_default_sign, "previous default un-flagged");
+        assert!(rb.is_default_sign, "new default flagged");
+        // exactly one default
+        let defaults = list_crypto_keys_for_account(&pool, "acct", "smime")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.is_default_sign)
+            .count();
+        assert_eq!(defaults, 1);
+    }
+
+    #[tokio::test]
+    async fn set_default_signing_key_errors_on_missing_fingerprint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        // Seed an existing default so we can prove the tx rollback leaves it
+        // intact — the un-flag UPDATE must NOT persist when the chosen
+        // fingerprint is missing (the transaction is dropped uncommitted).
+        let mut a = sample_record("acct", "fp-existing");
+        a.row.is_default_sign = true;
+        upsert_crypto_key(&pool, &a).await.unwrap();
+        let err = set_default_signing_key(&pool, "acct", "smime", "nope")
+            .await
+            .unwrap_err();
+        assert!(err.contains("no key"));
+        // Rollback proof: the previously-flagged default is STILL flagged.
+        let still_default =
+            get_crypto_key_public(&pool, "smime", "fp-existing")
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            still_default.is_default_sign,
+            "missing-fingerprint path must NOT commit the un-flag (tx rolled back)"
         );
     }
 }

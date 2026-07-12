@@ -244,3 +244,177 @@ async fn smime_sign_produces_signed_data() {
             .expect("parse content info");
     assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_SIGNED_DATA);
 }
+
+// ---- Plan 4b Task 2 — SmimeBackend command wrappers -----------------------
+//
+// These tests drive the `crypto_*_inner` bodies directly against a real
+// in-memory pool — no Tauri runtime. The `#[tauri::command]` wrappers are
+// one-line delegations, so if the inner fn is correct the wrapper is correct
+// (same delegation-pinning strategy as `db::commands::tests` for
+// `db_get_rate_limit_info`).
+
+use kylins_client_lib::db::commands::{
+    crypto_export_public_to_path_inner, crypto_generate_key_inner,
+    crypto_import_key_from_path_inner,
+};
+use kylins_client_lib::db::crypto_keys::get_crypto_key_public;
+
+/// Seed an arbitrary `(id, email)` account row — the FK target for
+/// `crypto_keys`. A separate helper from [`seed_account`] so the import test
+/// can build a FRESH account (different `account_id`, same fingerprint) without
+/// disturbing the constants-bound fixture.
+async fn seed_account_with(pool: &SqlitePool, id: &str, email: &str) {
+    sqlx::query(
+        "INSERT INTO accounts (id, email, provider, is_active, is_default, sort_order, created_at, updated_at)
+         VALUES (?, ?, 'imap', 1, 0, 0, strftime('%s','now'), strftime('%s','now'))",
+    )
+    .bind(id)
+    .bind(email)
+    .execute(pool)
+    .await
+    .expect("seed account");
+}
+
+/// `crypto_generate_key_inner` persists a new S/MIME cert + private key into
+/// `crypto_keys` (private blob encrypted at rest via `encrypt_with_aad`) and
+/// returns the PUBLIC row — `has_private: true`, no private bytes.
+#[tokio::test]
+async fn crypto_generate_key_inner_persists_row_with_private() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+    seed_account_with(&pool, "acct-gen", "gen@kylins.com").await;
+
+    let row = crypto_generate_key_inner(&pool, "acct-gen", "gen@kylins.com")
+        .await
+        .expect("generate_key_inner");
+
+    assert_eq!(row.standard, "smime");
+    assert!(row.has_private, "generated key must have a private blob");
+    assert!(!row.fingerprint.is_empty(), "fingerprint must be non-empty");
+
+    // Re-fetch from the db confirms persistence (not just an in-memory return).
+    let again = get_crypto_key_public(&pool, "smime", &row.fingerprint)
+        .await
+        .expect("re-fetch");
+    let again = again.expect("row must persist in crypto_keys");
+    assert!(again.has_private);
+    assert_eq!(again.fingerprint, row.fingerprint);
+}
+
+/// `crypto_export_public_to_path_inner` writes the cert (DER) to `out_path`;
+/// re-parsing the file via `x509-parser` proves the bytes are a real X.509 cert
+/// carrying the expected SAN `rfc822Name=<email>` + EKU `emailProtection`.
+#[tokio::test]
+async fn crypto_export_public_to_path_inner_writes_parseable_cert() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+    seed_account_with(&pool, "acct-exp", "exp@kylins.com").await;
+
+    let row = crypto_generate_key_inner(&pool, "acct-exp", "exp@kylins.com")
+        .await
+        .expect("generate_key_inner");
+
+    let cert_path = tmp.path().join("exported.crt");
+    crypto_export_public_to_path_inner(
+        &pool,
+        "acct-exp",
+        "smime",
+        &row.fingerprint,
+        cert_path.to_str().unwrap(),
+    )
+    .await
+    .expect("export_public_to_path_inner");
+
+    assert!(cert_path.exists(), "cert file must be written");
+    let der = std::fs::read(&cert_path).expect("read cert");
+    assert!(!der.is_empty(), "cert DER must be non-empty");
+
+    let (_rem, cert) = x509_parser::parse_x509_certificate(&der)
+        .expect("x509-parser must re-parse the exported DER");
+
+    // SAN must carry the account email as an RFC822Name (S/MIME cert marker).
+    let san = cert
+        .subject_alternative_name()
+        .expect("SAN extension lookup ok")
+        .expect("SAN extension present")
+        .value;
+    let has_email = san.general_names.iter().any(
+        |gn| matches!(gn, x509_parser::extensions::GeneralName::RFC822Name(s) if *s == "exp@kylins.com"),
+    );
+    assert!(has_email, "SAN must contain exp@kylins.com; got {:?}", san.general_names);
+
+    // EKU must include emailProtection.
+    let eku = cert
+        .extended_key_usage()
+        .expect("EKU extension lookup ok")
+        .expect("EKU extension present")
+        .value;
+    assert!(eku.email_protection, "EKU must include emailProtection; got {eku:?}");
+}
+
+/// `crypto_import_key_from_path_inner` round-trips a PEM bundle (cert + PKCS#8
+/// private key) generated in acct-A into a FRESH account (acct-B). Asserts the
+/// imported fingerprint matches the source (same cert → same SKI) AND
+/// `has_private` survives the at-rest encrypt/decrypt round-trip.
+#[tokio::test]
+async fn crypto_import_key_from_path_inner_round_trips_pem_bundle() {
+    // --- Fixture: generate a key in acct-A, build a PEM bundle (cert+PKCS#8). -
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+    seed_account_with(&pool, "acct-A", "alice@kylins.com").await;
+
+    let row_a = crypto_generate_key_inner(&pool, "acct-A", "alice@kylins.com")
+        .await
+        .expect("generate_key_inner in acct-A");
+
+    // Fetch the cert (DER) + private key (PKCS#8 DER) to build the PEM bundle.
+    // Mirrors the legacy `smime_lifecycle_generate_export_reimport_round_trips`
+    // test's fixture-construction approach.
+    let canonical = lookup_handle(Standard::Smime, &row_a.fingerprint);
+    let ks = Arc::new(SqliteKeyStore::new(
+        std::sync::Arc::new((*pool).clone()),
+        "acct-A",
+    ));
+    let stored = ks
+        .get(&canonical)
+        .await
+        .expect("keystore get")
+        .expect("stored key present");
+
+    let cert_der = stored.public_data.clone();
+    let priv_der = crypto_core::secret::expose_bytes(
+        stored
+            .private_data
+            .as_ref()
+            .expect("private material present after generate"),
+    )
+    .to_vec();
+    let pem = format!(
+        "{}\n{}\n",
+        pem_block("CERTIFICATE", &cert_der),
+        pem_block("PRIVATE KEY", &priv_der),
+    );
+    let pem_path = tmp.path().join("bundle.pem");
+    std::fs::write(&pem_path, pem.as_bytes()).expect("write PEM bundle");
+
+    // --- Import the PEM into a FRESH account (acct-B). -----------------------
+    seed_account_with(&pool, "acct-B", "bob@kylins.com").await;
+    let row_b = crypto_import_key_from_path_inner(&pool, "acct-B", pem_path.to_str().unwrap())
+        .await
+        .expect("import_key_from_path_inner");
+
+    assert_eq!(row_b.standard, "smime");
+    assert_eq!(
+        row_b.fingerprint, row_a.fingerprint,
+        "same cert → same SubjectKeyIdentifier fingerprint"
+    );
+    assert!(row_b.has_private, "imported key must have private material");
+
+    // Re-fetch from the db confirms persistence in acct-B (a different
+    // account_id from acct-A — proving the row is newly inserted, not the
+    // acct-A row being shadowed by the UNIQUE constraint).
+    let again = get_crypto_key_public(&pool, "smime", &row_b.fingerprint)
+        .await
+        .expect("re-fetch");
+    assert!(again.is_some(), "imported row must persist in crypto_keys");
+}

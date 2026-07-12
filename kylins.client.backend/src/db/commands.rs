@@ -1226,6 +1226,35 @@ pub async fn db_list_crypto_keys_for_account(
     crypto_keys::list_crypto_keys_for_account(&pool, &account_id, &standard).await
 }
 
+/// Delete a crypto key by `(account_id, standard, fingerprint)`. Backs the
+/// KeyManager UI's Delete action. Idempotent at the db layer (no rows affected
+/// is not an error) — the caller is responsible for any "row was already gone"
+/// UX. Private material is purged along with the row.
+#[tauri::command]
+pub async fn db_delete_crypto_key(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    standard: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    crypto_keys::delete_crypto_key(&pool, &account_id, &standard, &fingerprint).await
+}
+
+/// Atomically flag `(account_id, standard, fingerprint)` as the default
+/// signing key: un-flag all existing defaults in the scope, then flag the
+/// chosen one — both inside a single transaction. Returns `Err` if no key row
+/// matches the triple, so a stale KeyManager UI surfaces the missing key
+/// instead of silently leaving the account without a default.
+#[tauri::command]
+pub async fn db_set_default_signing_key(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    standard: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    crypto_keys::set_default_signing_key(&pool, &account_id, &standard, &fingerprint).await
+}
+
 /// Append a trust decision (INSERT only — audit history is never mutated).
 #[tauri::command]
 pub async fn db_put_trust_decision(
@@ -1297,6 +1326,137 @@ pub async fn db_list_collected_keys(
 #[tauri::command]
 pub async fn db_remove_collected_key(pool: State<'_, SqlitePool>, id: i64) -> Result<(), String> {
     collected_keys::remove_collected_key(&pool, id).await
+}
+
+// ---- S/MIME backend lifecycle commands (Plan 4b Task 2) ----
+//
+// Thin Tauri wrappers around `crypto_smime::SmimeBackend`'s generate / import /
+// export ops, bound to the per-account `SqliteKeyStore` (same construction
+// `send_op` does at `engine.rs:1011`). Path-based import/export dodges the
+// `plugin-fs` appData-scope restriction on byte-array IPC and mirrors the
+// `stage_picked_attachment` pattern.
+//
+// Each command delegates to a `pub async fn <name>_inner(&SqlitePool, ...)`
+// body so the lifecycle can be exercised against a real in-memory pool without
+// a Tauri runtime (same delegation-pinning strategy as the test for
+// `db_get_rate_limit_info`).
+//
+// Returned `CryptoKeyRow`s are the PUBLIC-facing view only: `has_private: bool`
+// is set, but no private bytes ever cross the IPC boundary (private reads go
+// through `get_crypto_key_full`, which is deliberately NOT exposed as a command).
+
+use crypto_core::{CryptoBackend, CryptoPolicy, KeyGenParams, KeyHandle, KeyId, Standard};
+use crypto_smime::SmimeBackend;
+
+use crate::keystore_bridge::SqliteKeyStore;
+
+/// Build a per-call `SmimeBackend` bound to `account_id`, mirroring the
+/// `send_op` construction at `engine.rs:1011`. `SqlitePool::clone` is a cheap
+/// `Arc` bump; the outer `Arc<SqliteKeyStore>` coerces to `Arc<dyn KeyStore>`.
+fn smime_backend(pool: &SqlitePool, account_id: &str) -> SmimeBackend {
+    SmimeBackend::new(
+        std::sync::Arc::new(SqliteKeyStore::new(
+            std::sync::Arc::new(pool.clone()),
+            account_id,
+        )),
+        CryptoPolicy::default_baseline(),
+    )
+}
+
+/// Generate a self-signed S/MIME cert + PKCS#8 private key, persisting both to
+/// `crypto_keys` (private blob encrypted at rest via `encrypt_with_aad`).
+/// Returns the PUBLIC row only — `has_private: true`, no private bytes.
+pub async fn crypto_generate_key_inner(
+    pool: &SqlitePool,
+    account_id: &str,
+    email: &str,
+) -> Result<CryptoKeyRow, String> {
+    let backend = smime_backend(pool, account_id);
+    let h = backend
+        .generate_key(KeyGenParams {
+            standard: Standard::Smime,
+            user_id: email.into(),
+            algorithm: "ECDSA-P256".into(),
+            passphrase: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    crypto_keys::get_crypto_key_public(pool, h.standard.as_str(), h.fingerprint.as_str())
+        .await?
+        .ok_or_else(|| "generate_key: row not found after put".into())
+}
+
+/// Read a PEM bundle (cert + PKCS#8 private key) from `path` and import it
+/// into the account's keystore, persisting to `crypto_keys`. Returns the PUBLIC
+/// row only.
+pub async fn crypto_import_key_from_path_inner(
+    pool: &SqlitePool,
+    account_id: &str,
+    path: &str,
+) -> Result<CryptoKeyRow, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+    let backend = smime_backend(pool, account_id);
+    let h = backend
+        .import_key(&bytes, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    crypto_keys::get_crypto_key_public(pool, h.standard.as_str(), h.fingerprint.as_str())
+        .await?
+        .ok_or_else(|| "import_key: row not found after put".into())
+}
+
+/// Export the public cert (DER) for `(standard, fingerprint)` to `out_path`.
+/// Used by the KeyManager UI's "Export certificate" action. Public-only — never
+/// touches `private_data`.
+pub async fn crypto_export_public_to_path_inner(
+    pool: &SqlitePool,
+    account_id: &str,
+    standard: &str,
+    fingerprint: &str,
+    out_path: &str,
+) -> Result<(), String> {
+    let backend = smime_backend(pool, account_id);
+    // The KeyId encoding matches `SqliteKeyStore::encode_key_id` so the
+    // backend's `export_public` → `keystore.get` resolves the row.
+    let handle = KeyHandle::Software(KeyId(format!("{standard}|{fingerprint}")));
+    let der = backend
+        .export_public(&handle)
+        .await
+        .map_err(|e| e.to_string())?;
+    std::fs::write(out_path, &der).map_err(|e| format!("write {out_path}: {e}"))?;
+    Ok(())
+}
+
+/// Tauri wrapper for [`crypto_generate_key_inner`].
+#[tauri::command]
+pub async fn crypto_generate_key(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    email: String,
+) -> Result<CryptoKeyRow, String> {
+    crypto_generate_key_inner(&pool, &account_id, &email).await
+}
+
+/// Tauri wrapper for [`crypto_import_key_from_path_inner`].
+#[tauri::command]
+pub async fn crypto_import_key_from_path(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    path: String,
+) -> Result<CryptoKeyRow, String> {
+    crypto_import_key_from_path_inner(&pool, &account_id, &path).await
+}
+
+/// Tauri wrapper for [`crypto_export_public_to_path_inner`].
+#[tauri::command]
+pub async fn crypto_export_public_to_path(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    standard: String,
+    fingerprint: String,
+    out_path: String,
+) -> Result<(), String> {
+    crypto_export_public_to_path_inner(&pool, &account_id, &standard, &fingerprint, &out_path).await
 }
 
 // ---- rate-limit (Phase 3f) ----

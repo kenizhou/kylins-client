@@ -154,4 +154,68 @@ describe('composer/send', () => {
       ]),
     );
   });
+
+  it('passes cryptoMethod=smime + sign/encrypt when DraftInput toggles set', async () => {
+    // Plan 4b Task 1: sendEmail must thread DraftInput.isEncrypted/isSigned
+    // through buildSendDraft's 5th `crypto` arg so the backend SendDraft
+    // carries the user's crypto intent. Without this wiring the toggles are
+    // silently dropped and Plan 4a's apply_crypto is a no-op passthrough.
+    const res = await sendEmail(
+      'acc-1',
+      { ...baseInput, isSigned: true, isEncrypted: true },
+      'draft-1',
+    );
+    expect(res.success).toBe(true);
+    const payload = mockInvoke.mock.calls[0]![1] as {
+      op: { draft: { cryptoMethod: string; sign: boolean; encrypt: boolean } };
+    };
+    expect(payload.op.draft.cryptoMethod).toBe('smime');
+    expect(payload.op.draft.sign).toBe(true);
+    expect(payload.op.draft.encrypt).toBe(true);
+  });
+
+  it('defaults cryptoMethod=none + sign/encrypt=false when toggles unset', async () => {
+    // When neither toggle is set, sendEmail should pass NO crypto arg
+    // (undefined) so buildSendDraft applies its 'none'/false defaults.
+    const res = await sendEmail('acc-1', baseInput, 'draft-1');
+    expect(res.success).toBe(true);
+    const payload = mockInvoke.mock.calls[0]![1] as {
+      op: { draft: { cryptoMethod: string; sign: boolean; encrypt: boolean } };
+    };
+    expect(payload.op.draft.cryptoMethod).toBe('none');
+    expect(payload.op.draft.sign).toBe(false);
+    expect(payload.op.draft.encrypt).toBe(false);
+  });
+
+  it('threads only sign when only isSigned is set (encrypt stays false)', async () => {
+    // Asymmetry guard: one toggle ON must not flip the other. sign-only path.
+    const res = await sendEmail(
+      'acc-1',
+      { ...baseInput, isSigned: true, isEncrypted: false },
+      'draft-1',
+    );
+    expect(res.success).toBe(true);
+    const payload = mockInvoke.mock.calls[0]![1] as {
+      op: { draft: { cryptoMethod: string; sign: boolean; encrypt: boolean } };
+    };
+    expect(payload.op.draft.cryptoMethod).toBe('smime');
+    expect(payload.op.draft.sign).toBe(true);
+    expect(payload.op.draft.encrypt).toBe(false);
+  });
+
+  it('threads only encrypt when only isEncrypted is set (sign stays false)', async () => {
+    // Asymmetry guard: encrypt-only path.
+    const res = await sendEmail(
+      'acc-1',
+      { ...baseInput, isSigned: false, isEncrypted: true },
+      'draft-1',
+    );
+    expect(res.success).toBe(true);
+    const payload = mockInvoke.mock.calls[0]![1] as {
+      op: { draft: { cryptoMethod: string; sign: boolean; encrypt: boolean } };
+    };
+    expect(payload.op.draft.cryptoMethod).toBe('smime');
+    expect(payload.op.draft.sign).toBe(false);
+    expect(payload.op.draft.encrypt).toBe(true);
+  });
 });
