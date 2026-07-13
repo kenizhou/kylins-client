@@ -20,7 +20,7 @@ spki = "0.8"
 # resolve directly from this crate (they're transitively on via p256, but relying
 # on that is fragile).
 pkcs8 = { version = "0.11", features = ["pem", "alloc"] }
-p256 = { version = "0.14", features = ["pkcs8", "pem"] }
+p256 = { version = "0.14", features = ["pkcs8", "pem", "ecdh"] }
 ecdsa = { version = "0.17", features = ["digest", "pem"] }
 signature = "3"
 # CMS builder (Plan 2b). `cms` is VENDORED at `../vendor/cms/` because the newest

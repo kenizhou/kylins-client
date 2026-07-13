@@ -5,10 +5,13 @@
 //! the stored DER cert). `import_key` is Plan 2 Task 5. Plan 2b implements the
 //! send side over the RustCrypto `cms` builder: `sign` (SignedData, ECDSA-P256),
 //! `encrypt` (EnvelopedData, RSA + ECC P-256 recipients), and sign-then-encrypt
-//! (`encrypt.sign_with`). `decrypt`/`verify` remain `NotImplemented` (Phase 1b).
+//! (`encrypt.sign_with`). Phase 1b implements the receive side: `decrypt`
+//! (EnvelopedData, ktri RSA + kari ECC P-256) and `verify` (SignedData
+//! pre-chain signature check; chain/trust assessment is G4).
 
 mod cert;
 mod cms_build;
+mod cms_parse;
 
 use std::sync::Arc;
 
@@ -18,16 +21,12 @@ use crypto_core::{
     CryptoBackend, CryptoError, CryptoPolicy, DecryptedPayload, DecryptOp, DetachedSignature,
     EncryptedEnvelope, EncryptedPart, EncryptOp, Fingerprint, KeyGenParams, KeyHandle, KeyHandleRef,
     KeyId, KeyPacketRef, KeyStore, KeyUsage, PartId, PartKind, SecretBox, SerializationStrategy,
-    SignOp, SignedEnvelope, Standard, StoredKey, VerificationResult, VerifyOp,
+    SignOp, SignatureState, SignedEnvelope, Standard, StoredKey, VerificationResult, VerifyOp,
 };
 use der::referenced::OwnedToRef;
 use der::Decode;
 
 pub const CRATE_NAME: &str = "crypto-smime";
-
-/// Placeholder tag for the receive-side ops this backend does not implement yet
-/// (Phase 1b). `sign` + `encrypt` ship in Plan 2b; `decrypt` + `verify` remain.
-const NOT_IMPLEMENTED_TAG: &str = "Phase 1b (CMS decrypt/verify)";
 
 /// S/MIME `CryptoBackend`. Owns the framework policy plus the `KeyStore` where
 /// generated cert/key material is persisted (public DER cert + encrypted PKCS#8
@@ -142,8 +141,38 @@ impl CryptoBackend for SmimeBackend {
         })
     }
 
-    async fn decrypt(&self, _op: DecryptOp<'_>) -> crypto_core::Result<DecryptedPayload> {
-        Err(CryptoError::NotImplemented(NOT_IMPLEMENTED_TAG.into()))
+    async fn decrypt(&self, op: DecryptOp<'_>) -> crypto_core::Result<DecryptedPayload> {
+        // S/MIME collapses the whole MIME tree into one EnvelopedData blob;
+        // there is exactly one encrypted part.
+        let single = op.envelope.parts.first().ok_or_else(|| {
+            CryptoError::Malformed("decrypt: envelope has no parts".into())
+        })?;
+        // Resolve the recipient's stored key (cert + private material).
+        let stored = self
+            .keystore
+            .get(&op.decryption_key.handle)
+            .await?
+            .ok_or_else(|| {
+                CryptoError::KeyNotFound(format!("decrypt: {:?}", op.decryption_key.handle))
+            })?;
+        let priv_box = stored.private_data.as_ref().ok_or_else(|| {
+            CryptoError::Policy("decrypt: key has no private material".into())
+        })?;
+        // Zeroizing so the cloned PKCS#8 private bytes are wiped on drop —
+        // same hygiene as `sign`/`encrypt` (private material never leaves this
+        // scope; only the plaintext is returned).
+        let priv_der =
+            zeroize::Zeroizing::new(crypto_core::secret::expose_bytes(priv_box).to_vec());
+        let plaintext =
+            cms_parse::decrypt_enveloped(&single.ciphertext, &stored.public_data, priv_der.as_slice())?;
+        Ok(DecryptedPayload {
+            standard: Standard::Smime,
+            parts: vec![crypto_core::Part {
+                id: crypto_core::PartId("body".into()),
+                kind: crypto_core::PartKind::Body,
+                data: plaintext,
+            }],
+        })
     }
 
     async fn sign(&self, op: SignOp<'_>) -> crypto_core::Result<SignedEnvelope> {
@@ -188,8 +217,48 @@ impl CryptoBackend for SmimeBackend {
         })
     }
 
-    async fn verify(&self, _op: VerifyOp<'_>) -> crypto_core::Result<VerificationResult> {
-        Err(CryptoError::NotImplemented(NOT_IMPLEMENTED_TAG.into()))
+    async fn verify(&self, op: VerifyOp<'_>) -> crypto_core::Result<VerificationResult> {
+        // Pre-chain signature check (G3): cryptographic sig check against the
+        // signer cert embedded in the SignedData. Cert-chain/trust refinement
+        // is G4. `op.signed.signature.signature` is the DER `SignedData`
+        // (wrapped in ContentInfo); `op.signed.payload` is the caller's
+        // covered-content assertion, passed through to the helper which uses
+        // it ONLY for detached signatures (encapsulated signatures always hash
+        // the in-band eContent bytes the cms builder actually hashed).
+        let signed_data_der = &op.signed.signature.signature;
+        let covered = Some(op.signed.payload.as_slice());
+        let check = match cms_parse::verify_signed(signed_data_der, covered) {
+            Ok(c) => c,
+            Err(CryptoError::Malformed(msg)) if msg.contains("no signer cert") => {
+                // No usable signer cert available to verify against — surface
+                // as `UnknownKey` rather than a hard error so the caller can
+                // distinguish "no key" from "broken CMS".
+                return Ok(VerificationResult {
+                    state: SignatureState::UnknownKey,
+                    signer: None,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        let state = if check.sig_ok {
+            // Pre-chain: cryptographic signature OK, chain/trust assessment is G4.
+            SignatureState::ValidUnverified
+        } else {
+            SignatureState::Invalid
+        };
+        // Build a `KeyHandleRef` matching the send-side `KeyId` encoding
+        // `"{standard}|{fingerprint}"` (e.g. `smime|{fp}`) so a later
+        // `backend.sign(... signing_key: this ...)` resolves via the keystore.
+        let signer = check.signer_fingerprint.map(|fp| {
+            crypto_core::KeyHandleRef {
+                handle: crypto_core::KeyHandle::Software(crypto_core::KeyId(format!("smime|{fp}"))),
+                standard: Standard::Smime,
+                fingerprint: crypto_core::Fingerprint::new(fp),
+                usage: crypto_core::KeyUsage::SignAndEncrypt,
+                algorithm: "ECDSA-P256".into(),
+            }
+        });
+        Ok(VerificationResult { state, signer })
     }
 
     async fn generate_key(&self, params: KeyGenParams) -> crypto_core::Result<KeyHandleRef> {
@@ -767,5 +836,97 @@ mod tests {
             matches!(err, CryptoError::UnsupportedStandard(_) | CryptoError::Policy(_)),
             "SplitPerPart must be rejected for S/MIME, got {err:?}"
         );
+    }
+
+    /// End-to-end verify wiring: `backend.sign(...)` produces a SignedEnvelope,
+    /// `backend.verify(...)` confirms it as `ValidUnverified` (pre-chain) and
+    /// echoes a `KeyHandleRef` whose `KeyId` matches the keystore's
+    /// `"standard|fingerprint"` encoding (so a later `backend.sign(signing_key:
+    /// this)` would resolve).
+    #[tokio::test]
+    async fn verify_signing_round_trip_returns_valid_unverified() {
+        let b = backend();
+        let signer = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "signer-verify@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+
+        let payload = b"verify-this-payload".to_vec();
+        let signed = b
+            .sign(SignOp {
+                signing_key: signer.clone(),
+                payload: &payload,
+                detached: false,
+            })
+            .await
+            .expect("sign ok");
+
+        let res = b
+            .verify(VerifyOp { signed: &signed })
+            .await
+            .expect("verify ok");
+        assert_eq!(res.state, SignatureState::ValidUnverified);
+        let s = res.signer.expect("signer KeyHandleRef echoed");
+        // KeyId encoding matches the keystore's canonical form.
+        assert!(
+            matches!(&s.handle, KeyHandle::Software(k) if k.0 == format!("smime|{}", signer.fingerprint.as_str())),
+            "KeyId must be `smime|<fingerprint>` to round-trip via the keystore; got {:?}",
+            s.handle
+        );
+        assert_eq!(s.fingerprint.as_str(), signer.fingerprint.as_str());
+        assert_eq!(s.algorithm, "ECDSA-P256");
+    }
+
+    /// Tampered SignedData (flip a payload byte after signing) → `Invalid`.
+    /// This proves the backend's `Invalid` mapping for sig crypto-fail.
+    #[tokio::test]
+    async fn verify_tampered_payload_returns_invalid() {
+        let b = backend();
+        let signer = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "signer-tamper@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+
+        let payload = b"original".to_vec();
+        let mut signed = b
+            .sign(SignOp {
+                signing_key: signer,
+                payload: &payload,
+                detached: false,
+            })
+            .await
+            .expect("sign ok");
+
+        // Mutate the encapsulated content inside the SignedData DER — flip the
+        // last byte. The signature check (or the parser) must then fail.
+        let mut der = signed.signature.signature.clone();
+        let last = der.len() - 1;
+        der[last] ^= 0xFF;
+        signed.signature.signature = der;
+
+        let res = b.verify(VerifyOp { signed: &signed }).await;
+        // Either a hard Malformed error (parse fail) or `Invalid`. Both are
+        // acceptable security verdicts; only `ValidUnverified` is a bug.
+        match res {
+            Ok(v) => assert_ne!(
+                v.state,
+                SignatureState::ValidUnverified,
+                "tampered SignedData must not be ValidUnverified"
+            ),
+            Err(e) => assert!(
+                matches!(e, CryptoError::Malformed(_)),
+                "expected Malformed on tampered DER, got {e:?}"
+            ),
+        }
     }
 }

@@ -118,6 +118,122 @@ pub struct RemoteMessage {
     pub list_unsubscribe_post: Option<String>,
     pub auth_results: Option<String>,
     pub has_attachments: bool,
+    /// Detected S/MIME (Phase 1b) / future-PGP structure of an inbound message,
+    /// derived from its top-level Content-Type header by the source adapter.
+    /// `None` for sources that don't surface Content-Type (EAS today) or for
+    /// plain messages. The IMAP mapper populates this in
+    /// `imap_source::imap_message_to_remote` via the pure helper
+    /// [`crypto_kind_from_content_type`]; the engine writes the `db_flags()`
+    /// onto `messages.is_encrypted` / `is_signed` at upsert time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_kind: Option<CryptoKind>,
+}
+
+/// Detected S/MIME (Phase 1b) / future-PGP structure of an inbound message,
+/// derived from its top-level Content-Type header. The IMAP source adapter
+/// builds this in `imap_source::imap_message_to_remote`; other sources (EAS)
+/// leave `RemoteMessage.crypto_kind = None`. The variant set mirrors the
+/// `message_crypto_results.crypto_kind` CHECK constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CryptoKind {
+    /// `application/pkcs7-mime; smime-type=enveloped-data` (S/MIME encrypted).
+    Encrypted,
+    /// `application/pkcs7-mime; smime-type=signed-data` OR `multipart/signed`
+    /// (S/MIME opaque / clear-signed).
+    Signed,
+    /// Both envelopes present (rare; nested opaque structures).
+    EncryptedSigned,
+}
+
+impl CryptoKind {
+    /// True for [`Encrypted`] and [`EncryptedSigned`].
+    pub fn is_encrypted(&self) -> bool {
+        matches!(self, CryptoKind::Encrypted | CryptoKind::EncryptedSigned)
+    }
+    /// True for [`Signed`] and [`EncryptedSigned`].
+    pub fn is_signed(&self) -> bool {
+        matches!(self, CryptoKind::Signed | CryptoKind::EncryptedSigned)
+    }
+    /// The `(is_encrypted, is_signed)` pair as `(i64, i64)` for binding onto
+    /// the dormant `messages.is_encrypted` / `is_signed` INTEGER columns at
+    /// upsert time.
+    pub fn db_flags(&self) -> (i64, i64) {
+        (self.is_encrypted() as i64, self.is_signed() as i64)
+    }
+}
+
+/// Pure helper: derive the crypto structure from the top-level Content-Type
+/// main value (`application/pkcs7-mime`, `multipart/signed`, etc.) and the
+/// lowercased `smime-type` parameter value (`enveloped-data`, `signed-data`,
+/// or empty). Case-insensitive on both inputs. Returns `None` for plain
+/// messages (no S/MIME structure detected).
+///
+/// Extracted from `imap_source::imap_message_to_remote` so the derivation is
+/// unit-testable without constructing a `mail_parser::Message`. The IMAP
+/// source adapter assembles the two input strings from
+/// `mail_parser::ContentType` (`ctype()` + `subtype()` for the full type,
+/// `params` for the `smime-type` value) before calling this.
+pub(crate) fn crypto_kind_from_content_type(ctype: &str, smime_type: &str) -> Option<CryptoKind> {
+    let ctype = ctype.to_ascii_lowercase();
+    let smime_type = smime_type.to_ascii_lowercase();
+    let is_encrypted = ctype == "application/pkcs7-mime" && smime_type.contains("enveloped-data");
+    let is_signed = (ctype == "application/pkcs7-mime" && smime_type.contains("signed-data"))
+        || ctype == "multipart/signed";
+    match (is_encrypted, is_signed) {
+        (true, true) => Some(CryptoKind::EncryptedSigned),
+        (true, false) => Some(CryptoKind::Encrypted),
+        (false, true) => Some(CryptoKind::Signed),
+        (false, false) => None,
+    }
+}
+
+#[cfg(test)]
+mod crypto_kind_tests {
+    use super::{crypto_kind_from_content_type, CryptoKind};
+
+    #[test]
+    fn crypto_kind_detection() {
+        let kind = |c: &str, s: &str| crypto_kind_from_content_type(c, s);
+        assert_eq!(
+            kind("application/pkcs7-mime", "enveloped-data"),
+            Some(CryptoKind::Encrypted)
+        );
+        assert_eq!(
+            kind("multipart/signed", ""),
+            Some(CryptoKind::Signed)
+        );
+        assert_eq!(
+            kind("application/pkcs7-mime", "signed-data"),
+            Some(CryptoKind::Signed)
+        );
+        assert_eq!(kind("text/plain", ""), None);
+        assert_eq!(kind("text/html", ""), None);
+        // Case-insensitive.
+        assert_eq!(
+            kind("APPLICATION/PKCS7-MIME", "ENVELOPED-DATA"),
+            Some(CryptoKind::Encrypted)
+        );
+        assert_eq!(
+            kind("MULTIPART/SIGNED", ""),
+            Some(CryptoKind::Signed)
+        );
+        // p7m without smime-type (malformed but seen) — no detection.
+        assert_eq!(kind("application/pkcs7-mime", ""), None);
+    }
+
+    #[test]
+    fn db_flags_for_each_variant() {
+        assert_eq!(CryptoKind::Encrypted.db_flags(), (1, 0));
+        assert_eq!(CryptoKind::Signed.db_flags(), (0, 1));
+        assert_eq!(CryptoKind::EncryptedSigned.db_flags(), (1, 1));
+        assert!(CryptoKind::Encrypted.is_encrypted());
+        assert!(!CryptoKind::Encrypted.is_signed());
+        assert!(CryptoKind::Signed.is_signed());
+        assert!(!CryptoKind::Signed.is_encrypted());
+        assert!(CryptoKind::EncryptedSigned.is_encrypted());
+        assert!(CryptoKind::EncryptedSigned.is_signed());
+    }
 }
 
 /// A CONDSTORE flag-only delta: the server reported a FLAGS change for `uid` since the

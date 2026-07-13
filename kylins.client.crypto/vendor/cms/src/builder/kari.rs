@@ -350,15 +350,27 @@ where
                 };
 
                 // Init a wrapping key (KEK) based on KeyWrapAlgorithm and on CEK (i.e. key to wrap) size
-                let kek = KW::init_kek();
+                let mut kek = KW::init_kek();
                 let mut wrapped: WrappedKey<Enc> = KW::init_wrapped();
 
-                // Derive the Key Encryption Key (KEK) from Shared Secret using ANSI X9.63 KDF
+                // Derive the Key Encryption Key (KEK) from Shared Secret using ANSI X9.63 KDF.
+                // The KDF writes into `wrapped` (its signature takes `&mut WrappedKey<Enc>`),
+                // which for AES-192-KW + AES-128 content is the same size as the KEK (24 bytes).
                 KA::kdf(
                     &non_uniformly_random_shared_secret,
                     &shared_info,
                     &mut wrapped,
                 )?;
+                // Copy the derived KEK from the KDF output buffer into `kek` before wrapping.
+                // Without this, `try_wrap` below would use an all-zero KEK (the KDF output
+                // lands in `wrapped`, not `kek`). Truncate to `kek.len()` in case the KDF
+                // produced more bytes than the KEK needs (AES key-wrap sizes may differ from
+                // content-cipher + IV sizes for other algorithm combinations).
+                {
+                    let kek_len = kek.len();
+                    let kdf_out: &mut [u8] = wrapped.as_mut();
+                    kek[..].copy_from_slice(&kdf_out[..kek_len]);
+                }
 
                 // Wrap the Content Encryption Key (CEK) with the KEK
                 KW::try_wrap(&kek, content_encryption_key, wrapped.as_mut())?;
