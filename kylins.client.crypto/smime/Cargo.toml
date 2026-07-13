@@ -67,6 +67,64 @@ async-trait = "0.1"
 thiserror = "1"
 zeroize = "1"
 
+# ─── Phase 1b Plan 2 (G4): cert-chain validation engine ───
+# The `pkix-*` family (MarkAtwood/crate-pkix workspace). `pkix-chain` is the
+# ergonomic wrapper combining `pkix-path` (RFC 5280 §6.1 path validation) with
+# `pkix-revocation` (CRL/OCSP). The use-case wrapper `verify_smime_signer`
+# composes chain validation with `pkix-identity` From↔SAN binding and
+# `pkix-profiles` EKU rules. `pkix-profiles-cabf` adds the CA/B Forum S/MIME BR
+# reference policy (separate crate from `pkix-profiles`, which is RFC-baseline
+# only). Direct deps below let us name the types explicitly in `chain.rs`.
+#
+# **DE-RISKING NOTE (Task 1 spike):** the pkix-* ecosystem currently pins the
+# `x509-cert 0.2` / `der 0.7` / `spki 0.7` line, whereas this crate is on the
+# `x509-cert 0.3` / `der 0.8` / `spki 0.8` line (required by the vendored cms
+# builder). Cargo resolves both majors side-by-side in the dep graph; the types
+# are NOT shared, so `chain.rs` bridges via raw DER bytes (build with our 0.3
+# stack → `to_der()` → re-parse via the aliased `x509-cert-v02` 0.2 dep → pass
+# to pkix-chain). This is acceptable because `validate_signer_chain`'s seam is
+# already `&[u8]` DER, and is the documented carry-forward if/when RustCrypto
+# formats cuts the 0.3 line. Tracked in the Task 1 report's "API pin" +
+# "Concerns" sections.
+# `rustcrypto` transitively enables `pkix-path/p384` (pkix-path's `rustcrypto`
+# feature = `["rsa", "p256", "p384"]`). With it, `DefaultVerifier` handles
+# ECDSA-P384 natively (Task 2 spike-simplification — no custom P-384 code). RSA-PSS
+# is still a `DefaultVerifier` gap and is closed by the `SmimeVerifier` wrapper.
+pkix-chain = { version = "0.4", features = ["crl", "rustcrypto"] }
+pkix-profiles-cabf = "0.2"
+pkix-identity = "0.1"
+pkix-revocation = { version = "0.3", features = ["crl"] }
+# ECDSA P-384 cert generation in tests. pkix-path pulls in `p384 0.13` for its
+# own verify path; we keep p384 0.14 (same line as p256 0.14) for cert building.
+p384 = { version = "0.14", features = ["pem", "pkcs8"] }
+# pkix-chain's `verify_chain`/`verify_smime_signer` take `&[x509_cert::Certificate]`
+# where `x509_cert` is the **0.2** line (pkix-path 0.3.2 → x509-cert 0.2). Our
+# build-time stack is `x509-cert 0.3` (required by the vendored cms builder).
+# Cargo cannot have two same-named deps, so we alias the 0.2 line under
+# `x509-cert-v02` via the `package = ` rename. chain.rs re-parses our 0.3-built
+# cert DER into `x509_cert_v02::Certificate` for handing to pkix-chain.
+x509-cert-v02 = { package = "x509-cert", version = "0.2", default-features = false }
+# `der 0.7` is the line `x509-cert 0.2` / `pkix-path 0.3.2` are built against.
+# Our build stack is `der 0.8`. Aliased as `der-07` so `chain.rs` can call
+# `<CertificateV02 as der_07::Decode>::from_der(...)` for the 0.2 cert type.
+der-07 = { package = "der", version = "0.7" }
+# Task 2: `SmimeVerifier` (custom `SignatureVerifier`) needs to name the spki
+# 0.7 types (`AlgorithmIdentifierRef` / `SubjectPublicKeyInfoRef`) used by the
+# `pkix_path::SignatureVerifier` trait signature. Our build stack's `spki` is
+# 0.8, so we alias the 0.7 line. Same rationale as `der-07`.
+spki-07 = { package = "spki", version = "0.7" }
+# Task 2: the `SignatureVerifier` trait's return type is `signature::Error`
+# from `signature 2.x` (pkix-path's dep line). Our build stack uses
+# `signature 3.x`. Aliased so `SmimeVerifier::verify_signature` can name the
+# exact Error type the trait expects.
+signature-2 = { package = "signature", version = "2" }
+# Task 2: `pkcs1 0.7` exposes `RsaPssParams` for parsing the RSA-PSS
+# `AlgorithmIdentifier.parameters` (extracts the hashAlgorithm OID so we can
+# dispatch to `rsa::pss::VerifyingKey::<Sha256|Sha384|Sha512>`). Aliased
+# because pkcs1 0.8 (which our `rsa 0.10` dep uses) is on the spki 0.8 line,
+# incompatible with pkix-path's 0.7-encoded params. pkcs1 0.7.5 uses spki 0.7.
+pkcs1-07 = { package = "pkcs1", version = "0.7", default-features = false }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
 # Task 2 round-trip test does `use cipher::{BlockModeDecrypt, KeyIvInit};` and

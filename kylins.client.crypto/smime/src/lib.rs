@@ -10,6 +10,7 @@
 //! pre-chain signature check; chain/trust assessment is G4).
 
 mod cert;
+mod chain;
 mod cms_build;
 mod cms_parse;
 
