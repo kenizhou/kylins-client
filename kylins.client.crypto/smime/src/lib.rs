@@ -22,12 +22,20 @@ use crypto_core::{
     CryptoBackend, CryptoError, CryptoPolicy, DecryptedPayload, DecryptOp, DetachedSignature,
     EncryptedEnvelope, EncryptedPart, EncryptOp, Fingerprint, KeyGenParams, KeyHandle, KeyHandleRef,
     KeyId, KeyPacketRef, KeyStore, KeyUsage, PartId, PartKind, SecretBox, SerializationStrategy,
-    SignOp, SignatureState, SignedEnvelope, Standard, StoredKey, VerificationResult, VerifyOp,
+    SignOp, SignatureState, SignedEnvelope, Standard, StoredKey, TrustState, VerificationResult,
+    VerifyOp,
 };
 use der::referenced::OwnedToRef;
 use der::Decode;
 
 pub const CRATE_NAME: &str = "crypto-smime";
+
+// Task 5: public re-exports so the G5 receive orchestrator + the backend
+// `mail/crypto.rs::validate_recipient_certs` helper can call cert-chain
+// validation and consume its outcome. `RevocationState` is exposed because it
+// is a field of `ChainOutcome`; callers (the orchestrator) read it to surface
+// "unchecked revocation" warnings in the UI.
+pub use chain::{validate_signer_chain, ChainOutcome, RevocationState};
 
 /// S/MIME `CryptoBackend`. Owns the framework policy plus the `KeyStore` where
 /// generated cert/key material is persisted (public DER cert + encrypted PKCS#8
@@ -42,6 +50,167 @@ impl SmimeBackend {
     /// Construct an S/MIME backend over a `KeyStore` with an explicit policy.
     pub fn new(keystore: Arc<dyn KeyStore>, policy: CryptoPolicy) -> Self {
         Self { policy, keystore }
+    }
+
+    /// Full S/MIME verification with cert-chain, identity, revocation, and
+    /// trust context (G4 Task 5). The G5 receive orchestrator calls this
+    /// directly (NOT the `CryptoBackend::verify` trait method, which is the
+    /// pre-chain fallback for callers that have no trust context).
+    ///
+    /// This is an **inherent method** (not a trait method) because the
+    /// `CryptoBackend::verify` trait takes only `VerifyOp { signed: &SignedEnvelope }`
+    /// — there is no way to pass trust anchors, the From: email, CRLs, or the
+    /// signer's resolved `TrustState` through the trait signature. The G5
+    /// orchestrator resolves those inputs (looks up the From: header, fetches
+    /// trust anchors from the keystore, fetches CRLs from the cache, resolves
+    /// the signer's trust_decision) and passes them in here.
+    ///
+    /// # Flow (spec §4.4 mapping)
+    ///
+    /// 1. Run the pre-chain cryptographic signature check via
+    ///    `cms_parse::verify_signed`. If no signer cert is present in the
+    ///    SignedData `certificates` set → `SignatureState::UnknownKey` (early
+    ///    return; chain validation cannot run without a signer cert).
+    /// 2. If `sig_ok == false` → `SignatureState::Invalid` (crypto fail).
+    /// 3. Otherwise run `chain::validate_signer_chain` with the supplied
+    ///    anchors / intermediates / from_email / signing_time / crls.
+    /// 4. Map the `ChainOutcome` + the caller-supplied `signer_trust` to the
+    ///    final `SignatureState`:
+    ///    - `!chain_valid` (incl. revoked) → `Invalid`
+    ///    - `chain_valid && !identity_match` (From↔SAN mismatch) → `Mismatch`
+    ///    - `chain_valid && identity_match && signer_trust.may_encrypt_to()`
+    ///      (Verified / Personal) → `ValidVerified`
+    ///    - otherwise → `ValidUnverified`
+    ///
+    /// `signing_time_unix` falls back to `now()` when the CMS `signingTime`
+    /// signed attribute is absent (spec decision #9: verify as-of-signing so
+    /// a message still verifies after signer-cert expiry, with `now()` as the
+    /// fallback when signingTime is missing).
+    ///
+    /// # Inputs
+    ///
+    /// - `signed`              — the SignedEnvelope to verify (the inner
+    ///   `signature.signature` bytes are the SignedData DER).
+    /// - `from_email`          — RFC 5322 `From:` address for SAN binding.
+    ///   `None` skips identity binding (chain_valid alone decides; identity_match
+    ///   defaults to `true` so a chain-valid / no-from result is `ValidVerified`
+    ///   or `ValidUnverified`, NOT `Mismatch`).
+    /// - `trust_anchor_ders`   — trust anchor cert DERs (user-imported CA roots
+    ///   from the KeyManager's "Trusted CAs" store; the G5 orchestrator
+    ///   resolves them).
+    /// - `intermediate_ders`   — intermediate CA cert DERs (typically extracted
+    ///   from the SignedData `certificates` set, or a separate CA cache).
+    /// - `crls`                — CRL DERs (one per issuing CA; fetched +
+    ///   cached by the G5 orchestrator).
+    /// - `signer_trust`        — the resolved trust state for THIS signer
+    ///   (looked up in `trust_decisions` by the signer fingerprint; or
+    ///   `TrustState::Personal` for our own key).
+    ///
+    /// # Returns
+    ///
+    /// `Ok(VerificationResult { state, signer })` always — even on cryptographic
+    /// failure, the result is `Invalid` (a verification verdict), not an
+    /// `Err`. `Err` is reserved for parse failures (malformed CMS DER) and
+    /// invariant violations (e.g. sig_ok but no signer cert). The `signer`
+    /// `KeyHandleRef` is populated whenever a signer cert was located, so the
+    /// caller can record a trust_decision for it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn verify_with_context(
+        &self,
+        signed: &SignedEnvelope,
+        from_email: Option<&str>,
+        trust_anchor_ders: &[Vec<u8>],
+        intermediate_ders: &[Vec<u8>],
+        crls: &[Vec<u8>],
+        signer_trust: TrustState,
+    ) -> crypto_core::Result<VerificationResult> {
+        // Pre-chain signature check (Plan 1 / G3): cryptographic sig check
+        // against the signer cert embedded in the SignedData. Identical to the
+        // trait `verify` impl up to the chain-validation branch.
+        let signed_data_der = &signed.signature.signature;
+        let covered = Some(signed.payload.as_slice());
+        let check = match cms_parse::verify_signed(signed_data_der, covered) {
+            Ok(c) => c,
+            Err(CryptoError::Malformed(msg)) if msg.contains("no signer cert") => {
+                // No usable signer cert available to verify against — surface
+                // as `UnknownKey` (caller can prompt the user to import).
+                return Ok(VerificationResult {
+                    state: SignatureState::UnknownKey,
+                    signer: None,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Build the signer KeyHandleRef whenever a signer cert was located
+        // (independent of the chain outcome — even a chain-failed result wants
+        // the signer ref so the UI can show "signed by unknown signer" and
+        // offer a trust action).
+        let signer = check.signer_fingerprint.map(|fp| KeyHandleRef {
+            handle: KeyHandle::Software(KeyId(format!("smime|{fp}"))),
+            standard: Standard::Smime,
+            fingerprint: Fingerprint::new(fp),
+            usage: KeyUsage::SignAndEncrypt,
+            algorithm: "ECDSA-P256".into(),
+        });
+
+        // Step 2: sig crypto-fail → Invalid.
+        if !check.sig_ok {
+            return Ok(VerificationResult {
+                state: SignatureState::Invalid,
+                signer,
+            });
+        }
+
+        // Step 3: sig OK → run cert-chain validation. The signer_cert_der is
+        // guaranteed present here (sig_ok implies a signer cert was located
+        // — verify_signed only sets sig_ok=true after parsing the signer cert
+        // and verifying the signature against it).
+        let signer_cert_der = check.signer_cert_der.ok_or_else(|| {
+            CryptoError::Malformed(
+                "verify_with_context: sig_ok=true but no signer cert (invariant violation)".into(),
+            )
+        })?;
+
+        // signingTime fallback: CMS signingTime is the authoritative verify
+        // time (spec §9 — message verifies the same today and in 10 years).
+        // Falls back to now() only when the attribute is absent.
+        let signing_time_unix = check.signing_time_unix.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0)
+        });
+
+        // Build the intermediate slices as &[u8] — chain::validate_signer_chain
+        // takes `&[&[u8]]` (caller supplies leaf separately; intermediates are
+        // passed in caller's order per pkix-chain's contract).
+        let intermediates: Vec<&[u8]> =
+            intermediate_ders.iter().map(|v| v.as_slice()).collect();
+
+        let outcome = chain::validate_signer_chain(
+            &signer_cert_der,
+            &intermediates,
+            trust_anchor_ders,
+            from_email,
+            signing_time_unix,
+            crls,
+        );
+
+        // Step 4: map ChainOutcome + signer_trust → SignatureState (spec §4.4).
+        // Order matters: chain_valid gate first (revoked → chain_valid=false →
+        // Invalid), then identity_match (Mismatch), then the trust ladder.
+        let state = if !outcome.chain_valid {
+            SignatureState::Invalid
+        } else if !outcome.identity_match {
+            SignatureState::Mismatch
+        } else if signer_trust.may_encrypt_to() {
+            SignatureState::ValidVerified
+        } else {
+            SignatureState::ValidUnverified
+        };
+
+        Ok(VerificationResult { state, signer })
     }
 }
 
@@ -929,5 +1098,319 @@ mod tests {
                 "expected Malformed on tampered DER, got {e:?}"
             ),
         }
+    }
+
+    // ─── Task 5: SmimeBackend::verify_with_context mapping tests ───
+    //
+    // The mapping under test (spec §4.4):
+    //
+    //   | condition                                  | SignatureState   |
+    //   |--------------------------------------------|------------------|
+    //   | sig crypto-fail / chain invalid / revoked  | Invalid          |
+    //   | sig OK + chain OK + From↔SAN mismatch      | Mismatch         |
+    //   | sig OK + chain OK + identity + trusted     | ValidVerified    |
+    //   | sig OK + chain OK + identity + untrusted   | ValidUnverified  |
+    //   | no signer cert                             | UnknownKey       |
+    //
+    // Each test generates a key (`backend.generate_key`), signs a payload
+    // (`backend.sign`), then calls `verify_with_context` with a specific
+    // trust-anchor / from_email / signer_trust combination and asserts the
+    // resulting `SignatureState`. The signer cert produced by
+    // `cert::build_self_signed_smime_cert` is a self-signed S/MIME leaf
+    // (KeyUsage=digitalSignature|keyEncipherment, EKU=emailProtection,
+    // SAN=rfc822Name(email)); passing its own DER as the trust anchor lets
+    // pkix-chain validate it as the chain root (leaf==anchor, signature
+    // self-verifies).
+
+    /// Helper: produce a `(backend, signer_KeyHandleRef, signer_cert_der,
+    /// SignedEnvelope)` for the supplied `email`. The signer cert carries
+    /// SAN=rfc822Name(`email`) so a matching `from_email` parameter passes the
+    /// From↔SAN binding.
+    async fn sign_with_self_signed(email: &str) -> (SmimeBackend, KeyHandleRef, Vec<u8>, SignedEnvelope) {
+        let b = backend();
+        let signer = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: email.into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&signer.handle).await.expect("export_public ok");
+        let payload = b"task5-verify-payload".to_vec();
+        let signed = b
+            .sign(SignOp {
+                signing_key: signer.clone(),
+                payload: &payload,
+                detached: false,
+            })
+            .await
+            .expect("sign ok");
+        (b, signer, cert_der, signed)
+    }
+
+    /// ValidVerified: sig OK + chain OK (self-signed signer as anchor) +
+    /// identity match + `signer_trust = Verified` → `ValidVerified`.
+    #[tokio::test]
+    async fn verify_with_context_trusted_signer_yields_valid_verified() {
+        let (b, _signer, cert_der, signed) =
+            sign_with_self_signed("alice@kylins.com").await;
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                Some("alice@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::ValidVerified,
+            "sig OK + chain OK + identity match + Verified trust → ValidVerified"
+        );
+        assert!(
+            res.signer.is_some(),
+            "signer KeyHandleRef must be populated on ValidVerified"
+        );
+    }
+
+    /// ValidUnverified: same as ValidVerified but `signer_trust = Unverified`
+    /// → `ValidUnverified` (the trust ladder — chain OK is not enough; the
+    /// signer must be explicitly Verified/Personal for ValidVerified).
+    #[tokio::test]
+    async fn verify_with_context_untrusted_signer_yields_valid_unverified() {
+        let (b, _signer, cert_der, signed) =
+            sign_with_self_signed("bob@kylins.com").await;
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                Some("bob@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Unverified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::ValidUnverified,
+            "sig OK + chain OK + identity match + Unverified trust → ValidUnverified"
+        );
+        assert!(res.signer.is_some());
+    }
+
+    /// Mismatch: sig OK + chain OK but `from_email` differs from the signer
+    /// cert's SAN → `Mismatch` (not `Invalid` — the path is valid, only the
+    /// identity binding failed; spec §4.4 + Task 3 split).
+    #[tokio::test]
+    async fn verify_with_context_from_email_mismatch_yields_mismatch() {
+        let (b, _signer, cert_der, signed) =
+            sign_with_self_signed("real@kylins.com").await;
+
+        // SAN on the cert is real@kylins.com; pass a DIFFERENT from_email.
+        let res = b
+            .verify_with_context(
+                &signed,
+                Some("imposter@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::Mismatch,
+            "sig OK + chain OK + From↔SAN mismatch → Mismatch (not Invalid)"
+        );
+    }
+
+    /// Invalid (chain fail): sig OK but the supplied trust anchor did NOT
+    /// sign the signer cert (unrelated root) → chain_valid=false → `Invalid`.
+    #[tokio::test]
+    async fn verify_with_context_wrong_anchor_yields_invalid() {
+        let (_b1, _signer1, unrelated_cert_der, _signed1) =
+            sign_with_self_signed("unrelated-anchor@kylins.com").await;
+        // Use a SECOND backend / key to produce the actual signed envelope,
+        // then verify against the FIRST (unrelated) cert as the anchor.
+        let (b2, _signer2, _cert2, signed2) =
+            sign_with_self_signed("actual-signer@kylins.com").await;
+
+        let res = b2
+            .verify_with_context(
+                &signed2,
+                Some("actual-signer@kylins.com"),
+                // unrelated_cert_der never signed the actual-signer cert.
+                std::slice::from_ref(&unrelated_cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::Invalid,
+            "sig OK but chain doesn't validate against unrelated anchor → Invalid"
+        );
+    }
+
+    /// Invalid (sig crypto-fail): tamper the SignedData DER after signing →
+    /// the cryptographic signature check fails → `Invalid` (regardless of the
+    /// chain outcome — sig-fail short-circuits before chain validation).
+    #[tokio::test]
+    async fn verify_with_context_tampered_signature_yields_invalid() {
+        let (b, _signer, cert_der, mut signed) =
+            sign_with_self_signed("tamper-test@kylins.com").await;
+
+        // Flip the last byte of the SignedData DER — either the parse fails
+        // (Malformed) or the signature check fails (sig_ok=false → Invalid).
+        let last = signed.signature.signature.len() - 1;
+        signed.signature.signature[last] ^= 0xFF;
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                Some("tamper-test@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await;
+
+        match res {
+            Ok(v) => assert_eq!(
+                v.state,
+                SignatureState::Invalid,
+                "tampered SignedData must map to Invalid (sig crypto-fail)"
+            ),
+            Err(e) => assert!(
+                matches!(e, CryptoError::Malformed(_)),
+                "expected Malformed on tampered DER, got {e:?}"
+            ),
+        }
+    }
+
+    /// UnknownKey: strip the SignedData `certificates` field so no signer cert
+    /// can be located → `UnknownKey` (spec §4.4 — "no signer cert available").
+    #[tokio::test]
+    async fn verify_with_context_no_signer_cert_yields_unknown_key() {
+        use cms::content_info::ContentInfo;
+        use cms::signed_data::SignedData;
+        use der::{Decode, Encode};
+
+        let (b, _signer, _cert_der, signed) =
+            sign_with_self_signed("no-cert@kylins.com").await;
+
+        // Re-parse the SignedData, drop the `certificates` field, re-encode,
+        // and patch it back into the SignedEnvelope.
+        let ci = ContentInfo::from_der(&signed.signature.signature).expect("parse ContentInfo");
+        let sd = SignedData::from_der(ci.content.to_der().unwrap().as_slice()).expect("parse SignedData");
+        let stripped = SignedData {
+            version: sd.version,
+            digest_algorithms: sd.digest_algorithms.clone(),
+            encap_content_info: sd.encap_content_info.clone(),
+            certificates: None,
+            crls: sd.crls.clone(),
+            signer_infos: sd.signer_infos.clone(),
+        };
+        let stripped_ci = ContentInfo {
+            content_type: const_oid::db::rfc5911::ID_SIGNED_DATA,
+            content: der::Any::from_der(&stripped.to_der().unwrap()).unwrap(),
+        };
+        let mut stripped_signed = signed.clone();
+        stripped_signed.signature.signature = stripped_ci.to_der().unwrap();
+
+        // Use empty trust_anchor_ders — irrelevant for this test (early-return
+        // on UnknownKey before chain validation runs).
+        let res = b
+            .verify_with_context(
+                &stripped_signed,
+                Some("no-cert@kylins.com"),
+                &[],
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::UnknownKey,
+            "no signer cert in SignedData → UnknownKey"
+        );
+        assert!(
+            res.signer.is_none(),
+            "no signer ref when signer cert cannot be located"
+        );
+    }
+
+    /// Trust-ladder granularity: `Personal` trust (our-own-key level) also
+    /// qualifies for `ValidVerified` — `may_encrypt_to()` is true for both
+    /// `Verified` and `Personal` (crypto-core::TrustState). Other levels
+    /// (Rejected / Undecided) → `ValidUnverified`.
+    #[tokio::test]
+    async fn verify_with_context_personal_trust_also_yields_valid_verified() {
+        let (b, _signer, cert_der, signed) =
+            sign_with_self_signed("personal@kylins.com").await;
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                Some("personal@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Personal,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::ValidVerified,
+            "Personal trust also qualifies for ValidVerified (may_encrypt_to()=true)"
+        );
+    }
+
+    /// No `from_email`: identity binding is skipped; a chain-valid result
+    /// surfaces as `ValidVerified` / `ValidUnverified` (NOT `Mismatch`).
+    /// Confirms the `from_email = None` branch in `validate_signer_chain`.
+    #[tokio::test]
+    async fn verify_with_context_no_from_email_skips_identity_binding() {
+        let (b, _signer, cert_der, signed) =
+            sign_with_self_signed("nofrom@kylins.com").await;
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                None, // no identity binding
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::ValidVerified,
+            "no from_email → no identity binding → chain OK + trusted → ValidVerified (not Mismatch)"
+        );
     }
 }

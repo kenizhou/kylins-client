@@ -323,6 +323,61 @@ pub(crate) async fn apply_crypto(
     Ok(out)
 }
 
+/// Validate recipient certs before encrypting (Plan 4a carry-forward, closed
+/// in G4 Task 5). For each recipient cert, runs cert-chain validation against
+/// the supplied trust anchors at `now_unix`. Returns `Ok(())` if every cert
+/// chains to an anchor AND is within its validity window AND has the S/MIME
+/// BR leaf shape (KeyUsage + emailProtection EKU + rfc822Name SAN — enforced
+/// by the `KylinsSmimeProfile`); `Err(msg)` on the first failure.
+///
+/// G5 will wire this into `apply_crypto`'s encrypt path so the send side
+/// fails closed BEFORE producing ciphertext when a recipient cert is broken
+/// (expired, wrong-issuer, missing EKU, etc.) — closing the Plan 4a
+/// "unvalidated recipient cert" carry-forward. This Task 5 ships the helper
+/// + its unit tests; the wiring into `apply_crypto` is G5.
+///
+/// Recipients are validated for **chain + validity + leaf shape**, NOT
+/// identity binding (`from_email = None`). Recipients are NOT senders — their
+/// SAN doesn't need to match anything in the send context. The
+/// `KylinsSmimeProfile` still enforces that the cert HAS an rfc822Name SAN
+/// (`require_rfc822_san = true`), just not any particular value.
+///
+/// Pool-free: the G5 orchestrator resolves trust anchors from the KeyManager
+/// "Trusted CAs" store and passes them in. No DB access here keeps the helper
+/// pure / testable without a `SqlitePool`.
+pub async fn validate_recipient_certs(
+    recipient_cert_ders: &[Vec<u8>],
+    trust_anchor_ders: &[Vec<u8>],
+    now_unix: u64,
+) -> Result<(), String> {
+    for (i, cert_der) in recipient_cert_ders.iter().enumerate() {
+        // `validate_signer_chain` with `from_email=None` runs pure path
+        // validation under the S/MIME BR profile. `intermediates_der=&[]`
+        // because recipient certs in practice chain directly to a configured
+        // trust anchor (G5 may extend this to pass CRLs / intermediates when
+        // the orchestrator has them).
+        let outcome = crypto_smime::validate_signer_chain(
+            cert_der,
+            &[],
+            trust_anchor_ders,
+            None,
+            now_unix as i64,
+            &[],
+        );
+        if !outcome.chain_valid {
+            return Err(format!(
+                "recipient cert #{} invalid: {}",
+                i,
+                outcome
+                    .failure_reason
+                    .as_deref()
+                    .unwrap_or("(no failure reason)")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Build a [`KeyHandleRef`] for the default signing key whose `KeyId` matches
 /// `SqliteKeyStore`'s canonical `"standard|fingerprint"` encoding (so a later
 /// `backend.sign(... signing_key: this ...)` resolves via `keystore.get`).
@@ -771,5 +826,147 @@ mod tests {
         .await
         .expect("passthrough ok");
         assert_eq!(out, mime, "passthrough must return bytes unchanged");
+    }
+
+    // ─── Task 5: validate_recipient_certs unit tests ───
+    //
+    // These exercise the helper's wiring (chain_ok → Ok, chain_fail → Err with
+    // a diagnostic message), NOT the chain engine's per-case coverage (already
+    // pinned by chain.rs::spike_tests — expiry, EKU missing, etc.). The
+    // "valid" path uses `backend.generate_key` + `export_public` to get a
+    // real self-signed S/MIME cert; the "invalid" path uses the same cert
+    // but passes an UNRELATED anchor (so the cert doesn't chain → Err).
+    //
+    // We don't build an "expired" cert inline because that would require
+    // pulling `x509-cert` as a backend dev-dep; the "wrong-anchor → Err"
+    // path exercises the same `chain_valid=false → Err` wiring in
+    // `validate_recipient_certs`. The chain engine's `ValidityPeriod` rejection
+    // (expired cert) is already pinned by `chain.rs::spike_tests` and is
+    // surfaced identically (`chain_valid=false` + `failure_reason=Some(...)`).
+
+    /// Build a self-signed S/MIME cert + matching DER via the real backend
+    /// (uses `cert::build_self_signed_smime_cert` under the hood). The cert's
+    /// own DER serves as its trust anchor (self-trust). Returns the cert DER
+    /// and the `TempDir` owning the SqlitePool's file; the caller must hold
+    /// the TempDir for the test's duration (otherwise the pool's file is
+    /// removed mid-test).
+    async fn make_cert(email: &str) -> (Vec<u8>, TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+        seed_account(&pool, "acct-validate", email).await;
+        let ks = Arc::new(SqliteKeyStore::new(pool.clone(), "acct-validate"));
+        let backend = SmimeBackend::new(ks.clone(), CryptoPolicy::default_baseline());
+        let h = backend
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: email.into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key");
+        let cert_der = backend.export_public(&h.handle).await.expect("export_public");
+        (cert_der, tmp)
+    }
+
+    /// Valid recipient cert that chains to the supplied anchor → Ok.
+    #[tokio::test]
+    async fn validate_recipient_certs_valid_returns_ok() {
+        let (cert_der, _tmp) = make_cert("rcpt-valid@kylins.com").await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let res = validate_recipient_certs(
+            std::slice::from_ref(&cert_der),
+            // Self-signed cert's own DER is its trust anchor.
+            std::slice::from_ref(&cert_der),
+            now,
+        )
+        .await;
+
+        assert!(res.is_ok(), "valid recipient cert → Ok; got Err: {:?}", res);
+    }
+
+    /// Recipient cert that does NOT chain to the supplied (unrelated) anchor
+    /// → Err with a diagnostic message identifying the failing cert index.
+    #[tokio::test]
+    async fn validate_recipient_certs_wrong_anchor_returns_err() {
+        let (cert_der, _tmp1) = make_cert("rcpt-wrong@kylins.com").await;
+        let (unrelated_der, _tmp2) = make_cert("unrelated@kylins.com").await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let err = validate_recipient_certs(
+            std::slice::from_ref(&cert_der),
+            std::slice::from_ref(&unrelated_der),
+            now,
+        )
+        .await
+        .expect_err("wrong anchor → Err");
+
+        assert!(
+            err.contains("recipient cert #0"),
+            "Err must identify the failing cert index; got: {err}"
+        );
+    }
+
+    /// Multiple recipient certs, all valid → Ok. Exercises the loop.
+    #[tokio::test]
+    async fn validate_recipient_certs_multiple_valid_returns_ok() {
+        let (cert1, _tmp1) = make_cert("rcpt-a@kylins.com").await;
+        let (cert2, _tmp2) = make_cert("rcpt-b@kylins.com").await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Pass BOTH certs as both recipients AND anchors (self-trust each).
+        let recipients = vec![cert1.clone(), cert2.clone()];
+        let anchors = vec![cert1, cert2];
+        let res = validate_recipient_certs(&recipients, &anchors, now).await;
+        assert!(res.is_ok(), "all-valid recipients → Ok; got Err: {:?}", res);
+    }
+
+    /// Multiple recipient certs, the SECOND is invalid → Err identifies #1.
+    #[tokio::test]
+    async fn validate_recipient_certs_second_invalid_returns_err_with_index() {
+        let (cert1, _tmp1) = make_cert("rcpt-good@kylins.com").await;
+        let (cert2, _tmp2) = make_cert("rcpt-bad@kylins.com").await;
+        let (unrelated, _tmp3) = make_cert("unrelated@kylins.com").await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // cert1 chains to itself (OK); cert2 doesn't chain to any anchor →
+        // Err on cert #1.
+        let recipients = vec![cert1.clone(), cert2];
+        let anchors = vec![cert1, unrelated]; // cert2 not in anchors
+        let err = validate_recipient_certs(&recipients, &anchors, now)
+            .await
+            .expect_err("second cert invalid → Err");
+
+        assert!(
+            err.contains("recipient cert #1"),
+            "Err must identify cert #1 as the failing index; got: {err}"
+        );
+    }
+
+    /// Empty recipient list → Ok (vacuously true — no certs to validate).
+    /// Edge case: `apply_crypto` may call this with `recipients=[]` when
+    /// only the sender (encrypt-to-self) is in the loop, and the sender's
+    /// cert is validated separately.
+    #[tokio::test]
+    async fn validate_recipient_certs_empty_list_returns_ok() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let res = validate_recipient_certs(&[], &[], now).await;
+        assert!(res.is_ok(), "empty recipient list → Ok");
     }
 }

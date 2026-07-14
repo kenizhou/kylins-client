@@ -446,6 +446,12 @@ pub(crate) struct CmsSigCheck {
     /// RFC 5280 method-1 SKI (SHA-1 of SPKI, hex-lower) of the signer cert,
     /// when one was located. Matches the framework's `Fingerprint` format.
     pub signer_fingerprint: Option<String>,
+    /// CMS `signingTime` signed attribute (OID 1.2.840.113549.1.9.5) as Unix
+    /// seconds. `None` when the attribute is absent; the caller (Task 5's
+    /// `SmimeBackend::verify`) falls back to `now()` for cert-chain validation
+    /// at the verify-time rather than at the signing-time.
+    #[allow(dead_code)] // consumed by Task 5's SmimeBackend::verify
+    pub signing_time_unix: Option<i64>,
 }
 
 /// SHA-256 OID (2.16.840.1.101.3.4.2.1) — matches the build side.
@@ -459,6 +465,10 @@ const ID_ECDSA_WITH_SHA_256: const_oid::ObjectIdentifier =
 /// messageDigest signed-attribute OID (1.2.840.113549.1.9.4, RFC 5652 §11.2).
 const ID_MESSAGE_DIGEST: const_oid::ObjectIdentifier =
     const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.4");
+
+/// signingTime signed-attribute OID (1.2.840.113549.1.9.5, RFC 5652 §11.3).
+const ID_SIGNING_TIME: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.5");
 
 /// Verify a CMS `SignedData` signature (wrapped in `ContentInfo`).
 ///
@@ -545,6 +555,12 @@ pub(crate) fn verify_signed(
     let signed_attrs = signer_info.signed_attrs.as_ref().ok_or_else(|| {
         CryptoError::Malformed("SignedData: missing signed_attrs".into())
     })?;
+    // Extract the CMS signingTime signed attribute (RFC 5652 §11.3). `None`
+    // when absent — the caller (Task 5's `SmimeBackend::verify`) falls back to
+    // `now()` for cert-chain validation. Extracted here (before the digest
+    // check) so both the early-return (digest mismatch) and the final return
+    // carry the same value.
+    let signing_time_unix = find_signing_time(signed_attrs);
     let stored_digest = find_message_digest(signed_attrs).ok_or_else(|| {
         CryptoError::Malformed("SignedData: missing messageDigest attr".into())
     })?;
@@ -558,6 +574,7 @@ pub(crate) fn verify_signed(
             sig_ok: false,
             signer_cert_der: Some(signer_cert_der),
             signer_fingerprint: Some(fp),
+            signing_time_unix,
         });
     }
 
@@ -586,6 +603,7 @@ pub(crate) fn verify_signed(
         sig_ok,
         signer_cert_der: Some(signer_cert_der),
         signer_fingerprint: Some(fp),
+        signing_time_unix,
     })
 }
 
@@ -662,6 +680,26 @@ fn find_message_digest(attrs: &x509_cert::attr::Attributes) -> Option<Vec<u8>> {
     let val = md.values.get(0)?;
     let octets: OctetString = val.decode_as().ok()?;
     Some(octets.as_bytes().to_vec())
+}
+
+/// Find the signingTime signed-attribute value (RFC 5652 §11.3) and convert it
+/// to Unix seconds. Returns `None` if the attribute is absent or malformed.
+///
+/// `signingTime` is a `Time` (CHOICE of UTCTime `tag 0x17` / GeneralizedTime
+/// `tag 0x18`). The attribute value is stored as a `der::Any` wrapping the full
+/// Time DER (tag + length + value). We re-encode the `Any` → `to_der()` →
+/// decode as `x509_cert::time::Time`, which dispatches on the tag to the
+/// matching arm. `Time::to_unix_duration()` yields seconds since `UNIX_EPOCH`.
+fn find_signing_time(attrs: &x509_cert::attr::Attributes) -> Option<i64> {
+    let attr = attrs.iter().find(|a| a.oid == ID_SIGNING_TIME)?;
+    let val = attr.values.get(0)?;
+    // Re-encode the Any to full DER (tag + length + value), then decode as
+    // Time. The tag is load-bearing for the CHOICE dispatch (UTCTime vs
+    // GeneralizedTime), so `decode_as` alone (which reads only the value
+    // bytes) would not work — `to_der()` + `from_der()` round-trips the tag.
+    let time_der = val.to_der().ok()?;
+    let time = <x509_cert::time::Time as der::Decode>::from_der(&time_der).ok()?;
+    Some(time.to_unix_duration().as_secs() as i64)
 }
 
 /// Verify an ECDSA-P256 signature over the DER-encoded `signed_attrs`.
@@ -923,6 +961,130 @@ mod tests {
         assert!(
             matches!(err, CryptoError::Malformed(ref m) if m.contains("no signer cert")),
             "missing signer cert must surface as `no signer cert` Malformed (mapped to UnknownKey by the backend); got {err:?}"
+        );
+    }
+
+    // ──── signingTime extraction (Task 3) ────
+
+    /// Build a CMS SignedData that includes a `signingTime` signed attribute.
+    ///
+    /// The production `cms_build::build_signed_data` does NOT emit signingTime
+    /// (the cms `SignerInfoBuilder` only auto-adds `messageDigest` +
+    /// `contentType`). This helper mirrors `build_signed_data`'s sequence but
+    /// calls `signer_info_builder.add_signed_attribute(
+    /// create_signing_time_attribute()?)` to attach the attribute, producing a
+    /// fixture that exercises `verify_signed`'s signingTime extraction.
+    fn build_signed_data_with_signing_time(
+        payload: &[u8],
+        signer_cert_der: &[u8],
+        signer_priv_pkcs8_der: &[u8],
+    ) -> Vec<u8> {
+        use cms::builder::{
+            create_signing_time_attribute, SignedDataBuilder, SignerInfoBuilder,
+        };
+        use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
+        use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
+        use der::Any;
+        use pkcs8::DecodePrivateKey;
+        use spki::AlgorithmIdentifierOwned;
+        use x509_cert::Certificate;
+
+        let cert = <Certificate as der::Decode>::from_der(signer_cert_der).unwrap();
+        let tbs = cert.tbs_certificate();
+        let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: tbs.issuer().clone(),
+            serial_number: tbs.serial_number().clone(),
+        });
+        let secret = p256::SecretKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
+        let signing_key = p256::ecdsa::SigningKey::from(&secret);
+
+        let oct = der::asn1::OctetString::new(payload.to_vec()).unwrap();
+        let oct_der = oct.to_der().unwrap();
+        let econtent = Some(Any::new(der::Tag::OctetString, oct_der).unwrap());
+        let encap = EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent,
+        };
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: ID_SHA_256,
+            parameters: None,
+        };
+
+        let mut signer_info_builder = SignerInfoBuilder::new(
+            sid,
+            digest_algorithm.clone(),
+            &encap,
+            None, // encapsulated → builder computes the digest
+        )
+        .unwrap();
+        // Attach signingTime (the one attribute build_signed_data omits).
+        signer_info_builder
+            .add_signed_attribute(create_signing_time_attribute().unwrap())
+            .unwrap();
+
+        let content_info = SignedDataBuilder::new(&encap)
+            .add_digest_algorithm(digest_algorithm)
+            .unwrap()
+            .add_certificate(CertificateChoices::Certificate(cert))
+            .unwrap()
+            .add_signer_info::<ecdsa::SigningKey<p256::NistP256>, p256::ecdsa::DerSignature>(
+                signer_info_builder,
+                &signing_key,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        content_info.to_der().unwrap()
+    }
+
+    /// `signingTime` present in the SignedData's signed_attrs →
+    /// `CmsSigCheck.signing_time_unix` is `Some(unix_secs)` close to now.
+    #[test]
+    fn verify_extracts_signing_time_from_signed_attrs() {
+        let (cert_der, priv_pkcs8) = p256_test_cert_and_key(20);
+        let payload = b"signed with signingTime";
+
+        let now_before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let signed_data_der =
+            build_signed_data_with_signing_time(payload, &cert_der, &priv_pkcs8);
+
+        let now_after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let check = verify_signed(&signed_data_der, None).unwrap();
+        assert!(check.sig_ok, "signature must still verify with signingTime");
+        let signing_time = check
+            .signing_time_unix
+            .expect("signingTime must be extracted when the attribute is present");
+        // signingTime was captured during build (between now_before and
+        // now_after). Allow a 5s slack for clock granularity / test latency.
+        assert!(
+            signing_time >= now_before && signing_time <= now_after + 5,
+            "signing_time_unix {signing_time} must be within [{now_before}, {now_after}+5]"
+        );
+    }
+
+    /// `signingTime` absent (production `build_signed_data` output) →
+    /// `CmsSigCheck.signing_time_unix` is `None` (Task 5 falls back to now()).
+    #[test]
+    fn verify_signing_time_absent_yields_none() {
+        let (cert_der, priv_pkcs8) = p256_test_cert_and_key(21);
+        let payload = b"signed without signingTime";
+        let signed_data_der =
+            crate::cms_build::build_signed_data(payload, false, &cert_der, &priv_pkcs8).unwrap();
+
+        let check = verify_signed(&signed_data_der, None).unwrap();
+        assert!(check.sig_ok, "signature must still verify");
+        assert!(
+            check.signing_time_unix.is_none(),
+            "signingTime absent → None (Task 5 falls back to now()); got {:?}",
+            check.signing_time_unix
         );
     }
 }

@@ -30,10 +30,15 @@
 //! - Task 2 (DONE): [`SmimeVerifier`] wraps `DefaultVerifier` and adds RSA-PSS
 //!   via `rsa::pss::VerifyingKey`. P-384 is delegated to `DefaultVerifier`
 //!   (coverage enabled via the `rustcrypto` feature on `pkix-chain`).
-//! - Task 3: surface a distinct `identity_match = false` outcome when
+//! - Task 3 (DONE): surface a distinct `identity_match = false` outcome when
 //!   `verify_smime_signer` fails with `Error::Identity` (vs `Error::Path`).
-//! - Task 4: feed `_crls` to a `CrlChecker` and set `revocation_state`
-//!   (`Good`/`Revoked`/`Unchecked`) accordingly.
+//!   Path OK + From↔SAN mismatch → `chain_valid=true, identity_match=false`
+//!   (caller maps to `SignatureState::Mismatch`, not `Invalid`).
+//! - Task 4 (DONE): [`KylinsCrlChecker`] wraps one or more [`CrlChecker`]s
+//!   built from the supplied CRL DERs. Maps results to `RevocationState`
+//!   (hard-fail-on-revoked, soft-fail-on-transport). When no CRLs are
+//!   supplied, the checker holds zero inner `CrlChecker`s — equivalent to
+//!   `NoRevocation` → `Unchecked`.
 //! - Task 5: trust-ladder → `SignatureState` mapping in `SmimeBackend::verify`.
 //!
 //! # x509-cert 0.2 ↔ 0.3 bridge
@@ -47,12 +52,16 @@
 //! DER, so the bridge is local to `validate_signer_chain`.
 
 // `pkix-chain` re-exports the building blocks we need: `verify_smime_signer`
-// (use-case wrapper), `DefaultVerifier`, `NoRevocation`, `NoAiaFetcher`,
-// `TrustAnchor`, and the `pkix_path`/`pkix_identity`/`pkix_revocation` modules.
-// Task 2 also imports `SignatureVerifier` (the trait our `SmimeVerifier` impls).
+// (use-case wrapper), `DefaultVerifier`, `NoAiaFetcher`, `TrustAnchor`, and the
+// `pkix_path`/`pkix_identity`/`pkix_revocation` modules. Task 4 also imports
+// `CrlChecker` (feature `crl`, already enabled on `pkix-chain`), and the
+// `RevocationChecker` trait (needed to both impl our composite checker AND to
+// call `check_revocation` on the inner `CrlChecker`s).
+use std::cell::Cell;
+
 use pkix_chain::{
-    pkix_path::SignatureVerifier, verify_smime_signer, DefaultVerifier, NoAiaFetcher,
-    NoRevocation, Profile, TrustAnchor,
+    pkix_path::SignatureVerifier, pkix_revocation, verify_smime_signer, CrlChecker,
+    DefaultVerifier, NoAiaFetcher, Profile, RevocationChecker, TrustAnchor,
 };
 use pkix_profiles_cabf::SmimeProfile;
 
@@ -66,39 +75,43 @@ use x509_cert_v02::Certificate as CertificateV02;
 
 /// Revocation state for the validated chain.
 ///
-/// Task 1 always returns `Unchecked` (no CRL wiring until Task 4). Task 4 will
-/// populate `Good` / `Revoked` based on `pkix-revocation::CrlChecker` output
-/// (hard-fail-on-revoked, soft-fail-on-transport).
-//
-// `Good` and `Revoked` are unused until Task 4 wires `CrlChecker`; the
-// `allow(dead_code)` silences the warning for the Task 1 spike. Tasks 2-5 also
-// consume `validate_signer_chain` / `ChainOutcome`, currently flagged analogously.
+/// Task 4 wires the CRL checker; the state is now populated per the spec §0.4
+/// posture (hard-fail-on-revoked, soft-fail-on-transport):
+/// - `Good` — a CRL covered the cert and the serial was not in the revoked list.
+/// - `Revoked` — the CRL lists the cert's serial → `chain_valid = false`.
+/// - `Unchecked` — no CRL supplied, no CRL covered the cert, or the CRL was
+///   stale/unreachable (soft-fail — chain proceeds, caller warns).
+///
+/// Task 5: promoted from `pub(crate)` to `pub` so the backend's
+/// `validate_recipient_certs` helper can read the outcome of
+/// `validate_signer_chain` per recipient cert.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum RevocationState {
-    /// CRL/OCSP reported the cert good.
+pub enum RevocationState {
+    /// CRL reported the cert good (serial not in revoked list).
     Good,
-    /// CRL/OCSP reported the cert revoked (hard-fail).
+    /// CRL reported the cert revoked (hard-fail → `chain_valid = false`).
     Revoked,
     /// No revocation check performed (no CRL supplied / stale CRL / soft-fail).
     Unchecked,
 }
 
 /// Outcome of cert-chain validation. Tasks 2-5 depend on these field names.
+///
+/// Task 5: promoted from `pub(crate)` to `pub` so the G5 orchestrator and the
+/// send-side `validate_recipient_certs` helper can consume it.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) struct ChainOutcome {
+pub struct ChainOutcome {
     /// `true` iff the leaf chains to a trust anchor under RFC 5280 §6.1 +
     /// `SmimeProfile`. Cryptographic signature failures, expired certs,
     /// broken issuer/subject linkage, and BR-profile violations all surface
     /// here as `false`.
     pub chain_valid: bool,
     /// `true` iff the signer cert's SAN matches `from_email` under RFC 8398
-    /// (case-sensitive local-part, case-insensitive domain). Task 1 sets this
-    /// from `verify_smime_signer`'s implicit identity binding — the call fails
-    /// with `Error::Identity` if path validation succeeded but the SAN does not
-    /// match. Task 3 will surface that case as `chain_valid=true,
-    /// identity_match=false` (a `Mismatch` signature state).
+    /// (case-sensitive local-part, case-insensitive domain). Set from
+    /// `verify_smime_signer`'s identity binding — when path validation succeeds
+    /// but the SAN does not match, `verify_smime_signer` returns
+    /// `Error::Identity`, which Task 3 surfaces as `chain_valid=true,
+    /// identity_match=false` (a `Mismatch` signature state, not `Invalid`).
     pub identity_match: bool,
     /// Revocation state. Task 1 always returns `Unchecked`.
     pub revocation_state: RevocationState,
@@ -115,14 +128,21 @@ pub(crate) struct ChainOutcome {
 /// `signing_time_unix` (the CMS `signingTime` signed attribute; falls back to
 /// now() at the call site if absent).
 ///
-/// # Task 1 / Task 2 behavior
+/// # Task 1 / Task 2 / Task 3 / Task 4 behavior
 ///
-/// - `_crls` is a no-op → `revocation_state = Unchecked`. Task 4 wires
-///   `pkix-revocation::CrlChecker`.
+/// - `crls` (Task 4) — CRL DERs are parsed into [`KylinsCrlChecker`] (a
+///   composite over one or more [`CrlChecker`]s). Unparseable CRLs are silently
+///   skipped (soft-fail). When zero CRLs are supplied OR all fail to parse,
+///   the checker holds zero inner `CrlChecker`s → equivalent to `NoRevocation`
+///   → `RevocationState::Unchecked`. When a CRL covers the cert and the serial
+///   is NOT in the revoked list → `Good`. When the serial IS revoked → `Revoked`
+///   + `chain_valid = false` (hard-fail). When the CRL applies but is stale,
+///     has a bad signature, or is otherwise unusable → `Unchecked` (soft-fail).
 /// - `from_email` is parsed into a `MailboxName` and passed to
-///   `verify_smime_signer`, which runs RFC 8398 From↔SAN binding. Task 3 will
-///   refine the outcome to distinguish `Error::Identity` (chain OK, mismatch)
-///   from `Error::Path`.
+///   `verify_smime_signer`, which runs RFC 8398 From↔SAN binding. Task 3
+///   splits the `Err` arm: `Error::Identity` (path OK, From↔SAN mismatch)
+///   surfaces as `chain_valid=true, identity_match=false`; all other errors
+///   surface as `chain_valid=false`.
 /// - Signature verifier is [`SmimeVerifier`] (Task 2). It delegates
 ///   RSA-PKCS1v15 + ECDSA-P256/P384 to `DefaultVerifier`, and adds an RSA-PSS
 ///   arm via `rsa::pss::VerifyingKey` (SHA-256/384/512). RSA-PSS params are
@@ -140,15 +160,24 @@ pub(crate) struct ChainOutcome {
 /// - `trust_anchor_ders` — trust anchor cert DERs (user-imported CA roots).
 /// - `from_email`        — RFC 5322 `From:` address for SAN binding.
 /// - `signing_time_unix` — CMS `signingTime` (signed attribute) as Unix seconds.
-/// - `_crls`             — CRL DERs (unused in Task 1).
-#[allow(dead_code, clippy::too_many_arguments)]
-pub(crate) fn validate_signer_chain(
+/// - `crls`              — CRL DERs (one per issuing CA). Task 4 wires these
+///   into the [`KylinsCrlChecker] passed as the `revocation` arg to
+///   `verify_smime_signer` / `verify_chain`.
+///
+/// Task 5: promoted from `pub(crate)` to `pub` so the backend
+/// `mail/crypto.rs::validate_recipient_certs` helper can call it per
+/// recipient cert (closes the Plan 4a "unvalidated recipient cert"
+/// carry-forward). The G5 receive orchestrator also calls this directly for
+/// pre-encryption sender-cert sanity checks. The function is otherwise
+/// unchanged from Task 4.
+#[allow(clippy::too_many_arguments)]
+pub fn validate_signer_chain(
     signer_cert_der: &[u8],
     intermediates_der: &[&[u8]],
     trust_anchor_ders: &[Vec<u8>],
     from_email: Option<&str>,
     signing_time_unix: i64,
-    _crls: &[Vec<u8>],
+    crls: &[Vec<u8>],
 ) -> ChainOutcome {
     // Parse each input DER with x509-cert **0.2** (pkix-chain's stack). Our
     // callers hold raw DER (from CMS SignedData or the keystore), and DER is
@@ -188,6 +217,23 @@ pub(crate) fn validate_signer_chain(
         signing_time_unix as u64
     };
 
+    // Build the CRL revocation checker (Task 4). `KylinsCrlChecker` wraps one
+    // or more `pkix_revocation::CrlChecker`s, each built from a single CRL DER.
+    // Unparseable CRLs are silently skipped (soft-fail — the transport layer's
+    // responsibility is to supply DER bytes; a malformed CRL is treated like a
+    // missing one). When zero CRLs parse, the checker holds zero inner
+    // `CrlChecker`s — every `check_revocation` call iterates zero items and
+    // returns `Ok(())`, exactly matching `NoRevocation` semantics.
+    //
+    // `SmimeVerifier` is `Copy`, so it can be freely duplicated into each
+    // inner `CrlChecker` (each needs its own copy for CRL-signature
+    // verification). The `now_unix` (signing time) is the correct time for
+    // CRL-freshness checks under RFC 5280 §6.3: we validate the message as of
+    // its signing time, so a CRL that was fresh at signing time is still
+    // valid for this verification even if it has since expired at wall-clock
+    // time.
+    let checker = KylinsCrlChecker::new(crls, now_unix, SmimeVerifier);
+
     // From↔SAN binding: parse the RFC 5322 From: into a MailboxName. When
     // `from_email` is None, skip identity binding by calling verify_chain_default
     // (pure path validation, no identity check) and hardcode identity_match=true.
@@ -205,17 +251,61 @@ pub(crate) fn validate_signer_chain(
             &KylinsSmimeProfile,
             now_unix,
             &SmimeVerifier,
-            &NoRevocation,
+            &checker,
             &NoAiaFetcher,
         ) {
             Ok(_validated) => ChainOutcome {
                 chain_valid: true,
                 identity_match: true,
-                revocation_state: RevocationState::Unchecked,
+                revocation_state: checker.revocation_state(),
                 failure_reason: None,
             },
-            // Task 3 will split this arm to surface Error::Identity as
-            // chain_valid=true, identity_match=false.
+            // Identity mismatch (path OK, From↔SAN binding failed): per spec
+            // §4.4, surface as chain_valid=true, identity_match=false so the
+            // caller (Task 5's SmimeBackend::verify) maps this to
+            // `SignatureState::Mismatch`, not `Invalid`. `verify_smime_signer`
+            // runs RFC 5280 path validation FIRST (including revocation),
+            // then identity binding only on path success — so an
+            // `Error::Identity` implies the chain itself is valid AND the CRL
+            // check passed (otherwise it would have been an Error::Revocation
+            // or Error::Path); only the mailbox binding failed.
+            Err(pkix_chain::Error::Identity(e)) => ChainOutcome {
+                chain_valid: true,
+                identity_match: false,
+                // Revocation already passed (path validation + revocation run
+                // before identity binding). Reflect the checker's state.
+                revocation_state: checker.revocation_state(),
+                failure_reason: Some(format!("identity mismatch: {e}")),
+            },
+            // CRL says revoked → hard-fail (spec §0.4). `KylinsCrlChecker`
+            // only returns `Err(Revoked{..})` from `check_revocation`; all
+            // other revocation errors (stale CRL, bad signature, etc.) are
+            // swallowed to `Ok(())` internally (soft-fail). So this arm fires
+            // only when a fetched CRL explicitly lists the cert's serial.
+            Err(pkix_chain::Error::Revocation(rev_err)) => match rev_err {
+                pkix_revocation::Error::Revoked { serial, reason_code } => {
+                    let reason_str = match reason_code {
+                        Some(r) => format!("certificate {serial} revoked ({r:?})"),
+                        None => format!("certificate {serial} revoked"),
+                    };
+                    ChainOutcome {
+                        chain_valid: false,
+                        identity_match: false,
+                        revocation_state: RevocationState::Revoked,
+                        failure_reason: Some(reason_str),
+                    }
+                }
+                // Defensive: `KylinsCrlChecker` converts all non-Revoked
+                // errors to Ok(()) (soft-fail), so a non-Revoked
+                // `Error::Revocation` is unreachable. If it ever surfaces
+                // (e.g. a future code change in pkix-chain), treat it as a
+                // chain failure with Unchecked revocation.
+                other => fail(format!("revocation: {other}")),
+            },
+            // All other errors (Path / ProfileViolation / Aia /
+            // PathBuild / OcspDelegation / AiaDepthExceeded) indicate a chain
+            // failure, not an identity or revocation outcome. Surface as
+            // chain_valid=false, Unchecked.
             Err(e) => fail(format!("{e}")),
         }
     } else {
@@ -232,14 +322,29 @@ pub(crate) fn validate_signer_chain(
             &anchors,
             &policy,
             &SmimeVerifier,
-            &NoRevocation,
+            &checker,
             &NoAiaFetcher,
         ) {
             Ok(_validated) => ChainOutcome {
                 chain_valid: true,
                 identity_match: true,
-                revocation_state: RevocationState::Unchecked,
+                revocation_state: checker.revocation_state(),
                 failure_reason: None,
+            },
+            Err(pkix_chain::Error::Revocation(rev_err)) => match rev_err {
+                pkix_revocation::Error::Revoked { serial, reason_code } => {
+                    let reason_str = match reason_code {
+                        Some(r) => format!("certificate {serial} revoked ({r:?})"),
+                        None => format!("certificate {serial} revoked"),
+                    };
+                    ChainOutcome {
+                        chain_valid: false,
+                        identity_match: false,
+                        revocation_state: RevocationState::Revoked,
+                        failure_reason: Some(reason_str),
+                    }
+                }
+                other => fail(format!("revocation: {other}")),
             },
             Err(e) => fail(format!("{e}")),
         }
@@ -248,7 +353,6 @@ pub(crate) fn validate_signer_chain(
 
 /// Construct `TrustAnchor`s from raw cert DERs. Returns `Err` with the first
 /// parse failure (caller surfaces as a chain-validation failure).
-#[allow(dead_code)]
 fn build_anchors(trust_anchor_ders: &[Vec<u8>]) -> Result<Vec<TrustAnchor>, String> {
     let mut out = Vec::with_capacity(trust_anchor_ders.len());
     for (i, der) in trust_anchor_ders.iter().enumerate() {
@@ -265,13 +369,198 @@ fn build_anchors(trust_anchor_ders: &[Vec<u8>]) -> Result<Vec<TrustAnchor>, Stri
 
 /// Build a `ChainOutcome` for a validation failure (chain_valid=false,
 /// identity_match=false, Unchecked, failure_reason=Some).
-#[allow(dead_code)]
 fn fail(reason: String) -> ChainOutcome {
     ChainOutcome {
         chain_valid: false,
         identity_match: false,
         revocation_state: RevocationState::Unchecked,
         failure_reason: Some(reason),
+    }
+}
+
+// ──────────────────────── Task 4: CRL revocation ────────────────────────
+//
+// `pkix-revocation`'s `CrlChecker` validates against a SINGLE pre-loaded CRL
+// DER. Real-world S/MIME chains involve multiple issuers (root CA →
+// intermediate CA → leaf), each with its own CRL. `KylinsCrlChecker` is a
+// thin composite that holds a `Vec<CrlChecker>` and, for each `(cert, issuer)`
+// pair, finds the CRL whose issuer DN matches (continuing past
+// `CrlIssuerMismatch`), then delegates to it.
+//
+// **Revocation posture (spec §0.4):** hard-fail-on-revoked,
+// soft-fail-on-transport.
+//
+// | CRL result for a matching CRL      | Our return | Outcome        |
+// |-------------------------------------|------------|----------------|
+// | `Ok(())` (serial not in CRL)       | `Ok(())`   | `Good`         |
+// | `Err(Revoked{..})`                  | `Err(..)`  | `Revoked`      |
+// | `Err(CrlExpired)`                   | `Ok(())`   | `Unchecked`    |
+// | `Err(CrlSignatureInvalid)`          | `Ok(())`   | `Unchecked`    |
+// | `Err(OutOfScope{..})`               | `Ok(())`   | `Unchecked`    |
+// | `Err(CrlIssuerMismatch)`            | try next   | (see below)    |
+// | No CRL in the set covers the cert   | `Ok(())`   | `Unchecked`    |
+// |
+// | `CrlIssuerMismatch` means the CRL's issuer DN does not match the cert's
+// | issuer — the CRL is simply not relevant for this cert. The checker
+// | continues to the next CRL. If none match → `Ok(())` (soft-fail).
+//
+// Interior mutability (`Cell`) tracks whether ANY `check_revocation` call
+// found a matching CRL (`any_matched`) and whether ANY matching CRL was
+// unusable (`any_unusable`). `validate_signer_chain` reads
+// `checker.revocation_state()` after `verify_smime_signer` returns `Ok` to
+// produce `Good` (all matching CRLs said good) vs `Unchecked` (no CRL covered
+// the cert, or a CRL was stale/unusable). This is safe because
+// `verify_chain`/`verify_smime_signer` are synchronous single-threaded calls
+// — the checker is never accessed from multiple threads concurrently.
+
+/// Composite CRL revocation checker for S/MIME cert chains (Task 4).
+///
+/// Wraps zero or more [`CrlChecker`]s, each built from a single CRL DER +
+/// the shared [`SmimeVerifier`]. Holds interior-mutable tracking cells
+/// ([`Cell`]) that `validate_signer_chain` reads after path validation to
+/// determine the overall `RevocationState`.
+///
+/// When `crls` is empty (or all fail to parse), the checker holds zero inner
+/// `CrlChecker`s — `check_revocation` iterates zero items and returns `Ok(())`,
+/// exactly matching `NoRevocation`. This means `validate_signer_chain` can
+/// always pass `&checker` without a conditional branch on `from_email`.
+#[allow(dead_code)]
+struct KylinsCrlChecker<V: SignatureVerifier> {
+    /// Pre-parsed CRL checkers, one per successfully-parsed CRL DER.
+    /// Empty when no CRLs were supplied or all failed to parse.
+    crls: Vec<CrlChecker<V>>,
+    /// `true` once any `check_revocation` / `check_revocation_against_anchor`
+    /// call finds a CRL whose issuer matches the cert (regardless of whether
+    /// the CRL said good, revoked, or unusable). Reset only by construction.
+    any_matched: Cell<bool>,
+    /// `true` once any matching CRL was unusable (expired, bad signature,
+    /// out-of-scope, parse error). If `any_matched && !any_unusable` → `Good`.
+    /// Otherwise → `Unchecked` (incomplete or unreliable coverage).
+    any_unusable: Cell<bool>,
+}
+
+impl<V: SignatureVerifier + Copy> KylinsCrlChecker<V> {
+    /// Build a composite checker from raw CRL DERs. Unparseable CRLs are
+    /// silently skipped (soft-fail) — a malformed CRL is treated the same as
+    /// a missing one. The verifier is copied into each inner `CrlChecker`
+    /// (it must be `Copy`; `SmimeVerifier` and `DefaultVerifier` both are).
+    fn new(crl_ders: &[Vec<u8>], now_unix: u64, verifier: V) -> Self {
+        let mut crls = Vec::with_capacity(crl_ders.len());
+        for der in crls_ders_iter(crl_ders) {
+            // `CrlChecker::new` parses the DER once at construction time.
+            // On parse error, skip the CRL entirely (soft-fail) — the
+            // transport layer's job is to supply bytes; if the bytes aren't
+            // a valid CRL, we don't have revocation data for this issuer.
+            if let Ok(c) = CrlChecker::new(der, now_unix, verifier) {
+                crls.push(c);
+            }
+        }
+        Self {
+            crls,
+            any_matched: Cell::new(false),
+            any_unusable: Cell::new(false),
+        }
+    }
+
+    /// Produce the final [`RevocationState`] after path validation.
+    /// Called only when `verify_smime_signer` / `verify_chain` returned `Ok`
+    /// (no cert was revoked — a revoked cert surfaces as `Err` and is handled
+    /// separately in `validate_signer_chain`).
+    fn revocation_state(&self) -> RevocationState {
+        if self.any_matched.get() && !self.any_unusable.get() {
+            RevocationState::Good
+        } else {
+            RevocationState::Unchecked
+        }
+    }
+}
+
+/// Helper to iterate `&[Vec<u8>]` as `&[u8]` slices without lifetime issues.
+fn crls_ders_iter(crls: &[Vec<u8>]) -> impl Iterator<Item = &[u8]> {
+    crls.iter().map(|v| v.as_slice())
+}
+
+impl<V: SignatureVerifier> RevocationChecker for KylinsCrlChecker<V> {
+    fn check_revocation(
+        &self,
+        cert: &CertificateV02,
+        issuer: &CertificateV02,
+    ) -> pkix_revocation::Result<()> {
+        for crl in &self.crls {
+            match RevocationChecker::check_revocation(crl, cert, issuer) {
+                Ok(()) => {
+                    // The CRL covers this cert and the serial is NOT revoked.
+                    self.any_matched.set(true);
+                    return Ok(());
+                }
+                Err(e) => match &e {
+                    // Hard-fail: the cert's serial is in the CRL's revoked list.
+                    // Propagate the error — `verify_chain` wraps it as
+                    // `Error::Revocation(Revoked{..})`, and
+                    // `validate_signer_chain` maps that to
+                    // `RevocationState::Revoked` + `chain_valid=false`.
+                    pkix_revocation::Error::Revoked { .. } => {
+                        self.any_matched.set(true);
+                        return Err(e);
+                    }
+                    // This CRL's issuer doesn't match the cert's issuer →
+                    // the CRL is not relevant for this cert. Try the next CRL.
+                    pkix_revocation::Error::CrlIssuerMismatch => continue,
+                    // The CRL IS relevant (issuer matched) but is unusable:
+                    // expired (`CrlExpired`), bad signature
+                    // (`CrlSignatureInvalid`), out-of-scope (`OutOfScope`),
+                    // or structurally broken (`CrlParseError`,
+                    // `MalformedCertificate`). Soft-fail: the CRL applied but
+                    // couldn't determine revocation → `Unchecked`.
+                    _ => {
+                        self.any_matched.set(true);
+                        self.any_unusable.set(true);
+                        return Ok(());
+                    }
+                },
+            }
+        }
+        // No CRL in the set covers this cert → soft-fail (Unchecked). The
+        // cert's issuer has no CRL in our set; we cannot make a revocation
+        // determination. `any_matched` stays at its prior value (set only
+        // when a CRL matches, not when none do).
+        Ok(())
+    }
+
+    /// Check revocation for a cert issued directly by a trust anchor (the
+    /// root-issued intermediate in a typical 3-cert chain). Mirrors
+    /// [`check_revocation`][Self::check_revocation] but delegates to each
+    /// inner `CrlChecker`'s `check_revocation_against_anchor` override.
+    ///
+    /// The default `RevocationChecker` impl returns `Ok(())` (skip). We
+    /// override to ensure the anchor-issued cert is also CRL-checked when a
+    /// matching CRL exists (e.g. a root's CRL that revokes an intermediate).
+    fn check_revocation_against_anchor(
+        &self,
+        cert: &CertificateV02,
+        anchor: &TrustAnchor,
+    ) -> pkix_revocation::Result<()> {
+        for crl in &self.crls {
+            match RevocationChecker::check_revocation_against_anchor(crl, cert, anchor) {
+                Ok(()) => {
+                    self.any_matched.set(true);
+                    return Ok(());
+                }
+                Err(e) => match &e {
+                    pkix_revocation::Error::Revoked { .. } => {
+                        self.any_matched.set(true);
+                        return Err(e);
+                    }
+                    pkix_revocation::Error::CrlIssuerMismatch => continue,
+                    _ => {
+                        self.any_matched.set(true);
+                        self.any_unusable.set(true);
+                        return Ok(());
+                    }
+                },
+            }
+        }
+        Ok(())
     }
 }
 
@@ -319,15 +608,42 @@ const OID_RSASSA_PSS: der_07::asn1::ObjectIdentifier =
     der_07::asn1::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
 
 /// Kylins S/MIME profile: `SmimeProfile` + `id-RSASSA-PSS` in
-/// `allowed_signature_algs`.
+/// `allowed_signature_algs` + the 825-day cap DROPPED.
 ///
 /// The CA/B Forum S/MIME BR profile (`pkix-profiles-cabf::SmimeProfile`) sets
 /// `allowed_signature_algs` to RSA-PKCS1v15-SHA-{256,384,512} + ECDSA-SHA-
 /// {256,384,512} only. Real-world S/MIME chains commonly use RSA-PSS (modern
 /// RSA roots cross-signing for PSS-capable clients); without this override,
 /// pkix-path's policy gate rejects RSA-PSS chains before our `SmimeVerifier`
-/// ever runs. Everything else (EKU, validity cap, min RSA bits) is inherited
-/// from `SmimeProfile` unchanged.
+/// ever runs. Everything else (EKU, min RSA bits, SAN) is inherited from
+/// `SmimeProfile` unchanged.
+///
+/// # Task 5 carry-forward #2 — 825-day cap on roots
+///
+/// `SmimeProfile.policy()` sets `max_validity_secs = Some(825 days)`, and the
+/// underlying `pkix_path::ValidationPolicy.max_validity_secs` field applies to
+/// EVERY certificate in the chain, not just the leaf (confirmed in the
+/// pkix-path 0.3.2 rustdoc — "Applied to every certificate in the chain, not
+/// just the leaf"). Real CA roots (Sectigo, DigiCert, GlobalSign) have 10–20
+/// year validity, well over 825 days; passing them as trust anchors under the
+/// stock `SmimeProfile` causes path validation to fail on the anchor itself.
+///
+/// `ValidationPolicy` has no leaf-only validity field (the leaf-specific knobs
+/// are `required_leaf_eku`, `required_leaf_policy_oids`,
+/// `required_leaf_subject_dn_attrs` — none cap validity). The cleanest fix is
+/// to set `max_validity_secs = None` and accept long-lived roots.
+///
+/// **Trade-off:** we lose the BR-mandated 825-day leaf cap. This is acceptable
+/// because (a) the cap is a CA/B Forum contract with CAs about *issuance* —
+/// "a CA shall not issue a Strict-tier S/MIME cert valid > 825 days" — not a
+/// relying-party trust check. (b) Real-world clients (Thunderbird, Outlook,
+/// Apple Mail) do not enforce this cap at verify time. (c) A leaf cert > 825
+/// days is "this CA is out of BR compliance" — informational, not a security
+/// guarantee we can usefully enforce at verify time. The cert's
+/// `notBefore ≤ now ≤ notAfter` window is still checked by RFC 5280 §6.1
+/// path validation (the `current_time_unix` field), so expired-or-not-yet-
+/// valid certs are still rejected. We trade one informational check for
+/// compatibility with the actual deployed CA ecosystem.
 ///
 /// Task 5 may fold this into a fuller custom profile that also addresses the
 /// 825-day-validity-cap-on-roots gotcha (Task 1 carry-forward #2).
@@ -345,9 +661,19 @@ impl Profile for KylinsSmimeProfile {
 
     fn policy(&self, now_unix: u64) -> pkix_chain::pkix_path::ValidationPolicy {
         let mut p = SmimeProfile.policy(now_unix);
+        // Task 2: allow RSA-PSS in addition to the SmimeProfile default algs.
         if let Some(algs) = p.allowed_signature_algs.as_mut() {
             algs.push(OID_RSASSA_PSS);
         }
+        // Task 5: drop the BR 825-day cap. SmimeProfile sets
+        // `max_validity_secs = Some(825 days)` which applies to EVERY cert in
+        // the chain (per `ValidationPolicy.max_validity_secs` rustdoc) — real
+        // CA roots (10–20yr validity) get rejected. `None` accepts long-lived
+        // roots; we lose the informational 825-day leaf cap (BR issuance
+        // policy, not a relying-party trust check — see the struct rustdoc
+        // for the full trade-off). `notBefore ≤ now ≤ notAfter` is still
+        // enforced by RFC 5280 §6.1 path validation.
+        p.max_validity_secs = None;
         p
     }
 
@@ -472,8 +798,10 @@ mod spike_tests {
     use p256::elliptic_curve::Generate;
     use p256::pkcs8::DecodePrivateKey;
     use pkcs8::EncodePrivateKey;
-    use x509_cert::builder::{Builder, CertificateBuilder};
+    use x509_cert::builder::{Builder, CertificateBuilder, CrlBuilder};
     use x509_cert::builder::profile::BuilderProfile;
+    use x509_cert::crl::RevokedCert as CrlRevokedCert;
+    use x509_cert::ext::pkix::crl::CrlNumber;
     use x509_cert::certificate::TbsCertificate;
     use x509_cert::ext::pkix::name::GeneralName;
     use x509_cert::ext::pkix::{
@@ -1017,13 +1345,13 @@ mod spike_tests {
     }
 
     /// From↔SAN mismatch: a leaf cert with SAN=user@example.com, validated
-    /// against `from_email = imposter@example.com`. Task 1's outcome is
-    /// `chain_valid=false, identity_match=false` because `verify_smime_signer`
-    /// surfaces the mismatch as `Error::Identity` (path OK, identity fails) and
-    /// Task 1's fail-closed maps any Err to chain_valid=false. Task 3 will
-    /// split this into `chain_valid=true, identity_match=false`.
+    /// against `from_email = imposter@example.com`. Per Task 3, the path still
+    /// validates (the cert chains to the root) but the identity binding fails
+    /// (`verify_smime_signer` returns `Error::Identity`). Surface as
+    /// `chain_valid=true, identity_match=false` so the caller maps this to
+    /// `Mismatch` (not `Invalid`).
     #[test]
-    fn spike_from_email_mismatch_currently_fails_chain() {
+    fn spike_from_email_mismatch_yields_chain_ok_identity_miss() {
         let root = build_ca("Kylins Test Root CA", None);
         let inter = build_ca(
             "Kylins Test Intermediate CA",
@@ -1050,12 +1378,17 @@ mod spike_tests {
             &[],
         );
 
-        // Task 1 fail-closed: the verify_smime_signer Err surfaces as
-        // chain_valid=false. This pins Task 3's starting point: split the
-        // Error::Identity arm into chain_valid=true, identity_match=false.
+        // Task 3 split: path validation succeeded, so chain_valid=true. Only
+        // the From↔SAN binding failed → identity_match=false. The caller maps
+        // this to `SignatureState::Mismatch`, not `Invalid`.
         assert!(
-            !outcome.chain_valid || !outcome.identity_match,
-            "Task 1 spike: From↔SAN mismatch must fail somewhere; got {:?}",
+            outcome.chain_valid,
+            "path must still validate; only identity mismatches; got {:?}",
+            outcome
+        );
+        assert!(
+            !outcome.identity_match,
+            "from_email imposter@example.com must not match SAN user@example.com; got {:?}",
             outcome
         );
     }
@@ -1132,5 +1465,345 @@ mod spike_tests {
         );
         assert!(outcome.identity_match, "from_email matches the leaf SAN");
         assert!(outcome.failure_reason.is_none());
+    }
+
+    // ────── Task 4: CRL revocation ──────
+
+    /// Build a CRL signed by `issuer` that revokes the given serial numbers.
+    /// Returns DER bytes. The CRL is valid from now to now+7 days (covers the
+    /// test's signing_time = now+1day). An empty `revoked_serials` produces a
+    /// CRL with no revoked entries (cert's serial not in it → "good").
+    ///
+    /// The CRL is built with `x509-cert 0.3`'s `CrlBuilder` and consumed by
+    /// `pkix-revocation 0.3.3`'s `CrlChecker` (which parses `x509-cert 0.2`'s
+    /// `CertificateList`). DER is wire-compatible across the 0.2/0.3 line.
+    fn build_crl(issuer: &BuiltTestCert, revoked_serials: &[SerialNumber]) -> Vec<u8> {
+        let issuer_cert = <x509_cert::Certificate as der::Decode>::from_der(&issuer.cert_der)
+            .expect("parse issuer for CRL");
+        let issuer_sk = SigningKey::from_pkcs8_der(&issuer.priv_pkcs8_der)
+            .expect("parse issuer key for CRL signing");
+
+        // CrlNumber = 1 (INTEGER, DER: 02 01 01).
+        let crl_number = CrlNumber(der::asn1::Uint::new(&[1u8]).expect("crl number uint"));
+
+        // CRL validity window: now to now+7 days. The signing_time used in
+        // tests is now+1 day, well within this window.
+        let validity: Validity =
+            Validity::from_now(Duration::from_secs(7 * 24 * 60 * 60)).expect("crl validity");
+
+        let mut builder = CrlBuilder::new_with_this_update(
+            &issuer_cert,
+            crl_number,
+            validity.not_before,
+        )
+        .expect("crl builder")
+        .with_next_update(Some(validity.not_after));
+
+        if !revoked_serials.is_empty() {
+            let revoked: Vec<CrlRevokedCert> = revoked_serials
+                .iter()
+                .map(|s| CrlRevokedCert {
+                    serial_number: s.clone(),
+                    revocation_date: validity.not_before,
+                    crl_entry_extensions: None,
+                })
+                .collect();
+            builder = builder.with_certificates(revoked.into_iter());
+        }
+
+        let crl = builder
+            .build::<_, DerSignature>(&issuer_sk)
+            .expect("crl build/sign");
+        crl.to_der().expect("crl to_der")
+    }
+
+    /// Extract the leaf cert's serial number (for CRL revocation entry).
+    fn leaf_serial(leaf: &BuiltTestCert) -> SerialNumber {
+        let parsed = <x509_cert::Certificate as der::Decode>::from_der(&leaf.cert_der)
+            .expect("parse leaf for serial");
+        parsed.tbs_certificate().serial_number().clone()
+    }
+
+    /// CRL with NO revoked entries → CRL covers the leaf (issuer matches) and
+    /// the serial is NOT in the revoked list → `RevocationState::Good`.
+    /// Chain still validates, identity matches.
+    #[test]
+    fn crl_empty_revocation_list_yields_good_state() {
+        let root = build_ca("Kylins CRL Test Root CA", None);
+        let inter = build_ca(
+            "Kylins CRL Test Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "crl-good@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        // CRL signed by the intermediate (the leaf's issuer), no revoked entries.
+        let crl_der = build_crl(&inter, &[]);
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("crl-good@example.com"),
+            signing_time_unix,
+            std::slice::from_ref(&crl_der),
+        );
+
+        assert!(
+            outcome.chain_valid,
+            "chain must still validate with a non-revoking CRL; got {:?}",
+            outcome.failure_reason
+        );
+        assert!(outcome.identity_match);
+        assert_eq!(
+            outcome.revocation_state,
+            RevocationState::Good,
+            "CRL covered the cert and serial is not revoked → Good"
+        );
+        assert!(outcome.failure_reason.is_none());
+    }
+
+    /// CRL that EXPLICITLY revokes the leaf's serial number → hard-fail.
+    /// `chain_valid=false`, `revocation_state=Revoked`. This is the spec §0.4
+    /// hard-fail-on-revoked path.
+    #[test]
+    fn crl_revokes_leaf_serial_yields_revoked_hard_fail() {
+        let root = build_ca("Kylins CRL Test Root CA", None);
+        let inter = build_ca(
+            "Kylins CRL Test Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "crl-revoked@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        // CRL signed by the intermediate that INCLUDES the leaf's serial.
+        let serial = leaf_serial(&leaf);
+        let crl_der = build_crl(&inter, std::slice::from_ref(&serial));
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("crl-revoked@example.com"),
+            signing_time_unix,
+            std::slice::from_ref(&crl_der),
+        );
+
+        assert!(
+            !outcome.chain_valid,
+            "revoked cert must hard-fail (chain_valid=false); got {:?}",
+            outcome
+        );
+        assert_eq!(
+            outcome.revocation_state,
+            RevocationState::Revoked,
+            "CRL says revoked → RevocationState::Revoked"
+        );
+        assert!(
+            outcome.failure_reason.is_some(),
+            "failure_reason must be populated for a revoked cert"
+        );
+        // The failure reason should mention "revoked".
+        assert!(
+            outcome
+                .failure_reason
+                .as_ref()
+                .map(|r| r.to_lowercase().contains("revoke"))
+                .unwrap_or(false),
+            "failure_reason should mention revocation, got: {:?}",
+            outcome.failure_reason
+        );
+    }
+
+    /// No CRLs supplied → `RevocationState::Unchecked` (soft-fail — no
+    /// revocation data available). Chain still validates. This matches the
+    /// Task 1 behavior and is the spec §0.4 soft-fail-when-no-data posture.
+    #[test]
+    fn crl_empty_set_yields_unchecked_state() {
+        let root = build_ca("Kylins CRL Test Root CA", None);
+        let inter = build_ca(
+            "Kylins CRL Test Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "no-crl@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("no-crl@example.com"),
+            signing_time_unix,
+            // Empty CRL set → KylinsCrlChecker holds zero inner CrlCheckers.
+            &[],
+        );
+
+        assert!(outcome.chain_valid);
+        assert_eq!(
+            outcome.revocation_state,
+            RevocationState::Unchecked,
+            "no CRLs → Unchecked (soft-fail)"
+        );
+    }
+
+    /// A CRL from a DIFFERENT issuer (unrelated CA) → `CrlIssuerMismatch` for
+    /// every cert in the chain → no CRL covers the cert → soft-fail
+    /// `Unchecked`. This tests the "CRL doesn't apply" iteration path.
+    #[test]
+    fn crl_wrong_issuer_yields_unchecked_soft_fail() {
+        let root = build_ca("Kylins CRL Test Root CA", None);
+        let inter = build_ca(
+            "Kylins CRL Test Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "wrong-crl@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        // An unrelated CA — signs a CRL, but it's for a DIFFERENT domain.
+        let wrong_ca = build_ca("Unrelated CA", None);
+        let wrong_crl_der = build_crl(&wrong_ca, &[]);
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("wrong-crl@example.com"),
+            signing_time_unix,
+            std::slice::from_ref(&wrong_crl_der),
+        );
+
+        assert!(
+            outcome.chain_valid,
+            "unrelated CRL must not fail the chain; got {:?}",
+            outcome.failure_reason
+        );
+        assert_eq!(
+            outcome.revocation_state,
+            RevocationState::Unchecked,
+            "wrong-issuer CRL → no coverage → Unchecked"
+        );
+    }
+
+    // ────── Task 5: SmimeProfile 825-day cap fix (carry-forward #2) ──────
+
+    /// Regression for the SmimeProfile 825-day cap fix: a real CA root has
+    /// 10–20 year validity (well over the BR 825-day cap). Before the fix,
+    /// `SmimeProfile.policy()` set `max_validity_secs = Some(825 days)` which
+    /// was applied to EVERY cert in the chain — including the root — and a
+    /// 10-year root would be rejected with `Error::ValidityPeriodExceedsMax`
+    /// at the policy gate. `KylinsSmimeProfile::policy()` now sets
+    /// `max_validity_secs = None` (drop the BR cap entirely), so a long-lived
+    /// root + a normal leaf chain cleanly to it.
+    ///
+    /// `LONG_ROOT_VALIDITY_SECS` = 10 years, far over the 825-day BR cap
+    /// (825 days ≈ 71_280_000 secs). `SPIKE_VALIDITY_SECS` (200 days) stays
+    /// well under the cap for the leaf, isolating the test's signal to the
+    /// root's validity window.
+    #[test]
+    fn long_lived_root_chains_after_cap_fix() {
+        const LONG_ROOT_VALIDITY_SECS: u64 = 10 * 365 * 24 * 60 * 60; // 10 years
+
+        // Build a CA root with 10-year validity. We can't reuse `build_ca`
+        // directly because it hardcodes `SPIKE_VALIDITY_SECS`; inline the
+        // build with the long validity window. The extension set mirrors
+        // `build_ca` (BasicConstraints cA:TRUE, KeyUsage keyCertSign|cRLSign,
+        // SubjectKeyIdentifier).
+        let mut rng = rand::rng();
+        let signing_key = SigningKey::generate_from_rng(&mut rng);
+        let verifying_key = signing_key.verifying_key();
+        let pub_spki = SubjectPublicKeyInfo::from_key(verifying_key).expect("spki from key");
+        let ski = SubjectKeyIdentifier::try_from(pub_spki.owned_to_ref()).expect("ski");
+
+        let subject = Name::from_str("CN=Kylins Long-Lived Root CA").expect("subject name");
+        let profile = TestCertProfile {
+            subject: subject.clone(),
+            issuer: subject.clone(),
+        };
+        let serial = SerialNumber::from(rand::random::<u32>());
+        let validity = Validity::from_now(Duration::from_secs(LONG_ROOT_VALIDITY_SECS))
+            .expect("long root validity");
+        let mut builder = CertificateBuilder::new(profile, serial, validity, pub_spki)
+            .expect("cert builder");
+        let bc = BasicConstraints {
+            ca: true,
+            path_len_constraint: None,
+        };
+        builder.add_extension(&bc).expect("bc ext");
+        let key_usage = KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign);
+        builder.add_extension(&key_usage).expect("key usage ext");
+        builder.add_extension(&ski).expect("ski ext");
+        let cert = builder
+            .build::<_, DerSignature>(&signing_key)
+            .expect("cert build/sign (self)");
+        let root_cert_der = cert.to_der().expect("cert to_der");
+        let root_priv_der = signing_key
+            .to_pkcs8_der()
+            .expect("pkcs8 der")
+            .as_bytes()
+            .to_vec();
+
+        // Intermediate + leaf use the standard 200-day validity.
+        let inter = build_ca(
+            "Kylins Intermediate for Long Root",
+            Some((&root_cert_der, &root_priv_der)),
+        );
+        let leaf = build_smime_leaf(
+            "long-root@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root_cert_der),
+            Some("long-root@example.com"),
+            signing_time_unix,
+            &[],
+        );
+
+        assert!(
+            outcome.chain_valid,
+            "long-lived root (10y) must chain cleanly after the 825-day cap fix; got {:?}",
+            outcome.failure_reason
+        );
+        assert!(outcome.identity_match);
     }
 }
