@@ -52,6 +52,18 @@ pub struct ImapMessage {
     pub list_unsubscribe_post: Option<String>,
     pub auth_results: Option<String>,
     pub attachments: Vec<ImapAttachment>,
+    /// Lowercased full top-level Content-Type (e.g. `application/pkcs7-mime`,
+    /// `multipart/signed`, `text/plain`). Populated by `parse_message` from
+    /// `mail_parser::Message::content_type()` so the sync_engine IMAP adapter
+    /// can derive `crypto_kind` without re-parsing the raw bytes. `None` when
+    /// the parsed message had no Content-Type header (rare; malformed input).
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// Lowercased `smime-type` parameter value (`enveloped-data`,
+    /// `signed-data`, etc.) when the top-level Content-Type carried one.
+    /// `None` when absent — including every non-S/MIME message.
+    #[serde(default)]
+    pub smime_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

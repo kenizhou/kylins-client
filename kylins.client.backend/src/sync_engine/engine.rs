@@ -962,6 +962,125 @@ async fn send_op(
         }
     };
 
+    // ---- Plan 4a Task 6: S/MIME sign/encrypt wrapping ----
+    //
+    // If the draft carries `crypto_method=Smime` + sign/encrypt, wrap the MIME
+    // via `apply_crypto` before transport. The wrapped bytes (multipart/signed
+    // or application/pkcs7-mime enveloped-data) flow to BOTH `src.send` (below)
+    // AND the Sent-folder `src.append` (reused later) — the variable shadowing
+    // below is what makes the reuse automatic. Fail-closed: a `CryptoSendError`
+    // emits `sync:send-result{success:false}` AND returns `Err` so the replay
+    // worker marks the op failed (no plaintext fallback, no retry of a crypto
+    // error that won't resolve on retry).
+    //
+    // `SqliteKeyStore` is NOT `Clone` (its `account_id: String` field has no
+    // cheap clone-path) but its constructor is cheap (`Arc<SqlitePool>` handle
+    // bump + `String` clone), so we construct TWO stores from the same pool —
+    // one moved into `Arc<dyn KeyStore>` for the backend, one borrowed by
+    // `apply_crypto` for its own `find_by_email` recipient lookups. The
+    // backend's internal `Arc<dyn KeyStore>` and the lookup store share the
+    // same SQLite handle, so both see the same key rows.
+    let mime = if matches!(draft.crypto_method, crate::mail::builder::CryptoMethod::Smime)
+        && (draft.sign || draft.encrypt)
+    {
+        let account_email: String = match sqlx::query_scalar("SELECT email FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(&engine.pool)
+            .await
+        {
+            Ok(email) => email,
+            Err(e) => {
+                let msg = format!("lookup account email: {e}");
+                log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
+                engine.sink.emit_send_result(SendResultEvent {
+                    account_id: account_id.into(),
+                    draft_id: draft.draft_id.clone(),
+                    success: false,
+                    error: Some(msg.clone()),
+                });
+                return Err(crate::sync_engine::SourceError::Other(msg));
+            }
+        };
+        let pool_arc = std::sync::Arc::new(engine.pool.clone());
+        let keystore_for_backend = crate::keystore_bridge::SqliteKeyStore::new(
+            std::sync::Arc::clone(&pool_arc),
+            account_id,
+        );
+        let keystore_for_lookup =
+            crate::keystore_bridge::SqliteKeyStore::new(pool_arc, account_id);
+        let backend = crypto_smime::SmimeBackend::new(
+            std::sync::Arc::new(keystore_for_backend),
+            crypto_core::CryptoPolicy::default_baseline(),
+        );
+        let default_key = match crate::db::crypto_keys::get_default_signing_key(
+            &engine.pool,
+            account_id,
+        )
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                let msg = format!("lookup default signing key: {e}");
+                log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
+                engine.sink.emit_send_result(SendResultEvent {
+                    account_id: account_id.into(),
+                    draft_id: draft.draft_id.clone(),
+                    success: false,
+                    error: Some(msg.clone()),
+                });
+                return Err(crate::sync_engine::SourceError::Other(msg));
+            }
+        };
+        match crate::mail::crypto::apply_crypto(
+            &backend,
+            &keystore_for_lookup,
+            &mime,
+            draft,
+            &account_email,
+            default_key.as_ref(),
+        )
+        .await
+        {
+            Ok(wrapped) => {
+                log::info!(
+                    "[send] apply_crypto OK draft_id={} wrapped {} -> {} bytes \
+                     (sign={} encrypt={})",
+                    draft.draft_id,
+                    mime.len(),
+                    wrapped.len(),
+                    draft.sign,
+                    draft.encrypt
+                );
+                wrapped
+            }
+            Err(e) => {
+                // Permanent crypto error — surface immediately, no plaintext
+                // fallback. The replay worker will `mark_failed` on the Err
+                // return; emitting the send-result first lets the frontend
+                // show an error banner without waiting for the next round.
+                let msg = e.to_string();
+                log::warn!(
+                    "[send] apply_crypto ERR draft_id={}: {msg} \
+                     (fail-closed — src.send NOT called)",
+                    draft.draft_id
+                );
+                log::info!(
+                    "[send] {account_id} emit sync:send-result success=false draft_id={}",
+                    draft.draft_id
+                );
+                engine.sink.emit_send_result(SendResultEvent {
+                    account_id: account_id.into(),
+                    draft_id: draft.draft_id.clone(),
+                    success: false,
+                    error: Some(msg.clone()),
+                });
+                return Err(crate::sync_engine::SourceError::Other(msg));
+            }
+        }
+    } else {
+        mime
+    };
+
     // The retryable unit: an Err here surfaces to the replay worker, which
     // marks the op failed + schedules backoff. Anything AFTER this line is
     // best-effort and MUST NOT return Err (send already succeeded).
@@ -3415,6 +3534,226 @@ mod tests {
         assert!(
             evts[0].success,
             "the single event must be the original success signal"
+        );
+    }
+
+    // ---- Plan 4a Task 6: S/MIME send_op wiring ----
+    //
+    // send_op must call apply_crypto between build_mime and src.send when the
+    // draft carries crypto_method=Smime + sign/encrypt. The wrapped bytes
+    // (multipart/signed or application/pkcs7-mime enveloped-data) flow to
+    // src.send. A crypto failure (e.g. missing recipient cert) MUST emit a
+    // sync:send-result{success=false} event AND return Err(SourceError::Other)
+    // — fail-closed, no plaintext fallback.
+
+    use crate::keystore_bridge::SqliteKeyStore;
+    use crate::mail::builder::CryptoMethod;
+    use crypto_core::{CryptoBackend, CryptoPolicy, KeyGenParams, Standard};
+    use crypto_smime::SmimeBackend;
+
+    /// Generate an S/MIME keypair for an existing account and (optionally)
+    /// flag it as the account's default signing key. Mirrors the seed pattern
+    /// in `mail/crypto.rs` Task 5 tests: the keygen `user_id` is the account's
+    /// email so `find_by_email` (which queries by the `email` column written by
+    /// `SqliteKeyStore::put`) resolves it for encrypt-to-self + recipient
+    /// lookups. Uses the EXISTING `seed_account` helper (email = `{id}@x.com`).
+    async fn seed_smime_key_for_account(
+        pool: &SqlitePool,
+        account_id: &str,
+        flag_default_sign: bool,
+    ) {
+        // Resolve the email the same way send_op will at send time so the
+        // keygen user_id matches what `apply_crypto` queries for encrypt-to-self.
+        let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(pool)
+            .await
+            .expect("seed account exists");
+        let ks = std::sync::Arc::new(SqliteKeyStore::new(
+            std::sync::Arc::new(pool.clone()),
+            account_id,
+        ));
+        let backend = SmimeBackend::new(ks, CryptoPolicy::default_baseline());
+        let key = backend
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: email,
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key");
+        if flag_default_sign {
+            sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+                .bind(key.fingerprint.as_str())
+                .execute(pool)
+                .await
+                .expect("flag default signer");
+        }
+    }
+
+    /// Helper that extracts the raw bytes from the single recorded `Send` call.
+    /// Mirrors the brief's `src.last_send_bytes()` pseudocode by filtering the
+    /// existing `MockSource::recorded_calls()` recorder for `RecordedCall::Send`.
+    /// Returns `None` when no Send was recorded (the fail-closed assertion path).
+    fn last_send_bytes(src: &MockSource) -> Option<Vec<u8>> {
+        src.recorded_calls().into_iter().find_map(|c| match c {
+            RecordedCall::Send { raw_bytes } => Some(raw_bytes),
+            _ => None,
+        })
+    }
+
+    /// Sign path: `draft.sign=true` + a default-flagged S/MIME signing key →
+    /// `src.send` receives bytes containing `multipart/signed`. Proves the
+    /// Task 5 `apply_crypto` orchestrator is invoked on the send path and the
+    /// wrapped bytes (not the inner MIME) reach transport.
+    #[tokio::test]
+    async fn send_op_signs_when_draft_requests_smime_sign() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await; // email: a@x.com
+        seed_smime_key_for_account(&pool, "a", true).await; // default-flagged signer
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        // EAS caps → skip Sent-append so the only recorded call is Send.
+        let src = MockSource::new(vec![], vec![]).with_caps(eas_caps());
+
+        let mut draft = t8_draft("smime-sign-1");
+        draft.crypto_method = CryptoMethod::Smime;
+        draft.sign = true;
+
+        send_op(&engine, "a", &src, &draft)
+            .await
+            .expect("send_op should succeed for sign-only");
+
+        let raw = last_send_bytes(&src).expect("send was called");
+        let s = String::from_utf8_lossy(&raw);
+        assert!(
+            s.contains("multipart/signed"),
+            "signed send must wrap MIME in multipart/signed; got:\n{s}"
+        );
+        assert!(
+            s.contains("application/pkcs7-signature"),
+            "multipart/signed part 2 must be application/pkcs7-signature; got:\n{s}"
+        );
+    }
+
+    /// Encrypt path: sender cert (encrypt-to-self) + one recipient cert →
+    /// `src.send` receives bytes containing
+    /// `application/pkcs7-mime; smime-type=enveloped-data`. Proves the
+    /// recipient-set resolution + enveloped wrapping fires on send.
+    #[tokio::test]
+    async fn send_op_encrypts_and_includes_self_as_recipient() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        // Sender account a@x.com — own cert resolves for encrypt-to-self.
+        seed_account(&pool, "a").await;
+        seed_smime_key_for_account(&pool, "a", false).await;
+        // Recipient account b@x.com — own cert under its own account row so
+        // `find_by_email` (no account filter) locates it.
+        seed_account(&pool, "b").await;
+        seed_smime_key_for_account(&pool, "b", false).await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(eas_caps());
+
+        let mut draft = t8_draft("smime-encrypt-1");
+        // Override recipient so it matches a seeded cert.
+        draft.to = vec![AddressSpec {
+            name: None,
+            email: "b@x.com".into(),
+        }];
+        draft.crypto_method = CryptoMethod::Smime;
+        draft.encrypt = true;
+
+        send_op(&engine, "a", &src, &draft)
+            .await
+            .expect("send_op should succeed for encrypt");
+
+        let raw = last_send_bytes(&src).expect("send was called");
+        let s = String::from_utf8_lossy(&raw);
+        assert!(
+            s.contains("application/pkcs7-mime; smime-type=enveloped-data"),
+            "encrypt send must wrap MIME in pkcs7-mime enveloped-data; got:\n{s}"
+        );
+    }
+
+    /// Fail-closed: encrypting to a recipient with no cert in the keystore
+    /// MUST return `Err`, emit a `sync:send-result{success=false}` event, and
+    /// NOT call `src.send` (no plaintext leak). The error string carries the
+    /// missing recipient email verbatim so the frontend banner is actionable.
+    #[tokio::test]
+    async fn send_op_missing_recipient_cert_surfaces_error_and_no_plaintext_send() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        // Sender a@x.com — own cert resolves (encrypt-to-self). Recipient
+        // nobody@x.com has NO seeded cert → apply_crypto returns
+        // MissingRecipientCert and send_op must fail-closed.
+        seed_account(&pool, "a").await;
+        seed_smime_key_for_account(&pool, "a", false).await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(eas_caps());
+
+        let mut draft = t8_draft("smime-missing-rcpt-1");
+        draft.to = vec![AddressSpec {
+            name: None,
+            email: "nobody@x.com".into(),
+        }];
+        draft.crypto_method = CryptoMethod::Smime;
+        draft.encrypt = true;
+
+        let err = send_op(&engine, "a", &src, &draft)
+            .await
+            .expect_err("missing recipient cert must surface as Err");
+        assert!(
+            err.to_string().contains("no S/MIME cert for recipient"),
+            "expected missing-recipient error, got: {err}"
+        );
+
+        // Fail-closed: src.send was NEVER called (no plaintext leak).
+        assert!(
+            last_send_bytes(&src).is_none(),
+            "must NOT call src.send when crypto fails (plaintext leak)"
+        );
+        assert!(
+            src.recorded_calls().is_empty(),
+            "no source mutation calls should be recorded on crypto failure; got {:?}",
+            src.recorded_calls()
+        );
+
+        // The failure was surfaced via sync:send-result so the frontend can
+        // render an immediate error banner (independent of mark_failed).
+        let evts = sink.send_results.lock().unwrap().clone();
+        assert_eq!(
+            evts.len(),
+            1,
+            "exactly one send-result event on crypto failure; got {evts:?}"
+        );
+        assert!(!evts[0].success, "crypto failure must emit success=false");
+        assert_eq!(evts[0].draft_id, "smime-missing-rcpt-1");
+        let err_msg = evts[0]
+            .error
+            .as_deref()
+            .expect("failure event must carry error=Some(..)");
+        assert!(
+            err_msg.contains("no S/MIME cert for recipient"),
+            "event error string must carry the missing-recipient detail; got: {err_msg}"
         );
     }
 }

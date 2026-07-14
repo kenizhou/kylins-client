@@ -21,11 +21,13 @@ use super::types::*;
 /// `Cc`/`Bcc`/`Reply-To`), threading (`Message-Id`/`In-Reply-To`/`References`),
 /// list management (`List-Unsubscribe`/`List-Unsubscribe-Post`), and
 /// `Authentication-Results` for phishing checks. `RFC822.SIZE` gives the UI the
-/// on-wire size without a second round-trip.
+/// on-wire size without a second round-trip. `CONTENT-TYPE` is included so the
+/// Phase 1b S/MIME receive-detection path can derive `crypto_kind` from the
+/// top-level Content-Type + `smime-type` parameter at zero extra round-trips.
 pub const SYNC_FETCH_QUERY: &str =
     "UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC BCC REPLY-TO \
      DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST \
-     AUTHENTICATION-RESULTS)]";
+     AUTHENTICATION-RESULTS CONTENT-TYPE)]";
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -2608,6 +2610,31 @@ fn parse_message(
         "Authentication-Results".into(),
     )));
 
+    // Top-level Content-Type + `smime-type` parameter, used by the Phase 1b
+    // receive-detection path in sync_engine::imap_source. mail_parser exposes
+    // `ctype()` (main type, e.g. "application") + `subtype()` (e.g.
+    // "pkcs7-mime") separately; we assemble the full lowercase "type/subtype"
+    // string so the pure helper `crypto_kind_from_content_type` can match it
+    // without caring about mail_parser's accessor shape. The `smime-type`
+    // parameter is carried on `ContentType::attributes` as `Vec<(Cow<str>,
+    // Cow<str>)>`.
+    let (content_type, smime_type) = match message.content_type() {
+        Some(ct) => {
+            let full = match ct.subtype() {
+                Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
+                None => ct.ctype().to_lowercase(),
+            };
+            let smime = ct
+                .attributes
+                .iter()
+                .flatten()
+                .find(|(k, _)| k.eq_ignore_ascii_case("smime-type"))
+                .map(|(_, v)| v.to_lowercase());
+            (Some(full), smime)
+        }
+        None => (None, None),
+    };
+
     let attachments = extract_attachments(&message, uid);
 
     Ok(ImapMessage {
@@ -2635,6 +2662,8 @@ fn parse_message(
         list_unsubscribe_post,
         auth_results,
         attachments,
+        content_type,
+        smime_type,
     })
 }
 

@@ -34,6 +34,17 @@ pub struct AttachmentRef {
     pub cid: Option<String>,
 }
 
+/// Per-message crypto intent carried in `SendDraft`. Mirrors the TS union
+/// `'none' | 'smime'` (serde `rename_all = "lowercase"`). Future standards
+/// (openpgp, sm) add variants here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CryptoMethod {
+    #[default]
+    None,
+    Smime,
+}
+
 /// Structured draft crossing IPC as JSON. The frontend (`buildSendDraft`)
 /// produces this; the backend builds RFC5322 bytes via `build_mime`.
 ///
@@ -66,6 +77,17 @@ pub struct SendDraft {
     pub inline_images: Vec<AttachmentRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_headers: Vec<(String, String)>,
+    /// S/MIME per-message intent (sign/encrypt toggles). Default `None` — the
+    /// send path treats the draft as plain MIME. Plan 4a honors `Smime`.
+    #[serde(default)]
+    pub crypto_method: CryptoMethod,
+    /// Sign the message (clear-sign multipart/signed). Only meaningful when
+    /// `crypto_method == Smime`.
+    #[serde(default)]
+    pub sign: bool,
+    /// Encrypt the message (application/pkcs7-mime enveloped-data).
+    #[serde(default)]
+    pub encrypt: bool,
 }
 
 /// Convert an `AddressSpec` into a `mail-builder` `Address` (owned, single-address form).
@@ -407,5 +429,37 @@ mod tests {
         assert!(s.contains("In-Reply-To: <orig@kylins.mail>"));
         assert!(s.contains("References: <orig@kylins.mail>"));
         assert!(s.contains("X-Priority: 1"));
+    }
+
+    #[test]
+    fn send_draft_crypto_fields_round_trip() {
+        let draft = SendDraft {
+            draft_id: "c1".into(),
+            from: addr("a@k"),
+            to: vec![addr("b@k")],
+            subject: "S".into(),
+            text_body: Some("x".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            encrypt: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&draft).unwrap();
+        assert!(json.contains("\"cryptoMethod\":\"smime\""), "{json}");
+        assert!(json.contains("\"sign\":true"));
+        assert!(json.contains("\"encrypt\":true"));
+        let back: SendDraft = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.crypto_method, CryptoMethod::Smime);
+        assert!(back.sign && back.encrypt);
+    }
+
+    #[test]
+    fn send_draft_crypto_fields_default_none() {
+        // `SendDraft` has `#[serde(rename_all = "camelCase")]`, so the JSON
+        // keys must be camelCase. No crypto fields present → all default.
+        let json = "{\"draftId\":\"\",\"from\":{\"email\":\"\"},\"to\":[],\"subject\":\"\"}";
+        let d: SendDraft = serde_json::from_str(json).unwrap();
+        assert_eq!(d.crypto_method, CryptoMethod::None);
+        assert!(!d.sign && !d.encrypt);
     }
 }

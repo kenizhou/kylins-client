@@ -42,8 +42,8 @@ use crate::mail::smtp::client as smtp_client;
 use crate::mail::smtp::types::SmtpConfig;
 
 use super::{
-    Capabilities, Cursor, FlagUpdate, FolderDelta, MailSource, RemoteFolder, RemoteMessage,
-    SourceError,
+    crypto_kind_from_content_type, Capabilities, Cursor, FlagUpdate, FolderDelta, MailSource,
+    RemoteFolder, RemoteMessage, SourceError,
 };
 
 /// IDLE keepalive watchdog. async-imap's `wait_with_timeout` resets this clock on any
@@ -220,6 +220,14 @@ fn imap_folder_to_remote(f: ImapFolder) -> RemoteFolder {
 
 fn imap_message_to_remote(m: ImapMessage) -> RemoteMessage {
     let has_attachments = !m.attachments.is_empty();
+    // Derive the S/MIME crypto structure from the top-level Content-Type +
+    // `smime-type` parameter (populated by `parse_message` from
+    // `mail_parser::Message::content_type()`). Falls back to `None` for plain
+    // messages or when the header was absent.
+    let crypto_kind = m
+        .content_type
+        .as_deref()
+        .and_then(|ct| crypto_kind_from_content_type(ct, m.smime_type.as_deref().unwrap_or("")));
     RemoteMessage {
         uid: m.uid,
         folder: m.folder,
@@ -245,6 +253,7 @@ fn imap_message_to_remote(m: ImapMessage) -> RemoteMessage {
         list_unsubscribe_post: m.list_unsubscribe_post,
         auth_results: m.auth_results,
         has_attachments,
+        crypto_kind,
     }
 }
 
@@ -1360,6 +1369,8 @@ mod tests {
                 content_id: None,
                 is_inline: false,
             }],
+            content_type: None,
+            smime_type: None,
         };
         let r = imap_message_to_remote(m);
         assert_eq!(r.uid, 7);
@@ -1369,6 +1380,62 @@ mod tests {
         assert!(r.is_starred);
         assert!(!r.is_read);
         assert!(r.has_attachments);
+        // No Content-Type → no crypto kind.
+        assert!(r.crypto_kind.is_none());
+    }
+
+    /// Regression lock for the Phase 1b receive-detection wiring:
+    /// `imap_message_to_remote` must surface a detected `crypto_kind` derived
+    /// from the (content_type, smime_type) pair carried on `ImapMessage`. This
+    /// proves the ImapMessage → RemoteMessage mapping actually invokes the pure
+    /// helper instead of dropping the field.
+    #[test]
+    fn imap_message_to_remote_derives_crypto_kind_for_enveloped_p7m() {
+        let m = ImapMessage {
+            uid: 9,
+            folder: "INBOX".into(),
+            content_type: Some("application/pkcs7-mime".into()),
+            smime_type: Some("enveloped-data".into()),
+            ..use_default_imap_message()
+        };
+        let r = imap_message_to_remote(m);
+        assert_eq!(r.crypto_kind, Some(super::super::CryptoKind::Encrypted));
+    }
+
+    /// Construct an `ImapMessage` with every non-essential field defaulted —
+    /// used by detection tests that only care about `content_type` /
+    /// `smime_type`. Mirrors the struct-update pattern without requiring
+    /// `Default` on `ImapMessage` (which has no logical default for `uid` /
+    /// `folder`).
+    fn use_default_imap_message() -> ImapMessage {
+        ImapMessage {
+            uid: 0,
+            folder: String::new(),
+            message_id: None,
+            in_reply_to: None,
+            references: None,
+            from_address: None,
+            from_name: None,
+            to_addresses: None,
+            cc_addresses: None,
+            bcc_addresses: None,
+            reply_to: None,
+            subject: None,
+            date: 0,
+            is_read: false,
+            is_starred: false,
+            is_draft: false,
+            body_html: None,
+            body_text: None,
+            snippet: None,
+            raw_size: 0,
+            list_unsubscribe: None,
+            list_unsubscribe_post: None,
+            auth_results: None,
+            attachments: Vec::new(),
+            content_type: None,
+            smime_type: None,
+        }
     }
 
     #[test]

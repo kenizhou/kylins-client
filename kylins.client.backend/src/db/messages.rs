@@ -11,6 +11,8 @@ use serde::Serialize;
 use sqlx::{SqlitePool, Transaction};
 
 use crate::sync_engine::{FlagUpdate, FolderDelta, RemoteMessage};
+#[cfg(test)]
+use crate::sync_engine::CryptoKind;
 
 /// Number of messages persisted per transaction inside `apply_folder_delta`.
 /// Each chunk is a separate BEGIN→upsert*N→COMMIT so the SQLite write-lock is
@@ -390,6 +392,17 @@ async fn upsert_message(
     let has_attachments: i64 = if m.has_attachments { 1 } else { 0 };
     let is_read: i64 = if m.is_read { 1 } else { 0 };
     let is_starred: i64 = if m.is_starred { 1 } else { 0 };
+    // Phase 1b S/MIME receive detection: derive the dormant `is_encrypted` /
+    // `is_signed` INTEGER flags from `RemoteMessage.crypto_kind` (set by the
+    // IMAP source adapter from the top-level Content-Type). `None` means the
+    // source didn't detect crypto structure (plain message, or EAS) → both
+    // flags stay 0. Bound on BOTH the initial INSERT and the ON CONFLICT
+    // UPDATE so a re-sync that detects crypto (e.g. a UIDVALIDITY reset that
+    // re-fetches the message after the body changed) re-stamps the flags.
+    let (is_encrypted, is_signed) = m
+        .crypto_kind
+        .map(|k| k.db_flags())
+        .unwrap_or((0, 0));
     // `apply_folder_delta` runs ONLY on the headers-only sync path ( sole
     // caller is the SyncEngine at engine.rs ~812), so no real body was
     // fetched — always insert body_cached = 0. The body-fetch path
@@ -407,13 +420,14 @@ async fn upsert_message(
         "INSERT INTO threads (id, account_id, subject, snippet, last_message_at, message_count,
             is_read, is_starred, is_important, has_attachments, is_snoozed, from_name, from_address,
             classification_id, is_encrypted, is_signed)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0, ?, 0, ?, ?, NULL, 0, 0)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0, ?, 0, ?, ?, NULL, ?, ?)
          ON CONFLICT(account_id, id) DO UPDATE SET
            subject = excluded.subject, snippet = excluded.snippet,
            last_message_at = excluded.last_message_at, message_count = excluded.message_count,
            is_read = excluded.is_read, is_starred = excluded.is_starred,
            is_important = excluded.is_important, has_attachments = excluded.has_attachments,
-           from_name = excluded.from_name, from_address = excluded.from_address",
+           from_name = excluded.from_name, from_address = excluded.from_address,
+           is_encrypted = excluded.is_encrypted, is_signed = excluded.is_signed",
     )
     .bind(&message_id)
     .bind(account_id)
@@ -425,6 +439,8 @@ async fn upsert_message(
     .bind(has_attachments)
     .bind(&m.from_name)
     .bind(&m.from_address)
+    .bind(is_encrypted)
+    .bind(is_signed)
     .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
@@ -436,7 +452,7 @@ async fn upsert_message(
             body_text, body_cached, raw_size, message_id_header, in_reply_to_header,
             references_header, list_unsubscribe, list_unsubscribe_post, auth_results,
             imap_uid, imap_folder, classification_id, is_encrypted, is_signed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
          ON CONFLICT(account_id, id) DO UPDATE SET
            from_address = excluded.from_address, from_name = excluded.from_name,
            to_addresses = excluded.to_addresses, cc_addresses = excluded.cc_addresses,
@@ -445,7 +461,8 @@ async fn upsert_message(
            is_read = excluded.is_read, is_starred = excluded.is_starred,
            body_text = excluded.body_text, raw_size = excluded.raw_size,
            message_id_header = excluded.message_id_header,
-           imap_uid = excluded.imap_uid, imap_folder = excluded.imap_folder",
+           imap_uid = excluded.imap_uid, imap_folder = excluded.imap_folder,
+           is_encrypted = excluded.is_encrypted, is_signed = excluded.is_signed",
     )
     .bind(&message_id)
     .bind(account_id)
@@ -472,6 +489,8 @@ async fn upsert_message(
     .bind(&m.auth_results)
     .bind(m.uid as i64)
     .bind(&m.folder)
+    .bind(is_encrypted)
+    .bind(is_signed)
     .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
@@ -1112,5 +1131,171 @@ mod tests {
             ids.is_empty(),
             "lookup must be scoped by account_id — no cross-account leak"
         );
+    }
+
+    /// Phase 1b receive detection: `apply_folder_delta` must persist the
+    /// dormant `is_encrypted` / `is_signed` columns on BOTH `messages` and
+    /// `threads` from `RemoteMessage.crypto_kind.db_flags()`. Proves the bind
+    /// + ON CONFLICT SET clauses land the flags for a detected S/MIME
+    /// enveloped-data message (encrypted-only).
+    #[tokio::test]
+    async fn apply_folder_delta_persists_crypto_flags_for_encrypted_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        let delta = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 11,
+                folder: "INBOX".into(),
+                message_id: Some("<enc>".into()),
+                subject: Some("Encrypted".into()),
+                from_address: Some("a@b".into()),
+                date: 5000,
+                crypto_kind: Some(CryptoKind::Encrypted),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+
+        // Message PK is `imap-{account}-{folder}-{uid}` (the stable IMAP identity).
+        let pk = "imap-acc-INBOX-11";
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (1, 0), "messages flags must reflect Encrypted");
+
+        let (enc_t, sig_t): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM threads WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc_t, sig_t), (1, 0), "threads flags must reflect Encrypted");
+    }
+
+    /// Companion to the encrypted-message test: a plain message (crypto_kind =
+    /// None) must leave both flags at 0, and an EncryptedSigned kind must set
+    /// both.
+    #[tokio::test]
+    async fn apply_folder_delta_crypto_flags_plain_and_signed_variants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+
+        // Plain message → (0, 0).
+        let delta = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 21,
+                folder: "INBOX".into(),
+                message_id: Some("<plain>".into()),
+                subject: Some("Plain".into()),
+                from_address: Some("a@b".into()),
+                date: 6000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind("imap-acc-INBOX-21")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (0, 0), "plain message must not set flags");
+
+        // EncryptedSigned → (1, 1).
+        let delta = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 22,
+                folder: "INBOX".into(),
+                message_id: Some("<both>".into()),
+                subject: Some("Both".into()),
+                from_address: Some("a@b".into()),
+                date: 7000,
+                crypto_kind: Some(CryptoKind::EncryptedSigned),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind("imap-acc-INBOX-22")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (1, 1), "EncryptedSigned must set both flags");
+    }
+
+    /// Re-sync via ON CONFLICT must UPDATE the flags (not leave the original
+    /// zeros). Proves the `is_encrypted = excluded.is_encrypted` clause in the
+    /// ON CONFLICT DO UPDATE SET list.
+    #[tokio::test]
+    async fn apply_folder_delta_resync_updates_crypto_flags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        let pk = "imap-acc-INBOX-31";
+
+        // Round 1: plain message (crypto_kind None) — flags (0, 0).
+        let delta1 = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 31,
+                folder: "INBOX".into(),
+                message_id: Some("<resync>".into()),
+                subject: Some("Resync".into()),
+                from_address: Some("a@b".into()),
+                date: 8000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta1)
+            .await
+            .unwrap();
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (0, 0));
+
+        // Round 2: same message id + uid, now flagged as Signed. The ON
+        // CONFLICT path must update the flags to (0, 1).
+        let delta2 = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 31,
+                folder: "INBOX".into(),
+                message_id: Some("<resync>".into()),
+                subject: Some("Resync".into()),
+                from_address: Some("a@b".into()),
+                date: 8000,
+                crypto_kind: Some(CryptoKind::Signed),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta2)
+            .await
+            .unwrap();
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (0, 1), "re-sync must update is_signed via ON CONFLICT");
     }
 }

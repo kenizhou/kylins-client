@@ -2,5 +2,6 @@
 
 pub mod address;
 pub mod builder;
+pub mod crypto;
 pub mod imap;
 pub mod smtp;

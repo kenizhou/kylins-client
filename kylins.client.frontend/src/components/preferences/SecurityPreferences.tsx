@@ -3,6 +3,7 @@ import { useClassification } from '../../features/classification/useClassificati
 import { useSecurityIndicatorIcons } from '../../features/classification/useSecurityIndicatorIcons';
 import { ClassificationIcon } from '../icons';
 import type { ClassificationLevel } from '../../features/classification/classificationTypes';
+import { KeyManagerSection } from './KeyManagerSection';
 
 const PRESET_COLORS = [
   '#6b7280',
@@ -295,6 +296,8 @@ export function SecurityPreferences() {
           ))}
         </div>
       </section>
+
+      <KeyManagerSection />
     </div>
   );
 }

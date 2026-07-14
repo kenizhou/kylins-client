@@ -165,6 +165,50 @@ pub async fn maybe_evict(pool: &SqlitePool, cap_rows: i64) -> Result<u64, String
     Ok(n)
 }
 
+/// Persist the raw CMS payload (`smime.p7m` / opaque `p7s` body) for an
+/// encrypted or opaque-signed message. Plaintext is NEVER written via this
+/// path — only the opaque CMS blob exactly as received. The row must already
+/// exist (created by [`set_message_body`]); this UPDATE only fills the
+/// ciphertext column. Idempotent: re-writing overwrites the prior blob.
+pub async fn set_message_ciphertext(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+    ciphertext: &[u8],
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE message_bodies SET body_mime_ciphertext = ? \
+         WHERE account_id = ? AND message_id = ?",
+    )
+    .bind(ciphertext)
+    .bind(account_id)
+    .bind(message_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read the cached raw CMS payload, if any. Returns `Ok(None)` when the row
+/// exists but the column is NULL (a plain text/html message) or when no row
+/// exists at all — both mean "no ciphertext to process".
+pub async fn get_message_ciphertext(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let row: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
+        "SELECT body_mime_ciphertext FROM message_bodies \
+         WHERE account_id = ? AND message_id = ?",
+    )
+    .bind(account_id)
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.and_then(|(b,)| b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,5 +497,50 @@ mod tests {
         let json2 = serde_json::to_value(&b2).unwrap();
         assert!(!json2.as_object().unwrap().contains_key("bodyHtml"));
         assert!(!json2.as_object().unwrap().contains_key("fetchedAt"));
+    }
+
+    /// Round-trip the raw CMS ciphertext column added in Plan 1 (G1). Proves the
+    /// ALTER TABLE migration landed and the helper pair writes + reads back the
+    /// exact bytes. The column stores the opaque `application/pkcs7-mime` /
+    /// multipart-signed blob; plaintext is NEVER written via this path.
+    #[tokio::test]
+    async fn set_and_get_message_ciphertext_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_message(&pool, "acct", "t1", "msg-1").await;
+        // message_bodies row must exist for the UPDATE to hit a row.
+        set_message_body(&pool, "acct", "msg-1", "<p>x</p>")
+            .await
+            .unwrap();
+
+        let blob = b"application/pkcs7-mime raw bytes here";
+        set_message_ciphertext(&pool, "acct", "msg-1", blob)
+            .await
+            .unwrap();
+
+        let got = get_message_ciphertext(&pool, "acct", "msg-1")
+            .await
+            .unwrap()
+            .expect("row present");
+        assert_eq!(got, blob);
+    }
+
+    /// A message with no cached ciphertext must return `Ok(None)` (not error),
+    /// so the decrypt pipeline can treat absence as "no work to do".
+    #[tokio::test]
+    async fn get_message_ciphertext_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_message(&pool, "acct", "t1", "msg-2").await;
+        set_message_body(&pool, "acct", "msg-2", "<p>x</p>")
+            .await
+            .unwrap();
+
+        assert!(get_message_ciphertext(&pool, "acct", "msg-2")
+            .await
+            .unwrap()
+            .is_none());
     }
 }
