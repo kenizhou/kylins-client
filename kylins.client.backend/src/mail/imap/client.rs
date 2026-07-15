@@ -195,6 +195,10 @@ pub async fn setup_session(session: &mut ImapSession, hostname: &str) -> Session
         profile.enable_requests()
     );
     // ENABLE — self-filter to caps the server actually advertises.
+    // NOTE: UIDONLY is DISABLED — async-imap 0.10.4 hangs on FETCH responses
+    // under UIDONLY mode (RFC 9586). The ENABLE plumbing is correct, but the
+    // typed Session parser can't handle the modified response format. Re-enable
+    // after upgrading async-imap or implementing a raw FETCH path.
     let mut enabled = Vec::new();
     if caps.enable {
         let reqs: Vec<&str> = profile
@@ -202,7 +206,7 @@ pub async fn setup_session(session: &mut ImapSession, hostname: &str) -> Session
             .iter()
             .copied()
             .filter(|c| match *c {
-                "UIDONLY" => caps.uidonly,
+                "UIDONLY" => false, // DISABLED — see note above
                 _ => false,
             })
             .collect();
