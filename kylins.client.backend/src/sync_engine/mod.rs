@@ -354,7 +354,15 @@ pub trait MailSource: Send + Sync {
     }
 
     // Optional real-time (Phase 2). Default = Unsupported.
-    async fn watch(&self, _folder: &RemoteFolder) -> Result<(), SourceError> {
+    //
+    // Returns the folder's delta on a server push: the IMAP IDLE owner fetches
+    // the new mail on its OWN socket (so no second connection SELECTs the folder
+    // concurrently — the precondition that made Yahoo steal IDLE EXISTS pushes)
+    // and hands the delta back for the engine to apply + emit. `Err(Unsupported)`
+    // means the source has no real-time path; an empty `FolderDelta` means "push
+    // fired / keepalive timed out but nothing new to apply" — the caller simply
+    // re-enters `watch()`.
+    async fn watch(&self, _folder: &RemoteFolder) -> Result<FolderDelta, SourceError> {
         Err(SourceError::Unsupported)
     }
     async fn ping(&self, _collections: &[(&str, &str)]) -> Result<(), SourceError> {

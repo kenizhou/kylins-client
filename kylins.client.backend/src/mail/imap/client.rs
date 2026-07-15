@@ -145,7 +145,9 @@ fn build_tls_connector(accept_invalid_certs: bool) -> Result<native_tls::TlsConn
         .map_err(|e| format!("Failed to create TLS connector: {e}"))
 }
 
-type ImapSession = Session<ImapStream>;
+/// Public so the session-manager actor (`session_manager::spawn_actor`) can
+/// name the owned type in its signatures; `connect()` also returns it.
+pub type ImapSession = Session<ImapStream>;
 
 pub async fn connect(config: &ImapConfig) -> Result<ImapSession, String> {
     let mut session = tokio::time::timeout(OVERALL_CONNECT_TIMEOUT, connect_inner(config))
