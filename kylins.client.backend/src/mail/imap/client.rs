@@ -2920,6 +2920,7 @@ pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(
         match up.as_str() {
             "IDLE" => c.idle = true,
             "CONDSTORE" => c.condstore = true,
+            "XYMHIGHESTMODSEQ" => c.condstore = true, // Yahoo proprietary: HIGHESTMODSEQ w/o CONDSTORE cap
             "QRESYNC" => c.qresync = true,
             "VANISHED" => c.vanishearch = true,
             "MOVE" => c.r#move = true,
@@ -2949,7 +2950,7 @@ pub async fn session_capabilities(
     let caps = session.capabilities().await.map_err(|e| e.to_string())?;
     Ok(crate::sync_engine::Capabilities {
         idle: caps.has_str("IDLE"),
-        condstore: caps.has_str("CONDSTORE"),
+        condstore: caps.has_str("CONDSTORE") || caps.has_str("XYMHIGHESTMODSEQ"),
         qresync: caps.has_str("QRESYNC"),
         vanishearch: caps.has_str("VANISHED"),
         r#move: caps.has_str("MOVE"),
