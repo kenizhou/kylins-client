@@ -203,11 +203,11 @@ pub struct PushNotice {
 pub struct Handle {
     pub account_id: String,
     pub config: ImapConfig,
-    /// Command channel to the actor task that owns the `Session`.
     cmd_tx: mpsc::Sender<ActorMsg>,
-    /// The actor's JoinHandle (for shutdown abort). The actor owns the
-    /// `Session`, the selected-mailbox cache, the idle folder, and the push_tx.
     actor: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// Snapshot of the session setup (caps + profile + enabled) written by the
+    /// actor on every connect/reconnect. Read by `get_setup()` → `ImapSource`.
+    pub setup: Arc<std::sync::Mutex<Option<crate::mail::imap::client::SessionSetup>>>,
 }
 
 pub struct ImapSessionManager {
@@ -312,15 +312,31 @@ impl ImapSessionManager {
             return Arc::clone(h);
         }
         let (cmd_tx, cmd_rx) = mpsc::channel::<ActorMsg>(64);
-        let actor = spawn_actor(account_id.to_string(), config.clone(), cmd_rx);
+        let setup_slot: Arc<std::sync::Mutex<Option<crate::mail::imap::client::SessionSetup>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let actor = spawn_actor(account_id.to_string(), config.clone(), cmd_rx, Arc::clone(&setup_slot));
         let handle = Arc::new(Handle {
             account_id: account_id.to_string(),
             config: config.clone(),
             cmd_tx,
             actor: tokio::sync::Mutex::new(Some(actor)),
+            setup: setup_slot,
         });
         map.insert(account_id.to_string(), Arc::clone(&handle));
         handle
+    }
+
+    /// Read the session-setup snapshot (caps + profile + enabled) for an account.
+    /// Written by the actor on every connect/reconnect. Returns `None` if the
+    /// actor hasn't connected yet.
+    pub async fn get_setup(
+        &self,
+        account_id: &str,
+    ) -> Option<crate::mail::imap::client::SessionSetup> {
+        let map = self.accounts.lock().await;
+        map.get(account_id)
+            .map(|h| h.setup.lock().unwrap().clone())
+            .flatten()
     }
 
     /// Start IDLE on `folder`. Returns a receiver the engine drains for push
@@ -411,7 +427,7 @@ enum IdleSel {
 ///   push: emit `PushNotice` + re-IDLE. On Timeout/Interrupt: re-IDLE. On error:
 ///   drop the session.
 /// - Else block on the command channel.
-fn spawn_actor(account_id: String, config: ImapConfig, mut cmd_rx: mpsc::Receiver<ActorMsg>) -> JoinHandle<()> {
+fn spawn_actor(account_id: String, config: ImapConfig, mut cmd_rx: mpsc::Receiver<ActorMsg>, setup_slot: Arc<std::sync::Mutex<Option<crate::mail::imap::client::SessionSetup>>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut session: Option<Session<ImapStream>> = None;
         let mut selected: Option<String> = None;
@@ -429,6 +445,7 @@ fn spawn_actor(account_id: String, config: ImapConfig, mut cmd_rx: mpsc::Receive
                     &mut push_tx,
                     &config,
                     &account_id,
+                    &setup_slot,
                 )
                 .await
                 {
@@ -517,6 +534,7 @@ fn spawn_actor(account_id: String, config: ImapConfig, mut cmd_rx: mpsc::Receive
                             &mut push_tx,
                             &config,
                             &account_id,
+                            &setup_slot,
                         )
                         .await
                         {
@@ -560,6 +578,7 @@ fn spawn_actor(account_id: String, config: ImapConfig, mut cmd_rx: mpsc::Receive
                             &mut push_tx,
                             &config,
                             &account_id,
+                            &setup_slot,
                         )
                         .await
                         {
@@ -582,6 +601,7 @@ async fn handle_msg(
     push_tx: &mut Option<mpsc::Sender<PushNotice>>,
     config: &ImapConfig,
     account_id: &str,
+    setup_slot: &Arc<std::sync::Mutex<Option<crate::mail::imap::client::SessionSetup>>>,
 ) -> bool {
     match msg {
         ActorMsg::Shutdown => true,
@@ -602,7 +622,7 @@ async fn handle_msg(
             false
         }
         ActorMsg::Command { folder, op, reply } => {
-            run_command(account_id, config, session, selected, folder, op, reply).await;
+            run_command(account_id, config, session, selected, folder, op, reply, setup_slot).await;
             false
         }
     }
@@ -619,15 +639,17 @@ async fn run_command(
     folder: Option<String>,
     mut op: ErasedOp,
     reply: oneshot::Sender<Result<Box<dyn Any + Send>, String>>,
+    setup_slot: &Arc<std::sync::Mutex<Option<crate::mail::imap::client::SessionSetup>>>,
 ) {
     let mut attempt = 1u8;
     loop {
         // Lazy connect (and reconnect after a transient drop).
         if session.is_none() {
             match imap_client::connect(config).await {
-                Ok(s) => {
+                Ok((s, setup)) => {
                     *session = Some(s);
                     *selected = None;
+                    *setup_slot.lock().unwrap() = Some(setup);
                 }
                 Err(e) => {
                     let estr = format!("IMAP connect failed: {e}");

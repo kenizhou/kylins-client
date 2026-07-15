@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kylins Client is a Tauri v2 desktop email client (codename `mailclient`) inspired by MS Outlook. The codebase is currently a **skeleton** — services, stores, and UI shells exist but most backend logic (EAS, IMAP, AI providers, plugin loading) is stubbed with `TODO` comments. The intended tech stack and architecture are based on Velo (`D:/AI/Projects/opensource/velo` is available locally as the reference implementation). See `docs/architecture.md` for the full design document.
+Kylins Client is a Tauri v2 desktop email client (codename `mailclient`) inspired by MS Outlook. The codebase is currently a **skeleton** — services, stores, and UI shells exist but most backend logic (EAS, IMAP, AI providers, plugin loading) is stubbed with `TODO` comments. The intended tech stack and architecture draw on open-source references available locally under `D:\Projects\mailclient\opensource` — Velo (`opensource/velo`) is the primary reference; `imapflow`, `Mailspring`, `thunderbird-desktop`, `ews-rs`, `google-apis-rs`, `graph-rs-sdk`, `jmap-client`, and `inbox-zero` are also consulted for protocol/provider patterns. See `docs/architecture.md` for the full design document.
 
 ## Repository Layout
 

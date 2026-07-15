@@ -313,19 +313,12 @@ impl MailSource for ImapSource {
             .await
             .map_err(other)?;
 
-        if let Some((idle, condstore, qresync, vanished)) = caps_tuple {
+        if let Some(caps) = caps_tuple {
             log::info!(
-                "[sync] {account_id} IMAP capabilities: idle={idle} condstore={condstore} qresync={qresync} vanished={vanished}"
+                "[sync] {account_id} IMAP capabilities: idle={} condstore={} qresync={} move={} list_status={} uidonly={}",
+                caps.idle, caps.condstore, caps.qresync, caps.r#move, caps.list_status, caps.uidonly
             );
-            *self.caps.lock().unwrap() = Some(Capabilities {
-                idle,
-                condstore,
-                qresync,
-                ping: false,
-                vanishearch: vanished,
-                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
-                saves_sent_automatically: false,
-            });
+            *self.caps.lock().unwrap() = Some(caps);
         }
         Ok(folders.into_iter().map(imap_folder_to_remote).collect())
     }
@@ -427,13 +420,13 @@ impl MailSource for ImapSource {
             /// full delta + caps. The caller just writes caps and returns.
             Done {
                 delta: FolderDelta,
-                caps_tuple: Option<(bool, bool, bool, bool)>,
+                caps_tuple: Option<Capabilities>,
             },
             /// UIDVALIDITY changed — early signal to the engine (cache wipe +
             /// full resync). Carries the placeholder delta + best-effort caps.
             UidValidityChanged {
                 delta: FolderDelta,
-                caps_tuple: Option<(bool, bool, bool, bool)>,
+                caps_tuple: Option<Capabilities>,
             },
             /// Typed FETCH hit ASYNC_IMAP_EMPTY. Caller must run the raw-fetch
             /// fallback (with the persistent session disconnected first), then
@@ -920,16 +913,8 @@ impl MailSource for ImapSource {
 
         // Write caps AFTER the closure returns (no &self.caps borrow held inside
         // the closure — that would conflict with &self.manager via execute()).
-        if let Some((idle, condstore, qresync, vanished)) = caps_tuple {
-            *self.caps.lock().unwrap() = Some(Capabilities {
-                idle,
-                condstore,
-                qresync,
-                ping: false,
-                vanishearch: vanished,
-                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
-                saves_sent_automatically: false,
-            });
+        if let Some(caps) = caps_tuple {
+            *self.caps.lock().unwrap() = Some(caps);
         }
         Ok(delta)
     }
@@ -1035,6 +1020,7 @@ impl MailSource for ImapSource {
         let src_remote = src.remote_id.clone();
         let dest_remote = dest.remote_id.clone();
         let uid_set_str = uid_set(uids);
+        let use_move = self.caps.lock().unwrap().unwrap_or_default().r#move;
 
         // folder=Some(&src_remote): the manager SELECTs the SOURCE mailbox (MOVE
         // operates on the currently-selected mailbox). The dest is just a command
@@ -1050,7 +1036,7 @@ impl MailSource for ImapSource {
                     let dest_remote = dest_remote.clone();
                     let uid_set_str = uid_set_str.clone();
                     Box::pin(async move {
-                        imap_client::move_messages(session, &src_remote, &uid_set_str, &dest_remote)
+                        imap_client::move_messages(session, &src_remote, &uid_set_str, &dest_remote, use_move)
                             .await?;
                         Ok::<_, String>(())
                     })

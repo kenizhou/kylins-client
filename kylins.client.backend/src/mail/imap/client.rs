@@ -149,15 +149,75 @@ fn build_tls_connector(accept_invalid_certs: bool) -> Result<native_tls::TlsConn
 /// name the owned type in its signatures; `connect()` also returns it.
 pub type ImapSession = Session<ImapStream>;
 
-pub async fn connect(config: &ImapConfig) -> Result<ImapSession, String> {
+/// Result of post-login session setup: the parsed `Capabilities`, the detected
+/// `ProviderProfile`, and the list of caps actually ENABLE'd.
+#[derive(Debug, Clone)]
+pub struct SessionSetup {
+    pub caps: crate::sync_engine::Capabilities,
+    pub profile: super::provider_profile::ProviderProfile,
+    pub enabled: Vec<String>,
+}
+
+pub async fn connect(config: &ImapConfig) -> Result<(ImapSession, SessionSetup), String> {
     let mut session = tokio::time::timeout(OVERALL_CONNECT_TIMEOUT, connect_inner(config))
         .await
         .map_err(|_| format!(
             "IMAP connection to {}:{} timed out after {}s — check your server settings or network connection",
             config.host, config.port, OVERALL_CONNECT_TIMEOUT.as_secs()
         ))??;
-    log_capabilities(&mut session).await;
-    Ok(session)
+    let setup = setup_session(&mut session, &config.host).await;
+    Ok((session, setup))
+}
+
+/// Post-auth seam: log raw caps → re-fetch `Capabilities` struct → send IMAP `ID`
+/// → `provider_profile::detect` → self-filtered `ENABLE`. This is the one-stop
+/// per-server setup that replaces a bare `log_capabilities` call. Called from
+/// `connect()` only (STARTTLS path keeps its internal diagnostic log_capabilities).
+pub async fn setup_session(session: &mut ImapSession, hostname: &str) -> SessionSetup {
+    log_capabilities(session).await;
+    let caps = session_capabilities(session).await.unwrap_or_default();
+    // IMAP ID (RFC 2971). Best-effort: ignore Err / NIL.
+    let id_name = if caps.id {
+        session
+            .id([("name", Some("Kylins Mail")), ("version", Some(env!("CARGO_PKG_VERSION")))])
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| m.get("name").cloned())
+    } else {
+        None
+    };
+    let profile = super::provider_profile::detect(hostname, id_name.as_deref(), &caps);
+    log::info!(
+        "[imap] {hostname} vendor={:?} idle_reports_expunges={} enable_requests={:?}",
+        profile.vendor,
+        profile.idle_reports_expunges(),
+        profile.enable_requests()
+    );
+    // ENABLE — self-filter to caps the server actually advertises.
+    let mut enabled = Vec::new();
+    if caps.enable {
+        let reqs: Vec<&str> = profile
+            .enable_requests()
+            .iter()
+            .copied()
+            .filter(|c| match *c {
+                "UIDONLY" => caps.uidonly,
+                _ => false,
+            })
+            .collect();
+        if !reqs.is_empty() {
+            let cmd = format!("ENABLE {}", reqs.join(" "));
+            match session.run_command_and_check_ok(&cmd).await {
+                Ok(()) => {
+                    enabled = reqs.iter().map(|s| s.to_string()).collect();
+                    log::info!("[imap] {hostname} ENABLED: {:?}", enabled);
+                }
+                Err(e) => log::warn!("[imap] {hostname} {} failed: {e}", cmd),
+            }
+        }
+    }
+    SessionSetup { caps, profile, enabled }
 }
 
 /// Diagnostic helper: query and log the full server capability set once,
@@ -738,44 +798,50 @@ pub async fn move_messages(
     source_folder: &str,
     uid_set: &str,
     dest_folder: &str,
+    use_move: bool,
 ) -> Result<(), String> {
     tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(source_folder))
         .await
         .map_err(|_| format!("SELECT {source_folder} timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
         .map_err(|e| format!("SELECT {source_folder} failed: {e}"))?;
 
-    match tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_mv(uid_set, dest_folder)).await {
-        Ok(Ok(())) => Ok(()),
-        _ => {
-            tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_copy(uid_set, dest_folder))
-                .await
-                .map_err(|_| format!("UID COPY timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
-                .map_err(|e| format!("UID COPY failed: {e}"))?;
-
-            tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
-                let store_stream = session
-                    .uid_store(uid_set, "+FLAGS (\\Deleted)")
-                    .await
-                    .map_err(|e| format!("UID STORE +Deleted failed: {e}"))?;
-                let _: Vec<_> = store_stream.collect().await;
-                Ok::<_, String>(())
-            })
+    if use_move {
+        // Server advertises MOVE (RFC 6851): use the atomic UID MOVE. Surface
+        // errors instead of silently degrading to COPY+STORE+EXPUNGE.
+        return tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_mv(uid_set, dest_folder))
             .await
-            .map_err(|_| format!("UID STORE +Deleted timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
-
-            tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
-                let expunge_stream = session
-                    .expunge()
-                    .await
-                    .map_err(|e| format!("EXPUNGE failed: {e}"))?;
-                let _: Vec<_> = expunge_stream.collect().await;
-                Ok::<_, String>(())
-            })
-            .await
-            .map_err(|_| format!("EXPUNGE timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
-            Ok(())
-        }
+            .map_err(|_| format!("UID MOVE timed out after {}s", IMAP_CMD_TIMEOUT.as_secs()))?
+            .map_err(|e| format!("UID MOVE failed: {e}"));
     }
+
+    // Fallback: COPY + STORE \Deleted + EXPUNGE (server doesn't advertise MOVE).
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_copy(uid_set, dest_folder))
+        .await
+        .map_err(|_| format!("UID COPY timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("UID COPY failed: {e}"))?;
+
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
+        let store_stream = session
+            .uid_store(uid_set, "+FLAGS (\\Deleted)")
+            .await
+            .map_err(|e| format!("UID STORE +Deleted failed: {e}"))?;
+        let _: Vec<_> = store_stream.collect().await;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|_| format!("UID STORE +Deleted timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
+
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
+        let expunge_stream = session
+            .expunge()
+            .await
+            .map_err(|e| format!("EXPUNGE failed: {e}"))?;
+        let _: Vec<_> = expunge_stream.collect().await;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|_| format!("EXPUNGE timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
+    Ok(())
 }
 
 pub async fn copy_messages(
@@ -1189,7 +1255,7 @@ pub async fn sync_folder(
 }
 
 pub async fn test_connection(config: &ImapConfig) -> Result<String, String> {
-    let mut session = connect(config).await?;
+    let (mut session, _setup) = connect(config).await?;
     let count = tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
         let names = session
             .list(Some(""), Some("*"))
@@ -2825,43 +2891,77 @@ fn format_address_list(addr: Option<&mail_parser::Address>) -> Option<String> {
     }
 }
 
-/// Map a set of IMAP capability strings to the feature flags the sync engine cares
-/// about. Pure so it's unit-testable; `session_capabilities` runs the live command
-/// then delegates here.
+/// Map a set of IMAP capability strings to a `Capabilities` struct. Pure so it's
+/// unit-testable; `session_capabilities` runs the live command then uses `has_str`.
 pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(
     caps: I,
-) -> (bool, bool, bool, bool) {
-    let mut idle = false;
-    let mut condstore = false;
-    let mut qresync = false;
-    let mut vanished = false;
-    for c in caps {
-        let up = c.to_ascii_uppercase();
+) -> crate::sync_engine::Capabilities {
+    let mut c = crate::sync_engine::Capabilities::default();
+    for raw in caps {
+        let up = raw.to_ascii_uppercase();
+        // Value-carrying caps: APPENDLIMIT=<n>, MESSAGELIMIT=<n>, AUTH=<mech>.
+        if let Some((name, val)) = up.split_once('=') {
+            match name {
+                "APPENDLIMIT" => c.appendlimit = val.parse().ok(),
+                "MESSAGELIMIT" => c.message_limit = val.parse().ok(),
+                "AUTH" => match val {
+                    "OAUTHBEARER" => c.auth_oauthbearer = true,
+                    "XOAUTH2" | "XOAUTH" => c.auth_xoauth2 = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+            continue;
+        }
         match up.as_str() {
-            "IDLE" => idle = true,
-            "CONDSTORE" => condstore = true,
-            "QRESYNC" => qresync = true,
-            "VANISHED" => vanished = true,
+            "IDLE" => c.idle = true,
+            "CONDSTORE" => c.condstore = true,
+            "QRESYNC" => c.qresync = true,
+            "VANISHED" => c.vanishearch = true,
+            "MOVE" => c.r#move = true,
+            "LIST-STATUS" => c.list_status = true,
+            "OBJECTID" => c.objectid = true,
+            "UIDONLY" | "X-UIDONLY" => c.uidonly = true,
+            "ENABLE" => c.enable = true,
+            "PARTIAL" => c.partial = true,
+            "NAMESPACE" => c.namespace = true,
+            "ID" => c.id = true,
+            "X-GM-EXT-1" => c.gm_ext1 = true,
+            "UIDPLUS" => c.uidplus = true,
             _ => {}
         }
     }
-    (idle, condstore, qresync, vanished)
+    c
 }
 
-/// Run CAPABILITY on an open session and map to the feature tuple
-/// `(idle, condstore, qresync, vanished)`. Uses `has_str` for case-insensitive
-/// matching (async-imap's `Capability` enum has no public `as_str`, so we cannot
-/// route the live `HashSet` through `capabilities_from_strs` directly).
+/// Run CAPABILITY on an open session and map to a `Capabilities` struct. Uses
+/// `has_str` (case-insensitive) for simple atom caps; value-carrying caps
+/// (`APPENDLIMIT=`/`MESSAGELIMIT=`) are not extractable via `has_str` (it matches
+/// the full string including the value) and are left as `None` here. Yahoo's
+/// `MESSAGELIMIT` is hard-coded in `ProviderProfile::detect` instead.
 pub async fn session_capabilities(
     session: &mut ImapSession,
-) -> Result<(bool, bool, bool, bool), String> {
+) -> Result<crate::sync_engine::Capabilities, String> {
     let caps = session.capabilities().await.map_err(|e| e.to_string())?;
-    Ok((
-        caps.has_str("IDLE"),
-        caps.has_str("CONDSTORE"),
-        caps.has_str("QRESYNC"),
-        caps.has_str("VANISHED"),
-    ))
+    Ok(crate::sync_engine::Capabilities {
+        idle: caps.has_str("IDLE"),
+        condstore: caps.has_str("CONDSTORE"),
+        qresync: caps.has_str("QRESYNC"),
+        vanishearch: caps.has_str("VANISHED"),
+        r#move: caps.has_str("MOVE"),
+        list_status: caps.has_str("LIST-STATUS"),
+        objectid: caps.has_str("OBJECTID"),
+        uidonly: caps.has_str("UIDONLY") || caps.has_str("X-UIDONLY"),
+        enable: caps.has_str("ENABLE"),
+        partial: caps.has_str("PARTIAL"),
+        namespace: caps.has_str("NAMESPACE"),
+        id: caps.has_str("ID"),
+        gm_ext1: caps.has_str("X-GM-EXT-1"),
+        uidplus: caps.has_str("UIDPLUS"),
+        auth_oauthbearer: caps.has_str("AUTH=OAUTHBEARER"),
+        auth_xoauth2: caps.has_str("AUTH=XOAUTH2") || caps.has_str("AUTH=XOAUTH"),
+        ..Default::default()
+    })
 }
 
 /// Pure helper: detect whether the STARTTLS OK response is followed by extra
@@ -3040,33 +3140,31 @@ mod tests {
 
     #[test]
     fn capabilities_from_strs_maps_known_flags() {
-        let (idle, condstore, qresync, vanished) =
-            capabilities_from_strs(["IMAP4rev1", "IDLE", "CONDSTORE", "QRESYNC", "VANISHED"]);
-        assert!(idle, "IDLE should map to idle");
-        assert!(condstore, "CONDSTORE should map to condstore");
-        assert!(qresync, "QRESYNC should map to qresync");
-        assert!(vanished, "VANISHED should map to vanished");
+        let c = capabilities_from_strs(["IMAP4rev1", "IDLE", "CONDSTORE", "QRESYNC", "VANISHED"]);
+        assert!(c.idle, "IDLE should map to idle");
+        assert!(c.condstore, "CONDSTORE should map to condstore");
+        assert!(c.qresync, "QRESYNC should map to qresync");
+        assert!(c.vanishearch, "VANISHED should map to vanishearch");
     }
 
     #[test]
     fn capabilities_from_strs_case_insensitive() {
-        let (idle, _, _, _) = capabilities_from_strs(["idle"]);
-        assert!(idle, "mapping should be case-insensitive");
-        let (_, condstore, _, _) = capabilities_from_strs(["condstore"]);
-        assert!(condstore);
+        let c = capabilities_from_strs(["idle"]);
+        assert!(c.idle, "mapping should be case-insensitive");
+        let c = capabilities_from_strs(["condstore"]);
+        assert!(c.condstore);
     }
 
     #[test]
     fn capabilities_from_strs_empty_when_no_known_flags() {
-        let (idle, condstore, qresync, vanished) =
-            capabilities_from_strs(["IMAP4rev1", "STARTTLS", "LOGINDISABLED"]);
-        assert!(!idle && !condstore && !qresync && !vanished);
+        let c = capabilities_from_strs(["IMAP4rev1", "STARTTLS", "LOGINDISABLED"]);
+        assert!(!c.idle && !c.condstore && !c.qresync && !c.vanishearch);
     }
 
     #[test]
     fn capabilities_from_strs_empty_iter() {
-        let (idle, condstore, qresync, vanished) = capabilities_from_strs::<[&str; 0]>([]);
-        assert!(!idle && !condstore && !qresync && !vanished);
+        let c = capabilities_from_strs::<[&str; 0]>([]);
+        assert!(!c.idle && !c.condstore && !c.qresync && !c.vanishearch);
     }
 
     /// Regression lock for the single-connection raw fetch path

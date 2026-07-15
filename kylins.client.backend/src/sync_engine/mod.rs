@@ -29,6 +29,21 @@ pub struct Capabilities {
     /// IMAP-APPEND to Sent (IMAP/SMTP). The engine uses this to gate the
     /// best-effort Sent-append in `send_op`.
     pub saves_sent_automatically: bool,
+    // ---- Cap-gated RFC extension flags (per-server extension architecture) ----
+    pub r#move: bool,               // MOVE (RFC 6851)
+    pub list_status: bool,          // LIST-STATUS (RFC 5819)
+    pub objectid: bool,             // OBJECTID (RFC 8474)
+    pub uidonly: bool,              // UIDONLY advertised (RFC 9586)
+    pub enable: bool,               // ENABLE (RFC 5161)
+    pub partial: bool,              // PARTIAL (RFC 7888)
+    pub namespace: bool,            // NAMESPACE (RFC 2342)
+    pub id: bool,                   // ID (RFC 2971)
+    pub gm_ext1: bool,              // X-GM-EXT-1 (Gmail)
+    pub uidplus: bool,              // UIDPLUS (RFC 4315)
+    pub auth_oauthbearer: bool,     // AUTH=OAUTHBEARER (RFC 7628)
+    pub auth_xoauth2: bool,         // AUTH=XOAUTH2
+    pub appendlimit: Option<u64>,   // APPENDLIMIT=<n>
+    pub message_limit: Option<u32>, // Yahoo MESSAGELIMIT=<n>
 }
 
 /// Opaque per-folder delta cursor. Each source defines its own payload; the engine
