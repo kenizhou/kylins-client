@@ -455,6 +455,32 @@ fn spawn_actor(account_id: String, config: ImapConfig, mut cmd_rx: mpsc::Receive
 
             let can_idle = session.is_some() && idle_folder.is_some();
             if can_idle {
+                // Brief grace period: wait 100ms for a follow-up command before
+                // re-entering IDLE. This batches rapid sequential commands (e.g.,
+                // per-folder sync round) so the actor doesn't break/re-enter IDLE
+                // between each folder — 8 folder syncs run back-to-back instead of
+                // interleaving with 8 IDLE break/re-enter cycles.
+                match tokio::time::timeout(Duration::from_millis(100), cmd_rx.recv()).await {
+                    Ok(Some(msg)) => {
+                        if handle_msg(
+                            msg,
+                            &mut session,
+                            &mut selected,
+                            &mut idle_folder,
+                            &mut push_tx,
+                            &config,
+                            &account_id,
+                            &setup_slot,
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                        continue 'main;
+                    }
+                    Ok(None) => return, // channel closed → exit actor
+                    Err(_) => {}        // timeout — no more commands, proceed to IDLE
+                }
                 // SELECT the idle folder if it differs from the current selection.
                 {
                     let needs_select = should_reselect(&selected, idle_folder.as_deref());
