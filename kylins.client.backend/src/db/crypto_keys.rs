@@ -287,6 +287,49 @@ pub async fn list_crypto_keys_for_account(
     Ok(rows.iter().map(row_to_crypto_key).collect())
 }
 
+/// Return the raw DER bytes of every S/MIME CA-root trust anchor the user has
+/// imported for this account (`crypto_keys` rows with `standard='smime'` AND
+/// `key_type='cert'`). These feed [`crate::mail::crypto::SmimeBackend::verify_with_context`]'s
+/// `trust_anchor_ders` argument in the G5 receive orchestrator.
+///
+/// Personal signing keys (`key_type='private'`) and public-only certs are
+/// excluded — only CA-root entries in the "Trusted CAs" store qualify.
+/// `account_id` is NOT NULL per the schema (CA roots are account-scoped), so
+/// NULL-scope handling is unnecessary. Returns an empty Vec (not an error)
+/// when the account has no imported trust anchors.
+///
+/// `public_data` is stored HEX-encoded in the DB (see `keystore_bridge::put`,
+/// which `hex::encode`s, and `upsert_crypto_key`, which binds
+/// `CryptoKeyRecord.public_data: String`). This helper reads it as a String
+/// and `hex::decode`s it to recover the cert DER; rows that fail to decode
+/// are skipped with a `log::warn!` (one bad anchor must not brick the rest).
+pub async fn list_trust_anchor_certs(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    // `public_data` is stored HEX-encoded (see `keystore_bridge::put` ->
+    // `hex::encode`; `upsert_crypto_key` binds `CryptoKeyRecord.public_data`
+    // as a String). Read it as a String + hex-decode to recover the cert DER.
+    // A raw-bytes read would return hex-ASCII, not DER, and break the chain
+    // validator. Rows that fail to decode are skipped (best-effort) with a log.
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT public_data FROM crypto_keys
+         WHERE account_id = ? AND standard = 'smime' AND key_type = 'cert'",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (hex_str,) in rows {
+        match hex::decode(&hex_str) {
+            Ok(der) => out.push(der),
+            Err(e) => log::warn!("[crypto] trust-anchor public_data hex decode failed: {e}"),
+        }
+    }
+    Ok(out)
+}
+
 /// Minimal view of a default signing key — the bits `send_op`/`apply_crypto`
 /// need to build a `KeyHandleRef` and resolve the cert+key via
 /// [`get_crypto_key_full`]. Carries no private material.
@@ -698,5 +741,129 @@ mod tests {
             still_default.is_default_sign,
             "missing-fingerprint path must NOT commit the un-flag (tx rolled back)"
         );
+    }
+
+    // ─── Task 2 (G5): list_trust_anchor_certs ───
+
+    /// Seed a `crypto_keys` row with raw bytes bound to the `public_data` BLOB
+    /// column (bypassing `upsert_crypto_key`, which binds a `String` — trust
+    /// anchors are written as raw DER bytes by the KeyManager import path, and
+    /// the G5 orchestrator reads them back as `Vec<u8>` DER for
+    /// `verify_with_context(trust_anchor_ders)`).
+    async fn seed_trust_anchor_blob(
+        pool: &SqlitePool,
+        id: &str,
+        account_id: &str,
+        fingerprint: &str,
+        key_type: &str,
+        public_data: &[u8],
+    ) {
+        sqlx::query(
+            "INSERT INTO crypto_keys (
+                id, account_id, standard, key_type, email, fingerprint, public_data,
+                origin, is_default_sign, is_default_encrypt, created_at
+             ) VALUES (?, ?, 'smime', ?, NULL, ?, ?, 'imported', 0, 0, strftime('%s','now'))",
+        )
+        .bind(id)
+        .bind(account_id)
+        .bind(key_type)
+        .bind(fingerprint)
+        .bind(hex::encode(public_data))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Returns the DER bytes of every `key_type='cert'` trust anchor for the
+    /// account; excludes signing keys (`key_type='private'`) and public-only
+    /// certs. Cross-account isolation: another account's anchors are NOT
+    /// returned.
+    #[tokio::test]
+    async fn list_trust_anchor_certs_returns_ca_root_ders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+
+        // CA-root trust anchor: key_type='cert', raw DER bytes in public_data.
+        let ca_root_der = vec![0x30u8, 0x82, 0x01, 0xFF, 0xAA, 0xBB, 0xCC];
+        seed_trust_anchor_blob(
+            &pool,
+            "k_ca",
+            "acct",
+            "fp_ca",
+            "cert",
+            &ca_root_der,
+        )
+        .await;
+
+        // A second CA root for the same account — both must be returned.
+        let ca_root_der_2 = vec![0x30u8, 0x82, 0x02, 0x00, 0x11, 0x22];
+        seed_trust_anchor_blob(
+            &pool,
+            "k_ca2",
+            "acct",
+            "fp_ca2",
+            "cert",
+            &ca_root_der_2,
+        )
+        .await;
+
+        // Personal signing key (key_type='private') — must NOT be returned.
+        let signing_priv_der = vec![0xDEu8, 0xAD, 0xBE, 0xEF];
+        seed_trust_anchor_blob(
+            &pool,
+            "k_priv",
+            "acct",
+            "fp_priv",
+            "private",
+            &signing_priv_der,
+        )
+        .await;
+
+        // Different account — must NOT be returned.
+        seed_account(&pool, "acct2").await;
+        seed_trust_anchor_blob(
+            &pool,
+            "k_ca_other",
+            "acct2",
+            "fp_ca_other",
+            "cert",
+            &[0xFFu8, 0xEE, 0xDD],
+        )
+        .await;
+
+        let anchors = list_trust_anchor_certs(&pool, "acct")
+            .await
+            .expect("query ok");
+        assert_eq!(
+            anchors.len(),
+            2,
+            "only key_type='cert' rows for 'acct' are returned"
+        );
+        assert!(
+            anchors.contains(&ca_root_der),
+            "first CA-root DER must be present: got {anchors:?}"
+        );
+        assert!(
+            anchors.contains(&ca_root_der_2),
+            "second CA-root DER must be present: got {anchors:?}"
+        );
+        assert!(
+            !anchors.contains(&signing_priv_der),
+            "key_type='private' signing key must NOT be returned"
+        );
+    }
+
+    /// An account with no trust anchors returns an empty Vec (not an error).
+    #[tokio::test]
+    async fn list_trust_anchor_certs_empty_when_no_anchors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct_empty").await;
+
+        let anchors = list_trust_anchor_certs(&pool, "acct_empty")
+            .await
+            .expect("query ok on empty scope");
+        assert!(anchors.is_empty(), "no trust anchors -> empty Vec");
     }
 }

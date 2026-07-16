@@ -37,6 +37,16 @@ pub const CRATE_NAME: &str = "crypto-smime";
 // "unchecked revocation" warnings in the UI.
 pub use chain::{validate_signer_chain, ChainOutcome, RevocationState};
 
+// Task 2 (G5): re-export `extract_intermediates` so the backend receive
+// orchestrator (G5 Task 3) can collect the intermediate CA cert DERs embedded
+// in a received SignedData (minus the signer leaf) and pass them to
+// `SmimeBackend::verify_with_context(intermediate_ders)`. The function is
+// declared `pub` in the private `cms_parse` module (mirroring
+// `chain::validate_signer_chain`'s visibility pattern) so it can be re-exported
+// here; external callers reach it only through this crate-root alias, never via
+// `cms_parse::extract_intermediates` directly.
+pub use cms_parse::extract_intermediates;
+
 /// S/MIME `CryptoBackend`. Owns the framework policy plus the `KeyStore` where
 /// generated cert/key material is persisted (public DER cert + encrypted PKCS#8
 /// private key). Private material never crosses the IPC boundary — it moves only

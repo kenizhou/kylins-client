@@ -1459,6 +1459,87 @@ pub async fn crypto_export_public_to_path(
     crypto_export_public_to_path_inner(&pool, &account_id, &standard, &fingerprint, &out_path).await
 }
 
+// ---- S/MIME receive orchestrator commands (Plan 3 / G5 Task 4) ----
+//
+// Thin Tauri wrappers around the G5 Task 3 receive orchestrator
+// (`mail::crypto::open_crypto_message`) + the persisted-result read
+// (`db::message_crypto_results::get_message_crypto_result`). Two commands:
+//
+// 1. `crypto_open_message` — decrypts + verifies a crypto-marked message,
+//    returns the in-memory plaintext + the persisted verification outcome,
+//    AND emits `sync:crypto-result` so the G6 UI can refresh crypto badges
+//    for the opened message without re-decrypting. The event is fired AFTER
+//    `open_crypto_message` runs (so the `message_crypto_results` row is
+//    already written when the frontend re-reads it).
+//
+// 2. `db_get_message_crypto_result` — reads the persisted
+//    `message_crypto_results` row. Used by the list view to render crypto
+//    badges without triggering a full decrypt (the row was written the last
+//    time the message was opened).
+//
+// The emit-access pattern mirrors `sync_request_bodies` (engine.rs:
+// `emit_bodies_written_public`): the `SyncEngine` owns the private
+// `Arc<dyn EventSink>`, so the command takes `State<'_, Arc<SyncEngine>>` and
+// calls the narrow public helper `emit_crypto_result_public`. No `spawn_blocking`
+// — matches `crypto_generate_key` (the orchestrator is already async).
+
+use std::sync::Arc;
+
+use crate::db::message_crypto_results::MessageCryptoResultRow;
+use crate::mail::crypto::{open_crypto_message, OpenCryptoResult};
+use crate::sync_engine::engine::{CryptoResultEvent, SyncEngine};
+
+/// Testable core of [`crypto_open_message`]. Takes a borrowed pool + an
+/// `&Arc<SyncEngine>` (the engine is only used for the final event emission)
+/// so unit tests can drive it without a `State<'_, _>` harness — mirrors
+/// `request_bodies_inner` in `sync_engine/commands.rs`.
+pub async fn crypto_open_message_inner(
+    engine: &Arc<SyncEngine>,
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<OpenCryptoResult, String> {
+    let res = open_crypto_message(pool, account_id, message_id).await?;
+    // Fire AFTER open_crypto_message so the persisted row is visible to the
+    // frontend's re-read (the G6 handler queries db_get_message_crypto_result
+    // on this event). Best-effort: emit errors are swallowed inside
+    // `emit_crypto_result_public` (Tauri emit never errors on a valid
+    // AppHandle — the `let _ =` in TauriSink).
+    engine.emit_crypto_result_public(CryptoResultEvent {
+        account_id: account_id.to_string(),
+        message_id: message_id.to_string(),
+    });
+    Ok(res)
+}
+
+/// Open (decrypt + verify) a crypto-marked message. Returns the in-memory
+/// plaintext (html / text / attachment metadata) + the persisted verification
+/// outcome (`crypto_result`). Emits `sync:crypto-result` after the orchestrator
+/// runs so the G6 UI can refresh crypto badges. Plaintext is IN-MEMORY ONLY —
+/// the backend never persists it (see `OpenCryptoResult`).
+#[tauri::command]
+pub async fn crypto_open_message(
+    engine: State<'_, Arc<SyncEngine>>,
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<OpenCryptoResult, String> {
+    crypto_open_message_inner(engine.inner(), pool.inner(), &account_id, &message_id).await
+}
+
+/// Read the persisted `message_crypto_results` row for `(account_id,
+/// message_id)`. Used by the list view to render crypto badges without
+/// re-decrypting (the row is written by the last `crypto_open_message` call).
+#[tauri::command]
+pub async fn db_get_message_crypto_result(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<Option<MessageCryptoResultRow>, String> {
+    crate::db::message_crypto_results::get_message_crypto_result(&pool, &account_id, &message_id)
+        .await
+}
+
 // ---- rate-limit (Phase 3f) ----
 
 /// Returns the account's current rate-limit window (`Some(retry_after)` epoch
@@ -1534,5 +1615,133 @@ mod tests {
 
         let got = crate::db::rate_limit::get_rate_limit(&pool, "a").await;
         assert_eq!(got.unwrap(), None);
+    }
+
+    // ---- G5 Task 4: crypto_open_message + db_get_message_crypto_result ----
+    //
+    // Tauri `State<'_, _>` cannot be erected inside a `#[tokio::test]` without
+    // a full `App` harness, so we exercise the testable core (`*_inner`) of
+    // each command directly — the same strategy as the rate-limit delegation
+    // tests above + `request_bodies_inner` in `sync_engine/commands.rs`. The
+    // load-bearing decrypt+verify round-trip is already pinned in
+    // `mail/crypto.rs::tests`; these tests cover ONLY the wrapper concerns:
+    //   1. `crypto_open_message_inner` delegates to `open_crypto_message` AND
+    //      emits exactly one `CryptoResultEvent` with the right ids.
+    //   2. `db_get_message_crypto_result` returns the persisted row (the
+    //      `get_message_crypto_result` CRUD contract is pinned in
+    //      `db/message_crypto_results.rs::tests` — this only pins the
+    //      delegation wiring).
+
+    use crate::sync_engine::engine::{
+        CryptoResultEvent, EventSink, SyncEngine,
+    };
+    use crate::db::message_crypto_results::MessageCryptoResultRow;
+    use std::sync::{Arc, Mutex};
+
+    /// Sink that captures `CryptoResultEvent`s (and no-ops the rest). Mirrors
+    /// the `CapturingSink` in `sync_engine/commands.rs::tests` but local so
+    /// this test module stays self-contained.
+    #[derive(Default, Clone)]
+    struct CryptoResultCapturingSink {
+        crypto: Arc<Mutex<Vec<CryptoResultEvent>>>,
+    }
+    impl EventSink for CryptoResultCapturingSink {
+        fn emit_delta(&self, _: crate::sync_engine::engine::DeltaEvent) {}
+        fn emit_new_mail(&self, _: crate::sync_engine::engine::NewMailEvent) {}
+        fn emit_status(&self, _: crate::sync_engine::engine::StatusEvent) {}
+        fn emit_queue(&self, _: crate::sync_engine::engine::QueueEvent) {}
+        fn emit_bodies_written(&self, _: crate::sync_engine::engine::BodiesWrittenEvent) {}
+        fn emit_send_result(&self, _: crate::sync_engine::engine::SendResultEvent) {}
+        fn emit_crypto_result(&self, e: CryptoResultEvent) {
+            self.crypto.lock().unwrap().push(e);
+        }
+    }
+
+    async fn seed_thread_and_message(pool: &SqlitePool, account_id: &str, message_id: &str) {
+        sqlx::query(
+            "INSERT INTO threads (id, account_id, is_read, last_message_at)
+             VALUES (?, ?, 0, 0)",
+        )
+        .bind(message_id)
+        .bind(account_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, account_id, thread_id, from_address, date, is_read, is_starred, body_cached)
+             VALUES (?, ?, ?, ?, 0, 0, 0, 0)",
+        )
+        .bind(message_id)
+        .bind(account_id)
+        .bind(message_id)
+        .bind(format!("{account_id}@x.com"))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// `crypto_open_message_inner` delegates to `open_crypto_message` (which
+    /// writes the `message_crypto_results` row even on the no-ciphertext →
+    /// Failed path) AND emits exactly one `CryptoResultEvent`. Uses the
+    /// no-ciphertext path so this test does not require generating S/MIME keys
+    /// — the load-bearing decrypt+verify round-trip is already pinned in
+    /// `mail/crypto.rs::tests`.
+    #[tokio::test]
+    async fn crypto_open_message_inner_returns_result_and_emits_crypto_result_event() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        // Seed thread+message so `open_crypto_message`'s ciphertext lookup has
+        // a row to read from-address off (the no-ciphertext → Failed path
+        // still writes a crypto_result row).
+        seed_thread_and_message(&pool, "a", "msg-1").await;
+
+        let sink = Arc::new(CryptoResultCapturingSink::default());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+
+        let res = crypto_open_message_inner(&engine, &pool, "a", "msg-1")
+            .await
+            .expect("open_crypto_message ok (no-ciphertext → Failed outcome)");
+
+        // The no-ciphertext path records a Failed decrypt outcome (the
+        // orchestrator's contract is to surface a meaningful result, not Err).
+        assert_eq!(res.crypto_result.account_id, "a");
+        assert_eq!(res.crypto_result.message_id, "msg-1");
+        assert_eq!(res.crypto_result.decrypt_state, "failed");
+
+        // Exactly ONE event, with the wrapper-supplied ids.
+        let events = sink.crypto.lock().unwrap().clone();
+        assert_eq!(events.len(), 1, "exactly one sync:crypto-result emission");
+        assert_eq!(events[0].account_id, "a");
+        assert_eq!(events[0].message_id, "msg-1");
+    }
+
+    /// `db_get_message_crypto_result` returns the row that
+    /// `open_crypto_message` persisted. The wrapper is a one-line delegation,
+    /// so this asserts the call path (same as the rate-limit delegation tests).
+    #[tokio::test]
+    async fn db_get_message_crypto_result_reads_persisted_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "a").await;
+        seed_thread_and_message(&pool, "a", "msg-2").await;
+
+        // Run the orchestrator once so it persists a row for `msg-2`.
+        let sink = Arc::new(CryptoResultCapturingSink::default());
+        let engine = SyncEngine::new(pool.clone(), sink.clone());
+        let _ = crypto_open_message_inner(&engine, &pool, "a", "msg-2")
+            .await
+            .expect("open_crypto_message ok");
+
+        // The command body is
+        // `get_message_crypto_result(&pool, &account_id, &message_id)`.
+        let got: Option<MessageCryptoResultRow> =
+            crate::db::message_crypto_results::get_message_crypto_result(&pool, "a", "msg-2")
+                .await
+                .expect("read ok");
+        let row = got.expect("row persisted by open_crypto_message");
+        assert_eq!(row.account_id, "a");
+        assert_eq!(row.message_id, "msg-2");
+        assert_eq!(row.decrypt_state, "failed");
     }
 }

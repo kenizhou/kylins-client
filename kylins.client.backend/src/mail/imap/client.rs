@@ -489,12 +489,18 @@ pub async fn fetch_bodies_batch_on_session(
             let body_html = parsed.body_html(0).map(|s| s.to_string());
             let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
             let attachments = extract_attachments(&parsed, uid);
+            // For application/pkcs7-mime (S/MIME enveloped-data OR opaque
+            // signed-data) the body IS the CMS blob — extract the DER so the
+            // engine can cache it for the receive orchestrator. Returns None
+            // for multipart/signed (clear-signed) and ordinary mail.
+            let raw_ciphertext = extract_raw_ciphertext(&parsed);
             out.push(FetchedBody {
                 uid,
                 body_html,
                 body_text,
                 snippet,
                 attachments,
+                raw_ciphertext,
             });
         }
     }
@@ -1559,6 +1565,50 @@ fn derive_snippet(body_text: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     collapsed.chars().take(200).collect()
+}
+
+/// Extract the raw CMS ciphertext (DER) from the body of an
+/// `application/pkcs7-mime` message (S/MIME enveloped-data OR opaque
+/// signed-data). Returns the already-CTE-decoded bytes (mail_parser handles
+/// base64 / quoted-printable) so the receive orchestrator (Phase 1b G5 Task 3)
+/// can hand them straight to `decrypt_enveloped` / `verify_signed` without
+/// re-fetching from IMAP or re-decoding.
+///
+/// Returns `None` for every other top-level Content-Type, INCLUDING
+/// `multipart/signed` (clear-signed mail): its body is already plaintext and
+/// the signature is a `smime.p7s` attachment handled separately. Only the
+/// opaque `application/pkcs7-mime` form carries a CMS blob as the body.
+///
+/// Pure (borrows `&Message`) so it can be unit-tested without a socket — the
+/// live `fetch_bodies_batch_on_session` is exercised by the manual integration
+/// test, but the Content-Type gate + root-part extraction are regression-locked
+/// here.
+fn extract_raw_ciphertext(message: &mail_parser::Message) -> Option<Vec<u8>> {
+    // Re-assemble the full "type/subtype" string the same way
+    // `parse_message` / `imap_message_to_remote` do so the gate matches the
+    // detection path the engine already uses.
+    let ct = message.content_type()?;
+    let full = match ct.subtype() {
+        Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
+        None => ct.ctype().to_lowercase(),
+    };
+    if full != "application/pkcs7-mime" {
+        return None;
+    }
+    // The root part holds the CMS blob. mail_parser has already done CTE
+    // (base64/QP) decoding, so `Binary` / `InlineBinary` carry the DER bytes
+    // directly — no base64 round-trip needed. (A `Text` root would be a
+    // producer quirk; we take its bytes verbatim. Multipart roots never carry
+    // pkcs7-mime as the top-level type, so they are not expected here.)
+    let root = message.parts.first()?;
+    match &root.body {
+        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+            Some(d.as_ref().to_vec())
+        }
+        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+        mail_parser::PartType::Html(h) => Some(h.as_bytes().to_vec()),
+        mail_parser::PartType::Message(_) | mail_parser::PartType::Multipart(_) => None,
+    }
 }
 
 /// Build the `a1 LOGIN` / `a1 AUTHENTICATE XOAUTH2` command for `config`. Used
@@ -2673,7 +2723,7 @@ fn parse_message(
 /// fetch) so both paths produce identical `ImapAttachment` metadata that can be
 /// persisted to the `attachments` table and later used to fetch a single part
 /// via `BODY.PEEK[<part_id>]`. `uid` is for log correlation only.
-fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAttachment> {
+pub(crate) fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAttachment> {
     let section_map = build_imap_section_map(message);
 
     log::debug!(
@@ -2886,10 +2936,11 @@ fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
 mod tests {
     use super::{
         capabilities_from_strs, decode_part_bytes, derive_snippet, ends_with_crlf_crlf,
-        extract_starttls_injection, fetch_changed_flags_response_from_fetches, uid_set_raw,
-        SYNC_FETCH_QUERY,
+        extract_raw_ciphertext, extract_starttls_injection,
+        fetch_changed_flags_response_from_fetches, uid_set_raw, SYNC_FETCH_QUERY,
     };
     use base64::Engine;
+    use mail_parser::MessageParser;
 
     // ---------- derive_snippet (pure preview-text helper for fetch_bodies_batch) ----------
     //
@@ -3264,5 +3315,108 @@ mod tests {
         assert!(!ends_with_crlf_crlf(b"\r\n\r")); // truncated
         assert!(!ends_with_crlf_crlf(b"\n\n")); // LF only, not CRLF
         assert!(!ends_with_crlf_crlf(b"foo")); // no separator at all
+    }
+
+    // ---------- extract_raw_ciphertext (Phase 1b G5 Task 1) ----------
+    //
+    // For `application/pkcs7-mime` (S/MIME enveloped-data OR opaque
+    // signed-data), the message body IS the CMS blob. The helper pulls the
+    // already-CTE-decoded DER bytes from the root part so the receive
+    // orchestrator can decrypt/verify without re-fetching from IMAP. These
+    // tests pin the contract: only application/pkcs7-mime yields ciphertext;
+    // multipart/signed (clear-signed) and plain text yield None.
+
+    /// Build a `mail_parser::Message` from raw RFC 822 bytes for unit tests.
+    /// Mirrors how `fetch_bodies_batch_on_session` parses a fetched BODY[].
+    fn parse_raw(raw: &[u8]) -> mail_parser::Message<'static> {
+        MessageParser::default()
+            .parse(raw)
+            .expect("raw message must parse")
+            .into_owned()
+    }
+
+    #[test]
+    fn extract_raw_ciphertext_returns_der_for_pkcs7_mime_enveloped_data() {
+        // The CMS body is an arbitrary recognizable byte pattern; it does not
+        // need to be valid DER for this test (we are checking extraction, not
+        // CMS parsing). base64-encode it exactly as an S/MIME producer would.
+        let cms_der = b"\x30\x82\x00\x10FAKE-ENVELOPED-DATA";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(cms_der);
+        let raw = format!(
+            "From: a@b.com\r\n\
+             To: c@d.com\r\n\
+             Subject: encrypted\r\n\
+             Content-Type: application/pkcs7-mime; smime-type=enveloped-data;\r\n\
+             \tname=\"smime.p7m\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             \r\n\
+             {b64}\r\n"
+        );
+        let msg = parse_raw(raw.as_bytes());
+        let ct = extract_raw_ciphertext(&msg).expect("pkcs7-mime must yield ciphertext");
+        assert_eq!(ct, cms_der);
+    }
+
+    #[test]
+    fn extract_raw_ciphertext_returns_der_for_pkcs7_mime_signed_data() {
+        // Opaque signed-data ALSO carries a CMS blob as the body — same
+        // extraction as enveloped-data. (Contrast with multipart/signed
+        // clear-signed, whose body is plaintext — handled by the next test.)
+        let cms_der = b"\x30\x82\x00\x10FAKE-SIGNED-DATA";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(cms_der);
+        let raw = format!(
+            "From: a@b.com\r\n\
+             To: c@d.com\r\n\
+             Subject: opaque-signed\r\n\
+             Content-Type: application/pkcs7-mime; smime-type=signed-data;\r\n\
+             \tname=\"smime.p7m\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             \r\n\
+             {b64}\r\n"
+        );
+        let msg = parse_raw(raw.as_bytes());
+        let ct = extract_raw_ciphertext(&msg).expect("opaque signed-data must yield ciphertext");
+        assert_eq!(ct, cms_der);
+    }
+
+    #[test]
+    fn extract_raw_ciphertext_returns_none_for_multipart_signed() {
+        // Clear-signed mail: the body is plaintext, the signature is a
+        // smime.p7s attachment. raw_ciphertext MUST be None — the orchestrator
+        // handles clear-signed via the attachment, not the body.
+        let raw =
+            b"From: a@b.com\r\n\
+             To: c@d.com\r\n\
+             Subject: clear-signed\r\n\
+             Content-Type: multipart/signed; protocol=\"application/pkcs7-signature\";\r\n\
+             \tmicalg=sha-256; boundary=\"==\"\r\n\
+             \r\n\
+             --==\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             hello\r\n\
+             --==\r\n\
+             Content-Type: application/pkcs7-signature\r\n\
+             \r\n\
+             fake-sig\r\n\
+             --==--\r\n";
+        let msg = parse_raw(raw);
+        assert!(
+            extract_raw_ciphertext(&msg).is_none(),
+            "multipart/signed must NOT yield raw_ciphertext"
+        );
+    }
+
+    #[test]
+    fn extract_raw_ciphertext_returns_none_for_plain_text() {
+        let raw =
+            b"From: a@b.com\r\n\
+             To: c@d.com\r\n\
+             Subject: plain\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             just a plain message\r\n";
+        let msg = parse_raw(raw);
+        assert!(extract_raw_ciphertext(&msg).is_none());
     }
 }

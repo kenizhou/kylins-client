@@ -138,13 +138,27 @@ pub async fn request_bodies_inner(
                             match by_uid.get(uid) {
                                 Some(fb) => {
                                     // Persist body_html (prefers HTML; falls back to text).
+                                    // For S/MIME opaque messages
+                                    // (application/pkcs7-mime enveloped-data / opaque
+                                    // signed-data) `body_html`/`body_text` are both
+                                    // None because the body IS the CMS blob. We still
+                                    // need a `message_bodies` row so the ciphertext
+                                    // UPDATE below hits a row — persist an empty
+                                    // placeholder in that case; the receive
+                                    // orchestrator (G5 Task 3) overwrites it after
+                                    // decrypt/verify.
                                     let body_str = fb
                                         .body_html
                                         .clone()
                                         .or_else(|| fb.body_text.clone());
-                                    if let Some(body) = body_str {
+                                    let body_to_persist = body_str.or_else(|| {
+                                        fb.raw_ciphertext
+                                            .as_ref()
+                                            .map(|_| String::new())
+                                    });
+                                    if let Some(body) = body_to_persist.as_deref() {
                                         if let Err(e) = message_bodies::set_message_body(
-                                            pool, account_id, mid, &body,
+                                            pool, account_id, mid, body,
                                         )
                                         .await
                                         {
@@ -152,6 +166,24 @@ pub async fn request_bodies_inner(
                                                 "[sync] request_bodies: persist body for {mid} (uid {uid} in {folder}) failed: {e}"
                                             );
                                             continue;
+                                        }
+                                    }
+                                    // Cache the raw CMS ciphertext for the receive
+                                    // orchestrator (Phase 1b G5 Task 1). This MUST
+                                    // run AFTER set_message_body above — the helper
+                                    // is an UPDATE that requires the row to exist.
+                                    // Best-effort: a failure here leaves the body row
+                                    // valid but without the cached ciphertext, so the
+                                    // orchestrator will fall back to re-fetching.
+                                    if let Some(ct) = fb.raw_ciphertext.as_deref() {
+                                        if let Err(e) = message_bodies::set_message_ciphertext(
+                                            pool, account_id, mid, ct,
+                                        )
+                                        .await
+                                        {
+                                            log::warn!(
+                                                "[crypto] request_bodies: persist ciphertext for {mid} (uid {uid} in {folder}) failed: {e}"
+                                            );
                                         }
                                     }
                                     // Write snippet onto messages + threads.
@@ -716,8 +748,8 @@ mod tests {
     use super::*;
     use crate::db::init_db;
     use crate::sync_engine::engine::{
-        BodiesWrittenEvent, DeltaEvent, EventSink, NewMailEvent, QueueEvent, SendResultEvent,
-        StatusEvent, SyncEngine,
+        BodiesWrittenEvent, CryptoResultEvent, DeltaEvent, EventSink, NewMailEvent, QueueEvent,
+        SendResultEvent, StatusEvent, SyncEngine,
     };
     use std::sync::{Arc, Mutex};
 
@@ -731,6 +763,7 @@ mod tests {
         fn emit_queue(&self, _: QueueEvent) {}
         fn emit_bodies_written(&self, _: BodiesWrittenEvent) {}
         fn emit_send_result(&self, _: SendResultEvent) {}
+        fn emit_crypto_result(&self, _: CryptoResultEvent) {}
     }
 
     async fn seed_account(pool: &SqlitePool, id: &str) {
@@ -1099,6 +1132,7 @@ mod tests {
             self.bodies.lock().unwrap().push(e);
         }
         fn emit_send_result(&self, _: SendResultEvent) {}
+        fn emit_crypto_result(&self, _: CryptoResultEvent) {}
     }
 
     /// Pure folder-grouping sanity: given a list of (message_id, folder, uid)

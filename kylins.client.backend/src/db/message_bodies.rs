@@ -543,4 +543,74 @@ mod tests {
             .unwrap()
             .is_none());
     }
+
+    /// Pins the ordering invariant the Phase 1b G5 Task 1 body-fetch persist
+    /// path relies on: for an S/MIME opaque message
+    /// (`application/pkcs7-mime`) there is NO readable HTML/text body, so
+    /// `request_bodies_inner` creates the `message_bodies` row with an empty
+    /// body placeholder via `set_message_body`, THEN attaches the CMS blob via
+    /// `set_message_ciphertext`. This test proves the empty-body row is a
+    /// valid anchor for the ciphertext UPDATE and the round-trip succeeds —
+    /// i.e. the ordering `set_message_body` → `set_message_ciphertext` →
+    /// `get_message_ciphertext` works end-to-end with an empty body. Plaintext
+    /// is never persisted; only the opaque CMS blob.
+    #[tokio::test]
+    async fn ciphertext_round_trips_after_empty_body_placeholder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_message(&pool, "acct", "t1", "msg-smime").await;
+
+        // Step 1: create the row with an empty body (mirrors the opaque-S/MIME
+        // case where body_html/body_text are both None but a row is needed).
+        set_message_body(&pool, "acct", "msg-smime", "").await.unwrap();
+
+        // Step 2: attach the CMS ciphertext (the UPDATE hits the row from step 1).
+        let cms_blob = b"\x30\x82\x00\x10fake-enveloped-data-der";
+        set_message_ciphertext(&pool, "acct", "msg-smime", cms_blob)
+            .await
+            .unwrap();
+
+        // Step 3: round-trip — the ciphertext is readable back exactly as written.
+        let got = get_message_ciphertext(&pool, "acct", "msg-smime")
+            .await
+            .unwrap()
+            .expect("ciphertext must be present after set_message_ciphertext");
+        assert_eq!(got, cms_blob);
+
+        // The body_html stays the empty placeholder (plaintext NEVER written).
+        let body = get_message_body(&pool, "acct", "msg-smime")
+            .await
+            .unwrap()
+            .expect("row must exist");
+        assert_eq!(body.body_html.as_deref(), Some(""));
+    }
+
+    /// Pins the UPDATE-affects-zero-rows case: calling `set_message_ciphertext`
+    /// when NO `message_bodies` row exists must NOT error (it silently updates
+    /// zero rows). This documents why `request_bodies_inner` MUST call
+    /// `set_message_body` first — without the row, the ciphertext is silently
+    /// dropped and the orchestrator would have to re-fetch from IMAP.
+    #[tokio::test]
+    async fn set_message_ciphertext_silently_drops_when_no_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_message(&pool, "acct", "t1", "msg-orphan").await;
+        // No set_message_body call — no row exists.
+
+        // The UPDATE matches zero rows; sqlx reports no error, but the
+        // ciphertext is NOT stored.
+        set_message_ciphertext(&pool, "acct", "msg-orphan", b"orphan")
+            .await
+            .unwrap();
+
+        // get_message_ciphertext returns None because no row exists at all
+        // (the helper returns Ok(None) for both "row exists, NULL column" and
+        // "no row" — both mean "no ciphertext to process").
+        assert!(get_message_ciphertext(&pool, "acct", "msg-orphan")
+            .await
+            .unwrap()
+            .is_none());
+    }
 }
