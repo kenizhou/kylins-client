@@ -502,6 +502,42 @@ impl MailSource for ImapSource {
                             });
                         }
 
+                        // Skip unchanged folder: if HIGHESTMODSEQ matches the
+                        // cursor, nothing changed (no new messages, no flag
+                        // updates, no expunges). Skip the entire SELECT+FETCH+
+                        // SEARCH — return an empty delta with the cursor advanced.
+                        // This is the biggest per-round optimization: most folders
+                        // don't change between polls, and the STATUS command
+                        // (already issued by get_folder_status) gives us the
+                        // HIGHESTMODSEQ for free.
+                        if caps.condstore && since_modseq > 0 {
+                            if let Some(current_modseq) = status.highest_modseq {
+                                if current_modseq == since_modseq {
+                                    log::debug!(
+                                        "[sync] {} HIGHESTMODSEQ unchanged ({}), skipping fetch",
+                                        folder_remote, current_modseq
+                                    );
+                                    let caps_tuple =
+                                        imap_client::session_capabilities(session).await.ok();
+                                    return Ok::<_, String>(Stage1Result::Done {
+                                        delta: FolderDelta {
+                                            added: vec![],
+                                            updated: vec![],
+                                            flag_updates: vec![],
+                                            vanished_uids: vec![],
+                                            next_cursor: Cursor::Imap {
+                                                uidvalidity: status.uidvalidity,
+                                                highest_uid: since_high,
+                                                highest_modseq: current_modseq,
+                                            },
+                                            uidvalidity_changed: false,
+                                        },
+                                        caps_tuple,
+                                    });
+                                }
+                            }
+                        }
+
                         let new_uids =
                             imap_client::fetch_new_uids(session, &folder_remote, since_high)
                                 .await?;
