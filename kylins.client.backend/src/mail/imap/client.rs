@@ -1124,7 +1124,7 @@ pub async fn get_folder_status(
 ) -> Result<ImapFolderStatus, String> {
     let mailbox = tokio::time::timeout(
         IMAP_CMD_TIMEOUT,
-        session.status(folder, "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN)"),
+        session.status(folder, "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN HIGHESTMODSEQ)"),
     )
     .await
     .map_err(|_| {
