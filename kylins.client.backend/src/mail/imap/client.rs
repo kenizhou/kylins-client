@@ -389,29 +389,20 @@ pub async fn list_with_status(config: &ImapConfig) -> Result<Vec<ImapFolder>, St
             .map_err(|e| format!("greeting: {e}"))?;
     }
 
-    // 2. login (LOGIN vs XOAUTH2, same cmd shape as raw_fetch_folder).
-    let login_cmd = if config.auth_method == "oauth2" {
-        let xoauth2 = format!(
-            "user={}\x01auth=Bearer {}\x01\x01",
-            config.username, config.password
-        );
-        let b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            xoauth2.as_bytes(),
-        );
-        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
-    } else {
-        format!(
-            "a1 LOGIN \"{}\" \"{}\"\r\n",
-            config.username, config.password
-        )
-    };
+    // 2. login — share the exact auth-string construction with the other raw
+    //    paths via build_login_cmd (XOAUTH2 vs LOGIN, same `a1` tag + \r\n).
+    let login_cmd = build_login_cmd(config);
     raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
 
     // 3. LIST ... RETURN (STATUS (...)) — RFC 5819. One tagged response carries
     //    every `* LIST` and `* STATUS` unagged the server emits.
+    // HIGHESTMODSEQ is intentionally NOT requested here: parse_status_line only
+    // extracts MESSAGES/UNSEEN, and requesting it would make a strict
+    // non-CONDSTORE server return BAD for the whole LIST-STATUS round. The
+    // per-folder HIGHESTMODSEQ (gated on caps.condstore) is fetched by
+    // get_folder_status instead.
     let list_cmd =
-        "a2 LIST \"\" \"*\" RETURN (STATUS (MESSAGES UNSEEN UIDNEXT UIDVALIDITY HIGHESTMODSEQ))\r\n";
+        "a2 LIST \"\" \"*\" RETURN (STATUS (MESSAGES UNSEEN UIDNEXT UIDVALIDITY))\r\n";
     let response = raw_send_and_wait(&mut reader, list_cmd.as_bytes(), "a2").await?;
 
     // 4. parse. Walk the response lines: LIST rows build folder skeletons
@@ -1124,10 +1115,20 @@ pub async fn delete_folder(session: &mut ImapSession, folder: &str) -> Result<()
 pub async fn get_folder_status(
     session: &mut ImapSession,
     folder: &str,
+    condstore: bool,
 ) -> Result<ImapFolderStatus, String> {
+    // Only request HIGHESTMODSEQ when the server advertises CONDSTORE — a strict
+    // RFC 3501 server returns BAD for the unknown STATUS data-item and fails the
+    // whole folder sync. When not requested, highest_modseq stays None and the
+    // CONDSTORE delta/skip path falls back to the UID-high cursor.
+    let status_items = if condstore {
+        "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN HIGHESTMODSEQ)"
+    } else {
+        "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN)"
+    };
     let mailbox = tokio::time::timeout(
         IMAP_CMD_TIMEOUT,
-        session.status(folder, "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN HIGHESTMODSEQ)"),
+        session.status(folder, status_items),
     )
     .await
     .map_err(|_| {
@@ -2656,8 +2657,20 @@ async fn raw_parse_fetch_responses(
                         .await
                         .map_err(|e| format!("read literal for UID {uid}: {e}"))?;
 
+                    // The body literal's closing line carries any FETCH
+                    // attributes the server emitted AFTER the BODY.PEEK[...]
+                    // literal (servers may order attributes freely; RFC 8474
+                    // servers commonly put EMAILID/THREADID last). Scan it for
+                    // stable IDs that weren't on the first line, so the raw
+                    // path doesn't silently drop them.
                     let mut closing = String::new();
                     let _ = reader.read_line(&mut closing).await;
+                    let remote_email_id = remote_email_id
+                        .or_else(|| extract_fetch_attr(&closing, "EMAILID"))
+                        .or_else(|| extract_fetch_attr(&closing, "X-GM-MSGID"));
+                    let remote_thread_id = remote_thread_id
+                        .or_else(|| extract_fetch_attr(&closing, "THREADID"))
+                        .or_else(|| extract_fetch_attr(&closing, "X-GM-THRID"));
 
                     messages.push(RawFetchedMessage {
                         uid,
@@ -2719,14 +2732,20 @@ fn extract_internal_date(line: &str) -> Option<i64> {
 /// contains `EMAILID`/`THREADID`/`X-GM-MSGID`/`X-GM-THRID`). Returns `None`
 /// when the key is absent or the value is empty.
 fn extract_fetch_attr(line: &str, key: &str) -> Option<String> {
-    let needle = format!(" {key} ");
-    let key_pos = line.find(&needle)?;
-    let rest = line[key_pos + needle.len()..].trim_start();
+    // Match the key as a space-delimited token, preceded by either a space OR
+    // the opening `(` of the FETCH list — so a key that is the FIRST attribute
+    // (`* 1 FETCH (EMAILID …)`, with no leading space before `EMAILID`) is still
+    // found. Both needles are `key.len() + 2` chars (" KEY " / "(KEY "), so the
+    // value starts immediately after.
+    let key_pos = line
+        .find(&format!(" {key} "))
+        .or_else(|| line.find(&format!("({key} ")))?;
+    let rest = line[key_pos + key.len() + 2..].trim_start();
     if rest.starts_with('"') {
-        // quoted astring — take up to the closing quote (no escaping in IMAP
-        // astrings; a literal `\` is just a character).
-        let end = rest[1..].find('"')?;
-        Some(rest[1..1 + end].to_string())
+        // quoted astring — `parse_imap_quoted` honours `\`-escapes (so a value
+        // containing an escaped quote round-trips), unlike a naive find('"')
+        // which would stop at the first `\"`.
+        parse_imap_quoted(rest).map(|(v, _)| v)
     } else if rest.starts_with('(') {
         // parenthesized astring — RFC 8474 servers may wrap the OBJECTID value
         // in parens; take the trimmed content up to `)`.
@@ -3455,12 +3474,6 @@ mod tests {
         assert_eq!(out.1, 200);
     }
 
-    /// Regression lock for the headers-first sync fix. The folder sweep MUST NOT
-    /// request `BODY.PEEK[]` (full body) — that hangs async-imap on large folders
-    /// and downloads gigabytes of bodies the user may never open. Sync pulls
-    /// headers + metadata only; bodies arrive on demand via `sync_request_bodies`
-    /// → `fetch_message_body`. If this assertion fails, someone reverted the
-    /// sync query to the full-body form.
     /// Regression lock for the headers-first sync fix. The folder sweep MUST NOT
     /// request `BODY.PEEK[]` (full body) — that hangs async-imap on large folders
     /// and downloads gigabytes of bodies the user may never open. Sync pulls

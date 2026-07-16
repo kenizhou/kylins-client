@@ -505,7 +505,7 @@ impl MailSource for ImapSource {
                         };
 
                         let status =
-                            imap_client::get_folder_status(session, &folder_remote).await?;
+                            imap_client::get_folder_status(session, &folder_remote, caps.condstore).await?;
 
                         // UIDVALIDITY change -> the server rebuilt the folder;
                         // signal a cache wipe and a full resync from uid 0. The
@@ -532,23 +532,27 @@ impl MailSource for ImapSource {
                             });
                         }
 
-                        // Skip unchanged folder: if HIGHESTMODSEQ matches the
-                        // cursor, nothing changed (no new messages, no flag
-                        // updates, no expunges). Skip the entire SELECT+FETCH+
-                        // SEARCH — return an empty delta with the cursor advanced.
-                        // This is the biggest per-round optimization: most folders
-                        // don't change between polls, and the STATUS command
-                        // (already issued by get_folder_status) gives us the
-                        // HIGHESTMODSEQ for free.
-                        if caps.condstore && since_modseq > 0 {
+                        // Skip unchanged folder: when HIGHESTMODSEQ matches the
+                        // cursor AND the server advertises QRESYNC, nothing
+                        // changed (no new messages, no flag updates, no expunges)
+                        // — QRESYNC tracks expunges in the modseq, so an
+                        // unchanged modseq guarantees no expunges either. Skip
+                        // the entire SELECT+FETCH+SEARCH. Gate on qresync (NOT
+                        // condstore): vanilla CONDSTORE does NOT bump
+                        // HIGHESTMODSEQ on EXPUNGE (RFC 7162 §3.1.1), so skipping
+                        // on a condstore-only server would miss expunges and leave
+                        // ghost rows. Biggest per-round optimization.
+                        if caps.qresync && since_modseq > 0 {
                             if let Some(current_modseq) = status.highest_modseq {
                                 if current_modseq == since_modseq {
                                     log::debug!(
                                         "[sync] {} HIGHESTMODSEQ unchanged ({}), skipping fetch",
                                         folder_remote, current_modseq
                                     );
-                                    let caps_tuple =
-                                        imap_client::session_capabilities(session).await.ok();
+                                    // Caps are unchanged on the skip path (the
+                                    // folder didn't change) — reuse the already-
+                                    // captured `caps` instead of a CAPABILITY RTT.
+                                    let caps_tuple = Some(caps);
                                     return Ok::<_, String>(Stage1Result::Done {
                                         delta: FolderDelta {
                                             added: vec![],

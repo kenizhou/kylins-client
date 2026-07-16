@@ -511,7 +511,10 @@ impl SyncEngine {
                     .get_setup(&aid)
                     .await
                     .map(|s| s.profile.supports_idle())
-                    .unwrap_or(true);
+                    // Default to Poll on a transient get_setup miss (actor not
+                    // yet connected) — safer than assuming IDLE works, which
+                    // could re-enable IDLE for a profile (e.g. Yahoo) that opts out.
+                    .unwrap_or(false);
                 let strategy = caps
                     .as_ref()
                     .map(|c| pick_realtime_strategy(c, supports_idle))

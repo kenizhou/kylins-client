@@ -535,8 +535,8 @@ pub async fn imap_get_folder_status(
     config: ImapConfig,
     folder: String,
 ) -> Result<ImapFolderStatus, String> {
-    let (mut session, _setup) = imap_client::connect(&config).await?;
-    let status = imap_client::get_folder_status(&mut session, &folder).await?;
+    let (mut session, setup) = imap_client::connect(&config).await?;
+    let status = imap_client::get_folder_status(&mut session, &folder, setup.caps.condstore).await?;
     let _ = session.logout().await;
     Ok(status)
 }

@@ -188,7 +188,7 @@ async fn find_uid_by_subject(
     }
     // Use the raw TCP fetch path to avoid async-imap's empty-fetch bug on Exchange.
     for uid in uids {
-        let result = imap_client::raw_fetch_messages(config, folder, &uid.to_string()).await?;
+        let result = imap_client::raw_fetch_messages(config, folder, &uid.to_string(), &Default::default()).await?;
         if result
             .messages
             .iter()
@@ -259,7 +259,7 @@ async fn smtp_starttls_test_connection() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_list_folders() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     let folders = imap_client::list_folders(&mut session)
         .await
         .expect("list folders");
@@ -277,8 +277,8 @@ async fn imap_list_folders() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_folder_status() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
-    let status = imap_client::get_folder_status(&mut session, "INBOX")
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
+    let status = imap_client::get_folder_status(&mut session, "INBOX", false)
         .await
         .expect("status");
     println!(
@@ -291,7 +291,7 @@ async fn imap_folder_status() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_append_and_fetch_plain_text() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -303,7 +303,7 @@ async fn imap_append_and_fetch_plain_text() {
         .await
         .expect("append");
 
-    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string())
+    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string(), &Default::default())
         .await
         .expect("fetch")
         .messages
@@ -324,7 +324,7 @@ async fn imap_append_and_fetch_plain_text() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_flag_update() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -349,7 +349,7 @@ async fn imap_flag_update() {
     .await
     .expect("set flags");
 
-    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string())
+    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string(), &Default::default())
         .await
         .expect("fetch after flag set")
         .messages
@@ -370,7 +370,7 @@ async fn imap_flag_update() {
     .await
     .expect("clear flagged");
 
-    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string())
+    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string(), &Default::default())
         .await
         .expect("fetch after flag clear")
         .messages
@@ -388,7 +388,7 @@ async fn imap_flag_update() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_copy_message() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -432,7 +432,7 @@ async fn imap_copy_message() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_move_message() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -443,7 +443,7 @@ async fn imap_move_message() {
         .await
         .expect("append");
 
-    imap_client::move_messages(&mut session, &test_folder(), &uid.to_string(), "INBOX")
+    imap_client::move_messages(&mut session, &test_folder(), &uid.to_string(), "INBOX", false)
         .await
         .expect("move");
 
@@ -475,7 +475,7 @@ async fn imap_move_message() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_delete_and_expunge() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -504,7 +504,7 @@ async fn imap_delete_and_expunge() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_search_since() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -533,7 +533,7 @@ async fn imap_search_since() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_delta_check() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -571,7 +571,7 @@ async fn imap_delta_check() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_append_and_fetch_attachment() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -590,7 +590,7 @@ async fn imap_append_and_fetch_attachment() {
         .expect("append");
 
     // Fetch the full message and verify the attachment metadata.
-    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string())
+    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string(), &Default::default())
         .await
         .expect("fetch")
         .messages
@@ -627,7 +627,7 @@ async fn imap_append_and_fetch_attachment() {
 #[ignore = "requires live mail server credentials"]
 async fn imap_sync_folder_batch() {
     let config = get_imap_config();
-    let mut session = imap_client::connect(&config).await.expect("connect");
+    let (mut session, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut session)
         .await
         .expect("test folder exists");
@@ -638,7 +638,7 @@ async fn imap_sync_folder_batch() {
         .await
         .expect("append");
 
-    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string())
+    let result = imap_client::raw_fetch_messages(&config, &test_folder(), &uid.to_string(), &Default::default())
         .await
         .expect("sync folder");
     assert!(
