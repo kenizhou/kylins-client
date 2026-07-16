@@ -290,6 +290,34 @@ impl MailSource for ImapSource {
         let config = self.imap_config();
         let account_id = self.account.id.clone();
 
+        // Read caps BEFORE any execute() closure (same hoist pattern as
+        // `use_move` in `move_messages` and `caps_captured` in `sync_folder`)
+        // so no `&self.caps` borrow is held inside the closure. `None` on the
+        // very first sync round → unwrap_or_default() gives the poll-only set
+        // with `list_status = false`, so the first round takes the legacy N+1
+        // path (which ALSO refreshes caps below); subsequent rounds that cached
+        // `list_status = true` take the single-round-trip LIST-STATUS path.
+        let list_status = self.caps.lock().unwrap().unwrap_or_default().list_status;
+
+        // P3 LIST-STATUS (RFC 5819): when the server advertises LIST-STATUS,
+        // discover folders + counts in ONE round-trip over a short-lived raw
+        // TCP connection. `list_with_status` opens its OWN connection (LOGIN →
+        // LIST...RETURN(STATUS) → LOGOUT) and does NOT run inside the actor's
+        // execute() closure — so the actor's persistent session is not held
+        // open for the folder-discovery round. The actor's idle connection
+        // (if any) may briefly coexist; Yahoo (the sole server for which
+        // `list_status` is true today) allows concurrent connections, and the
+        // round completes in ~1s. Caps are already cached from a prior
+        // connect, so this branch intentionally skips the caps-refresh the
+        // legacy path performs — caps were last validated on the connection
+        // that set the flag.
+        if list_status {
+            let folders = imap_client::list_with_status(&config)
+                .await
+                .map_err(other)?;
+            return Ok(folders.into_iter().map(imap_folder_to_remote).collect());
+        }
+
         // Single execute() trip: fetch folders AND refresh caps on the SAME call
         // through the persistent session (folder=None: LIST has no per-folder
         // context, no SELECT is forced). The closure returns both, and we write

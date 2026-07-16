@@ -344,6 +344,135 @@ pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<ImapFolder>, 
     Ok(folders)
 }
 
+/// P3 LIST-STATUS (RFC 5819): single-round-trip folder discovery.
+///
+/// Issues `LIST "" "*" RETURN (STATUS (MESSAGES UNSEEN UIDNEXT UIDVALIDITY
+/// HIGHESTMODSEQ))` over a fresh raw TCP+TLS connection (the same raw pattern
+/// `raw_fetch_folder` uses) and parses the interleaved `* LIST (...)` and
+/// `* STATUS "folder" (...)` lines into `ImapFolder`s with `exists`/`unseen`
+/// already populated — collapsing the N+1 round-trips of `list_folders` (one
+/// LIST + one STATUS per mailbox) into one.
+///
+/// This opens its OWN connection (LOGIN … LOGOUT) and does not touch the
+/// session-manager actor's persistent connection. The actor's connection may
+/// remain idle (e.g. mid-IDLE) while this runs; that brief overlap is
+/// acceptable — Yahoo (the only server for which `caps.list_status` is true
+/// today) permits multiple concurrent connections, and the LIST-STATUS round
+/// completes in ~1s. If a future provider rejects concurrent sessions, call
+/// `yield_session`/disconnect the actor before invoking this (see the
+/// raw-fetch fallback in `ImapSource::sync_folder` for the disconnect-then-
+/// raw pattern).
+///
+/// Only `MESSAGES` (→ `exists`) and `UNSEEN` are extracted into `ImapFolder`;
+/// `UIDNEXT`/`UIDVALIDITY`/`HIGHESTMODSEQ` are requested so servers return
+/// them in one shot (useful for future delta-sync seeds) but are not stored
+/// on `ImapFolder`, which mirrors `list_folders`' field set.
+pub async fn list_with_status(config: &ImapConfig) -> Result<Vec<ImapFolder>, String> {
+    log::info!(
+        "RAW IMAP LIST-STATUS: connecting to {}:{} (single round-trip folder discovery)",
+        config.host,
+        config.port
+    );
+
+    // 1. connect (+ read greeting for plain/tls; STARTTLS path consumes it
+    //    during handshake) — mirrors raw_fetch_folder exactly.
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+
+    // 2. login (LOGIN vs XOAUTH2, same cmd shape as raw_fetch_folder).
+    let login_cmd = if config.auth_method == "oauth2" {
+        let xoauth2 = format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            config.username, config.password
+        );
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            xoauth2.as_bytes(),
+        );
+        format!("a1 AUTHENTICATE XOAUTH2 {b64}\r\n")
+    } else {
+        format!(
+            "a1 LOGIN \"{}\" \"{}\"\r\n",
+            config.username, config.password
+        )
+    };
+    raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
+
+    // 3. LIST ... RETURN (STATUS (...)) — RFC 5819. One tagged response carries
+    //    every `* LIST` and `* STATUS` unagged the server emits.
+    let list_cmd =
+        "a2 LIST \"\" \"*\" RETURN (STATUS (MESSAGES UNSEEN UIDNEXT UIDVALIDITY HIGHESTMODSEQ))\r\n";
+    let response = raw_send_and_wait(&mut reader, list_cmd.as_bytes(), "a2").await?;
+
+    // 4. parse. Walk the response lines: LIST rows build folder skeletons
+    //    (path/delimiter/special-use); STATUS rows carry the counts we splice
+    //    onto the matching skeleton by raw mailbox name.
+    let mut list_rows: Vec<(Vec<String>, String, String)> = Vec::new(); // (attrs, delim, raw_path)
+    // STATUS counts keyed by raw mailbox name (as it appears in the STATUS
+    // response — same encoding the LIST row carries, so a direct string
+    // match works for both quoted and atom forms).
+    let mut status_map: std::collections::HashMap<String, (u32, u32)> =
+        std::collections::HashMap::new();
+
+    for line in response.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("* LIST") {
+            if let Some((attrs, delim, raw_path)) = parse_list_line(trimmed) {
+                list_rows.push((attrs, delim, raw_path));
+            }
+        } else if trimmed.starts_with("* STATUS") {
+            if let Some((folder, exists, unseen)) = parse_status_line(trimmed) {
+                status_map.insert(folder, (exists, unseen));
+            }
+        }
+    }
+
+    let mut folders = Vec::with_capacity(list_rows.len());
+    for (attrs, delimiter, raw_path) in list_rows {
+        // Decode IMAP modified UTF-7 for the display path; raw_path stays
+        // encoded so SELECT/STATUS round-trips use the server's form.
+        let path = utf7_imap::decode_utf7_imap(raw_path.clone());
+        let display_name = path
+            .rsplit_once(&delimiter)
+            .map(|(_, last)| last.to_string())
+            .unwrap_or_else(|| path.clone());
+        let special_use = detect_special_use_from_attrs(&attrs, &path);
+        let (exists, unseen) = status_map.get(&raw_path).copied().unwrap_or((0, 0));
+        folders.push(ImapFolder {
+            path,
+            raw_path,
+            name: display_name,
+            delimiter,
+            special_use,
+            exists,
+            unseen,
+        });
+    }
+
+    log::info!(
+        "RAW IMAP LIST-STATUS: parsed {} folders ({} with STATUS counts)",
+        folders.len(),
+        folders.iter().filter(|f| f.exists > 0 || f.unseen > 0).count()
+    );
+
+    // 5. LOGOUT + close. Best-effort: ignore write errors on teardown.
+    let _ = reader.get_mut().write_all(b"a3 LOGOUT\r\n").await;
+
+    Ok(folders)
+}
+
 pub async fn fetch_messages(
     session: &mut ImapSession,
     folder: &str,
@@ -2311,6 +2440,150 @@ fn extract_bracket_number(line: &str, keyword: &str) -> Option<u32> {
     None
 }
 
+/// Parse an IMAP quoted string at the start of `s`, returning `(value, remainder)`.
+/// Handles `\`-escapes (so `\"` inside a mailbox name round-trips correctly) and is
+/// char-based so multibyte UTF-7-encoded mailbox names survive. Returns `None`
+/// if `s` does not start with `"` or is never closed.
+fn parse_imap_quoted(s: &str) -> Option<(String, String)> {
+    let mut chars = s.chars();
+    let first = chars.next()?;
+    if first != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if escaped {
+            out.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            let remainder: String = chars.collect();
+            return Some((out, remainder));
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+/// Parse a `* LIST (...) "delim" "mailbox"` (or atom mailbox / NIL delimiter)
+/// untagged into `(attributes, delimiter, raw_mailbox_path)`. Attributes are the
+/// raw `\Flags` tokens inside the leading parenthesized list. Returns `None`
+/// when the line is not a recognisable LIST response.
+fn parse_list_line(line: &str) -> Option<(Vec<String>, String, String)> {
+    let after_list = line.strip_prefix("* LIST")?.trim_start();
+    // Attributes: parenthesized group `(...)`.
+    let attrs_open = after_list.find('(')?;
+    let attrs_close = after_list[attrs_open..].find(')')?;
+    let attrs_str = &after_list[attrs_open + 1..attrs_open + attrs_close];
+    let attrs: Vec<String> = attrs_str
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let rest = after_list[attrs_open + attrs_close + 1..].trim_start();
+
+    // Delimiter: a quoted string, NIL, or a bare atom.
+    let (delimiter, rest) = if let Some(stripped) = rest.strip_prefix("NIL") {
+        ("/".to_string(), stripped.trim_start().to_string())
+    } else if rest.starts_with('"') {
+        let (val, remainder) = parse_imap_quoted(rest)?;
+        (val, remainder.trim_start().to_string())
+    } else {
+        // Bare atom delimiter (rare): up to the next space.
+        let end = rest.find(' ').unwrap_or(rest.len());
+        (rest[..end].to_string(), rest[end..].trim_start().to_string())
+    };
+
+    // Mailbox name: quoted (with escapes) or a trailing atom.
+    let raw_path = if rest.starts_with('"') {
+        parse_imap_quoted(&rest)?.0
+    } else {
+        rest.trim_end().to_string()
+    };
+    Some((attrs, delimiter, raw_path))
+}
+
+/// Parse a `* STATUS "folder" (KEY val KEY val …)` untagged, returning
+/// `(folder, messages, unseen)`. Only MESSAGES and UNSEEN are extracted
+/// (the other requested keys are ignored here — see `list_with_status`).
+/// Returns `None` when the line is not a recognisable STATUS response.
+fn parse_status_line(line: &str) -> Option<(String, u32, u32)> {
+    let after_status = line.strip_prefix("* STATUS")?.trim_start();
+    // Folder name: quoted (with escapes) or a bare atom up to the next space.
+    let (folder, rest) = if after_status.starts_with('"') {
+        parse_imap_quoted(after_status)?
+    } else {
+        let end = after_status.find(' ').unwrap_or(after_status.len());
+        (
+            after_status[..end].to_string(),
+            after_status[end..].trim_start().to_string(),
+        )
+    };
+    let rest = rest.trim_start();
+    let paren_start = rest.find('(')?;
+    let paren_end = rest.rfind(')')?;
+    if paren_end <= paren_start {
+        return None;
+    }
+    let inner = &rest[paren_start + 1..paren_end];
+    let tokens: Vec<&str> = inner.split_whitespace().collect();
+    let mut exists = 0u32;
+    let mut unseen = 0u32;
+    let mut i = 0;
+    while i + 1 < tokens.len() {
+        match tokens[i].to_uppercase().as_str() {
+            "MESSAGES" => exists = tokens[i + 1].parse().unwrap_or(0),
+            "UNSEEN" => unseen = tokens[i + 1].parse().unwrap_or(0),
+            _ => {}
+        }
+        i += 2;
+    }
+    Some((folder, exists, unseen))
+}
+
+/// Map parsed LIST attribute tokens (e.g. `\Sent`, `\Trash`) + the folder's
+/// decoded name to a special-use role string. This is the string-input twin of
+/// `detect_special_use` (which works off `async_imap::types::Name`); both share
+/// the name-based fallback table. `list_with_status` parses raw LIST lines into
+/// attribute strings and routes them through here instead of going through the
+/// typed `Name` path.
+fn detect_special_use_from_attrs(attrs: &[String], folder_name: &str) -> Option<String> {
+    for attr in attrs {
+        let special = match attr.as_str() {
+            "\\Inbox" => Some("\\Inbox"),
+            "\\Sent" | "\\SentMail" => Some("\\Sent"),
+            "\\Trash" => Some("\\Trash"),
+            "\\Drafts" | "\\Draft" => Some("\\Drafts"),
+            "\\Junk" | "\\Spam" => Some("\\Junk"),
+            "\\Archive" => Some("\\Archive"),
+            "\\All" | "\\AllMail" => Some("\\All"),
+            "\\Flagged" => Some("\\Flagged"),
+            _ => None,
+        };
+        if let Some(s) = special {
+            return Some(s.to_string());
+        }
+    }
+    let lower = folder_name.to_lowercase();
+    match lower.as_str() {
+        "inbox" => Some("\\Inbox".to_string()),
+        "sent" | "sent messages" | "sent items" | "[gmail]/sent mail" => {
+            Some("\\Sent".to_string())
+        }
+        "trash" | "deleted" | "deleted items" | "deleted messages" | "bin" | "corbeille"
+        | "unsolbox" | "[gmail]/trash" => Some("\\Trash".to_string()),
+        "drafts" | "draft" | "draftbox" | "brouillons" | "[gmail]/drafts" => {
+            Some("\\Drafts".to_string())
+        }
+        "junk" | "spam" | "junk e-mail" | "[gmail]/spam" => Some("\\Junk".to_string()),
+        "archive" | "archives" | "[gmail]/all mail" => Some("\\Archive".to_string()),
+        _ => None,
+    }
+}
+
 async fn raw_parse_fetch_responses(
     reader: &mut tokio::io::BufReader<ImapStream>,
     tag: &str,
@@ -2690,35 +2963,23 @@ async fn authenticate(
 fn detect_special_use(name: &async_imap::types::Name) -> Option<String> {
     use async_imap::types::NameAttribute;
 
-    for attr in name.attributes() {
-        let special = match attr {
-            NameAttribute::Sent => Some("\\Sent"),
-            NameAttribute::Trash => Some("\\Trash"),
-            NameAttribute::Drafts => Some("\\Drafts"),
-            NameAttribute::Junk => Some("\\Junk"),
-            NameAttribute::Archive => Some("\\Archive"),
-            NameAttribute::All => Some("\\All"),
-            NameAttribute::Flagged => Some("\\Flagged"),
-            _ => None,
-        };
-        if let Some(s) = special {
-            return Some(s.to_string());
-        }
-    }
-
-    let lower = name.name().to_lowercase();
-    match lower.as_str() {
-        "inbox" => Some("\\Inbox".to_string()),
-        "sent" | "sent messages" | "sent items" | "[gmail]/sent mail" => Some("\\Sent".to_string()),
-        "trash" | "deleted" | "deleted items" | "deleted messages" | "bin" | "corbeille"
-        | "unsolbox" | "[gmail]/trash" => Some("\\Trash".to_string()),
-        "drafts" | "draft" | "draftbox" | "brouillons" | "[gmail]/drafts" => {
-            Some("\\Drafts".to_string())
-        }
-        "junk" | "spam" | "junk e-mail" | "[gmail]/spam" => Some("\\Junk".to_string()),
-        "archive" | "archives" | "[gmail]/all mail" => Some("\\Archive".to_string()),
-        _ => None,
-    }
+    let attrs: Vec<String> = name
+        .attributes()
+        .iter()
+        .map(|attr| match attr {
+            NameAttribute::Sent => "\\Sent",
+            NameAttribute::Trash => "\\Trash",
+            NameAttribute::Drafts => "\\Drafts",
+            NameAttribute::Junk => "\\Junk",
+            NameAttribute::Archive => "\\Archive",
+            NameAttribute::All => "\\All",
+            NameAttribute::Flagged => "\\Flagged",
+            _ => "",
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    detect_special_use_from_attrs(&attrs, name.name())
 }
 
 // Nine parameters reflect the IMAP message metadata available at the call site;
@@ -3115,9 +3376,10 @@ fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capabilities_from_strs, decode_part_bytes, derive_snippet, ends_with_crlf_crlf,
-        extract_fetch_attr, extract_starttls_injection,
-        fetch_changed_flags_response_from_fetches, uid_set_raw, BASE_SYNC_FETCH_QUERY,
+        capabilities_from_strs, decode_part_bytes, derive_snippet, detect_special_use_from_attrs,
+        ends_with_crlf_crlf, extract_fetch_attr, extract_starttls_injection,
+        fetch_changed_flags_response_from_fetches, parse_imap_quoted, parse_list_line,
+        parse_status_line, uid_set_raw, BASE_SYNC_FETCH_QUERY,
     };
     use crate::sync_engine::Capabilities;
     use base64::Engine;
@@ -3583,5 +3845,115 @@ mod tests {
         assert!(!ends_with_crlf_crlf(b"\r\n\r")); // truncated
         assert!(!ends_with_crlf_crlf(b"\n\n")); // LF only, not CRLF
         assert!(!ends_with_crlf_crlf(b"foo")); // no separator at all
+    }
+
+    // ---------- P3 LIST-STATUS parsers (RFC 5819) ----------
+    //
+    // `list_with_status` opens a raw TCP connection (no socket in unit tests),
+    // so we regression-lock the pure line-parsers + the special-use mapper
+    // instead. The live single-round-trip path is exercised by the manual
+    // Yahoo e2e; these tests guard the parsing/mapping logic against drift.
+
+    #[test]
+    fn parse_imap_quoted_handles_plain_and_escaped() {
+        let (val, rest) = parse_imap_quoted("\"INBOX\" trailing").unwrap();
+        assert_eq!(val, "INBOX");
+        assert_eq!(rest, " trailing");
+
+        // Escaped quote inside the mailbox name round-trips.
+        let (val, _) = parse_imap_quoted(r#""a\"b""#).unwrap();
+        assert_eq!(val, "a\"b");
+
+        // Backslash-escape of a literal backslash.
+        let (val, _) = parse_imap_quoted(r#""a\\b""#).unwrap();
+        assert_eq!(val, "a\\b");
+    }
+
+    #[test]
+    fn parse_imap_quoted_rejects_unopened_or_unclosed() {
+        assert!(parse_imap_quoted("INBOX").is_none());
+        assert!(parse_imap_quoted("\"unclosed").is_none());
+        assert!(parse_imap_quoted("").is_none());
+    }
+
+    #[test]
+    fn parse_list_line_extracts_attrs_delim_quoted_mailbox() {
+        let (attrs, delim, raw) =
+            parse_list_line(r#"* LIST (\HasNoChildren \Sent) "/" "Sent""#).unwrap();
+        assert_eq!(attrs, vec!["\\HasNoChildren".to_string(), "\\Sent".to_string()]);
+        assert_eq!(delim, "/");
+        assert_eq!(raw, "Sent");
+    }
+
+    #[test]
+    fn parse_list_line_handles_inbox_and_no_attrs() {
+        // Bare atom mailbox (no quotes) — INBOX commonly arrives unquoted.
+        let (attrs, delim, raw) = parse_list_line(r#"* LIST (\HasNoChildren) "/" INBOX"#).unwrap();
+        assert_eq!(attrs, vec!["\\HasNoChildren".to_string()]);
+        assert_eq!(delim, "/");
+        assert_eq!(raw, "INBOX");
+
+        // Empty attribute list `()`.
+        let (attrs, _, raw) = parse_list_line(r#"* LIST () "/" "foo""#).unwrap();
+        assert!(attrs.is_empty());
+        assert_eq!(raw, "foo");
+    }
+
+    #[test]
+    fn parse_list_line_rejects_non_list() {
+        assert!(parse_list_line("* STATUS \"INBOX\" (MESSAGES 1)").is_none());
+        assert!(parse_list_line("a2 OK done").is_none());
+    }
+
+    #[test]
+    fn parse_status_line_extracts_messages_and_unseen() {
+        let (folder, exists, unseen) = parse_status_line(
+            r#"* STATUS "INBOX" (MESSAGES 36 UNSEEN 5 UIDNEXT 37 UIDVALIDITY 1782527579 HIGHESTMODSEQ 83540)"#,
+        )
+        .unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(exists, 36);
+        assert_eq!(unseen, 5);
+    }
+
+    #[test]
+    fn parse_status_line_handles_atom_mailbox_and_partial_keys() {
+        // Atom mailbox name (no quotes) + only MESSAGES present.
+        let (folder, exists, unseen) =
+            parse_status_line("* STATUS INBOX (MESSAGES 12)").unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(exists, 12);
+        assert_eq!(unseen, 0); // UNSEEN absent -> 0
+    }
+
+    #[test]
+    fn parse_status_line_rejects_non_status() {
+        assert!(parse_status_line(r#"* LIST (\Sent) "/" "Sent""#).is_none());
+        assert!(parse_status_line("a2 OK LIST completed").is_none());
+    }
+
+    #[test]
+    fn detect_special_use_from_attrs_prefers_attribute_over_name() {
+        // `\Sent` attribute wins even though the name isn't "Sent".
+        let attrs = vec!["\\HasNoChildren".to_string(), "\\Sent".to_string()];
+        assert_eq!(
+            detect_special_use_from_attrs(&attrs, "My Sent Folder"),
+            Some("\\Sent".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_special_use_from_attrs_falls_back_to_name() {
+        // No special-use attribute — name-based fallback maps "inbox".
+        let attrs = vec!["\\HasNoChildren".to_string()];
+        assert_eq!(
+            detect_special_use_from_attrs(&attrs, "INBOX"),
+            Some("\\Inbox".to_string())
+        );
+        assert_eq!(
+            detect_special_use_from_attrs(&[], "Drafts"),
+            Some("\\Drafts".to_string())
+        );
+        assert_eq!(detect_special_use_from_attrs(&[], "Personal"), None);
     }
 }
