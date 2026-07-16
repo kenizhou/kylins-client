@@ -361,15 +361,16 @@ pub async fn imap_fetch_messages(
         .collect::<Vec<_>>()
         .join(",");
 
-    let (mut session, _setup) = imap_client::connect(&config).await?;
-    let result = imap_client::fetch_messages(&mut session, &folder, &uid_set).await;
+    let (mut session, setup) = imap_client::connect(&config).await?;
+    let result =
+        imap_client::fetch_messages(&mut session, &folder, &uid_set, &setup.caps).await;
     let _ = session.logout().await;
 
     match result {
         Ok(r) => Ok(r),
         Err(e) if e.starts_with("ASYNC_IMAP_EMPTY:") => {
             log::info!("Falling back to raw TCP fetch for folder {folder}");
-            imap_client::raw_fetch_messages(&config, &folder, &uid_set).await
+            imap_client::raw_fetch_messages(&config, &folder, &uid_set, &setup.caps).await
         }
         Err(e) => Err(e),
     }

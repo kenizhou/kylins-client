@@ -33,7 +33,7 @@ pub async fn sync_account_now(
 
 /// Fetch full message bodies on demand (the second half of the headers-first
 /// sync design). The folder sweep persists envelopes + flags only
-/// (`SYNC_FETCH_QUERY`); bodies arrive here when the user opens a message whose
+/// (`sync_fetch_query`); bodies arrive here when the user opens a message whose
 /// `message_bodies` row is missing.
 ///
 /// **Task 2 — batch-per-folder:** message_ids are grouped by their

@@ -24,10 +24,44 @@ use super::types::*;
 /// on-wire size without a second round-trip. `CONTENT-TYPE` is included so the
 /// Phase 1b S/MIME receive-detection path can derive `crypto_kind` from the
 /// top-level Content-Type + `smime-type` parameter at zero extra round-trips.
-pub const SYNC_FETCH_QUERY: &str =
+///
+/// This is the always-present core; [`sync_fetch_query`] appends provider
+/// stable-ID attributes (`EMAILID THREADID` / `X-GM-MSGID X-GM-THRID`) on top of
+/// it when the server advertises OBJECTID / X-GM-EXT-1.
+pub const BASE_SYNC_FETCH_QUERY: &str =
     "UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC BCC REPLY-TO \
      DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST \
      AUTHENTICATION-RESULTS CONTENT-TYPE)]";
+
+/// Build the headers-only sync FETCH attribute list, appending provider
+/// stable-ID fields when the server advertises them. The base set
+/// ([`BASE_SYNC_FETCH_QUERY`]) is always present; `EMAILID THREADID`
+/// (RFC 8474 OBJECTID) are appended when `caps.objectid`, and
+/// `X-GM-MSGID X-GM-THRID` (Gmail X-GM-EXT-1) when `caps.gm_ext1`. The returned
+/// string is the bare fetch-att list — wrap it in `()` per RFC 3501 via
+/// [`sync_fetch_query_wrapped`] before sending.
+///
+/// Note: the typed async-imap path requests these attributes but cannot surface
+/// them (async-imap 0.10.4's `Fetch` has no accessor for custom/vendor FETCH
+/// attributes — see `Fetch` in the crate). They are extracted from the raw-TCP
+/// FETCH response line by `raw_parse_fetch_responses` → `extract_fetch_attr`.
+pub fn sync_fetch_query(caps: &crate::sync_engine::Capabilities) -> String {
+    let mut q = BASE_SYNC_FETCH_QUERY.to_string();
+    if caps.objectid {
+        q.push_str(" EMAILID THREADID");
+    }
+    if caps.gm_ext1 {
+        q.push_str(" X-GM-MSGID X-GM-THRID");
+    }
+    q
+}
+
+/// `sync_fetch_query(caps)` wrapped in the outer `()` that RFC 3501 requires for
+/// a multi-item fetch-att list. Kept as a small helper so `fetch_messages` and
+/// the regression test share the exact same wrapping logic.
+pub fn sync_fetch_query_wrapped(caps: &crate::sync_engine::Capabilities) -> String {
+    format!("({})", sync_fetch_query(caps))
+}
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -310,17 +344,11 @@ pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<ImapFolder>, 
     Ok(folders)
 }
 
-/// `SYNC_FETCH_QUERY` wrapped in the outer `()` that RFC 3501 requires for a
-/// multi-item fetch-att list. Kept as a small helper so `fetch_messages` and the
-/// regression test share the exact same wrapping logic.
-pub fn sync_fetch_query_wrapped() -> String {
-    format!("({SYNC_FETCH_QUERY})")
-}
-
 pub async fn fetch_messages(
     session: &mut ImapSession,
     folder: &str,
     uid_range: &str,
+    caps: &crate::sync_engine::Capabilities,
 ) -> Result<ImapFetchResult, String> {
     let mailbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(folder))
         .await
@@ -342,7 +370,7 @@ pub async fn fetch_messages(
         mailbox.uid_next.unwrap_or(0),
     );
 
-    let query = sync_fetch_query_wrapped();
+    let query = sync_fetch_query_wrapped(caps);
     let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
         let stream = session
             .uid_fetch(uid_range, &query)
@@ -393,7 +421,7 @@ pub async fn fetch_messages(
                 continue;
             }
         };
-        // SYNC_FETCH_QUERY asks for RFC822.SIZE — prefer the server-reported
+        // The sync FETCH query asks for RFC822.SIZE — prefer the server-reported
         // on-wire size (accurate; the body bytes here are header-only). Fall
         // back to the buffered length if the server omitted RFC822.SIZE.
         let raw_size = fetch.size.unwrap_or(raw.len() as u32);
@@ -412,6 +440,13 @@ pub async fn fetch_messages(
             is_starred,
             is_draft,
             internal_date,
+            // Typed async-imap path: async-imap 0.10.4 has no accessor for
+            // custom/vendor FETCH attributes (EMAILID/THREADID/X-GM-MSGID/
+            // X-GM-THRID), so the stable IDs are not extractable here even
+            // though the query requested them. The raw-TCP FETCH fallback
+            // path extracts them from the response line.
+            None,
+            None,
         ) {
             Ok(msg) => messages.push(msg),
             Err(e) => log::warn!("Failed to parse message UID {uid}: {e}"),
@@ -468,7 +503,7 @@ pub async fn fetch_message_body(
 
     let parser = MessageParser::default();
     parse_message(
-        &parser, raw, uid, folder, raw_size, is_read, is_starred, is_draft, None,
+        &parser, raw, uid, folder, raw_size, is_read, is_starred, is_draft, None, None, None,
     )
 }
 
@@ -1236,6 +1271,11 @@ pub async fn sync_folder(
                         is_starred,
                         is_draft,
                         internal_date,
+                        // Legacy full-body prefetch path: its FETCH query
+                        // (prefetch_bodies_fetch_query) does not request
+                        // provider stable-ID attrs, so none to pass.
+                        None,
+                        None,
                     ) {
                         Ok(msg) => all_messages.push(msg),
                         Err(e) => log::warn!("sync_folder: failed to parse UID {uid}: {e}"),
@@ -1287,6 +1327,7 @@ pub async fn raw_fetch_messages(
     config: &ImapConfig,
     folder: &str,
     uid_range: &str,
+    caps: &crate::sync_engine::Capabilities,
 ) -> Result<ImapFetchResult, String> {
     log::info!(
         "RAW IMAP FETCH: connecting to {}:{} for folder {folder}, UIDs {uid_range}",
@@ -1358,11 +1399,15 @@ pub async fn raw_fetch_messages(
         highest_modseq: None,
     };
 
-    // Headers-only, mirroring SYNC_FETCH_QUERY. The raw-TCP fallback exists
+    // Headers-only, mirroring the dynamic sync query. The raw-TCP fallback exists
     // because async-imap 0.10 silently returns 0 items on very large bodies;
     // keeping the same field set as the primary path means a fallback behaves
     // consistently (no surprise full-body downloads, no re-introduced hang).
-    let fetch_cmd = format!("a3 UID FETCH {uid_range} ({SYNC_FETCH_QUERY})\r\n");
+    // The query also requests provider stable-ID attrs (EMAILID/THREADID or
+    // X-GM-MSGID/X-GM-THRID) when the server advertises the cap — these are
+    // extracted from the FETCH response line by raw_parse_fetch_responses.
+    let fetch_query = sync_fetch_query(caps);
+    let fetch_cmd = format!("a3 UID FETCH {uid_range} ({fetch_query})\r\n");
     reader
         .get_mut()
         .write_all(fetch_cmd.as_bytes())
@@ -1390,6 +1435,8 @@ pub async fn raw_fetch_messages(
             raw_msg.is_starred,
             raw_msg.is_draft,
             raw_msg.internal_date,
+            raw_msg.remote_email_id.clone(),
+            raw_msg.remote_thread_id.clone(),
         ) {
             Ok(msg) => messages.push(msg),
             Err(e) => log::warn!("RAW FETCH: failed to parse UID {}: {e}", raw_msg.uid),
@@ -1422,6 +1469,7 @@ pub async fn raw_fetch_folder(
     folder: &str,
     uids: &[u32],
     chunk_size: usize,
+    caps: &crate::sync_engine::Capabilities,
 ) -> Result<ImapFetchResult, String> {
     if uids.is_empty() {
         // Nothing to do; report a zero-status so callers can still advance.
@@ -1514,6 +1562,10 @@ pub async fn raw_fetch_folder(
     // 4. UID FETCH each chunk on the SAME connection. Fresh IMAP tag per chunk
     //    (a3, a4, ...). On error: log the detail + break, returning what we have
     //    so the caller's cursor still advances past fetched UIDs.
+    //    The query is the dynamic sync query — it requests provider stable-ID
+    //    attrs (EMAILID/THREADID or X-GM-MSGID/X-GM-THRID) when the server
+    //    advertises the cap; raw_parse_fetch_responses extracts them.
+    let fetch_query = sync_fetch_query(caps);
     let parser = MessageParser::default();
     let mut messages: Vec<ImapMessage> = Vec::new();
     let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
@@ -1522,12 +1574,12 @@ pub async fn raw_fetch_folder(
     for (i, chunk) in chunks.iter().enumerate() {
         let range = uid_set_raw(chunk);
         let tag = format!("a{tag_index}");
-        let fetch_cmd = format!("{tag} UID FETCH {range} ({SYNC_FETCH_QUERY})\r\n");
+        let fetch_cmd = format!("{tag} UID FETCH {range} ({fetch_query})\r\n");
 
         // Protocol trace: the UID FETCH command (without the parenthesized list
-        // body, which is long and constant — see SYNC_FETCH_QUERY). Logged at
-        // DEBUG so it ships in dev builds but not release.
-        log::debug!("C: {tag} UID FETCH {range} (SYNC_FETCH_QUERY)");
+        // body, which is long and constant — see BASE_SYNC_FETCH_QUERY). Logged
+        // at DEBUG so it ships in dev builds but not release.
+        log::debug!("C: {tag} UID FETCH {range} (sync_fetch_query)");
 
         if let Err(e) = reader
             .get_mut()
@@ -1565,6 +1617,8 @@ pub async fn raw_fetch_folder(
                         raw_msg.is_starred,
                         raw_msg.is_draft,
                         raw_msg.internal_date,
+                        raw_msg.remote_email_id.clone(),
+                        raw_msg.remote_thread_id.clone(),
                     ) {
                         Ok(msg) => messages.push(msg),
                         Err(e) => log::warn!(
@@ -2100,6 +2154,12 @@ struct RawFetchedMessage {
     is_draft: bool,
     internal_date: Option<i64>,
     body: Vec<u8>,
+    /// Provider-stable message ID extracted from the FETCH response line
+    /// (Yahoo `EMAILID` / Gmail `X-GM-MSGID`). `None` when the FETCH query did
+    /// not request the attribute or the value could not be parsed.
+    remote_email_id: Option<String>,
+    /// Provider-stable thread ID (Yahoo `THREADID` / Gmail `X-GM-THRID`).
+    remote_thread_id: Option<String>,
 }
 
 async fn raw_connect_starttls(config: &ImapConfig) -> Result<ImapStream, String> {
@@ -2301,6 +2361,18 @@ async fn raw_parse_fetch_responses(
 
                 let internal_date = extract_internal_date(&line);
 
+                // Provider-stable IDs (P4): Yahoo's OBJECTID returns EMAILID /
+                // THREADID as parenthesized string atoms; Gmail's X-GM-EXT-1
+                // returns X-GM-MSGID / X-GM-THRID as bare numbers. Both live on
+                // the FETCH attribute line (same line as UID/FLAGS), so the
+                // simple token-search extractor suffices. `extract_fetch_attr`
+                // returns None when the attribute is absent (server didn't
+                // advertise the cap, so the query didn't request it).
+                let remote_email_id = extract_fetch_attr(&line, "EMAILID")
+                    .or_else(|| extract_fetch_attr(&line, "X-GM-MSGID"));
+                let remote_thread_id = extract_fetch_attr(&line, "THREADID")
+                    .or_else(|| extract_fetch_attr(&line, "X-GM-THRID"));
+
                 if let Some(literal_size) = extract_literal_size(&line) {
                     let mut body = vec![0u8; literal_size];
                     reader
@@ -2318,6 +2390,8 @@ async fn raw_parse_fetch_responses(
                         is_draft,
                         internal_date,
                         body,
+                        remote_email_id,
+                        remote_thread_id,
                     });
                 }
             }
@@ -2354,6 +2428,51 @@ fn extract_internal_date(line: &str) -> Option<i64> {
     let end = after.find('"')?;
     let date_str = &after[..end];
     parse_imap_date(date_str)
+}
+
+/// Extract a single-valued FETCH attribute (`KEY value`) from a raw FETCH
+/// response line. Handles the three value forms a server may emit:
+///
+/// - quoted astring: `EMAILID "P0000000001"` → `P0000000001`
+/// - parenthesized astring: `EMAILID (P0000000001)` → `P0000000001`
+/// - bare atom/number: `X-GM-MSGID 1234567` → `1234567`
+///
+/// The `KEY` is matched as a leading-space-delimited token (`" KEY "`) so it
+/// never matches as a substring of another token or inside the
+/// `BODY.PEEK[HEADER.FIELDS (...)]` section spec (whose field list never
+/// contains `EMAILID`/`THREADID`/`X-GM-MSGID`/`X-GM-THRID`). Returns `None`
+/// when the key is absent or the value is empty.
+fn extract_fetch_attr(line: &str, key: &str) -> Option<String> {
+    let needle = format!(" {key} ");
+    let key_pos = line.find(&needle)?;
+    let rest = line[key_pos + needle.len()..].trim_start();
+    if rest.starts_with('"') {
+        // quoted astring — take up to the closing quote (no escaping in IMAP
+        // astrings; a literal `\` is just a character).
+        let end = rest[1..].find('"')?;
+        Some(rest[1..1 + end].to_string())
+    } else if rest.starts_with('(') {
+        // parenthesized astring — RFC 8474 servers may wrap the OBJECTID value
+        // in parens; take the trimmed content up to `)`.
+        let end = rest[1..].find(')')?;
+        let inner = rest[1..1 + end].trim();
+        if inner.is_empty() {
+            None
+        } else {
+            Some(inner.to_string())
+        }
+    } else {
+        // bare atom/number — take until whitespace or closing paren.
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ')')
+            .unwrap_or(rest.len());
+        let v = rest[..end].trim();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.to_string())
+        }
+    }
 }
 
 fn parse_imap_date(s: &str) -> Option<i64> {
@@ -2616,6 +2735,8 @@ fn parse_message(
     is_starred: bool,
     is_draft: bool,
     internal_date: Option<i64>,
+    remote_email_id: Option<String>,
+    remote_thread_id: Option<String>,
 ) -> Result<ImapMessage, String> {
     let message = parser.parse(raw).ok_or("Failed to parse MIME message")?;
 
@@ -2736,6 +2857,8 @@ fn parse_message(
         attachments,
         content_type,
         smime_type,
+        remote_email_id,
+        remote_thread_id,
     })
 }
 
@@ -2993,9 +3116,10 @@ fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
 mod tests {
     use super::{
         capabilities_from_strs, decode_part_bytes, derive_snippet, ends_with_crlf_crlf,
-        extract_starttls_injection, fetch_changed_flags_response_from_fetches, uid_set_raw,
-        SYNC_FETCH_QUERY,
+        extract_fetch_attr, extract_starttls_injection,
+        fetch_changed_flags_response_from_fetches, uid_set_raw, BASE_SYNC_FETCH_QUERY,
     };
+    use crate::sync_engine::Capabilities;
     use base64::Engine;
 
     // ---------- derive_snippet (pure preview-text helper for fetch_bodies_batch) ----------
@@ -3072,25 +3196,31 @@ mod tests {
     /// headers + metadata only; bodies arrive on demand via `sync_request_bodies`
     /// → `fetch_message_body`. If this assertion fails, someone reverted the
     /// sync query to the full-body form.
+    /// Regression lock for the headers-first sync fix. The folder sweep MUST NOT
+    /// request `BODY.PEEK[]` (full body) — that hangs async-imap on large folders
+    /// and downloads gigabytes of bodies the user may never open. Sync pulls
+    /// headers + metadata only; bodies arrive on demand via `sync_request_bodies`
+    /// → `fetch_message_body`. If this assertion fails, someone reverted the
+    /// sync query to the full-body form.
     #[test]
     fn sync_fetch_query_is_headers_only_not_full_body() {
         assert!(
-            SYNC_FETCH_QUERY.contains("HEADER.FIELDS"),
-            "SYNC_FETCH_QUERY must select header fields (BODY.PEEK[HEADER.FIELDS ...]); \
-             got: {SYNC_FETCH_QUERY}",
+            BASE_SYNC_FETCH_QUERY.contains("HEADER.FIELDS"),
+            "BASE_SYNC_FETCH_QUERY must select header fields (BODY.PEEK[HEADER.FIELDS ...]); \
+             got: {BASE_SYNC_FETCH_QUERY}",
         );
         assert!(
-            !SYNC_FETCH_QUERY.contains("BODY.PEEK[]"),
-            "SYNC_FETCH_QUERY must NOT contain the full-body literal `BODY.PEEK[]` \
-             (it hangs large-folder sync); got: {SYNC_FETCH_QUERY}",
+            !BASE_SYNC_FETCH_QUERY.contains("BODY.PEEK[]"),
+            "BASE_SYNC_FETCH_QUERY must NOT contain the full-body literal `BODY.PEEK[]` \
+             (it hangs large-folder sync); got: {BASE_SYNC_FETCH_QUERY}",
         );
         // The query must also request the metadata the message list / threading
         // needs — FLAGS, INTERNALDATE, UID, and RFC822.SIZE (the last so the UI
         // can show message sizes without a second fetch).
-        assert!(SYNC_FETCH_QUERY.contains("UID"));
-        assert!(SYNC_FETCH_QUERY.contains("FLAGS"));
-        assert!(SYNC_FETCH_QUERY.contains("INTERNALDATE"));
-        assert!(SYNC_FETCH_QUERY.contains("RFC822.SIZE"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("UID"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("FLAGS"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("INTERNALDATE"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("RFC822.SIZE"));
     }
 
     /// RFC 3501 requires a multi-item fetch-att list to be wrapped in parentheses.
@@ -3098,7 +3228,7 @@ mod tests {
     /// async-imap to return 0 items and forcing a raw-TCP fallback LOGIN storm.
     #[test]
     fn sync_fetch_query_wrapped_is_parenthesized() {
-        let q = super::sync_fetch_query_wrapped();
+        let q = super::sync_fetch_query_wrapped(&Capabilities::default());
         assert!(
             q.starts_with('(') && q.ends_with(')'),
             "multi-item FETCH query must be wrapped in parentheses per RFC 3501; got: {q}"
@@ -3106,6 +3236,90 @@ mod tests {
         assert!(
             q.contains("BODY.PEEK[HEADER.FIELDS"),
             "wrapped query must still be the headers-only sync query; got: {q}"
+        );
+    }
+
+    /// P4: the dynamic query appends provider stable-ID attributes ONLY when the
+    /// server advertises the cap. Default (generic) caps must NOT request them;
+    /// OBJECTID caps append `EMAILID THREADID`; X-GM-EXT-1 caps append
+    /// `X-GM-MSGID X-GM-THRID`. A server advertising both (hypothetical) gets
+    /// both append groups.
+    #[test]
+    fn sync_fetch_query_appends_stable_ids_per_caps() {
+        // Default / generic — no stable-ID attrs.
+        let q = super::sync_fetch_query(&Capabilities::default());
+        assert!(!q.contains("EMAILID"));
+        assert!(!q.contains("THREADID"));
+        assert!(!q.contains("X-GM-MSGID"));
+        assert!(!q.contains("X-GM-THRID"));
+        // Always carries the base fields.
+        assert!(q.contains("UID"));
+        assert!(q.contains("BODY.PEEK[HEADER.FIELDS"));
+
+        // Yahoo OBJECTID.
+        let q = super::sync_fetch_query(&Capabilities {
+            objectid: true,
+            ..Capabilities::default()
+        });
+        assert!(q.contains("EMAILID THREADID"));
+        assert!(!q.contains("X-GM-MSGID"));
+
+        // Gmail X-GM-EXT-1.
+        let q = super::sync_fetch_query(&Capabilities {
+            gm_ext1: true,
+            ..Capabilities::default()
+        });
+        assert!(q.contains("X-GM-MSGID X-GM-THRID"));
+        assert!(!q.contains("EMAILID"));
+    }
+
+    /// P4: `extract_fetch_attr` parses the three value forms a server may emit
+    /// for a provider stable-ID attribute — quoted astring, parenthesized
+    /// astring, and bare number. Returns `None` when the key is absent so the
+    /// caller can fall back to `or`-chaining Yahoo/Gmail keys.
+    #[test]
+    fn extract_fetch_attr_parses_quoted_paren_and_bare() {
+        // quoted astring (Yahoo EMAILID)
+        assert_eq!(
+            extract_fetch_attr(
+                "* 1 FETCH (UID 7 EMAILID \"P0000000000000001\" THREADID \"P0000000000000002\" FLAGS (\\Seen))",
+                "EMAILID",
+            ),
+            Some("P0000000000000001".into())
+        );
+        // parenthesized astring (RFC 8474 form)
+        assert_eq!(
+            extract_fetch_attr(
+                "* 2 FETCH (UID 8 EMAILID (ABC) FLAGS (\\Seen))",
+                "EMAILID",
+            ),
+            Some("ABC".into())
+        );
+        // bare number (Gmail X-GM-MSGID)
+        assert_eq!(
+            extract_fetch_attr(
+                "* 3 FETCH (UID 9 X-GM-MSGID 1234567 X-GM-THRID 8910 FLAGS (\\Seen))",
+                "X-GM-MSGID",
+            ),
+            Some("1234567".into())
+        );
+        // absent key
+        assert_eq!(
+            extract_fetch_attr("* 4 FETCH (UID 10 FLAGS (\\Seen))", "EMAILID"),
+            None
+        );
+        // key only matches as a whole token — not a substring of BODY[HEADER.FIELDS (...)]
+        assert_eq!(
+            extract_fetch_attr(
+                "* 5 FETCH (UID 11 BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)] FLAGS (\\Seen))",
+                "EMAILID",
+            ),
+            None
+        );
+        // value terminated by `)` (last attr before the closing paren)
+        assert_eq!(
+            extract_fetch_attr("* 6 FETCH (UID 12 X-GM-THRID 42)", "X-GM-THRID"),
+            Some("42".into())
         );
     }
 

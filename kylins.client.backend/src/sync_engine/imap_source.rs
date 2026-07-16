@@ -248,6 +248,8 @@ fn imap_message_to_remote(m: ImapMessage) -> RemoteMessage {
         auth_results: m.auth_results,
         has_attachments,
         crypto_kind,
+        remote_email_id: m.remote_email_id,
+        remote_thread_id: m.remote_thread_id,
     }
 }
 
@@ -562,7 +564,7 @@ impl MailSource for ImapSource {
                         let mut added: Vec<RemoteMessage> = Vec::new();
                         for (i, chunk) in chunks.iter().enumerate() {
                             let range = uid_set(chunk);
-                            match imap_client::fetch_messages(session, &folder_remote, &range).await
+                            match imap_client::fetch_messages(session, &folder_remote, &range, &caps).await
                             {
                                 Ok(r) => {
                                     for m in r.messages {
@@ -776,7 +778,7 @@ impl MailSource for ImapSource {
                         remaining_uids.len()
                     );
                     let bulk =
-                        imap_client::raw_fetch_folder(&config, &folder_remote, &remaining_uids, 100)
+                        imap_client::raw_fetch_folder(&config, &folder_remote, &remaining_uids, 100, &caps_captured)
                             .await
                             .map_err(other)?;
                     for m in bulk.messages {
@@ -1283,6 +1285,8 @@ mod tests {
             }],
             content_type: None,
             smime_type: None,
+            remote_email_id: None,
+            remote_thread_id: None,
         };
         let r = imap_message_to_remote(m);
         assert_eq!(r.uid, 7);
@@ -1347,6 +1351,8 @@ mod tests {
             attachments: Vec::new(),
             content_type: None,
             smime_type: None,
+            remote_email_id: None,
+            remote_thread_id: None,
         }
     }
 

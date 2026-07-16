@@ -64,6 +64,19 @@ pub struct ImapMessage {
     /// `None` when absent — including every non-S/MIME message.
     #[serde(default)]
     pub smime_type: Option<String>,
+    /// Provider-stable message identifier parsed from the FETCH response:
+    /// Yahoo OBJECTID `EMAILID` (RFC 8474, parenthesized string atom) or Gmail
+    /// `X-GM-MSGID` (X-GM-EXT-1, bare number). `None` when the sync FETCH query
+    /// did not request the attribute (server lacks the cap) or the parser could
+    /// not extract it — the typed async-imap path cannot surface custom FETCH
+    /// attributes, so this is populated only by the raw-TCP FETCH path.
+    #[serde(default)]
+    pub remote_email_id: Option<String>,
+    /// Provider-stable thread identifier: Yahoo OBJECTID `THREADID` (RFC 8474)
+    /// or Gmail `X-GM-THRID` (X-GM-EXT-1). Same population rules as
+    /// `remote_email_id`.
+    #[serde(default)]
+    pub remote_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
