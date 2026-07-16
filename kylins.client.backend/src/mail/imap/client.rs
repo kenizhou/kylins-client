@@ -33,18 +33,16 @@ pub const BASE_SYNC_FETCH_QUERY: &str =
      DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST \
      AUTHENTICATION-RESULTS CONTENT-TYPE)]";
 
-/// Build the headers-only sync FETCH attribute list, appending provider
-/// stable-ID fields when the server advertises them. The base set
-/// ([`BASE_SYNC_FETCH_QUERY`]) is always present; `EMAILID THREADID`
-/// (RFC 8474 OBJECTID) are appended when `caps.objectid`, and
-/// `X-GM-MSGID X-GM-THRID` (Gmail X-GM-EXT-1) when `caps.gm_ext1`. The returned
-/// string is the bare fetch-att list — wrap it in `()` per RFC 3501 via
-/// [`sync_fetch_query_wrapped`] before sending.
+/// Build the raw-path sync FETCH attribute list, appending provider
+/// stable-ID fields when the server advertises them. **ONLY for the raw-TCP
+/// path** (raw_fetch_messages / raw_fetch_folder) — the raw parser
+/// (`raw_parse_fetch_responses` → `extract_fetch_attr`) can handle these
+/// non-standard attributes.
 ///
-/// Note: the typed async-imap path requests these attributes but cannot surface
-/// them (async-imap 0.10.4's `Fetch` has no accessor for custom/vendor FETCH
-/// attributes — see `Fetch` in the crate). They are extracted from the raw-TCP
-/// FETCH response line by `raw_parse_fetch_responses` → `extract_fetch_attr`.
+/// The typed async-imap path (`fetch_messages`) MUST NOT use this —
+/// async-imap 0.10.4 hangs when the FETCH response includes EMAILID/THREADID
+/// or X-GM-MSGID/X-GM-THRID (it can't parse them). The typed path uses
+/// `BASE_SYNC_FETCH_QUERY` directly.
 pub fn sync_fetch_query(caps: &crate::sync_engine::Capabilities) -> String {
     let mut q = BASE_SYNC_FETCH_QUERY.to_string();
     if caps.objectid {
@@ -477,7 +475,7 @@ pub async fn fetch_messages(
     session: &mut ImapSession,
     folder: &str,
     uid_range: &str,
-    caps: &crate::sync_engine::Capabilities,
+    _caps: &crate::sync_engine::Capabilities,
 ) -> Result<ImapFetchResult, String> {
     let mailbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(folder))
         .await
@@ -499,7 +497,12 @@ pub async fn fetch_messages(
         mailbox.uid_next.unwrap_or(0),
     );
 
-    let query = sync_fetch_query_wrapped(caps);
+    // The TYPED path must use BASE_SYNC_FETCH_QUERY only — async-imap 0.10.4
+    // hangs when the FETCH response includes EMAILID/THREADID or X-GM-MSGID/
+    // X-GM-THRID (it can't parse non-standard attributes). The raw path
+    // (raw_fetch_messages / raw_fetch_folder) uses sync_fetch_query(caps)
+    // which appends stable-ID attrs — the raw parser can handle them.
+    let query = format!("({BASE_SYNC_FETCH_QUERY})");
     let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
         let stream = session
             .uid_fetch(uid_range, &query)
