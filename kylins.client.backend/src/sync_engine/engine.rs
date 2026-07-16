@@ -214,8 +214,8 @@ pub enum RealtimeStrategy {
 /// round is what populates the cached caps on `ImapSource` (a fresh source
 /// reports `Capabilities::default()` until its first connect succeeds — see
 /// `ImapSource::capabilities()`).
-fn pick_realtime_strategy(caps: &crate::sync_engine::Capabilities) -> RealtimeStrategy {
-    if caps.idle {
+fn pick_realtime_strategy(caps: &crate::sync_engine::Capabilities, supports_idle: bool) -> RealtimeStrategy {
+    if caps.idle && supports_idle {
         RealtimeStrategy::Idle
     } else {
         RealtimeStrategy::Poll
@@ -506,9 +506,15 @@ impl SyncEngine {
                     let _ = src.list_folders().await;
                 }
                 let caps = src.as_ref().map(|s| s.capabilities());
+                let supports_idle = engine
+                    .session_manager
+                    .get_setup(&aid)
+                    .await
+                    .map(|s| s.profile.supports_idle())
+                    .unwrap_or(true);
                 let strategy = caps
                     .as_ref()
-                    .map(pick_realtime_strategy)
+                    .map(|c| pick_realtime_strategy(c, supports_idle))
                     .unwrap_or(RealtimeStrategy::Poll);
                 let idle_cap = caps.as_ref().map(|c| c.idle).unwrap_or(false);
                 log::info!(
@@ -2989,7 +2995,7 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            pick_realtime_strategy(&src.capabilities()),
+            pick_realtime_strategy(&src.capabilities(), true),
             RealtimeStrategy::Idle
         );
     }
@@ -2999,7 +3005,7 @@ mod tests {
         // Default caps (idle: false) → strategy is Poll (poll-only).
         let src = MockSource::new(vec![], vec![]);
         assert_eq!(
-            pick_realtime_strategy(&src.capabilities()),
+            pick_realtime_strategy(&src.capabilities(), true),
             RealtimeStrategy::Poll
         );
     }
@@ -3009,7 +3015,17 @@ mod tests {
         // Bare default caps (no source) — the case before the first sync round
         // warms the ImapSource caps cache. Must be Poll so no watcher spawns.
         assert_eq!(
-            pick_realtime_strategy(&Capabilities::default()),
+            pick_realtime_strategy(&Capabilities::default(), true),
+            RealtimeStrategy::Poll
+        );
+    }
+
+    #[test]
+    fn pick_realtime_strategy_poll_when_idle_disabled_by_profile() {
+        // Server advertises IDLE but profile says unreliable → Poll.
+        let caps = Capabilities { idle: true, ..Default::default() };
+        assert_eq!(
+            pick_realtime_strategy(&caps, false),
             RealtimeStrategy::Poll
         );
     }
