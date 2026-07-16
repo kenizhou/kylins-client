@@ -16,7 +16,12 @@ export interface ModalProps {
 }
 
 const SIZE_CLASSES: Record<NonNullable<ModalProps['size']>, string> = {
-  md: 'w-[680px] h-[640px]',
+  // `md` caps width/height to the viewport so the dialog never overflows on a
+  // small screen (the overlay centers + pads but does not scroll, so a fixed
+  // 680x640 box would clip both edges — incl. the close/save buttons — below
+  // that size). `w-full max-w-[680px]` shrinks to fit; `max-h-[88vh]` keeps it
+  // within the viewport and lets the inner `overflow-auto` scroll the rest.
+  md: 'w-full max-w-[680px] h-[640px] max-h-[88vh]',
   lg: 'w-full max-w-[920px] h-[680px] max-h-[90vh]',
   xl: 'w-full max-w-[1100px] h-[760px] max-h-[92vh]',
   full: 'w-[92vw] h-[92vh]',

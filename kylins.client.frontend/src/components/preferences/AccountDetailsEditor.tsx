@@ -232,7 +232,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
 
         {account.provider === 'imap' && (
           <>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <ReadOnlyField label="IMAP host" value={account.imapHost} />
               <ReadOnlyField label="IMAP port" value={account.imapPort} />
               <ReadOnlyField label="IMAP security" value={account.imapSecurity} />
@@ -271,7 +271,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                 }}
-                className="h-11 w-40 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+                className="h-11 w-full sm:w-40 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
               />
               <span className="text-xs text-[var(--muted-text)]">
                 How often the IDLE connection is refreshed (default {IDLE_TIMEOUT_DEFAULT_SECS}s,
