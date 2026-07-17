@@ -26,10 +26,7 @@ export interface VCardContact {
 
 function toCreateInput(parsed: VCardContact): CreateContactInput {
   const primaryEmail =
-    parsed.emails.find((e) => e.isPrimary)?.value ??
-    parsed.emails[0]?.value ??
-    parsed.email ??
-    '';
+    parsed.emails.find((e) => e.isPrimary)?.value ?? parsed.emails[0]?.value ?? parsed.email ?? '';
   return {
     email: primaryEmail,
     displayName: parsed.displayName ?? null,

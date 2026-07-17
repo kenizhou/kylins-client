@@ -25,6 +25,11 @@ async function getThreadMessages(
   return messages ?? (await getMessagesForThread(thread.accountId, thread.id));
 }
 
+function setSelectedThread(id: string | null): string | null {
+  useViewStore.getState().setSelectedThreadIds(id ? [id] : []);
+  return id;
+}
+
 interface ThreadQuery {
   accountId: string;
   labelId: string | null;
@@ -106,8 +111,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   selectThread: async (thread) => {
-    set({ selectedThreadId: thread.id });
-    useViewStore.getState().setSelectedThreadIds([thread.id]);
+    set({ selectedThreadId: setSelectedThread(thread.id) });
     try {
       const messages = await getMessagesForThread(thread.accountId, thread.id);
       const latest = messages[messages.length - 1] ?? null;
@@ -222,11 +226,10 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
 
     set({
       threads: state.threads.filter((t) => t.id !== thread.id),
-      selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      selectedThreadId: setSelectedThread(
+        nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      ),
     });
-    if (wasSelected) {
-      useViewStore.getState().setSelectedThreadIds(nextThread?.id ? [nextThread.id] : []);
-    }
 
     // If the deleted thread was being read, clear it and move the view to the
     // next thread. Otherwise, ensure the view store never points at a deleted
@@ -273,11 +276,10 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
 
     set({
       threads: state.threads.filter((t) => t.id !== thread.id),
-      selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      selectedThreadId: setSelectedThread(
+        nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      ),
     });
-    if (wasSelected) {
-      useViewStore.getState().setSelectedThreadIds(nextThread?.id ? [nextThread.id] : []);
-    }
 
     if (wasSelected) {
       useViewStore.getState().setSelectedMessage(null);

@@ -84,6 +84,64 @@
     monospace;
 }
 
+/* === HIGH CONTRAST === */
+[data-contrast='high'],
+[data-contrast='high'].light {
+  --color-background: #ffffff;
+  --color-foreground: #000000;
+  --color-surface: #ffffff;
+  --color-chrome: #f0f0f0;
+  --color-card: #ffffff;
+  --color-muted: #ffffff;
+  --color-muted-foreground: #000000;
+  --color-border: #000000;
+  --color-input: #ffffff;
+  --color-primary: #0000ff;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #ffffff;
+  --color-secondary-foreground: #000000;
+  --color-accent: #ffffff;
+  --color-accent-foreground: #000000;
+  --color-destructive: #ff0000;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #008000;
+  --color-success-foreground: #000000;
+  --color-warning: #ff8c00;
+  --color-error: #ff0000;
+  --color-info: #0000ff;
+  --color-link: #0000ff;
+  --color-link-hover: #000080;
+  --color-ring: #0000ff;
+}
+
+.dark[data-contrast='high'] {
+  --color-background: #000000;
+  --color-foreground: #ffffff;
+  --color-surface: #000000;
+  --color-chrome: #1a1a1a;
+  --color-card: #000000;
+  --color-muted: #000000;
+  --color-muted-foreground: #ffffff;
+  --color-border: #ffffff;
+  --color-input: #000000;
+  --color-primary: #00ffff;
+  --color-primary-foreground: #000000;
+  --color-secondary: #000000;
+  --color-secondary-foreground: #ffffff;
+  --color-accent: #000000;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #ff6666;
+  --color-destructive-foreground: #000000;
+  --color-success: #00ff00;
+  --color-success-foreground: #000000;
+  --color-warning: #ffd700;
+  --color-error: #ff6666;
+  --color-info: #00ffff;
+  --color-link: #00ffff;
+  --color-link-hover: #80ffff;
+  --color-ring: #00ffff;
+}
+
 /* === DARK MODE === */
 .dark {
   --color-background: #18181b;

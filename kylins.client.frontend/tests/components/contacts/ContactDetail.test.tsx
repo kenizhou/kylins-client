@@ -57,11 +57,16 @@ describe('ContactDetail', () => {
     Object.assign(navigator, {
       clipboard: { writeText: vi.fn(() => Promise.resolve()) },
     });
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
   });
 
   it('renders contact details', async () => {
-    const { getByText } = render(<ContactDetail contact={contact} groups={groups} onUpdate={vi.fn()} />);
+    const { getByText } = render(
+      <ContactDetail contact={contact} groups={groups} onUpdate={vi.fn()} />,
+    );
     await waitFor(() => {
       expect(getByText('Ada Lovelace')).toBeInTheDocument();
       expect(getByText('ada@example.com')).toBeInTheDocument();
@@ -91,7 +96,9 @@ describe('ContactDetail', () => {
   });
 
   it('copies email to clipboard', async () => {
-    const { getByText } = render(<ContactDetail contact={contact} groups={groups} onUpdate={vi.fn()} />);
+    const { getByText } = render(
+      <ContactDetail contact={contact} groups={groups} onUpdate={vi.fn()} />,
+    );
     fireEvent.click(getByText('Copy email'));
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith('ada@example.com');
@@ -99,7 +106,9 @@ describe('ContactDetail', () => {
   });
 
   it('opens composer when Compose is clicked', async () => {
-    const { getByText } = render(<ContactDetail contact={contact} groups={groups} onUpdate={vi.fn()} />);
+    const { getByText } = render(
+      <ContactDetail contact={contact} groups={groups} onUpdate={vi.fn()} />,
+    );
     fireEvent.click(getByText('Compose'));
     const composer = composerModule.useComposerStore.getState();
     expect(composer.openComposer).toHaveBeenCalledWith(
@@ -112,7 +121,9 @@ describe('ContactDetail', () => {
 
   it('deletes a contact after confirmation', async () => {
     const onUpdate = vi.fn();
-    const { getByText } = render(<ContactDetail contact={contact} groups={groups} onUpdate={onUpdate} />);
+    const { getByText } = render(
+      <ContactDetail contact={contact} groups={groups} onUpdate={onUpdate} />,
+    );
     fireEvent.click(getByText('Delete'));
     await waitFor(() => {
       expect(contactsModule.deleteContact).toHaveBeenCalledWith('c-1');

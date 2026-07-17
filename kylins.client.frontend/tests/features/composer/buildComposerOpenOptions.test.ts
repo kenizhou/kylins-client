@@ -90,7 +90,9 @@ describe('buildComposerOpenOptions', () => {
     mockInvoke.mockImplementation(async (cmd: string, _args?: Record<string, unknown>) => {
       if (cmd === 'db_get_aliases_for_account') return [];
       if (cmd === 'sync_fetch_inline_images') {
-        return [{ contentId: 'img-1', filePath: '/cache/img-1.png', mimeType: 'image/png', size: 2 }];
+        return [
+          { contentId: 'img-1', filePath: '/cache/img-1.png', mimeType: 'image/png', size: 2 },
+        ];
       }
       return wireDefaultDbResults.length ? undefined : undefined;
     });

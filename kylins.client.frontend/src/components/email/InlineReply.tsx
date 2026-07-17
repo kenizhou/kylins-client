@@ -16,7 +16,12 @@ import { RecipientField } from '@/features/composer/RecipientField';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { sendEmail } from '@/services/composer/send';
 import { stageAttachment, newDraftId } from '@/services/composer/attachments';
-import { getAttachments, fetchAttachment, fetchInlineImages, cachedImageToDataUrl } from '@/services/db/attachments';
+import {
+  getAttachments,
+  fetchAttachment,
+  fetchInlineImages,
+  cachedImageToDataUrl,
+} from '@/services/db/attachments';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { ComposerAttachment } from '@/stores/composerStore';

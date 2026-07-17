@@ -1,9 +1,5 @@
 import { getSetting, setSetting } from '../settings';
-import {
-  type ShortcutSet,
-  SHORTCUT_COMMANDS,
-  getDefaultKeyMap,
-} from './shortcutDefaults';
+import { type ShortcutSet, SHORTCUT_COMMANDS, getDefaultKeyMap } from './shortcutDefaults';
 
 const OVERRIDES_KEY = 'shortcuts_overrides';
 const ACTIVE_SET_KEY = 'shortcuts_set';
@@ -30,7 +26,8 @@ class ShortcutManager {
       this.overrides = {};
     }
 
-    this.activeSet = activeSetRaw === 'mac' || activeSetRaw === 'win' ? activeSetRaw : getPlatformSet();
+    this.activeSet =
+      activeSetRaw === 'mac' || activeSetRaw === 'win' ? activeSetRaw : getPlatformSet();
     this.notify();
   }
 
