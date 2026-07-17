@@ -451,8 +451,9 @@ async fn upsert_message(
             cc_addresses, bcc_addresses, reply_to, subject, snippet, date, is_read, is_starred,
             body_text, body_cached, raw_size, message_id_header, in_reply_to_header,
             references_header, list_unsubscribe, list_unsubscribe_post, auth_results,
-            imap_uid, imap_folder, classification_id, is_encrypted, is_signed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            imap_uid, imap_folder, classification_id, is_encrypted, is_signed,
+            remote_email_id, remote_thread_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
          ON CONFLICT(account_id, id) DO UPDATE SET
            from_address = excluded.from_address, from_name = excluded.from_name,
            to_addresses = excluded.to_addresses, cc_addresses = excluded.cc_addresses,
@@ -462,7 +463,8 @@ async fn upsert_message(
            body_text = excluded.body_text, raw_size = excluded.raw_size,
            message_id_header = excluded.message_id_header,
            imap_uid = excluded.imap_uid, imap_folder = excluded.imap_folder,
-           is_encrypted = excluded.is_encrypted, is_signed = excluded.is_signed",
+           is_encrypted = excluded.is_encrypted, is_signed = excluded.is_signed,
+           remote_email_id = excluded.remote_email_id, remote_thread_id = excluded.remote_thread_id",
     )
     .bind(&message_id)
     .bind(account_id)
@@ -491,6 +493,8 @@ async fn upsert_message(
     .bind(&m.folder)
     .bind(is_encrypted)
     .bind(is_signed)
+    .bind(&m.remote_email_id)
+    .bind(&m.remote_thread_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?;
@@ -1297,5 +1301,109 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!((enc, sig), (0, 1), "re-sync must update is_signed via ON CONFLICT");
+    }
+
+    /// P4 OBJECTID stable IDs: `apply_folder_delta` must persist
+    /// `remote_email_id` / `remote_thread_id` from a `RemoteMessage` onto the
+    /// new `messages` columns on BOTH the initial INSERT and the ON CONFLICT
+    /// UPDATE (so a re-sync that picks up the stable ID later — e.g. after the
+    /// server starts advertising OBJECTID — stamps the values). Locks the
+    /// column list + bind ordering in `upsert_message`.
+    #[tokio::test]
+    async fn apply_folder_delta_persists_remote_stable_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+
+        // Round 1: insert WITH stable IDs (Yahoo OBJECTID EMAILID/THREADID).
+        let delta = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 42,
+                folder: "INBOX".into(),
+                message_id: Some("<oid>".into()),
+                subject: Some("With OID".into()),
+                from_address: Some("a@b".into()),
+                date: 6000,
+                remote_email_id: Some("P0000000000000042".into()),
+                remote_thread_id: Some("P0000000000000099".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+
+        let pk = "imap-acc-INBOX-42";
+        let (email_id, thread_id): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT remote_email_id, remote_thread_id FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(email_id.as_deref(), Some("P0000000000000042"));
+        assert_eq!(thread_id.as_deref(), Some("P0000000000000099"));
+
+        // Round 2: re-sync with DIFFERENT stable IDs — ON CONFLICT UPDATE must
+        // overwrite (mirrors how a UIDVALIDITY reset + re-fetch re-links the
+        // logical message under a new OBJECTID).
+        let delta2 = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 42,
+                folder: "INBOX".into(),
+                message_id: Some("<oid>".into()),
+                subject: Some("With OID".into()),
+                from_address: Some("a@b".into()),
+                date: 6000,
+                remote_email_id: Some("P0000000000000042".into()),
+                remote_thread_id: Some("P0000000000000177".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta2)
+            .await
+            .unwrap();
+        let (email_id2, thread_id2): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT remote_email_id, remote_thread_id FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(email_id2.as_deref(), Some("P0000000000000042"));
+        assert_eq!(
+            thread_id2.as_deref(),
+            Some("P0000000000000177"),
+            "re-sync must update remote_thread_id via ON CONFLICT"
+        );
+
+        // Round 3: a message with NO stable IDs (generic IMAP) — columns stay NULL,
+        // and a prior non-NULL value is NOT clobbered to NULL by a None bind on
+        // the UPDATE path (generic server re-syncing after a cap was once advertised
+        // would drop the value; this asserts the bind is the source-of-truth).
+        // NOTE: None binds as SQL NULL, so this WILL overwrite to NULL — this is
+        // the intended behaviour (the new fetch genuinely saw no stable ID).
+        let delta3 = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 42,
+                folder: "INBOX".into(),
+                message_id: Some("<oid>".into()),
+                subject: Some("With OID".into()),
+                from_address: Some("a@b".into()),
+                date: 6000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta3)
+            .await
+            .unwrap();
+        let (email_id3, _): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT remote_email_id, remote_thread_id FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(email_id3.is_none(), "None stable ID binds to SQL NULL on re-sync");
     }
 }

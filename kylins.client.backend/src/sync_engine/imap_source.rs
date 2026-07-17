@@ -29,10 +29,8 @@
 // Task 5). The persistent session still handles connect/SELECT/caps + the typed
 // `uid_fetch` attempt; the raw fallback only triggers when async-imap yields 0.
 
-use async_imap::extensions::idle::IdleResponse;
 use async_trait::async_trait;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use crate::db::accounts::Account;
 use crate::mail::imap::client as imap_client;
@@ -46,11 +44,6 @@ use super::{
     RemoteFolder, RemoteMessage, SourceError,
 };
 
-/// IDLE keepalive watchdog. async-imap's `wait_with_timeout` resets this clock on any
-/// server traffic (including `* OK Still here`), so we stay below the server's typical
-/// ~29 min idle disconnect. On `IdleResponse::Timeout` we send DONE and re-init IDLE
-/// (loop continues); on `NewData` we return so the caller re-syncs.
-const IDLE_KEEPALIVE: Duration = Duration::from_secs(28 * 60);
 
 pub struct ImapSource {
     account: Account,
@@ -128,6 +121,7 @@ impl ImapSource {
             accept_invalid_certs: self.account.accept_invalid_certs,
         }
     }
+
 }
 
 fn other(e: String) -> SourceError {
@@ -254,6 +248,8 @@ fn imap_message_to_remote(m: ImapMessage) -> RemoteMessage {
         auth_results: m.auth_results,
         has_attachments,
         crypto_kind,
+        remote_email_id: m.remote_email_id,
+        remote_thread_id: m.remote_thread_id,
     }
 }
 
@@ -294,6 +290,34 @@ impl MailSource for ImapSource {
         let config = self.imap_config();
         let account_id = self.account.id.clone();
 
+        // Read caps BEFORE any execute() closure (same hoist pattern as
+        // `use_move` in `move_messages` and `caps_captured` in `sync_folder`)
+        // so no `&self.caps` borrow is held inside the closure. `None` on the
+        // very first sync round → unwrap_or_default() gives the poll-only set
+        // with `list_status = false`, so the first round takes the legacy N+1
+        // path (which ALSO refreshes caps below); subsequent rounds that cached
+        // `list_status = true` take the single-round-trip LIST-STATUS path.
+        let list_status = self.caps.lock().unwrap().unwrap_or_default().list_status;
+
+        // P3 LIST-STATUS (RFC 5819): when the server advertises LIST-STATUS,
+        // discover folders + counts in ONE round-trip over a short-lived raw
+        // TCP connection. `list_with_status` opens its OWN connection (LOGIN →
+        // LIST...RETURN(STATUS) → LOGOUT) and does NOT run inside the actor's
+        // execute() closure — so the actor's persistent session is not held
+        // open for the folder-discovery round. The actor's idle connection
+        // (if any) may briefly coexist; Yahoo (the sole server for which
+        // `list_status` is true today) allows concurrent connections, and the
+        // round completes in ~1s. Caps are already cached from a prior
+        // connect, so this branch intentionally skips the caps-refresh the
+        // legacy path performs — caps were last validated on the connection
+        // that set the flag.
+        if list_status {
+            let folders = imap_client::list_with_status(&config)
+                .await
+                .map_err(other)?;
+            return Ok(folders.into_iter().map(imap_folder_to_remote).collect());
+        }
+
         // Single execute() trip: fetch folders AND refresh caps on the SAME call
         // through the persistent session (folder=None: LIST has no per-folder
         // context, no SELECT is forced). The closure returns both, and we write
@@ -319,19 +343,12 @@ impl MailSource for ImapSource {
             .await
             .map_err(other)?;
 
-        if let Some((idle, condstore, qresync, vanished)) = caps_tuple {
+        if let Some(caps) = caps_tuple {
             log::info!(
-                "[sync] {account_id} IMAP capabilities: idle={idle} condstore={condstore} qresync={qresync} vanished={vanished}"
+                "[sync] {account_id} IMAP capabilities: idle={} condstore={} qresync={} move={} list_status={} uidonly={}",
+                caps.idle, caps.condstore, caps.qresync, caps.r#move, caps.list_status, caps.uidonly
             );
-            *self.caps.lock().unwrap() = Some(Capabilities {
-                idle,
-                condstore,
-                qresync,
-                ping: false,
-                vanishearch: vanished,
-                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
-                saves_sent_automatically: false,
-            });
+            *self.caps.lock().unwrap() = Some(caps);
         }
         Ok(folders.into_iter().map(imap_folder_to_remote).collect())
     }
@@ -433,13 +450,13 @@ impl MailSource for ImapSource {
             /// full delta + caps. The caller just writes caps and returns.
             Done {
                 delta: FolderDelta,
-                caps_tuple: Option<(bool, bool, bool, bool)>,
+                caps_tuple: Option<Capabilities>,
             },
             /// UIDVALIDITY changed — early signal to the engine (cache wipe +
             /// full resync). Carries the placeholder delta + best-effort caps.
             UidValidityChanged {
                 delta: FolderDelta,
-                caps_tuple: Option<(bool, bool, bool, bool)>,
+                caps_tuple: Option<Capabilities>,
             },
             /// Typed FETCH hit ASYNC_IMAP_EMPTY. Caller must run the raw-fetch
             /// fallback (with the persistent session disconnected first), then
@@ -488,7 +505,7 @@ impl MailSource for ImapSource {
                         };
 
                         let status =
-                            imap_client::get_folder_status(session, &folder_remote).await?;
+                            imap_client::get_folder_status(session, &folder_remote, caps.condstore).await?;
 
                         // UIDVALIDITY change -> the server rebuilt the folder;
                         // signal a cache wipe and a full resync from uid 0. The
@@ -515,6 +532,46 @@ impl MailSource for ImapSource {
                             });
                         }
 
+                        // Skip unchanged folder: when HIGHESTMODSEQ matches the
+                        // cursor AND the server advertises QRESYNC, nothing
+                        // changed (no new messages, no flag updates, no expunges)
+                        // — QRESYNC tracks expunges in the modseq, so an
+                        // unchanged modseq guarantees no expunges either. Skip
+                        // the entire SELECT+FETCH+SEARCH. Gate on qresync (NOT
+                        // condstore): vanilla CONDSTORE does NOT bump
+                        // HIGHESTMODSEQ on EXPUNGE (RFC 7162 §3.1.1), so skipping
+                        // on a condstore-only server would miss expunges and leave
+                        // ghost rows. Biggest per-round optimization.
+                        if caps.qresync && since_modseq > 0 {
+                            if let Some(current_modseq) = status.highest_modseq {
+                                if current_modseq == since_modseq {
+                                    log::debug!(
+                                        "[sync] {} HIGHESTMODSEQ unchanged ({}), skipping fetch",
+                                        folder_remote, current_modseq
+                                    );
+                                    // Caps are unchanged on the skip path (the
+                                    // folder didn't change) — reuse the already-
+                                    // captured `caps` instead of a CAPABILITY RTT.
+                                    let caps_tuple = Some(caps);
+                                    return Ok::<_, String>(Stage1Result::Done {
+                                        delta: FolderDelta {
+                                            added: vec![],
+                                            updated: vec![],
+                                            flag_updates: vec![],
+                                            vanished_uids: vec![],
+                                            next_cursor: Cursor::Imap {
+                                                uidvalidity: status.uidvalidity,
+                                                highest_uid: since_high,
+                                                highest_modseq: current_modseq,
+                                            },
+                                            uidvalidity_changed: false,
+                                        },
+                                        caps_tuple,
+                                    });
+                                }
+                            }
+                        }
+
                         let new_uids =
                             imap_client::fetch_new_uids(session, &folder_remote, since_high)
                                 .await?;
@@ -539,7 +596,7 @@ impl MailSource for ImapSource {
                         let mut added: Vec<RemoteMessage> = Vec::new();
                         for (i, chunk) in chunks.iter().enumerate() {
                             let range = uid_set(chunk);
-                            match imap_client::fetch_messages(session, &folder_remote, &range).await
+                            match imap_client::fetch_messages(session, &folder_remote, &range, &caps).await
                             {
                                 Ok(r) => {
                                     for m in r.messages {
@@ -753,7 +810,7 @@ impl MailSource for ImapSource {
                         remaining_uids.len()
                     );
                     let bulk =
-                        imap_client::raw_fetch_folder(&config, &folder_remote, &remaining_uids, 100)
+                        imap_client::raw_fetch_folder(&config, &folder_remote, &remaining_uids, 100, &caps_captured)
                             .await
                             .map_err(other)?;
                     for m in bulk.messages {
@@ -926,16 +983,8 @@ impl MailSource for ImapSource {
 
         // Write caps AFTER the closure returns (no &self.caps borrow held inside
         // the closure — that would conflict with &self.manager via execute()).
-        if let Some((idle, condstore, qresync, vanished)) = caps_tuple {
-            *self.caps.lock().unwrap() = Some(Capabilities {
-                idle,
-                condstore,
-                qresync,
-                ping: false,
-                vanishearch: vanished,
-                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
-                saves_sent_automatically: false,
-            });
+        if let Some(caps) = caps_tuple {
+            *self.caps.lock().unwrap() = Some(caps);
         }
         Ok(delta)
     }
@@ -1041,6 +1090,7 @@ impl MailSource for ImapSource {
         let src_remote = src.remote_id.clone();
         let dest_remote = dest.remote_id.clone();
         let uid_set_str = uid_set(uids);
+        let use_move = self.caps.lock().unwrap().unwrap_or_default().r#move;
 
         // folder=Some(&src_remote): the manager SELECTs the SOURCE mailbox (MOVE
         // operates on the currently-selected mailbox). The dest is just a command
@@ -1056,7 +1106,7 @@ impl MailSource for ImapSource {
                     let dest_remote = dest_remote.clone();
                     let uid_set_str = uid_set_str.clone();
                     Box::pin(async move {
-                        imap_client::move_messages(session, &src_remote, &uid_set_str, &dest_remote)
+                        imap_client::move_messages(session, &src_remote, &uid_set_str, &dest_remote, use_move)
                             .await?;
                         Ok::<_, String>(())
                     })
@@ -1174,110 +1224,6 @@ impl MailSource for ImapSource {
         }
     }
 
-    /// Long-lived IDLE on `folder`. Blocks until the server signals a change
-    /// (EXISTS/EXPUNGE/FLAG), then returns `Ok(())` so the caller can re-sync and
-    /// re-enter watch(). Cancelable by drop: the outer watcher task `select!`s on this
-    /// future vs a shutdown signal; dropping it mid-wait simply drops the inner wait
-    /// future (async-imap 0.10 has no Drop impl on `Handle`, so no DONE is sent on
-    /// drop — the server times the dangling IDLE out, and the next watch() reconnects
-    /// cleanly). Returns `Err(SourceError::Unsupported)` if the server's CAPABILITY
-    /// does not advertise `IDLE`.
-    ///
-    /// Keepalive: `wait_with_timeout(IDLE_KEEPALIVE=28min)` returns `Timeout` if no
-    /// bytes arrive for 28 min; on Timeout we send DONE, recover the Session, and loop
-    /// (re-init IDLE). The 28-min clock is reset by any server traffic, including
-    /// `* OK Still here` keepalive pings.
-    async fn watch(&self, folder: &RemoteFolder) -> Result<(), SourceError> {
-        // watch() owns its own connection (IDLE needs a persistent socket). Connect,
-        // SELECT the folder, and refresh the caps cache.
-        let config = self.imap_config();
-        let mut session = imap_client::connect(&config).await.map_err(other)?;
-        tokio::time::timeout(Duration::from_secs(30), session.select(&folder.remote_id))
-            .await
-            .map_err(|_| other(format!("SELECT {} timed out", folder.remote_id)))?
-            .map_err(|e| other(e.to_string()))?;
-
-        let mut idle_cap = false;
-        if let Ok((idle, condstore, qresync, vanished)) =
-            imap_client::session_capabilities(&mut session).await
-        {
-            idle_cap = idle;
-            *self.caps.lock().unwrap() = Some(Capabilities {
-                idle,
-                condstore,
-                qresync,
-                ping: false,
-                vanishearch: vanished,
-                // IMAP/SMTP: server does NOT auto-save Sent — client must APPEND.
-                saves_sent_automatically: false,
-            });
-        }
-        if !idle_cap {
-            let _ = session.logout().await;
-            return Err(SourceError::Unsupported);
-        }
-
-        loop {
-            // Enter IDLE: idle() consumes the Session, init() sends IDLE and waits
-            // for the `+ idling` continuation. On failure we surface the error and
-            // let the caller reconnect.
-            let mut idle = session.idle();
-            idle.init()
-                .await
-                .map_err(|e| other(format!("IDLE init failed: {e}")))?;
-
-            // wait_with_timeout returns a future + StopSource. We discard the
-            // StopSource (manual interrupt not needed here; the outer select! drops
-            // the whole watch() future for cancellation). The future's clock resets
-            // on any server traffic, so 28 min of total silence -> Timeout.
-            let (wait_fut, _stop) = idle.wait_with_timeout(IDLE_KEEPALIVE);
-            match wait_fut.await {
-                Ok(IdleResponse::NewData(_)) => {
-                    // Server signaled a real change. Send DONE, recover the session,
-                    // logout, return Ok so the caller re-syncs then re-enters watch().
-                    match idle.done().await {
-                        Ok(mut s) => {
-                            let _ = s.logout().await;
-                        }
-                        Err(e) => log::warn!("[sync] IDLE done() after NewData failed: {e}"),
-                    }
-                    return Ok(());
-                }
-                Ok(IdleResponse::ManualInterrupt) => {
-                    // Treated as a notification: caller re-syncs, then re-enters.
-                    match idle.done().await {
-                        Ok(mut s) => {
-                            let _ = s.logout().await;
-                        }
-                        Err(e) => {
-                            log::warn!("[sync] IDLE done() after ManualInterrupt failed: {e}")
-                        }
-                    }
-                    return Ok(());
-                }
-                Ok(IdleResponse::Timeout) => {
-                    // Keepalive fired: 28 min of silence. Send DONE to recover the
-                    // Session, then loop and re-init IDLE (keeps the connection
-                    // alive below the server's ~29 min idle disconnect).
-                    match idle.done().await {
-                        Ok(s) => {
-                            session = s;
-                        }
-                        Err(e) => {
-                            return Err(other(format!("IDLE done() after Timeout failed: {e}")));
-                        }
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    // IDLE wait itself errored (socket dead, parse failure, etc.).
-                    // The handle is consumed by the error path; we cannot recover
-                    // the session, so surface the error and let the caller reconnect.
-                    return Err(other(format!("IDLE wait failed: {e}")));
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1371,6 +1317,8 @@ mod tests {
             }],
             content_type: None,
             smime_type: None,
+            remote_email_id: None,
+            remote_thread_id: None,
         };
         let r = imap_message_to_remote(m);
         assert_eq!(r.uid, 7);
@@ -1435,6 +1383,8 @@ mod tests {
             attachments: Vec::new(),
             content_type: None,
             smime_type: None,
+            remote_email_id: None,
+            remote_thread_id: None,
         }
     }
 
@@ -1456,99 +1406,6 @@ mod tests {
         assert_eq!(r.unseen, 1);
     }
 
-    /// Cancellation/connect-failure test for `watch()`.
-    ///
-    /// A live IDLE needs a real socket (validated in Task 4/5 e2e), so the unit test
-    /// covers the two paths we CAN exercise without one:
-    ///   1. connect failure returns `Err(Other(..))` fast (no hang) when pointed at a
-    ///      non-existent host — proving the watch() entry path doesn't block.
-    ///   2. `watch()` is cancelable by drop: wrapping it in `tokio::time::timeout`
-    ///      and letting the timeout win drops the future cleanly (no panic). This is
-    ///      exactly what the outer watcher task's `select!` does for shutdown.
-    ///
-    /// The live notification behavior (NewData -> Ok(()), keepalive loop) is
-    /// validated by the Task 4 manual e2e against a real IMAP server.
-    #[tokio::test]
-    async fn watch_returns_err_fast_on_connect_failure_and_is_cancelable_by_drop() {
-        // Point at a host that refuses TCP connections on this port. connect() should
-        // fail fast (connection refused / timeout), surfacing Err(Other(..)).
-        // The DB pool is required by the constructor but never used here (connect
-        // fails before any DB read), so a throwaway tempdir pool is fine.
-        let tmp = tempfile::tempdir().unwrap();
-        let pool = init_db(tmp.path()).await.unwrap();
-        let account = Account {
-            email: "nobody@invalid.test".into(),
-            provider: "imap".into(),
-            imap_host: Some("127.0.0.1".into()),
-            // TCP port 1 is reserved and not listening on dev machines; connect
-            // fails near-instantly with ConnectionRefused.
-            imap_port: Some(1),
-            imap_security: Some("none".into()),
-            imap_username: Some("nobody".into()),
-            imap_password: Some("wrong".into()),
-            ..Account::default()
-        };
-        let source = ImapSource::new(
-            account,
-            pool,
-            std::sync::Arc::new(crate::mail::imap::session_manager::ImapSessionManager::new()),
-        );
-        let folder = RemoteFolder {
-            remote_id: "INBOX".into(),
-            name: "INBOX".into(),
-            delimiter: "/".into(),
-            ..Default::default()
-        };
-
-        // Path 1: watch() returns Err (not hang) on connect failure.
-        let res = source.watch(&folder).await;
-        assert!(
-            res.is_err(),
-            "watch() against a dead host should error, not hang"
-        );
-        match res {
-            Err(SourceError::Other(_)) => {}
-            Err(SourceError::Unsupported) => {
-                // Acceptable: if caps somehow got cached without IDLE we still bail.
-            }
-            // Phase 3f Task 2: watch() against a dead host will never return
-            // RateLimited (no server response to parse a Retry-After from),
-            // but the variant now exists on SourceError so this exhaustive
-            // match must acknowledge it. Treat it like Other/Unsupported —
-            // the assertion is only "watch() did not return Ok against a
-            // dead host", which any Err variant satisfies.
-            Err(SourceError::RateLimited { .. }) => {}
-            Ok(()) => panic!("watch() must not return Ok against a dead host"),
-        }
-
-        // Path 2: cancelability by drop. Wrap a fresh watch() call in a very short
-        // timeout; if watch() is not cancelable by drop this hangs the test. We use
-        // a second source (fresh caps cache) to avoid any state leakage.
-        let tmp2 = tempfile::tempdir().unwrap();
-        let pool2 = init_db(tmp2.path()).await.unwrap();
-        let source2 = ImapSource::new(
-            Account {
-                email: "nobody2@invalid.test".into(),
-                provider: "imap".into(),
-                imap_host: Some("127.0.0.1".into()),
-                imap_port: Some(1),
-                imap_security: Some("none".into()),
-                imap_username: Some("nobody".into()),
-                imap_password: Some("wrong".into()),
-                ..Account::default()
-            },
-            pool2,
-            std::sync::Arc::new(crate::mail::imap::session_manager::ImapSessionManager::new()),
-        );
-        let cancel = tokio::time::timeout(Duration::from_millis(100), source2.watch(&folder)).await;
-        // Either the connect failed fast (Err resolves before the timeout) OR the
-        // timeout fired and dropped the pending future. Both prove no hang/panic.
-        assert!(
-            cancel.is_ok() || cancel.is_err(),
-            "tokio::timeout always resolves; this assert is a no-op sanity check"
-        );
-        // The load-bearing assertion is that this line is reached at all.
-    }
 
     /// The manager is wired through ImapSource::new (it's a required arg now).
     /// This test constructs an ImapSource with a fresh manager and confirms the

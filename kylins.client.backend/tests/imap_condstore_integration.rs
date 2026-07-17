@@ -165,7 +165,7 @@ async fn append_and_find_uid(
     for _ in 0..10 {
         let uids = imap_client::search_all_uids(session, folder).await?;
         for uid in &uids {
-            let result = imap_client::raw_fetch_messages(config, folder, &uid.to_string()).await?;
+            let result = imap_client::raw_fetch_messages(config, folder, &uid.to_string(), &Default::default()).await?;
             if result
                 .messages
                 .iter()
@@ -260,7 +260,7 @@ async fn test_changed_flags_via_condstore() {
     let folder = remote_folder(&folder_path);
 
     // --- Ensure the folder exists, then append a fresh unread message. ---
-    let mut setup = imap_client::connect(&config).await.expect("connect");
+    let (mut setup, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut setup).await.expect("ensure folder");
     let subject = unique_subject("changed-flags-via-condstore");
     let raw = build_plain_message(&subject, "CONDSTORE flag-delta e2e.");
@@ -301,7 +301,7 @@ async fn test_changed_flags_via_condstore() {
     );
 
     // --- Flip \\Seen via a SECOND connection (simulating webmail / another client). ---
-    let mut other = imap_client::connect(&config).await.expect("connect #2");
+    let (mut other, _setup) = imap_client::connect(&config).await.expect("connect #2");
     imap_client::set_flags(
         &mut other,
         &folder_path,
@@ -371,7 +371,7 @@ async fn test_changed_flags_via_condstore() {
     }
 
     // --- Cleanup so the test is repeatable. ---
-    let mut cleanup = imap_client::connect(&config).await.expect("connect cleanup");
+    let (mut cleanup, _setup) = imap_client::connect(&config).await.expect("connect cleanup");
     cleanup_uids(&mut cleanup, &folder_path, &[uid]).await;
     let _ = cleanup.logout().await;
 }
@@ -418,7 +418,7 @@ async fn test_expunge_detected_via_set_difference() {
     let folder = remote_folder(&folder_path);
 
     // --- Append two fresh messages. ---
-    let mut setup = imap_client::connect(&config).await.expect("connect");
+    let (mut setup, _setup) = imap_client::connect(&config).await.expect("connect");
     ensure_test_folder(&mut setup).await.expect("ensure folder");
     let subject_keep = unique_subject("expunge-keep");
     let subject_kill = unique_subject("expunge-kill");
@@ -458,7 +458,7 @@ async fn test_expunge_detected_via_set_difference() {
     println!("[expunge] sync #1 cached both uids: {local_after_sync1:?}");
 
     // --- Delete + EXPUNGE uid_kill via a SECOND connection. ---
-    let mut other = imap_client::connect(&config).await.expect("connect #2");
+    let (mut other, _setup) = imap_client::connect(&config).await.expect("connect #2");
     imap_client::delete_messages(&mut other, &folder_path, &uid_kill.to_string())
         .await
         .expect("delete + expunge uid_kill");
@@ -506,7 +506,7 @@ async fn test_expunge_detected_via_set_difference() {
     );
 
     // --- Cleanup the survivor so the test is repeatable. ---
-    let mut cleanup = imap_client::connect(&config).await.expect("connect cleanup");
+    let (mut cleanup, _setup) = imap_client::connect(&config).await.expect("connect cleanup");
     cleanup_uids(&mut cleanup, &folder_path, &[uid_keep]).await;
     let _ = cleanup.logout().await;
 }

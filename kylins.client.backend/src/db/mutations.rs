@@ -341,7 +341,7 @@ impl MutationOp {
             } => {
                 for mid in message_ids {
                     // Remove the src label from this message's thread.
-                    sqlx::query(
+                    let removed = sqlx::query(
                         "DELETE FROM thread_labels
                          WHERE account_id = ? AND label_id = ?
                            AND thread_id IN (
@@ -356,6 +356,13 @@ impl MutationOp {
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
+                    // Attribute thread_labels wipes (a Move removes the src
+                    // label's linkage; the per-round reconcile re-links, but
+                    // this log surfaces Move-driven clears for diagnosis).
+                    log::info!(
+                        "[mutations] Move {mid}: removed {removed} thread_labels row(s) for src_label {src_label}",
+                        removed = removed.rows_affected()
+                    );
                     // Insert the dst label on this message's thread (ignore dup).
                     sqlx::query(
                         "INSERT INTO thread_labels (thread_id, account_id, label_id)

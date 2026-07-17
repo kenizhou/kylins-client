@@ -23,7 +23,9 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::db::{accounts, contacts, labels, messages, send_as_aliases, sync_state};
 use crate::mail::imap::session_manager::ImapSessionManager;
-use crate::sync_engine::{source_for_account, Cursor, MailSource, RemoteFolder};
+use crate::sync_engine::{
+    source_for_account, Cursor, FolderDelta, MailSource, RemoteFolder, RemoteMessage,
+};
 
 // Poll-only cadence: the tick used for accounts without IDLE, or whose IDLE
 // watcher isn't currently running. IDLE remains the preferred push path; this
@@ -212,8 +214,8 @@ pub enum RealtimeStrategy {
 /// round is what populates the cached caps on `ImapSource` (a fresh source
 /// reports `Capabilities::default()` until its first connect succeeds — see
 /// `ImapSource::capabilities()`).
-fn pick_realtime_strategy(caps: &crate::sync_engine::Capabilities) -> RealtimeStrategy {
-    if caps.idle {
+fn pick_realtime_strategy(caps: &crate::sync_engine::Capabilities, supports_idle: bool) -> RealtimeStrategy {
+    if caps.idle && supports_idle {
         RealtimeStrategy::Idle
     } else {
         RealtimeStrategy::Poll
@@ -222,11 +224,6 @@ fn pick_realtime_strategy(caps: &crate::sync_engine::Capabilities) -> RealtimeSt
 
 struct WorkerHandle {
     tx: mpsc::Sender<SyncOp>,
-    /// JoinHandle for the per-account IDLE watcher task, if the source
-    /// advertised IDLE. `None` for poll-only accounts. Aborted in `stop_all`
-    /// (and any future worker-removal path) so the watcher does not outlive
-    /// its account.
-    idle_watcher: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub struct SyncEngine {
@@ -469,16 +466,12 @@ impl SyncEngine {
         let aid = account_id.clone();
         // Insert a placeholder handle up front so `ensure_worker`'s
         // contains_key check sees the worker as running before the spawn
-        // finishes (avoids a double-spawn race if sync_account_now is
-        // called concurrently). The idle_watcher slot is filled in below
-        // once the first sync round has populated the caps cache.
-        self.workers.lock().await.insert(
-            account_id.clone(),
-            WorkerHandle {
-                tx: tx.clone(),
-                idle_watcher: None,
-            },
-        );
+        // finishes (avoids a double-spawn race if sync_account_now is called
+        // concurrently).
+        self.workers
+            .lock()
+            .await
+            .insert(account_id.clone(), WorkerHandle { tx: tx.clone() });
         // Capture the worker's JoinHandle so a supervisor can observe its exit.
         // Pre-fix the handle was discarded (detached spawn), which meant a
         // panic inside the worker loop was swallowed silently by tokio — the
@@ -498,7 +491,7 @@ impl SyncEngine {
             // INBOX that nudges a sync round on each notification. The poll
             // loop below stays as the background sweep for non-INBOX folders
             // + the fallback when IDLE is unavailable.
-            let idle_watcher = {
+            let mut idle_push_rx: Option<mpsc::Receiver<crate::mail::imap::session_manager::PushNotice>> = {
                 let src = crate::sync_engine::source_for_account(
                     &engine.pool,
                     &aid,
@@ -506,126 +499,71 @@ impl SyncEngine {
                 )
                 .await
                 .ok();
-                // Populate the caps cache: this fresh source hasn't queried
-                // CAPABILITY yet (its caps are empty/default). list_folders
-                // calls session_capabilities on the persistent session, caching
-                // the real caps so pick_realtime_strategy sees the server's
-                // actual IDLE/CONDSTORE support. Without this, idle_cap is
-                // always false on the fresh source -> strategy picks Poll
-                // even when the server advertises IDLE.
+                // Populate the caps cache so pick_realtime_strategy sees the
+                // server's actual IDLE support (a fresh source reports default
+                // caps until its first connect).
                 if let Some(src) = &src {
                     let _ = src.list_folders().await;
                 }
                 let caps = src.as_ref().map(|s| s.capabilities());
-                // Log the realtime-strategy decision + the gate input so the user
-                // can see why IDLE did/didn't spawn. The strategy is recomputed
-                // here (after the first sync round warms the source's caps cache);
-                // `pick_realtime_strategy` only flips to Idle when caps.idle is
-                // true, so logging caps.idle alongside makes the gate auditable.
+                let supports_idle = engine
+                    .session_manager
+                    .get_setup(&aid)
+                    .await
+                    .map(|s| s.profile.supports_idle())
+                    // Default to Poll on a transient get_setup miss (actor not
+                    // yet connected) — safer than assuming IDLE works, which
+                    // could re-enable IDLE for a profile (e.g. Yahoo) that opts out.
+                    .unwrap_or(false);
                 let strategy = caps
                     .as_ref()
-                    .map(pick_realtime_strategy)
+                    .map(|c| pick_realtime_strategy(c, supports_idle))
                     .unwrap_or(RealtimeStrategy::Poll);
                 let idle_cap = caps.as_ref().map(|c| c.idle).unwrap_or(false);
                 log::info!(
                     "[sync] {aid} realtime strategy: {strategy:?} (idle_cap={idle_cap})"
                 );
-                match (src, caps) {
-                    (Some(src), Some(caps))
-                        if pick_realtime_strategy(&caps) == RealtimeStrategy::Idle =>
-                    {
-                        let engine2 = Arc::clone(&engine);
-                        let aid2 = aid.clone();
-                        let src2 = Arc::clone(&src);
-                        // CANCELLATION CAVEAT (Phase 2 Task 2): async-imap 0.10.4's
-                        // IDLE `Handle` has no `Drop` impl, so aborting this task
-                        // (dropping the in-flight `watch()` future) leaves a dangling
-                        // IDLE the server times out ~29 min later. This is ACCEPTABLE
-                        // for Phase 2 — `stop_all` aborts the watcher on app shutdown
-                        // and the next `watch()` reconnects cleanly. On the happy path
-                        // (`Ok(())` on NewData) `watch()` calls `done()` cleanly and
-                        // no leak occurs.
-                        log::info!("[sync] {aid} spawning IDLE watcher for INBOX");
-                        Some(tokio::spawn(async move {
-                            loop {
-                                // Resolve the INBOX folder (role=inbox) from the DB.
-                                // The `remote_id` column holds the IMAP path (e.g.
-                                // "INBOX"); `imap_folder_path` is labels-specific and
-                                // only populated by other code paths, so we prefer
-                                // `remote_id` (which always falls back to the label id
-                                // on read — see `row_to_folder`).
-                                let inbox = match crate::db::labels::get_folder_by_role(
-                                    &engine2.pool,
-                                    &aid2,
-                                    "inbox",
-                                )
-                                .await
-                                {
-                                    Ok(Some(f)) => f,
-                                    _ => {
-                                        // No inbox row yet (initial sync may not have
-                                        // persisted labels, e.g. a fresh account whose
-                                        // first connect failed). Back off and retry.
-                                        tokio::time::sleep(Duration::from_secs(60)).await;
-                                        continue;
-                                    }
-                                };
-                                let folder = RemoteFolder {
-                                    remote_id: inbox.remote_id.clone(),
-                                    name: inbox.name.clone(),
-                                    delimiter: inbox
-                                        .delimiter
-                                        .clone()
-                                        .unwrap_or_else(|| "/".into()),
-                                    role: Some("inbox".into()),
-                                    ..Default::default()
-                                };
-                                match src2.watch(&folder).await {
-                                    Ok(()) => {
-                                        // Notification (or clean return) — nudge an
-                                        // immediate sync round, then loop back into
-                                        // watch(). We use `nudge_worker` (not
-                                        // `sync_account_now`) because the worker is
-                                        // already running — the watcher IS part of it —
-                                        // and `sync_account_now`'s `ensure_worker` would
-                                        // create a Send-cycle through `spawn_worker`.
-                                        engine2.nudge_worker(&aid2, SyncOp::SyncNow).await;
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "[sync] {aid2} IDLE watcher err: {e}; reconnecting after backoff"
-                                        );
-                                        // Brief backoff before reconnecting to avoid a
-                                        // hot loop on persistent failures (e.g. server
-                                        // flapping, dead socket, or the server killing
-                                        // the IDLE connection because a concurrent
-                                        // persistent session is also open).
-                                        tokio::time::sleep(Duration::from_secs(30)).await;
-                                    }
+                // Single-connection actor: if the server advertises IDLE, ask
+                // the manager's actor to IDLE on INBOX and hand us its push
+                // channel. The actor owns the ONE connection; commands (incl.
+                // the INBOX sync we run on a push) break IDLE on it. No second
+                // connection → Yahoo pushes land on this socket in real time.
+                if strategy != RealtimeStrategy::Idle {
+                    None
+                } else {
+                    let inbox = crate::db::labels::get_folder_by_role(
+                        &engine.pool,
+                        &aid,
+                        "inbox",
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                    match (inbox, src.as_ref()) {
+                        (Some(f), Some(s)) => {
+                            match s.imap_config_for_folder(&f.remote_id).await.ok().flatten() {
+                                Some(config) => {
+                                    log::info!(
+                                        "[sync] {aid} starting IDLE on {} (single-connection actor)",
+                                        f.remote_id
+                                    );
+                                    engine
+                                        .session_manager
+                                        .start_idle(&aid, &config, &f.remote_id)
+                                        .await
                                 }
+                                None => None,
                             }
-                        }))
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 }
             };
 
-            // Capture whether an IDLE watcher is active BEFORE we move the
-            // `idle_watcher` JoinHandle into the workers map below — after that
-            // move the Option is consumed and we couldn't read it from the tick
-            // site. The poll cadence is IDLE-aware: with an active IDLE watcher
-            // (INBOX realtime push) the poll slows to IDLE_BACKSTOP_SECS as a
-            // long backstop for non-INBOX + IDLE-gap recovery; without IDLE it
-            // stays at the short POLL_INTERVAL_SECS as the only push path.
-            let has_idle = idle_watcher.is_some();
-
-            // Publish the watcher JoinHandle so stop_all can abort it.
-            {
-                let mut ws = engine.workers.lock().await;
-                if let Some(h) = ws.get_mut(&aid) {
-                    h.idle_watcher = idle_watcher;
-                }
-            }
+            // The poll cadence is IDLE-aware: with IDLE (a push_rx) the poll
+            // slows to IDLE_BACKSTOP_SECS as a long backstop for non-INBOX +
+            // IDLE-gap recovery; without IDLE it stays at POLL_INTERVAL_SECS.
+            let has_idle = idle_push_rx.is_some();
 
             let poll_secs = if has_idle { IDLE_BACKSTOP_SECS } else { POLL_INTERVAL_SECS };
             let mut tick = tokio::time::interval(Duration::from_secs(poll_secs));
@@ -687,6 +625,25 @@ impl SyncEngine {
                                 log::warn!("[sync] {aid} worker channel closed; switching to tick-only poll");
                                 channel_open = false;
                             }
+                        },
+                        // IDLE push from the single-connection actor: a NewData
+                        // arrived on the IDLE socket. Sync INBOX (via execute(),
+                        // which breaks IDLE on the actor) + apply/emit. Pending
+                        // forever when there's no push_rx (poll-only accounts).
+                        notice = async {
+                            if let Some(rx) = &mut idle_push_rx {
+                                rx.recv().await
+                            } else {
+                                std::future::pending::<
+                                    Option<crate::mail::imap::session_manager::PushNotice>,
+                                >()
+                                .await
+                            }
+                        } => {
+                            if notice.is_some() {
+                                log::info!("[sync] {aid} IDLE push → sync INBOX");
+                                run_inbox_push_sync(&engine, &aid).await;
+                            }
                         }
                     }
                 } else {
@@ -695,7 +652,7 @@ impl SyncEngine {
                     let _ = run_sync_round(&engine, &aid, &provider).await;
                 }
             }
-            // (the idle_watcher JoinHandle is aborted by stop_all / worker removal)
+            // (the IDLE actor lives in the session manager; stop_all shuts it down.)
         });
 
         // Supervisor: log when the worker exits. A panic in the worker loop
@@ -729,16 +686,16 @@ impl SyncEngine {
     }
 
     /// Stop all workers (app shutdown / account removal). Sends Shutdown to each
-    /// worker's poll loop AND aborts any per-account IDLE watcher task so it does
-    /// not outlive its account.
+    /// worker's poll loop AND shuts down the per-account IDLE actor on the session
+    /// manager so its single connection doesn't outlive the account.
     pub async fn stop_all(&self) {
         let mut ws = self.workers.lock().await;
         for (_, w) in ws.drain() {
             let _ = w.tx.send(SyncOp::Shutdown).await;
-            if let Some(handle) = w.idle_watcher {
-                handle.abort();
-            }
         }
+        drop(ws);
+        // Stop every account's single-connection actor (sends Shutdown + aborts).
+        self.session_manager.shutdown().await;
     }
 
     /// Fan a `sync:queue` event through the sink. Called by [`run_replay_round`]
@@ -1372,6 +1329,188 @@ async fn unix_now(pool: &SqlitePool) -> i64 {
     now
 }
 
+/// Addresses belonging to the account itself (primary email + verified
+/// send-as aliases). Auto-extraction must never record these as contacts.
+/// Lifted out of `run_sync_round_with_source` so the IDLE watcher's apply
+/// path (which bypasses the round for the INBOX it owns) can reuse it.
+async fn own_emails_for_account(pool: &SqlitePool, account_id: &str) -> Vec<String> {
+    match accounts::get_by_id(pool, account_id).await {
+        Ok(Some(account)) => {
+            let mut set: Vec<String> = Vec::new();
+            let primary = account.email.trim().to_lowercase();
+            if !primary.is_empty() {
+                set.push(primary);
+            }
+            if let Ok(aliases) = send_as_aliases::emails_for_account(pool, account_id).await {
+                for alias in aliases {
+                    let email = alias.trim().to_lowercase();
+                    if !email.is_empty() && !set.contains(&email) {
+                        set.push(email);
+                    }
+                }
+            }
+            set
+        }
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            log::warn!("[sync] {account_id} failed to load account for contact extraction: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Emit the per-folder `sync:delta` (+ `sync:new-mail` for INBOX) when a
+/// round/watcher actually changed something. Lifted out of the per-folder loop
+/// so the IDLE watcher applies INBOX deltas with byte-identical events to the
+/// round (poll mode). `added` is the same slice just persisted, used to build
+/// the stable message ids for `new-mail` dedupe.
+fn emit_folder_delta(
+    sink: &dyn EventSink,
+    account_id: &str,
+    label_id: &str,
+    folder_role: Option<&str>,
+    counts: messages::AppliedCounts,
+    added: &[RemoteMessage],
+) {
+    if counts.added > 0 || counts.updated > 0 || counts.deleted > 0 {
+        sink.emit_delta(DeltaEvent {
+            op: "persist".into(),
+            table: "messages".into(),
+            account_id: account_id.into(),
+            label_id: label_id.into(),
+            count: counts.added as i64,
+        });
+        if folder_role == Some("inbox") {
+            let message_ids: Vec<String> = added
+                .iter()
+                .map(|m| format!("imap-{account_id}-{}-{}", m.folder, m.uid))
+                .collect();
+            sink.emit_new_mail(NewMailEvent {
+                account_id: account_id.into(),
+                folder_id: label_id.into(),
+                count: counts.added as i64,
+                message_ids,
+            });
+        }
+    }
+}
+
+/// Apply + emit a folder delta: `apply_folder_delta` → contact extraction →
+/// cursor advance (IMAP/EAS) → `emit_folder_delta`. Shared by the per-folder
+/// poll loop AND the IDLE push handler so poll-delivered and push-delivered mail
+/// are indistinguishable to the DB and the UI.
+async fn apply_folder_and_emit(
+    engine: &Arc<SyncEngine>,
+    account_id: &str,
+    folder: &RemoteFolder,
+    delta: &FolderDelta,
+    own_emails: &[String],
+) {
+    let label_id = format!("{account_id}:{}", folder.remote_id);
+    let counts = match messages::apply_folder_delta(
+        &engine.pool,
+        account_id,
+        &label_id,
+        &folder.remote_id,
+        delta,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!(
+                "[sync] {account_id} apply_folder_delta {} failed: {e}",
+                folder.remote_id
+            );
+            return;
+        }
+    };
+    for m in delta.added.iter().chain(delta.updated.iter()) {
+        if let Err(e) =
+            contacts::record_from_remote_msg(&engine.pool, account_id, m, folder.role.as_deref(), own_emails)
+                .await
+        {
+            log::warn!(
+                "[contacts] {account_id} extraction failed for {}: {e}",
+                m.uid
+            );
+        }
+    }
+    if let Cursor::Imap {
+        uidvalidity,
+        highest_uid,
+        highest_modseq,
+    } = &delta.next_cursor
+    {
+        let _ = sync_state::advance_imap_cursor(
+            &engine.pool,
+            account_id,
+            &folder.remote_id,
+            *uidvalidity,
+            *highest_uid,
+            *highest_modseq,
+        )
+        .await;
+    }
+    if let Cursor::Eas {
+        collection_id,
+        sync_key,
+    } = &delta.next_cursor
+    {
+        let _ = sync_state::advance_eas_cursor(
+            &engine.pool,
+            account_id,
+            &folder.remote_id,
+            collection_id,
+            sync_key,
+        )
+        .await;
+    }
+    emit_folder_delta(
+        engine.sink.as_ref(),
+        account_id,
+        &label_id,
+        folder.role.as_deref(),
+        counts,
+        &delta.added,
+    );
+}
+
+/// Handle an IDLE push notification: resolve INBOX + source, sync INBOX (via
+/// `execute()`, which breaks IDLE on the single-connection actor), and apply +
+/// emit. The actor's IDLE socket is the only connection that SELECTs INBOX, so
+/// the push that triggered this already landed on it in real time.
+async fn run_inbox_push_sync(engine: &Arc<SyncEngine>, account_id: &str) {
+    let inbox = match crate::db::labels::get_folder_by_role(&engine.pool, account_id, "inbox").await {
+        Ok(Some(f)) => f,
+        _ => return,
+    };
+    let folder = RemoteFolder {
+        remote_id: inbox.remote_id.clone(),
+        name: inbox.name.clone(),
+        delimiter: inbox.delimiter.clone().unwrap_or_else(|| "/".into()),
+        role: Some("inbox".into()),
+        ..Default::default()
+    };
+    let src = match crate::sync_engine::source_for_account(&engine.pool, account_id, &engine.session_manager).await {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[sync] {account_id} IDLE push: source resolve failed: {e}");
+            return;
+        }
+    };
+    let cursor = src.load_cursor(&engine.pool, account_id, &folder.remote_id).await;
+    let delta = match src.sync_folder(&folder, cursor).await {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("[sync] {account_id} IDLE push: sync_folder INBOX failed: {e}");
+            return;
+        }
+    };
+    let own_emails = own_emails_for_account(&engine.pool, account_id).await;
+    apply_folder_and_emit(engine, account_id, &folder, &delta, &own_emails).await;
+}
+
 /// One sync round against an explicit source (test seam + reused by production).
 async fn run_sync_round_with_source(
     engine: &Arc<SyncEngine>,
@@ -1525,40 +1664,19 @@ async fn run_sync_round_with_source(
         count: 0,
     });
 
-    // Addresses that belong to the account itself. Auto-extraction must never
-    // record the user's own email or verified send-as aliases as contacts.
-    let own_emails: Vec<String> = match accounts::get_by_id(&engine.pool, account_id).await {
-        Ok(Some(account)) => {
-            let mut set: Vec<String> = Vec::new();
-            let primary = account.email.trim().to_lowercase();
-            if !primary.is_empty() {
-                set.push(primary);
-            }
-            if let Ok(aliases) = send_as_aliases::emails_for_account(&engine.pool, account_id).await {
-                for alias in aliases {
-                    let email = alias.trim().to_lowercase();
-                    if !email.is_empty() && !set.contains(&email) {
-                        set.push(email);
-                    }
-                }
-            }
-            set
-        }
-        Ok(None) => Vec::new(),
-        Err(e) => {
-            log::warn!("[sync] {account_id} failed to load account for contact extraction: {e}");
-            Vec::new()
-        }
-    };
+    // Addresses that belong to the account itself (excluded from contact
+    // auto-extraction). Extracted into `own_emails_for_account` so the IDLE
+    // watcher's apply path reuses it.
+    let own_emails: Vec<String> = own_emails_for_account(&engine.pool, account_id).await;
 
-    // Per-folder delta sync.
+    // Per-folder delta sync. INBOX is synced here too (cursor-based, idempotent)
+    // — the single-connection actor serializes IDLE and commands on ONE socket,
+    // so there's no concurrent-SELECT reason to skip it. The 300s poll sweeps
+    // non-INBOX folders + acts as an INBOX backstop; realtime INBOX comes from
+    // the actor's IDLE push (handled in the worker's `select!`).
     for f in &folders {
-        let label_id = format!("{account_id}:{}", f.remote_id);
         // Source-owned cursor load: each source reads its own persisted cursor
-        // (ImapSource -> folder_sync_state, EasSource -> eas_sync_state). The
-        // previous unconditional `sync_state::get_imap_cursor` here handed an
-        // `Cursor::Imap` to EAS sources, so `EasSource::sync_folder` fell through
-        // to its non-Eas branch and re-bootstrapped (sync_key "0") every round.
+        // (ImapSource -> folder_sync_state, EasSource -> eas_sync_state).
         let cursor = src.load_cursor(&engine.pool, account_id, &f.remote_id).await;
         let delta = match src.sync_folder(f, cursor).await {
             Ok(d) => d,
@@ -1570,117 +1688,7 @@ async fn run_sync_round_with_source(
                 continue;
             }
         };
-        let counts = match messages::apply_folder_delta(
-            &engine.pool,
-            account_id,
-            &label_id,
-            &f.remote_id,
-            &delta,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!(
-                    "[sync] {account_id} apply_folder_delta {} failed: {e}",
-                    f.remote_id
-                );
-                continue;
-            }
-        };
-
-        // Extract contacts from the headers of every added/updated message.
-        // This runs outside the message-transaction batches so it cannot
-        // contribute to SQLite write-lock contention.
-        for m in delta.added.iter().chain(delta.updated.iter()) {
-            if let Err(e) = contacts::record_from_remote_msg(
-                &engine.pool,
-                account_id,
-                m,
-                f.role.as_deref(),
-                &own_emails,
-            )
-            .await
-            {
-                log::warn!("[contacts] {account_id} extraction failed for {}: {e}", m.uid);
-            }
-        }
-        // Advance the cursor. Each source owns its own cursor payload and its
-        // own persistence call (IMAP merges monotonically; EAS overwrites the
-        // opaque sync_key). The branches are mutually exclusive — a delta from
-        // a given source only ever carries that source's cursor kind.
-        if let Cursor::Imap {
-            uidvalidity,
-            highest_uid,
-            highest_modseq,
-        } = &delta.next_cursor
-        {
-            let _ = sync_state::advance_imap_cursor(
-                &engine.pool,
-                account_id,
-                &f.remote_id,
-                *uidvalidity,
-                *highest_uid,
-                *highest_modseq,
-            )
-            .await;
-        }
-        if let Cursor::Eas {
-            collection_id,
-            sync_key,
-        } = &delta.next_cursor
-        {
-            let _ = sync_state::advance_eas_cursor(
-                &engine.pool,
-                account_id,
-                &f.remote_id,
-                collection_id,
-                sync_key,
-            )
-            .await;
-        }
-        // Emit a `sync:delta{messages}` only when the round actually changed
-        // something — a no-op round (cursor advanced but DB unchanged: 0 added,
-        // 0 updated, 0 deleted) must NOT emit. Pre-fix this was guarded by
-        // `counts.added > 0` alone, which (a) skipped legitimate flag-update /
-        // expunge rounds (the UI never learned a message was marked read on
-        // another client via CONDSTORE, or expunged server-side), and (b) still
-        // fired every poll round on accounts that see a constant trickle of new
-        // mail (the symptom behind the "message list fully refreshed every 60s"
-        // bug). Adding updated/deleted to the guard fixes (a); the per-folder
-        // burst is collapsed on the frontend via a trailing debounce in
-        // `useSyncEvents`. The count field carries `added` (the most common
-        // case + what the new-mail path needs); updated/deleted are signalled
-        // by the event's existence, not the count — the frontend reloads the
-        // page either way.
-        if counts.added > 0 || counts.updated > 0 || counts.deleted > 0 {
-            engine.sink.emit_delta(DeltaEvent {
-                op: "persist".into(),
-                table: "messages".into(),
-                account_id: account_id.into(),
-                label_id: label_id.clone(),
-                count: counts.added as i64,
-            });
-            if f.role.as_deref() == Some("inbox") {
-                // Collect the stable message ids (`messages.id` shape) of the
-                // just-arrived messages so the frontend can dedupe
-                // notifications per-message. `delta.added` is the same slice
-                // `apply_folder_delta` just persisted, and `m.folder` is the
-                // IMAP path matching the `imap-{account}-{folder}-{uid}` id
-                // built in `db::messages::upsert_message`. `Vec::with_capacity`
-                // + `push` keeps this O(n) with one allocation.
-                let mut added_ids: Vec<String> = Vec::with_capacity(delta.added.len());
-                for m in &delta.added {
-                    added_ids.push(format!("imap-{account_id}-{}-{}", m.folder, m.uid));
-                }
-                engine.sink.emit_new_mail(NewMailEvent {
-                    account_id: account_id.into(),
-                    folder_id: label_id,
-                    count: counts.added as i64,
-                    message_ids: added_ids,
-                });
-            }
-        }
+        apply_folder_and_emit(engine, account_id, f, &delta, &own_emails).await;
     }
 
     let _ = accounts::touch_last_sync(&engine.pool, account_id).await;
@@ -2990,7 +2998,7 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            pick_realtime_strategy(&src.capabilities()),
+            pick_realtime_strategy(&src.capabilities(), true),
             RealtimeStrategy::Idle
         );
     }
@@ -3000,7 +3008,7 @@ mod tests {
         // Default caps (idle: false) → strategy is Poll (poll-only).
         let src = MockSource::new(vec![], vec![]);
         assert_eq!(
-            pick_realtime_strategy(&src.capabilities()),
+            pick_realtime_strategy(&src.capabilities(), true),
             RealtimeStrategy::Poll
         );
     }
@@ -3010,7 +3018,17 @@ mod tests {
         // Bare default caps (no source) — the case before the first sync round
         // warms the ImapSource caps cache. Must be Poll so no watcher spawns.
         assert_eq!(
-            pick_realtime_strategy(&Capabilities::default()),
+            pick_realtime_strategy(&Capabilities::default(), true),
+            RealtimeStrategy::Poll
+        );
+    }
+
+    #[test]
+    fn pick_realtime_strategy_poll_when_idle_disabled_by_profile() {
+        // Server advertises IDLE but profile says unreliable → Poll.
+        let caps = Capabilities { idle: true, ..Default::default() };
+        assert_eq!(
+            pick_realtime_strategy(&caps, false),
             RealtimeStrategy::Poll
         );
     }

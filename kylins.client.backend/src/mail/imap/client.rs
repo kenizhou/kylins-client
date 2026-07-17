@@ -24,10 +24,42 @@ use super::types::*;
 /// on-wire size without a second round-trip. `CONTENT-TYPE` is included so the
 /// Phase 1b S/MIME receive-detection path can derive `crypto_kind` from the
 /// top-level Content-Type + `smime-type` parameter at zero extra round-trips.
-pub const SYNC_FETCH_QUERY: &str =
+///
+/// This is the always-present core; [`sync_fetch_query`] appends provider
+/// stable-ID attributes (`EMAILID THREADID` / `X-GM-MSGID X-GM-THRID`) on top of
+/// it when the server advertises OBJECTID / X-GM-EXT-1.
+pub const BASE_SYNC_FETCH_QUERY: &str =
     "UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC BCC REPLY-TO \
      DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST \
      AUTHENTICATION-RESULTS CONTENT-TYPE)]";
+
+/// Build the raw-path sync FETCH attribute list, appending provider
+/// stable-ID fields when the server advertises them. **ONLY for the raw-TCP
+/// path** (raw_fetch_messages / raw_fetch_folder) — the raw parser
+/// (`raw_parse_fetch_responses` → `extract_fetch_attr`) can handle these
+/// non-standard attributes.
+///
+/// The typed async-imap path (`fetch_messages`) MUST NOT use this —
+/// async-imap 0.10.4 hangs when the FETCH response includes EMAILID/THREADID
+/// or X-GM-MSGID/X-GM-THRID (it can't parse them). The typed path uses
+/// `BASE_SYNC_FETCH_QUERY` directly.
+pub fn sync_fetch_query(caps: &crate::sync_engine::Capabilities) -> String {
+    let mut q = BASE_SYNC_FETCH_QUERY.to_string();
+    if caps.objectid {
+        q.push_str(" EMAILID THREADID");
+    }
+    if caps.gm_ext1 {
+        q.push_str(" X-GM-MSGID X-GM-THRID");
+    }
+    q
+}
+
+/// `sync_fetch_query(caps)` wrapped in the outer `()` that RFC 3501 requires for
+/// a multi-item fetch-att list. Kept as a small helper so `fetch_messages` and
+/// the regression test share the exact same wrapping logic.
+pub fn sync_fetch_query_wrapped(caps: &crate::sync_engine::Capabilities) -> String {
+    format!("({})", sync_fetch_query(caps))
+}
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -145,17 +177,83 @@ fn build_tls_connector(accept_invalid_certs: bool) -> Result<native_tls::TlsConn
         .map_err(|e| format!("Failed to create TLS connector: {e}"))
 }
 
-type ImapSession = Session<ImapStream>;
+/// Public so the session-manager actor (`session_manager::spawn_actor`) can
+/// name the owned type in its signatures; `connect()` also returns it.
+pub type ImapSession = Session<ImapStream>;
 
-pub async fn connect(config: &ImapConfig) -> Result<ImapSession, String> {
+/// Result of post-login session setup: the parsed `Capabilities`, the detected
+/// `ProviderProfile`, and the list of caps actually ENABLE'd.
+#[derive(Debug, Clone)]
+pub struct SessionSetup {
+    pub caps: crate::sync_engine::Capabilities,
+    pub profile: super::provider_profile::ProviderProfile,
+    pub enabled: Vec<String>,
+}
+
+pub async fn connect(config: &ImapConfig) -> Result<(ImapSession, SessionSetup), String> {
     let mut session = tokio::time::timeout(OVERALL_CONNECT_TIMEOUT, connect_inner(config))
         .await
         .map_err(|_| format!(
             "IMAP connection to {}:{} timed out after {}s — check your server settings or network connection",
             config.host, config.port, OVERALL_CONNECT_TIMEOUT.as_secs()
         ))??;
-    log_capabilities(&mut session).await;
-    Ok(session)
+    let setup = setup_session(&mut session, &config.host).await;
+    Ok((session, setup))
+}
+
+/// Post-auth seam: log raw caps → re-fetch `Capabilities` struct → send IMAP `ID`
+/// → `provider_profile::detect` → self-filtered `ENABLE`. This is the one-stop
+/// per-server setup that replaces a bare `log_capabilities` call. Called from
+/// `connect()` only (STARTTLS path keeps its internal diagnostic log_capabilities).
+pub async fn setup_session(session: &mut ImapSession, hostname: &str) -> SessionSetup {
+    log_capabilities(session).await;
+    let caps = session_capabilities(session).await.unwrap_or_default();
+    // IMAP ID (RFC 2971). Best-effort: ignore Err / NIL.
+    let id_name = if caps.id {
+        session
+            .id([("name", Some("Kylins Mail")), ("version", Some(env!("CARGO_PKG_VERSION")))])
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| m.get("name").cloned())
+    } else {
+        None
+    };
+    let profile = super::provider_profile::detect(hostname, id_name.as_deref(), &caps);
+    log::info!(
+        "[imap] {hostname} vendor={:?} idle_reports_expunges={} enable_requests={:?}",
+        profile.vendor,
+        profile.idle_reports_expunges(),
+        profile.enable_requests()
+    );
+    // ENABLE — self-filter to caps the server actually advertises.
+    // NOTE: UIDONLY is DISABLED — async-imap 0.10.4 hangs on FETCH responses
+    // under UIDONLY mode (RFC 9586). The ENABLE plumbing is correct, but the
+    // typed Session parser can't handle the modified response format. Re-enable
+    // after upgrading async-imap or implementing a raw FETCH path.
+    let mut enabled = Vec::new();
+    if caps.enable {
+        let reqs: Vec<&str> = profile
+            .enable_requests()
+            .iter()
+            .copied()
+            .filter(|c| match *c {
+                "UIDONLY" => false, // DISABLED — see note above
+                _ => false,
+            })
+            .collect();
+        if !reqs.is_empty() {
+            let cmd = format!("ENABLE {}", reqs.join(" "));
+            match session.run_command_and_check_ok(&cmd).await {
+                Ok(()) => {
+                    enabled = reqs.iter().map(|s| s.to_string()).collect();
+                    log::info!("[imap] {hostname} ENABLED: {:?}", enabled);
+                }
+                Err(e) => log::warn!("[imap] {hostname} {} failed: {e}", cmd),
+            }
+        }
+    }
+    SessionSetup { caps, profile, enabled }
 }
 
 /// Diagnostic helper: query and log the full server capability set once,
@@ -244,17 +342,144 @@ pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<ImapFolder>, 
     Ok(folders)
 }
 
-/// `SYNC_FETCH_QUERY` wrapped in the outer `()` that RFC 3501 requires for a
-/// multi-item fetch-att list. Kept as a small helper so `fetch_messages` and the
-/// regression test share the exact same wrapping logic.
-pub fn sync_fetch_query_wrapped() -> String {
-    format!("({SYNC_FETCH_QUERY})")
+/// P3 LIST-STATUS (RFC 5819): single-round-trip folder discovery.
+///
+/// Issues `LIST "" "*" RETURN (STATUS (MESSAGES UNSEEN UIDNEXT UIDVALIDITY
+/// HIGHESTMODSEQ))` over a fresh raw TCP+TLS connection (the same raw pattern
+/// `raw_fetch_folder` uses) and parses the interleaved `* LIST (...)` and
+/// `* STATUS "folder" (...)` lines into `ImapFolder`s with `exists`/`unseen`
+/// already populated — collapsing the N+1 round-trips of `list_folders` (one
+/// LIST + one STATUS per mailbox) into one.
+///
+/// This opens its OWN connection (LOGIN … LOGOUT) and does not touch the
+/// session-manager actor's persistent connection. The actor's connection may
+/// remain idle (e.g. mid-IDLE) while this runs; that brief overlap is
+/// acceptable — Yahoo (the only server for which `caps.list_status` is true
+/// today) permits multiple concurrent connections, and the LIST-STATUS round
+/// completes in ~1s. If a future provider rejects concurrent sessions, call
+/// `yield_session`/disconnect the actor before invoking this (see the
+/// raw-fetch fallback in `ImapSource::sync_folder` for the disconnect-then-
+/// raw pattern).
+///
+/// Only `MESSAGES` (→ `exists`) and `UNSEEN` are extracted into `ImapFolder`;
+/// `UIDNEXT`/`UIDVALIDITY`/`HIGHESTMODSEQ` are requested so servers return
+/// them in one shot (useful for future delta-sync seeds) but are not stored
+/// on `ImapFolder`, which mirrors `list_folders`' field set.
+pub async fn list_with_status(config: &ImapConfig) -> Result<Vec<ImapFolder>, String> {
+    log::info!(
+        "RAW IMAP LIST-STATUS: connecting to {}:{} (single round-trip folder discovery)",
+        config.host,
+        config.port
+    );
+
+    // 1. connect (+ read greeting for plain/tls; STARTTLS path consumes it
+    //    during handshake) — mirrors raw_fetch_folder exactly.
+    let stream = if config.security == "starttls" {
+        raw_connect_starttls(config).await?
+    } else {
+        connect_stream(config).await?
+    };
+    let mut reader = BufReader::new(stream);
+
+    if config.security != "starttls" {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("greeting: {e}"))?;
+    }
+
+    // 2. login — share the exact auth-string construction with the other raw
+    //    paths via build_login_cmd (XOAUTH2 vs LOGIN, same `a1` tag + \r\n).
+    let login_cmd = build_login_cmd(config);
+    raw_send_and_wait(&mut reader, login_cmd.as_bytes(), "a1").await?;
+
+    // 3. LIST ... RETURN (STATUS (...)) — RFC 5819. One tagged response carries
+    //    every `* LIST` and `* STATUS` unagged the server emits.
+    // HIGHESTMODSEQ is intentionally NOT requested here: parse_status_line only
+    // extracts MESSAGES/UNSEEN, and requesting it would make a strict
+    // non-CONDSTORE server return BAD for the whole LIST-STATUS round. The
+    // per-folder HIGHESTMODSEQ (gated on caps.condstore) is fetched by
+    // get_folder_status instead.
+    let list_cmd =
+        "a2 LIST \"\" \"*\" RETURN (STATUS (MESSAGES UNSEEN UIDNEXT UIDVALIDITY))\r\n";
+    let response = raw_send_and_wait(&mut reader, list_cmd.as_bytes(), "a2").await?;
+
+    // 4. parse. Walk the response lines: LIST rows build folder skeletons
+    //    (path/delimiter/special-use); STATUS rows carry the counts we splice
+    //    onto the matching skeleton by raw mailbox name.
+    let mut list_rows: Vec<(Vec<String>, String, String)> = Vec::new(); // (attrs, delim, raw_path)
+    // STATUS counts keyed by raw mailbox name (as it appears in the STATUS
+    // response — same encoding the LIST row carries, so a direct string
+    // match works for both quoted and atom forms).
+    let mut status_map: std::collections::HashMap<String, (u32, u32)> =
+        std::collections::HashMap::new();
+
+    for line in response.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("* LIST") {
+            if let Some((attrs, delim, raw_path)) = parse_list_line(trimmed) {
+                list_rows.push((attrs, delim, raw_path));
+            }
+        } else if trimmed.starts_with("* STATUS") {
+            if let Some((folder, exists, unseen)) = parse_status_line(trimmed) {
+                status_map.insert(folder, (exists, unseen));
+            }
+        }
+    }
+
+    let mut folders = Vec::with_capacity(list_rows.len());
+    for (attrs, delimiter, raw_path) in list_rows {
+        // Decode IMAP modified UTF-7 for the display path; raw_path stays
+        // encoded so SELECT/STATUS round-trips use the server's form.
+        let path = utf7_imap::decode_utf7_imap(raw_path.clone());
+        let display_name = path
+            .rsplit_once(&delimiter)
+            .map(|(_, last)| last.to_string())
+            .unwrap_or_else(|| path.clone());
+        let special_use = detect_special_use_from_attrs(&attrs, &path);
+        let (exists, unseen) = status_map.get(&raw_path).copied().unwrap_or((0, 0));
+        folders.push(ImapFolder {
+            path,
+            raw_path,
+            name: display_name,
+            delimiter,
+            special_use,
+            exists,
+            unseen,
+        });
+    }
+
+    log::info!(
+        "RAW IMAP LIST-STATUS: parsed {} folders ({} with STATUS counts)",
+        folders.len(),
+        folders.iter().filter(|f| f.exists > 0 || f.unseen > 0).count()
+    );
+    if folders.is_empty() {
+        // A 0-folder parse is almost certainly a transient failure (connection
+        // dropped mid-LIST, or the response was empty/truncated), NOT a real
+        // "account has no folders". Returning Ok([]) feeds `prune_stale_labels`
+        // an empty keep-set — which (without its empty-guard) nukes every label
+        // + thread_labels linkage for the account. Surface loudly so the trigger
+        // is traceable when the symptom recurs.
+        log::warn!(
+            "RAW IMAP LIST-STATUS: parsed 0 folders for {} — transient failure \
+             (connection drop / truncated response); returning empty (prune is guarded)",
+            config.host
+        );
+    }
+
+    // 5. LOGOUT + close. Best-effort: ignore write errors on teardown.
+    let _ = reader.get_mut().write_all(b"a3 LOGOUT\r\n").await;
+
+    Ok(folders)
 }
 
 pub async fn fetch_messages(
     session: &mut ImapSession,
     folder: &str,
     uid_range: &str,
+    _caps: &crate::sync_engine::Capabilities,
 ) -> Result<ImapFetchResult, String> {
     let mailbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(folder))
         .await
@@ -276,7 +501,12 @@ pub async fn fetch_messages(
         mailbox.uid_next.unwrap_or(0),
     );
 
-    let query = sync_fetch_query_wrapped();
+    // The TYPED path must use BASE_SYNC_FETCH_QUERY only — async-imap 0.10.4
+    // hangs when the FETCH response includes EMAILID/THREADID or X-GM-MSGID/
+    // X-GM-THRID (it can't parse non-standard attributes). The raw path
+    // (raw_fetch_messages / raw_fetch_folder) uses sync_fetch_query(caps)
+    // which appends stable-ID attrs — the raw parser can handle them.
+    let query = format!("({BASE_SYNC_FETCH_QUERY})");
     let fetches = tokio::time::timeout(IMAP_FETCH_TIMEOUT, async {
         let stream = session
             .uid_fetch(uid_range, &query)
@@ -327,7 +557,7 @@ pub async fn fetch_messages(
                 continue;
             }
         };
-        // SYNC_FETCH_QUERY asks for RFC822.SIZE — prefer the server-reported
+        // The sync FETCH query asks for RFC822.SIZE — prefer the server-reported
         // on-wire size (accurate; the body bytes here are header-only). Fall
         // back to the buffered length if the server omitted RFC822.SIZE.
         let raw_size = fetch.size.unwrap_or(raw.len() as u32);
@@ -346,6 +576,13 @@ pub async fn fetch_messages(
             is_starred,
             is_draft,
             internal_date,
+            // Typed async-imap path: async-imap 0.10.4 has no accessor for
+            // custom/vendor FETCH attributes (EMAILID/THREADID/X-GM-MSGID/
+            // X-GM-THRID), so the stable IDs are not extractable here even
+            // though the query requested them. The raw-TCP FETCH fallback
+            // path extracts them from the response line.
+            None,
+            None,
         ) {
             Ok(msg) => messages.push(msg),
             Err(e) => log::warn!("Failed to parse message UID {uid}: {e}"),
@@ -402,7 +639,7 @@ pub async fn fetch_message_body(
 
     let parser = MessageParser::default();
     parse_message(
-        &parser, raw, uid, folder, raw_size, is_read, is_starred, is_draft, None,
+        &parser, raw, uid, folder, raw_size, is_read, is_starred, is_draft, None, None, None,
     )
 }
 
@@ -736,44 +973,50 @@ pub async fn move_messages(
     source_folder: &str,
     uid_set: &str,
     dest_folder: &str,
+    use_move: bool,
 ) -> Result<(), String> {
     tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(source_folder))
         .await
         .map_err(|_| format!("SELECT {source_folder} timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
         .map_err(|e| format!("SELECT {source_folder} failed: {e}"))?;
 
-    match tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_mv(uid_set, dest_folder)).await {
-        Ok(Ok(())) => Ok(()),
-        _ => {
-            tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_copy(uid_set, dest_folder))
-                .await
-                .map_err(|_| format!("UID COPY timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
-                .map_err(|e| format!("UID COPY failed: {e}"))?;
-
-            tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
-                let store_stream = session
-                    .uid_store(uid_set, "+FLAGS (\\Deleted)")
-                    .await
-                    .map_err(|e| format!("UID STORE +Deleted failed: {e}"))?;
-                let _: Vec<_> = store_stream.collect().await;
-                Ok::<_, String>(())
-            })
+    if use_move {
+        // Server advertises MOVE (RFC 6851): use the atomic UID MOVE. Surface
+        // errors instead of silently degrading to COPY+STORE+EXPUNGE.
+        return tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_mv(uid_set, dest_folder))
             .await
-            .map_err(|_| format!("UID STORE +Deleted timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
-
-            tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
-                let expunge_stream = session
-                    .expunge()
-                    .await
-                    .map_err(|e| format!("EXPUNGE failed: {e}"))?;
-                let _: Vec<_> = expunge_stream.collect().await;
-                Ok::<_, String>(())
-            })
-            .await
-            .map_err(|_| format!("EXPUNGE timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
-            Ok(())
-        }
+            .map_err(|_| format!("UID MOVE timed out after {}s", IMAP_CMD_TIMEOUT.as_secs()))?
+            .map_err(|e| format!("UID MOVE failed: {e}"));
     }
+
+    // Fallback: COPY + STORE \Deleted + EXPUNGE (server doesn't advertise MOVE).
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_copy(uid_set, dest_folder))
+        .await
+        .map_err(|_| format!("UID COPY timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("UID COPY failed: {e}"))?;
+
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
+        let store_stream = session
+            .uid_store(uid_set, "+FLAGS (\\Deleted)")
+            .await
+            .map_err(|e| format!("UID STORE +Deleted failed: {e}"))?;
+        let _: Vec<_> = store_stream.collect().await;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|_| format!("UID STORE +Deleted timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
+
+    tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
+        let expunge_stream = session
+            .expunge()
+            .await
+            .map_err(|e| format!("EXPUNGE failed: {e}"))?;
+        let _: Vec<_> = expunge_stream.collect().await;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|_| format!("EXPUNGE timed out after {}s — check your server settings or network connection", IMAP_CMD_TIMEOUT.as_secs()))??;
+    Ok(())
 }
 
 pub async fn copy_messages(
@@ -885,10 +1128,20 @@ pub async fn delete_folder(session: &mut ImapSession, folder: &str) -> Result<()
 pub async fn get_folder_status(
     session: &mut ImapSession,
     folder: &str,
+    condstore: bool,
 ) -> Result<ImapFolderStatus, String> {
+    // Only request HIGHESTMODSEQ when the server advertises CONDSTORE — a strict
+    // RFC 3501 server returns BAD for the unknown STATUS data-item and fails the
+    // whole folder sync. When not requested, highest_modseq stays None and the
+    // CONDSTORE delta/skip path falls back to the UID-high cursor.
+    let status_items = if condstore {
+        "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN HIGHESTMODSEQ)"
+    } else {
+        "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN)"
+    };
     let mailbox = tokio::time::timeout(
         IMAP_CMD_TIMEOUT,
-        session.status(folder, "(UIDVALIDITY UIDNEXT MESSAGES UNSEEN)"),
+        session.status(folder, status_items),
     )
     .await
     .map_err(|_| {
@@ -1164,6 +1417,11 @@ pub async fn sync_folder(
                         is_starred,
                         is_draft,
                         internal_date,
+                        // Legacy full-body prefetch path: its FETCH query
+                        // (prefetch_bodies_fetch_query) does not request
+                        // provider stable-ID attrs, so none to pass.
+                        None,
+                        None,
                     ) {
                         Ok(msg) => all_messages.push(msg),
                         Err(e) => log::warn!("sync_folder: failed to parse UID {uid}: {e}"),
@@ -1187,7 +1445,7 @@ pub async fn sync_folder(
 }
 
 pub async fn test_connection(config: &ImapConfig) -> Result<String, String> {
-    let mut session = connect(config).await?;
+    let (mut session, _setup) = connect(config).await?;
     let count = tokio::time::timeout(IMAP_CMD_TIMEOUT, async {
         let names = session
             .list(Some(""), Some("*"))
@@ -1215,6 +1473,7 @@ pub async fn raw_fetch_messages(
     config: &ImapConfig,
     folder: &str,
     uid_range: &str,
+    caps: &crate::sync_engine::Capabilities,
 ) -> Result<ImapFetchResult, String> {
     log::info!(
         "RAW IMAP FETCH: connecting to {}:{} for folder {folder}, UIDs {uid_range}",
@@ -1286,11 +1545,15 @@ pub async fn raw_fetch_messages(
         highest_modseq: None,
     };
 
-    // Headers-only, mirroring SYNC_FETCH_QUERY. The raw-TCP fallback exists
+    // Headers-only, mirroring the dynamic sync query. The raw-TCP fallback exists
     // because async-imap 0.10 silently returns 0 items on very large bodies;
     // keeping the same field set as the primary path means a fallback behaves
     // consistently (no surprise full-body downloads, no re-introduced hang).
-    let fetch_cmd = format!("a3 UID FETCH {uid_range} ({SYNC_FETCH_QUERY})\r\n");
+    // The query also requests provider stable-ID attrs (EMAILID/THREADID or
+    // X-GM-MSGID/X-GM-THRID) when the server advertises the cap — these are
+    // extracted from the FETCH response line by raw_parse_fetch_responses.
+    let fetch_query = sync_fetch_query(caps);
+    let fetch_cmd = format!("a3 UID FETCH {uid_range} ({fetch_query})\r\n");
     reader
         .get_mut()
         .write_all(fetch_cmd.as_bytes())
@@ -1318,6 +1581,8 @@ pub async fn raw_fetch_messages(
             raw_msg.is_starred,
             raw_msg.is_draft,
             raw_msg.internal_date,
+            raw_msg.remote_email_id.clone(),
+            raw_msg.remote_thread_id.clone(),
         ) {
             Ok(msg) => messages.push(msg),
             Err(e) => log::warn!("RAW FETCH: failed to parse UID {}: {e}", raw_msg.uid),
@@ -1350,6 +1615,7 @@ pub async fn raw_fetch_folder(
     folder: &str,
     uids: &[u32],
     chunk_size: usize,
+    caps: &crate::sync_engine::Capabilities,
 ) -> Result<ImapFetchResult, String> {
     if uids.is_empty() {
         // Nothing to do; report a zero-status so callers can still advance.
@@ -1442,6 +1708,10 @@ pub async fn raw_fetch_folder(
     // 4. UID FETCH each chunk on the SAME connection. Fresh IMAP tag per chunk
     //    (a3, a4, ...). On error: log the detail + break, returning what we have
     //    so the caller's cursor still advances past fetched UIDs.
+    //    The query is the dynamic sync query — it requests provider stable-ID
+    //    attrs (EMAILID/THREADID or X-GM-MSGID/X-GM-THRID) when the server
+    //    advertises the cap; raw_parse_fetch_responses extracts them.
+    let fetch_query = sync_fetch_query(caps);
     let parser = MessageParser::default();
     let mut messages: Vec<ImapMessage> = Vec::new();
     let chunks: Vec<&[u32]> = uids.chunks(chunk_size).collect();
@@ -1450,12 +1720,12 @@ pub async fn raw_fetch_folder(
     for (i, chunk) in chunks.iter().enumerate() {
         let range = uid_set_raw(chunk);
         let tag = format!("a{tag_index}");
-        let fetch_cmd = format!("{tag} UID FETCH {range} ({SYNC_FETCH_QUERY})\r\n");
+        let fetch_cmd = format!("{tag} UID FETCH {range} ({fetch_query})\r\n");
 
         // Protocol trace: the UID FETCH command (without the parenthesized list
-        // body, which is long and constant — see SYNC_FETCH_QUERY). Logged at
-        // DEBUG so it ships in dev builds but not release.
-        log::debug!("C: {tag} UID FETCH {range} (SYNC_FETCH_QUERY)");
+        // body, which is long and constant — see BASE_SYNC_FETCH_QUERY). Logged
+        // at DEBUG so it ships in dev builds but not release.
+        log::debug!("C: {tag} UID FETCH {range} (sync_fetch_query)");
 
         if let Err(e) = reader
             .get_mut()
@@ -1493,6 +1763,8 @@ pub async fn raw_fetch_folder(
                         raw_msg.is_starred,
                         raw_msg.is_draft,
                         raw_msg.internal_date,
+                        raw_msg.remote_email_id.clone(),
+                        raw_msg.remote_thread_id.clone(),
                     ) {
                         Ok(msg) => messages.push(msg),
                         Err(e) => log::warn!(
@@ -2028,6 +2300,12 @@ struct RawFetchedMessage {
     is_draft: bool,
     internal_date: Option<i64>,
     body: Vec<u8>,
+    /// Provider-stable message ID extracted from the FETCH response line
+    /// (Yahoo `EMAILID` / Gmail `X-GM-MSGID`). `None` when the FETCH query did
+    /// not request the attribute or the value could not be parsed.
+    remote_email_id: Option<String>,
+    /// Provider-stable thread ID (Yahoo `THREADID` / Gmail `X-GM-THRID`).
+    remote_thread_id: Option<String>,
 }
 
 async fn raw_connect_starttls(config: &ImapConfig) -> Result<ImapStream, String> {
@@ -2179,6 +2457,150 @@ fn extract_bracket_number(line: &str, keyword: &str) -> Option<u32> {
     None
 }
 
+/// Parse an IMAP quoted string at the start of `s`, returning `(value, remainder)`.
+/// Handles `\`-escapes (so `\"` inside a mailbox name round-trips correctly) and is
+/// char-based so multibyte UTF-7-encoded mailbox names survive. Returns `None`
+/// if `s` does not start with `"` or is never closed.
+fn parse_imap_quoted(s: &str) -> Option<(String, String)> {
+    let mut chars = s.chars();
+    let first = chars.next()?;
+    if first != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if escaped {
+            out.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            let remainder: String = chars.collect();
+            return Some((out, remainder));
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+/// Parse a `* LIST (...) "delim" "mailbox"` (or atom mailbox / NIL delimiter)
+/// untagged into `(attributes, delimiter, raw_mailbox_path)`. Attributes are the
+/// raw `\Flags` tokens inside the leading parenthesized list. Returns `None`
+/// when the line is not a recognisable LIST response.
+fn parse_list_line(line: &str) -> Option<(Vec<String>, String, String)> {
+    let after_list = line.strip_prefix("* LIST")?.trim_start();
+    // Attributes: parenthesized group `(...)`.
+    let attrs_open = after_list.find('(')?;
+    let attrs_close = after_list[attrs_open..].find(')')?;
+    let attrs_str = &after_list[attrs_open + 1..attrs_open + attrs_close];
+    let attrs: Vec<String> = attrs_str
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let rest = after_list[attrs_open + attrs_close + 1..].trim_start();
+
+    // Delimiter: a quoted string, NIL, or a bare atom.
+    let (delimiter, rest) = if let Some(stripped) = rest.strip_prefix("NIL") {
+        ("/".to_string(), stripped.trim_start().to_string())
+    } else if rest.starts_with('"') {
+        let (val, remainder) = parse_imap_quoted(rest)?;
+        (val, remainder.trim_start().to_string())
+    } else {
+        // Bare atom delimiter (rare): up to the next space.
+        let end = rest.find(' ').unwrap_or(rest.len());
+        (rest[..end].to_string(), rest[end..].trim_start().to_string())
+    };
+
+    // Mailbox name: quoted (with escapes) or a trailing atom.
+    let raw_path = if rest.starts_with('"') {
+        parse_imap_quoted(&rest)?.0
+    } else {
+        rest.trim_end().to_string()
+    };
+    Some((attrs, delimiter, raw_path))
+}
+
+/// Parse a `* STATUS "folder" (KEY val KEY val …)` untagged, returning
+/// `(folder, messages, unseen)`. Only MESSAGES and UNSEEN are extracted
+/// (the other requested keys are ignored here — see `list_with_status`).
+/// Returns `None` when the line is not a recognisable STATUS response.
+fn parse_status_line(line: &str) -> Option<(String, u32, u32)> {
+    let after_status = line.strip_prefix("* STATUS")?.trim_start();
+    // Folder name: quoted (with escapes) or a bare atom up to the next space.
+    let (folder, rest) = if after_status.starts_with('"') {
+        parse_imap_quoted(after_status)?
+    } else {
+        let end = after_status.find(' ').unwrap_or(after_status.len());
+        (
+            after_status[..end].to_string(),
+            after_status[end..].trim_start().to_string(),
+        )
+    };
+    let rest = rest.trim_start();
+    let paren_start = rest.find('(')?;
+    let paren_end = rest.rfind(')')?;
+    if paren_end <= paren_start {
+        return None;
+    }
+    let inner = &rest[paren_start + 1..paren_end];
+    let tokens: Vec<&str> = inner.split_whitespace().collect();
+    let mut exists = 0u32;
+    let mut unseen = 0u32;
+    let mut i = 0;
+    while i + 1 < tokens.len() {
+        match tokens[i].to_uppercase().as_str() {
+            "MESSAGES" => exists = tokens[i + 1].parse().unwrap_or(0),
+            "UNSEEN" => unseen = tokens[i + 1].parse().unwrap_or(0),
+            _ => {}
+        }
+        i += 2;
+    }
+    Some((folder, exists, unseen))
+}
+
+/// Map parsed LIST attribute tokens (e.g. `\Sent`, `\Trash`) + the folder's
+/// decoded name to a special-use role string. This is the string-input twin of
+/// `detect_special_use` (which works off `async_imap::types::Name`); both share
+/// the name-based fallback table. `list_with_status` parses raw LIST lines into
+/// attribute strings and routes them through here instead of going through the
+/// typed `Name` path.
+fn detect_special_use_from_attrs(attrs: &[String], folder_name: &str) -> Option<String> {
+    for attr in attrs {
+        let special = match attr.as_str() {
+            "\\Inbox" => Some("\\Inbox"),
+            "\\Sent" | "\\SentMail" => Some("\\Sent"),
+            "\\Trash" => Some("\\Trash"),
+            "\\Drafts" | "\\Draft" => Some("\\Drafts"),
+            "\\Junk" | "\\Spam" => Some("\\Junk"),
+            "\\Archive" => Some("\\Archive"),
+            "\\All" | "\\AllMail" => Some("\\All"),
+            "\\Flagged" => Some("\\Flagged"),
+            _ => None,
+        };
+        if let Some(s) = special {
+            return Some(s.to_string());
+        }
+    }
+    let lower = folder_name.to_lowercase();
+    match lower.as_str() {
+        "inbox" => Some("\\Inbox".to_string()),
+        "sent" | "sent messages" | "sent items" | "[gmail]/sent mail" => {
+            Some("\\Sent".to_string())
+        }
+        "trash" | "deleted" | "deleted items" | "deleted messages" | "bin" | "corbeille"
+        | "unsolbox" | "[gmail]/trash" => Some("\\Trash".to_string()),
+        "drafts" | "draft" | "draftbox" | "brouillons" | "[gmail]/drafts" => {
+            Some("\\Drafts".to_string())
+        }
+        "junk" | "spam" | "junk e-mail" | "[gmail]/spam" => Some("\\Junk".to_string()),
+        "archive" | "archives" | "[gmail]/all mail" => Some("\\Archive".to_string()),
+        _ => None,
+    }
+}
+
 async fn raw_parse_fetch_responses(
     reader: &mut tokio::io::BufReader<ImapStream>,
     tag: &str,
@@ -2229,6 +2651,18 @@ async fn raw_parse_fetch_responses(
 
                 let internal_date = extract_internal_date(&line);
 
+                // Provider-stable IDs (P4): Yahoo's OBJECTID returns EMAILID /
+                // THREADID as parenthesized string atoms; Gmail's X-GM-EXT-1
+                // returns X-GM-MSGID / X-GM-THRID as bare numbers. Both live on
+                // the FETCH attribute line (same line as UID/FLAGS), so the
+                // simple token-search extractor suffices. `extract_fetch_attr`
+                // returns None when the attribute is absent (server didn't
+                // advertise the cap, so the query didn't request it).
+                let remote_email_id = extract_fetch_attr(&line, "EMAILID")
+                    .or_else(|| extract_fetch_attr(&line, "X-GM-MSGID"));
+                let remote_thread_id = extract_fetch_attr(&line, "THREADID")
+                    .or_else(|| extract_fetch_attr(&line, "X-GM-THRID"));
+
                 if let Some(literal_size) = extract_literal_size(&line) {
                     let mut body = vec![0u8; literal_size];
                     reader
@@ -2236,8 +2670,20 @@ async fn raw_parse_fetch_responses(
                         .await
                         .map_err(|e| format!("read literal for UID {uid}: {e}"))?;
 
+                    // The body literal's closing line carries any FETCH
+                    // attributes the server emitted AFTER the BODY.PEEK[...]
+                    // literal (servers may order attributes freely; RFC 8474
+                    // servers commonly put EMAILID/THREADID last). Scan it for
+                    // stable IDs that weren't on the first line, so the raw
+                    // path doesn't silently drop them.
                     let mut closing = String::new();
                     let _ = reader.read_line(&mut closing).await;
+                    let remote_email_id = remote_email_id
+                        .or_else(|| extract_fetch_attr(&closing, "EMAILID"))
+                        .or_else(|| extract_fetch_attr(&closing, "X-GM-MSGID"));
+                    let remote_thread_id = remote_thread_id
+                        .or_else(|| extract_fetch_attr(&closing, "THREADID"))
+                        .or_else(|| extract_fetch_attr(&closing, "X-GM-THRID"));
 
                     messages.push(RawFetchedMessage {
                         uid,
@@ -2246,6 +2692,8 @@ async fn raw_parse_fetch_responses(
                         is_draft,
                         internal_date,
                         body,
+                        remote_email_id,
+                        remote_thread_id,
                     });
                 }
             }
@@ -2282,6 +2730,57 @@ fn extract_internal_date(line: &str) -> Option<i64> {
     let end = after.find('"')?;
     let date_str = &after[..end];
     parse_imap_date(date_str)
+}
+
+/// Extract a single-valued FETCH attribute (`KEY value`) from a raw FETCH
+/// response line. Handles the three value forms a server may emit:
+///
+/// - quoted astring: `EMAILID "P0000000001"` → `P0000000001`
+/// - parenthesized astring: `EMAILID (P0000000001)` → `P0000000001`
+/// - bare atom/number: `X-GM-MSGID 1234567` → `1234567`
+///
+/// The `KEY` is matched as a leading-space-delimited token (`" KEY "`) so it
+/// never matches as a substring of another token or inside the
+/// `BODY.PEEK[HEADER.FIELDS (...)]` section spec (whose field list never
+/// contains `EMAILID`/`THREADID`/`X-GM-MSGID`/`X-GM-THRID`). Returns `None`
+/// when the key is absent or the value is empty.
+fn extract_fetch_attr(line: &str, key: &str) -> Option<String> {
+    // Match the key as a space-delimited token, preceded by either a space OR
+    // the opening `(` of the FETCH list — so a key that is the FIRST attribute
+    // (`* 1 FETCH (EMAILID …)`, with no leading space before `EMAILID`) is still
+    // found. Both needles are `key.len() + 2` chars (" KEY " / "(KEY "), so the
+    // value starts immediately after.
+    let key_pos = line
+        .find(&format!(" {key} "))
+        .or_else(|| line.find(&format!("({key} ")))?;
+    let rest = line[key_pos + key.len() + 2..].trim_start();
+    if rest.starts_with('"') {
+        // quoted astring — `parse_imap_quoted` honours `\`-escapes (so a value
+        // containing an escaped quote round-trips), unlike a naive find('"')
+        // which would stop at the first `\"`.
+        parse_imap_quoted(rest).map(|(v, _)| v)
+    } else if rest.starts_with('(') {
+        // parenthesized astring — RFC 8474 servers may wrap the OBJECTID value
+        // in parens; take the trimmed content up to `)`.
+        let end = rest[1..].find(')')?;
+        let inner = rest[1..1 + end].trim();
+        if inner.is_empty() {
+            None
+        } else {
+            Some(inner.to_string())
+        }
+    } else {
+        // bare atom/number — take until whitespace or closing paren.
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ')')
+            .unwrap_or(rest.len());
+        let v = rest[..end].trim();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.to_string())
+        }
+    }
 }
 
 fn parse_imap_date(s: &str) -> Option<i64> {
@@ -2499,35 +2998,23 @@ async fn authenticate(
 fn detect_special_use(name: &async_imap::types::Name) -> Option<String> {
     use async_imap::types::NameAttribute;
 
-    for attr in name.attributes() {
-        let special = match attr {
-            NameAttribute::Sent => Some("\\Sent"),
-            NameAttribute::Trash => Some("\\Trash"),
-            NameAttribute::Drafts => Some("\\Drafts"),
-            NameAttribute::Junk => Some("\\Junk"),
-            NameAttribute::Archive => Some("\\Archive"),
-            NameAttribute::All => Some("\\All"),
-            NameAttribute::Flagged => Some("\\Flagged"),
-            _ => None,
-        };
-        if let Some(s) = special {
-            return Some(s.to_string());
-        }
-    }
-
-    let lower = name.name().to_lowercase();
-    match lower.as_str() {
-        "inbox" => Some("\\Inbox".to_string()),
-        "sent" | "sent messages" | "sent items" | "[gmail]/sent mail" => Some("\\Sent".to_string()),
-        "trash" | "deleted" | "deleted items" | "deleted messages" | "bin" | "corbeille"
-        | "unsolbox" | "[gmail]/trash" => Some("\\Trash".to_string()),
-        "drafts" | "draft" | "draftbox" | "brouillons" | "[gmail]/drafts" => {
-            Some("\\Drafts".to_string())
-        }
-        "junk" | "spam" | "junk e-mail" | "[gmail]/spam" => Some("\\Junk".to_string()),
-        "archive" | "archives" | "[gmail]/all mail" => Some("\\Archive".to_string()),
-        _ => None,
-    }
+    let attrs: Vec<String> = name
+        .attributes()
+        .iter()
+        .map(|attr| match attr {
+            NameAttribute::Sent => "\\Sent",
+            NameAttribute::Trash => "\\Trash",
+            NameAttribute::Drafts => "\\Drafts",
+            NameAttribute::Junk => "\\Junk",
+            NameAttribute::Archive => "\\Archive",
+            NameAttribute::All => "\\All",
+            NameAttribute::Flagged => "\\Flagged",
+            _ => "",
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    detect_special_use_from_attrs(&attrs, name.name())
 }
 
 // Nine parameters reflect the IMAP message metadata available at the call site;
@@ -2544,6 +3031,8 @@ fn parse_message(
     is_starred: bool,
     is_draft: bool,
     internal_date: Option<i64>,
+    remote_email_id: Option<String>,
+    remote_thread_id: Option<String>,
 ) -> Result<ImapMessage, String> {
     let message = parser.parse(raw).ok_or("Failed to parse MIME message")?;
 
@@ -2664,6 +3153,8 @@ fn parse_message(
         attachments,
         content_type,
         smime_type,
+        remote_email_id,
+        remote_thread_id,
     })
 }
 
@@ -2823,43 +3314,78 @@ fn format_address_list(addr: Option<&mail_parser::Address>) -> Option<String> {
     }
 }
 
-/// Map a set of IMAP capability strings to the feature flags the sync engine cares
-/// about. Pure so it's unit-testable; `session_capabilities` runs the live command
-/// then delegates here.
+/// Map a set of IMAP capability strings to a `Capabilities` struct. Pure so it's
+/// unit-testable; `session_capabilities` runs the live command then uses `has_str`.
 pub fn capabilities_from_strs<'a, I: IntoIterator<Item = &'a str>>(
     caps: I,
-) -> (bool, bool, bool, bool) {
-    let mut idle = false;
-    let mut condstore = false;
-    let mut qresync = false;
-    let mut vanished = false;
-    for c in caps {
-        let up = c.to_ascii_uppercase();
+) -> crate::sync_engine::Capabilities {
+    let mut c = crate::sync_engine::Capabilities::default();
+    for raw in caps {
+        let up = raw.to_ascii_uppercase();
+        // Value-carrying caps: APPENDLIMIT=<n>, MESSAGELIMIT=<n>, AUTH=<mech>.
+        if let Some((name, val)) = up.split_once('=') {
+            match name {
+                "APPENDLIMIT" => c.appendlimit = val.parse().ok(),
+                "MESSAGELIMIT" => c.message_limit = val.parse().ok(),
+                "AUTH" => match val {
+                    "OAUTHBEARER" => c.auth_oauthbearer = true,
+                    "XOAUTH2" | "XOAUTH" => c.auth_xoauth2 = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+            continue;
+        }
         match up.as_str() {
-            "IDLE" => idle = true,
-            "CONDSTORE" => condstore = true,
-            "QRESYNC" => qresync = true,
-            "VANISHED" => vanished = true,
+            "IDLE" => c.idle = true,
+            "CONDSTORE" => c.condstore = true,
+            "XYMHIGHESTMODSEQ" => c.condstore = true, // Yahoo proprietary: HIGHESTMODSEQ w/o CONDSTORE cap
+            "QRESYNC" => c.qresync = true,
+            "VANISHED" => c.vanishearch = true,
+            "MOVE" => c.r#move = true,
+            "LIST-STATUS" => c.list_status = true,
+            "OBJECTID" => c.objectid = true,
+            "UIDONLY" | "X-UIDONLY" => c.uidonly = true,
+            "ENABLE" => c.enable = true,
+            "PARTIAL" => c.partial = true,
+            "NAMESPACE" => c.namespace = true,
+            "ID" => c.id = true,
+            "X-GM-EXT-1" => c.gm_ext1 = true,
+            "UIDPLUS" => c.uidplus = true,
             _ => {}
         }
     }
-    (idle, condstore, qresync, vanished)
+    c
 }
 
-/// Run CAPABILITY on an open session and map to the feature tuple
-/// `(idle, condstore, qresync, vanished)`. Uses `has_str` for case-insensitive
-/// matching (async-imap's `Capability` enum has no public `as_str`, so we cannot
-/// route the live `HashSet` through `capabilities_from_strs` directly).
+/// Run CAPABILITY on an open session and map to a `Capabilities` struct. Uses
+/// `has_str` (case-insensitive) for simple atom caps; value-carrying caps
+/// (`APPENDLIMIT=`/`MESSAGELIMIT=`) are not extractable via `has_str` (it matches
+/// the full string including the value) and are left as `None` here. Yahoo's
+/// `MESSAGELIMIT` is hard-coded in `ProviderProfile::detect` instead.
 pub async fn session_capabilities(
     session: &mut ImapSession,
-) -> Result<(bool, bool, bool, bool), String> {
+) -> Result<crate::sync_engine::Capabilities, String> {
     let caps = session.capabilities().await.map_err(|e| e.to_string())?;
-    Ok((
-        caps.has_str("IDLE"),
-        caps.has_str("CONDSTORE"),
-        caps.has_str("QRESYNC"),
-        caps.has_str("VANISHED"),
-    ))
+    Ok(crate::sync_engine::Capabilities {
+        idle: caps.has_str("IDLE"),
+        condstore: caps.has_str("CONDSTORE") || caps.has_str("XYMHIGHESTMODSEQ"),
+        qresync: caps.has_str("QRESYNC"),
+        vanishearch: caps.has_str("VANISHED"),
+        r#move: caps.has_str("MOVE"),
+        list_status: caps.has_str("LIST-STATUS"),
+        objectid: caps.has_str("OBJECTID"),
+        uidonly: caps.has_str("UIDONLY") || caps.has_str("X-UIDONLY"),
+        enable: caps.has_str("ENABLE"),
+        partial: caps.has_str("PARTIAL"),
+        namespace: caps.has_str("NAMESPACE"),
+        id: caps.has_str("ID"),
+        gm_ext1: caps.has_str("X-GM-EXT-1"),
+        uidplus: caps.has_str("UIDPLUS"),
+        auth_oauthbearer: caps.has_str("AUTH=OAUTHBEARER"),
+        auth_xoauth2: caps.has_str("AUTH=XOAUTH2") || caps.has_str("AUTH=XOAUTH"),
+        ..Default::default()
+    })
 }
 
 /// Pure helper: detect whether the STARTTLS OK response is followed by extra
@@ -2885,10 +3411,12 @@ fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capabilities_from_strs, decode_part_bytes, derive_snippet, ends_with_crlf_crlf,
-        extract_starttls_injection, fetch_changed_flags_response_from_fetches, uid_set_raw,
-        SYNC_FETCH_QUERY,
+        capabilities_from_strs, decode_part_bytes, derive_snippet, detect_special_use_from_attrs,
+        ends_with_crlf_crlf, extract_fetch_attr, extract_starttls_injection,
+        fetch_changed_flags_response_from_fetches, parse_imap_quoted, parse_list_line,
+        parse_status_line, uid_set_raw, BASE_SYNC_FETCH_QUERY,
     };
+    use crate::sync_engine::Capabilities;
     use base64::Engine;
 
     // ---------- derive_snippet (pure preview-text helper for fetch_bodies_batch) ----------
@@ -2968,22 +3496,22 @@ mod tests {
     #[test]
     fn sync_fetch_query_is_headers_only_not_full_body() {
         assert!(
-            SYNC_FETCH_QUERY.contains("HEADER.FIELDS"),
-            "SYNC_FETCH_QUERY must select header fields (BODY.PEEK[HEADER.FIELDS ...]); \
-             got: {SYNC_FETCH_QUERY}",
+            BASE_SYNC_FETCH_QUERY.contains("HEADER.FIELDS"),
+            "BASE_SYNC_FETCH_QUERY must select header fields (BODY.PEEK[HEADER.FIELDS ...]); \
+             got: {BASE_SYNC_FETCH_QUERY}",
         );
         assert!(
-            !SYNC_FETCH_QUERY.contains("BODY.PEEK[]"),
-            "SYNC_FETCH_QUERY must NOT contain the full-body literal `BODY.PEEK[]` \
-             (it hangs large-folder sync); got: {SYNC_FETCH_QUERY}",
+            !BASE_SYNC_FETCH_QUERY.contains("BODY.PEEK[]"),
+            "BASE_SYNC_FETCH_QUERY must NOT contain the full-body literal `BODY.PEEK[]` \
+             (it hangs large-folder sync); got: {BASE_SYNC_FETCH_QUERY}",
         );
         // The query must also request the metadata the message list / threading
         // needs — FLAGS, INTERNALDATE, UID, and RFC822.SIZE (the last so the UI
         // can show message sizes without a second fetch).
-        assert!(SYNC_FETCH_QUERY.contains("UID"));
-        assert!(SYNC_FETCH_QUERY.contains("FLAGS"));
-        assert!(SYNC_FETCH_QUERY.contains("INTERNALDATE"));
-        assert!(SYNC_FETCH_QUERY.contains("RFC822.SIZE"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("UID"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("FLAGS"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("INTERNALDATE"));
+        assert!(BASE_SYNC_FETCH_QUERY.contains("RFC822.SIZE"));
     }
 
     /// RFC 3501 requires a multi-item fetch-att list to be wrapped in parentheses.
@@ -2991,7 +3519,7 @@ mod tests {
     /// async-imap to return 0 items and forcing a raw-TCP fallback LOGIN storm.
     #[test]
     fn sync_fetch_query_wrapped_is_parenthesized() {
-        let q = super::sync_fetch_query_wrapped();
+        let q = super::sync_fetch_query_wrapped(&Capabilities::default());
         assert!(
             q.starts_with('(') && q.ends_with(')'),
             "multi-item FETCH query must be wrapped in parentheses per RFC 3501; got: {q}"
@@ -2999,6 +3527,90 @@ mod tests {
         assert!(
             q.contains("BODY.PEEK[HEADER.FIELDS"),
             "wrapped query must still be the headers-only sync query; got: {q}"
+        );
+    }
+
+    /// P4: the dynamic query appends provider stable-ID attributes ONLY when the
+    /// server advertises the cap. Default (generic) caps must NOT request them;
+    /// OBJECTID caps append `EMAILID THREADID`; X-GM-EXT-1 caps append
+    /// `X-GM-MSGID X-GM-THRID`. A server advertising both (hypothetical) gets
+    /// both append groups.
+    #[test]
+    fn sync_fetch_query_appends_stable_ids_per_caps() {
+        // Default / generic — no stable-ID attrs.
+        let q = super::sync_fetch_query(&Capabilities::default());
+        assert!(!q.contains("EMAILID"));
+        assert!(!q.contains("THREADID"));
+        assert!(!q.contains("X-GM-MSGID"));
+        assert!(!q.contains("X-GM-THRID"));
+        // Always carries the base fields.
+        assert!(q.contains("UID"));
+        assert!(q.contains("BODY.PEEK[HEADER.FIELDS"));
+
+        // Yahoo OBJECTID.
+        let q = super::sync_fetch_query(&Capabilities {
+            objectid: true,
+            ..Capabilities::default()
+        });
+        assert!(q.contains("EMAILID THREADID"));
+        assert!(!q.contains("X-GM-MSGID"));
+
+        // Gmail X-GM-EXT-1.
+        let q = super::sync_fetch_query(&Capabilities {
+            gm_ext1: true,
+            ..Capabilities::default()
+        });
+        assert!(q.contains("X-GM-MSGID X-GM-THRID"));
+        assert!(!q.contains("EMAILID"));
+    }
+
+    /// P4: `extract_fetch_attr` parses the three value forms a server may emit
+    /// for a provider stable-ID attribute — quoted astring, parenthesized
+    /// astring, and bare number. Returns `None` when the key is absent so the
+    /// caller can fall back to `or`-chaining Yahoo/Gmail keys.
+    #[test]
+    fn extract_fetch_attr_parses_quoted_paren_and_bare() {
+        // quoted astring (Yahoo EMAILID)
+        assert_eq!(
+            extract_fetch_attr(
+                "* 1 FETCH (UID 7 EMAILID \"P0000000000000001\" THREADID \"P0000000000000002\" FLAGS (\\Seen))",
+                "EMAILID",
+            ),
+            Some("P0000000000000001".into())
+        );
+        // parenthesized astring (RFC 8474 form)
+        assert_eq!(
+            extract_fetch_attr(
+                "* 2 FETCH (UID 8 EMAILID (ABC) FLAGS (\\Seen))",
+                "EMAILID",
+            ),
+            Some("ABC".into())
+        );
+        // bare number (Gmail X-GM-MSGID)
+        assert_eq!(
+            extract_fetch_attr(
+                "* 3 FETCH (UID 9 X-GM-MSGID 1234567 X-GM-THRID 8910 FLAGS (\\Seen))",
+                "X-GM-MSGID",
+            ),
+            Some("1234567".into())
+        );
+        // absent key
+        assert_eq!(
+            extract_fetch_attr("* 4 FETCH (UID 10 FLAGS (\\Seen))", "EMAILID"),
+            None
+        );
+        // key only matches as a whole token — not a substring of BODY[HEADER.FIELDS (...)]
+        assert_eq!(
+            extract_fetch_attr(
+                "* 5 FETCH (UID 11 BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)] FLAGS (\\Seen))",
+                "EMAILID",
+            ),
+            None
+        );
+        // value terminated by `)` (last attr before the closing paren)
+        assert_eq!(
+            extract_fetch_attr("* 6 FETCH (UID 12 X-GM-THRID 42)", "X-GM-THRID"),
+            Some("42".into())
         );
     }
 
@@ -3038,33 +3650,31 @@ mod tests {
 
     #[test]
     fn capabilities_from_strs_maps_known_flags() {
-        let (idle, condstore, qresync, vanished) =
-            capabilities_from_strs(["IMAP4rev1", "IDLE", "CONDSTORE", "QRESYNC", "VANISHED"]);
-        assert!(idle, "IDLE should map to idle");
-        assert!(condstore, "CONDSTORE should map to condstore");
-        assert!(qresync, "QRESYNC should map to qresync");
-        assert!(vanished, "VANISHED should map to vanished");
+        let c = capabilities_from_strs(["IMAP4rev1", "IDLE", "CONDSTORE", "QRESYNC", "VANISHED"]);
+        assert!(c.idle, "IDLE should map to idle");
+        assert!(c.condstore, "CONDSTORE should map to condstore");
+        assert!(c.qresync, "QRESYNC should map to qresync");
+        assert!(c.vanishearch, "VANISHED should map to vanishearch");
     }
 
     #[test]
     fn capabilities_from_strs_case_insensitive() {
-        let (idle, _, _, _) = capabilities_from_strs(["idle"]);
-        assert!(idle, "mapping should be case-insensitive");
-        let (_, condstore, _, _) = capabilities_from_strs(["condstore"]);
-        assert!(condstore);
+        let c = capabilities_from_strs(["idle"]);
+        assert!(c.idle, "mapping should be case-insensitive");
+        let c = capabilities_from_strs(["condstore"]);
+        assert!(c.condstore);
     }
 
     #[test]
     fn capabilities_from_strs_empty_when_no_known_flags() {
-        let (idle, condstore, qresync, vanished) =
-            capabilities_from_strs(["IMAP4rev1", "STARTTLS", "LOGINDISABLED"]);
-        assert!(!idle && !condstore && !qresync && !vanished);
+        let c = capabilities_from_strs(["IMAP4rev1", "STARTTLS", "LOGINDISABLED"]);
+        assert!(!c.idle && !c.condstore && !c.qresync && !c.vanishearch);
     }
 
     #[test]
     fn capabilities_from_strs_empty_iter() {
-        let (idle, condstore, qresync, vanished) = capabilities_from_strs::<[&str; 0]>([]);
-        assert!(!idle && !condstore && !qresync && !vanished);
+        let c = capabilities_from_strs::<[&str; 0]>([]);
+        assert!(!c.idle && !c.condstore && !c.qresync && !c.vanishearch);
     }
 
     /// Regression lock for the single-connection raw fetch path
@@ -3264,5 +3874,115 @@ mod tests {
         assert!(!ends_with_crlf_crlf(b"\r\n\r")); // truncated
         assert!(!ends_with_crlf_crlf(b"\n\n")); // LF only, not CRLF
         assert!(!ends_with_crlf_crlf(b"foo")); // no separator at all
+    }
+
+    // ---------- P3 LIST-STATUS parsers (RFC 5819) ----------
+    //
+    // `list_with_status` opens a raw TCP connection (no socket in unit tests),
+    // so we regression-lock the pure line-parsers + the special-use mapper
+    // instead. The live single-round-trip path is exercised by the manual
+    // Yahoo e2e; these tests guard the parsing/mapping logic against drift.
+
+    #[test]
+    fn parse_imap_quoted_handles_plain_and_escaped() {
+        let (val, rest) = parse_imap_quoted("\"INBOX\" trailing").unwrap();
+        assert_eq!(val, "INBOX");
+        assert_eq!(rest, " trailing");
+
+        // Escaped quote inside the mailbox name round-trips.
+        let (val, _) = parse_imap_quoted(r#""a\"b""#).unwrap();
+        assert_eq!(val, "a\"b");
+
+        // Backslash-escape of a literal backslash.
+        let (val, _) = parse_imap_quoted(r#""a\\b""#).unwrap();
+        assert_eq!(val, "a\\b");
+    }
+
+    #[test]
+    fn parse_imap_quoted_rejects_unopened_or_unclosed() {
+        assert!(parse_imap_quoted("INBOX").is_none());
+        assert!(parse_imap_quoted("\"unclosed").is_none());
+        assert!(parse_imap_quoted("").is_none());
+    }
+
+    #[test]
+    fn parse_list_line_extracts_attrs_delim_quoted_mailbox() {
+        let (attrs, delim, raw) =
+            parse_list_line(r#"* LIST (\HasNoChildren \Sent) "/" "Sent""#).unwrap();
+        assert_eq!(attrs, vec!["\\HasNoChildren".to_string(), "\\Sent".to_string()]);
+        assert_eq!(delim, "/");
+        assert_eq!(raw, "Sent");
+    }
+
+    #[test]
+    fn parse_list_line_handles_inbox_and_no_attrs() {
+        // Bare atom mailbox (no quotes) — INBOX commonly arrives unquoted.
+        let (attrs, delim, raw) = parse_list_line(r#"* LIST (\HasNoChildren) "/" INBOX"#).unwrap();
+        assert_eq!(attrs, vec!["\\HasNoChildren".to_string()]);
+        assert_eq!(delim, "/");
+        assert_eq!(raw, "INBOX");
+
+        // Empty attribute list `()`.
+        let (attrs, _, raw) = parse_list_line(r#"* LIST () "/" "foo""#).unwrap();
+        assert!(attrs.is_empty());
+        assert_eq!(raw, "foo");
+    }
+
+    #[test]
+    fn parse_list_line_rejects_non_list() {
+        assert!(parse_list_line("* STATUS \"INBOX\" (MESSAGES 1)").is_none());
+        assert!(parse_list_line("a2 OK done").is_none());
+    }
+
+    #[test]
+    fn parse_status_line_extracts_messages_and_unseen() {
+        let (folder, exists, unseen) = parse_status_line(
+            r#"* STATUS "INBOX" (MESSAGES 36 UNSEEN 5 UIDNEXT 37 UIDVALIDITY 1782527579 HIGHESTMODSEQ 83540)"#,
+        )
+        .unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(exists, 36);
+        assert_eq!(unseen, 5);
+    }
+
+    #[test]
+    fn parse_status_line_handles_atom_mailbox_and_partial_keys() {
+        // Atom mailbox name (no quotes) + only MESSAGES present.
+        let (folder, exists, unseen) =
+            parse_status_line("* STATUS INBOX (MESSAGES 12)").unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(exists, 12);
+        assert_eq!(unseen, 0); // UNSEEN absent -> 0
+    }
+
+    #[test]
+    fn parse_status_line_rejects_non_status() {
+        assert!(parse_status_line(r#"* LIST (\Sent) "/" "Sent""#).is_none());
+        assert!(parse_status_line("a2 OK LIST completed").is_none());
+    }
+
+    #[test]
+    fn detect_special_use_from_attrs_prefers_attribute_over_name() {
+        // `\Sent` attribute wins even though the name isn't "Sent".
+        let attrs = vec!["\\HasNoChildren".to_string(), "\\Sent".to_string()];
+        assert_eq!(
+            detect_special_use_from_attrs(&attrs, "My Sent Folder"),
+            Some("\\Sent".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_special_use_from_attrs_falls_back_to_name() {
+        // No special-use attribute — name-based fallback maps "inbox".
+        let attrs = vec!["\\HasNoChildren".to_string()];
+        assert_eq!(
+            detect_special_use_from_attrs(&attrs, "INBOX"),
+            Some("\\Inbox".to_string())
+        );
+        assert_eq!(
+            detect_special_use_from_attrs(&[], "Drafts"),
+            Some("\\Drafts".to_string())
+        );
+        assert_eq!(detect_special_use_from_attrs(&[], "Personal"), None);
     }
 }

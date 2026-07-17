@@ -29,6 +29,21 @@ pub struct Capabilities {
     /// IMAP-APPEND to Sent (IMAP/SMTP). The engine uses this to gate the
     /// best-effort Sent-append in `send_op`.
     pub saves_sent_automatically: bool,
+    // ---- Cap-gated RFC extension flags (per-server extension architecture) ----
+    pub r#move: bool,               // MOVE (RFC 6851)
+    pub list_status: bool,          // LIST-STATUS (RFC 5819)
+    pub objectid: bool,             // OBJECTID (RFC 8474)
+    pub uidonly: bool,              // UIDONLY advertised (RFC 9586)
+    pub enable: bool,               // ENABLE (RFC 5161)
+    pub partial: bool,              // PARTIAL (RFC 7888)
+    pub namespace: bool,            // NAMESPACE (RFC 2342)
+    pub id: bool,                   // ID (RFC 2971)
+    pub gm_ext1: bool,              // X-GM-EXT-1 (Gmail)
+    pub uidplus: bool,              // UIDPLUS (RFC 4315)
+    pub auth_oauthbearer: bool,     // AUTH=OAUTHBEARER (RFC 7628)
+    pub auth_xoauth2: bool,         // AUTH=XOAUTH2
+    pub appendlimit: Option<u64>,   // APPENDLIMIT=<n>
+    pub message_limit: Option<u32>, // Yahoo MESSAGELIMIT=<n>
 }
 
 /// Opaque per-folder delta cursor. Each source defines its own payload; the engine
@@ -127,6 +142,20 @@ pub struct RemoteMessage {
     /// onto `messages.is_encrypted` / `is_signed` at upsert time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_kind: Option<CryptoKind>,
+    /// Provider-stable message identifier that survives UIDVALIDITY resets and
+    /// cross-folder moves: Yahoo's OBJECTID `EMAILID` (RFC 8474) or Gmail's
+    /// `X-GM-MSGID` (X-GM-EXT-1). `None` when the server exposes neither scheme
+    /// (generic IMAP) or the source adapter couldn't parse the attribute. The
+    /// engine persists this onto `messages.remote_email_id` so a folder rebuild
+    /// can re-link the same logical message without a full re-download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_email_id: Option<String>,
+    /// Provider-stable thread/conversation identifier: Yahoo's OBJECTID
+    /// `THREADID` (RFC 8474) or Gmail's `X-GM-THRID` (X-GM-EXT-1). `None` when
+    /// unsupported or unparsed. Carried alongside `remote_email_id` so future
+    /// server-side threading can group messages the client never saw together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_thread_id: Option<String>,
 }
 
 /// Detected S/MIME (Phase 1b) / future-PGP structure of an inbound message,
@@ -354,7 +383,15 @@ pub trait MailSource: Send + Sync {
     }
 
     // Optional real-time (Phase 2). Default = Unsupported.
-    async fn watch(&self, _folder: &RemoteFolder) -> Result<(), SourceError> {
+    //
+    // Returns the folder's delta on a server push: the IMAP IDLE owner fetches
+    // the new mail on its OWN socket (so no second connection SELECTs the folder
+    // concurrently — the precondition that made Yahoo steal IDLE EXISTS pushes)
+    // and hands the delta back for the engine to apply + emit. `Err(Unsupported)`
+    // means the source has no real-time path; an empty `FolderDelta` means "push
+    // fired / keepalive timed out but nothing new to apply" — the caller simply
+    // re-enters `watch()`.
+    async fn watch(&self, _folder: &RemoteFolder) -> Result<FolderDelta, SourceError> {
         Err(SourceError::Unsupported)
     }
     async fn ping(&self, _collections: &[(&str, &str)]) -> Result<(), SourceError> {
