@@ -445,6 +445,21 @@ pub async fn prune_stale_labels(
     source: &str,
     keep_remote_ids: &HashSet<&str>,
 ) -> Result<u64, String> {
+    // Guard against a transient `list_folders` failure: an empty keep set means
+    // the folder list came back with ZERO folders this round. Every IMAP
+    // account has at least INBOX, so an empty set is always a flaky round (e.g.
+    // the raw-TCP list_with_status path dropping the connection mid-LIST),
+    // never a real "every folder was renamed/deleted on the server". Pruning
+    // here would `delete_folder` every label — `DELETE FROM thread_labels` for
+    // each — nuking the folder message-list linkage and emptying the UI until
+    // every message is re-synced. Skip instead and let the next round retry.
+    if keep_remote_ids.is_empty() {
+        log::warn!(
+            "[labels] {account_id} prune_stale_labels skipped: list_folders returned 0 folders \
+             this round (transient failure); leaving {source} labels intact"
+        );
+        return Ok(0);
+    }
     let rows = sqlx::query(
         "SELECT id, remote_id FROM labels WHERE account_id = ? AND source = ? AND remote_id IS NOT NULL",
     )
@@ -980,6 +995,48 @@ mod tests {
         assert!(f.visible);
         // mail_class schema default → 'mail'.
         assert_eq!(f.mail_class, "mail");
+    }
+
+    /// Regression: a transient `list_folders` failure returns 0 folders (empty
+    /// keep set). `prune_stale_labels` must NOT treat that as "all folders
+    /// renamed/deleted on the server" and `delete_folder` every label — that
+    /// `DELETE FROM thread_labels` for each folder, nuking the message-list
+    /// linkage and emptying the UI until every message was re-synced (observed
+    /// live: a flaky list_with_status round returned 0 folders → all 8 Yahoo
+    /// labels pruned → thread_labels wiped → folder lists empty).
+    #[tokio::test]
+    async fn prune_stale_labels_skips_when_keep_set_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        // A real folder label + its thread_labels linkage. `get_threads` does
+        // INNER JOIN thread_labels, so losing these rows empties the folder list.
+        sqlx::query(
+            "INSERT INTO labels (id, account_id, name, type, source, role, remote_id, mail_class)
+             VALUES ('acct:INBOX', 'acct', 'INBOX', 'system', 'imap', 'inbox', 'INBOX', 'mail')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        seed_thread_label(&pool, "acct", "imap-acct-INBOX-1", "acct:INBOX", false).await;
+
+        // Empty keep set = "list_folders returned 0 folders" (transient failure).
+        let empty: HashSet<&str> = HashSet::new();
+        let pruned = prune_stale_labels(&pool, "acct", "imap", &empty).await.unwrap();
+        assert_eq!(pruned, 0, "an empty keep set must NOT prune (transient list_folders failure)");
+
+        let labels: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM labels WHERE account_id = 'acct'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(labels, 1, "label must survive an empty keep set");
+        let tl: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_labels WHERE account_id = 'acct'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(tl, 1, "thread_labels linkage must survive an empty keep set");
     }
 
     #[tokio::test]

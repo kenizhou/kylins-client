@@ -455,6 +455,19 @@ pub async fn list_with_status(config: &ImapConfig) -> Result<Vec<ImapFolder>, St
         folders.len(),
         folders.iter().filter(|f| f.exists > 0 || f.unseen > 0).count()
     );
+    if folders.is_empty() {
+        // A 0-folder parse is almost certainly a transient failure (connection
+        // dropped mid-LIST, or the response was empty/truncated), NOT a real
+        // "account has no folders". Returning Ok([]) feeds `prune_stale_labels`
+        // an empty keep-set — which (without its empty-guard) nukes every label
+        // + thread_labels linkage for the account. Surface loudly so the trigger
+        // is traceable when the symptom recurs.
+        log::warn!(
+            "RAW IMAP LIST-STATUS: parsed 0 folders for {} — transient failure \
+             (connection drop / truncated response); returning empty (prune is guarded)",
+            config.host
+        );
+    }
 
     // 5. LOGOUT + close. Best-effort: ignore write errors on teardown.
     let _ = reader.get_mut().write_all(b"a3 LOGOUT\r\n").await;
