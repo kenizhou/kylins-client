@@ -73,7 +73,7 @@ export function ReadingPane() {
     // + fetches the entire message just to check for CID parts.
     const body = message?.html;
     if (!body || !/\bcid:/i.test(body)) {
-      setCidMap(new Map());
+      queueMicrotask(() => setCidMap(new Map()));
       return;
     }
     let cancelled = false;
