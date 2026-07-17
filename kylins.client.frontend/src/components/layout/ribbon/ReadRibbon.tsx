@@ -400,6 +400,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
           <>
             <RibbonButton
               icon={<ArchiveIcon size={18} />}
+              iconOnly={iconOnly}
               disabled={!hasThread}
               title="Archive"
               onClick={() => {
@@ -420,14 +421,6 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
               }}
             >
               Delete
-            </RibbonButton>
-            <RibbonButton
-              icon={<MoreIcon size={17} />}
-              iconOnly={iconOnly}
-              disabled={!hasMessage}
-              title="More actions"
-            >
-              More
             </RibbonButton>
           </>
         )}

@@ -453,6 +453,15 @@ export function MessageList() {
     }
   }, [nearEnd, cursor, isLoading, loadMore]);
 
+  // If the active Focused/Other tab filter empties out the currently loaded
+  // page but the backend cursor still has more data, keep paginating so the
+  // user isn't stuck on a "No X messages" screen while pages remain.
+  useEffect(() => {
+    if (isInbox && filteredItems.length === 0 && items.length > 0 && cursor && !isLoading) {
+      void loadMore();
+    }
+  }, [isInbox, filteredItems.length, items.length, cursor, isLoading, loadMore]);
+
   const handleDoubleClick = async (thread: Thread) => {
     await selectThread(thread);
     const msg = useViewStore.getState().selectedMessage;

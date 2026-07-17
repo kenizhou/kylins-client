@@ -408,4 +408,24 @@ describe('MessageList', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
     await waitFor(() => expect(screen.getByText('No other messages.')).toBeInTheDocument());
   });
+
+  it('keeps loading when the active tab is empty but more pages exist', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Focused only', isRead: false })],
+      nextCursor: 'cursor-1',
+    });
+    const loadMore = vi.spyOn(useThreadStore.getState(), 'loadMore').mockResolvedValue(undefined);
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      byAccount: {
+        a1: [{ id: 'inbox', accountId: 'a1', role: 'inbox' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Focused only')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
+    await waitFor(() => expect(loadMore).toHaveBeenCalled());
+    loadMore.mockRestore();
+  });
 });

@@ -150,4 +150,55 @@ describe('ReadRibbon', () => {
       expect(more).not.toHaveAttribute('data-disabled');
     });
   });
+
+  it('shows an overflow menu under 640px with archive/delete/move/mark unread/flag', async () => {
+    setRibbonWidth(500);
+    useThreadStore.setState({
+      threads: [{ id: 't1', accountId: 'a1', subject: 'x', isRead: true } as never],
+      selectedThreadId: 't1',
+    });
+    render(<ReadRibbon />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /more actions/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /more actions/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('menuitem', { name: /archive/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /delete/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /move/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /mark unread/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /flag/i })).toBeInTheDocument();
+    });
+  });
+
+  it('collapses ribbon labels at 750px icon-only width without an overflow menu', async () => {
+    setRibbonWidth(750);
+    useThreadStore.setState({
+      threads: [{ id: 't1', accountId: 'a1', subject: 'x', isRead: true } as never],
+      selectedThreadId: 't1',
+    });
+    render(<ReadRibbon />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /reply$/i })).toBeInTheDocument();
+    });
+    // In icon-only mode the visible text labels are hidden (sr-only).
+    expect(screen.getByText('Reply').classList.contains('sr-only')).toBe(true);
+    expect(screen.getByText('Archive').classList.contains('sr-only')).toBe(true);
+    expect(screen.queryByRole('button', { name: /more actions/i })).not.toBeInTheDocument();
+  });
+
+  it('shows text labels at 1024px full width', async () => {
+    setRibbonWidth(1024);
+    useThreadStore.setState({
+      threads: [{ id: 't1', accountId: 'a1', subject: 'x', isRead: true } as never],
+      selectedThreadId: 't1',
+    });
+    render(<ReadRibbon />);
+    await waitFor(() => {
+      expect(screen.getByText('Reply')).toBeVisible();
+      expect(screen.getByText('Archive')).toBeVisible();
+      expect(screen.getByText('Delete')).toBeVisible();
+    });
+  });
 });
