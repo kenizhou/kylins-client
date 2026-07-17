@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
-import type { ColumnDef } from '../../features/view/types';
+import type { ColumnDef, MessageListDensity } from '../../features/view/types';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -13,12 +13,12 @@ import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
-import { levelStyle, isProminent } from '../../features/classification/classificationStyle';
+import { isProminent } from '../../features/classification/classificationStyle';
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
-import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import {
   MailIcon,
   FlagIcon,
+  AttachmentIcon,
   TrashIcon,
   CopyIcon,
   FileTextIcon,
@@ -61,109 +61,173 @@ const DENSITY_ROW_CLASSES = {
   comfortable: 'min-h-[52px] py-3',
 };
 
+function cellWidth(col: ColumnDef): React.CSSProperties {
+  if (col.width) return { width: col.width, minWidth: col.width };
+  return { width: 'auto', minWidth: 24 };
+}
+
+function MessageRowCell({
+  col,
+  thread,
+  density,
+}: {
+  col: ColumnDef;
+  thread: Thread;
+  density: MessageListDensity;
+}) {
+  const { getLevelById } = useClassification();
+  const level = getLevelById(thread.classificationId);
+  const prominent = level ? isProminent(level) : false;
+  const unread = !thread.isRead;
+
+  switch (col.renderer) {
+    case 'threadRibbon':
+      return (
+        <span className="flex h-full items-stretch" style={cellWidth(col)}>
+          <span
+            className={`w-[3px] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[thread.isRead ? 'read' : unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+            style={prominent && level ? { backgroundColor: level.color } : undefined}
+          />
+        </span>
+      );
+    case 'importance':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {thread.isImportant && (
+            <span title="Important" aria-label="Important" className="text-[var(--warning)]">
+              !
+            </span>
+          )}
+        </span>
+      );
+    case 'category':
+      return (
+        <span className="flex items-center" style={cellWidth(col)}>
+          {level && (
+            <ClassificationBadge level={level} size={density === 'compact' ? 'xs' : 'sm'} />
+          )}
+        </span>
+      );
+    case 'from': {
+      const sender = thread.fromName ?? thread.fromAddress ?? 'Unknown';
+      return (
+        <span className="flex min-w-0 items-center gap-2" style={cellWidth(col)}>
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--border)] text-[10px] font-bold text-[var(--muted-text)]">
+            {getInitials(sender)}
+          </span>
+          <span className={`truncate ${unread ? 'font-semibold' : ''}`}>{sender}</span>
+        </span>
+      );
+    }
+    case 'subject':
+      return (
+        <span className="flex min-w-0 flex-col justify-center" style={cellWidth(col)}>
+          <span className={`truncate ${unread ? 'font-semibold' : ''}`}>
+            {thread.subject ?? '(no subject)'}
+          </span>
+          {density === 'comfortable' && thread.snippet && (
+            <span className="truncate text-[12px] text-[var(--muted-text)]">{thread.snippet}</span>
+          )}
+        </span>
+      );
+    case 'snippet':
+      return (
+        <span
+          className="flex items-center truncate text-[12px] text-[var(--muted-text)]"
+          style={cellWidth(col)}
+        >
+          {thread.snippet}
+        </span>
+      );
+    case 'received':
+      return (
+        <span
+          className="flex items-center justify-end text-[11px] font-mono text-[var(--muted-text)]"
+          style={cellWidth(col)}
+        >
+          {thread.lastMessageAt != null
+            ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
+            : ''}
+        </span>
+      );
+    case 'size':
+      return (
+        <span
+          className="flex items-center justify-end text-[11px] text-[var(--muted-text)]"
+          style={cellWidth(col)}
+        />
+      );
+    case 'attachments':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {thread.hasAttachments && (
+            <span
+              title="Has attachments"
+              aria-label="Has attachments"
+              className="text-[var(--muted-text)]"
+            >
+              <AttachmentIcon size={14} />
+            </span>
+          )}
+        </span>
+      );
+    case 'flag':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {thread.isStarred && (
+            <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
+              <FlagIcon size={14} />
+            </span>
+          )}
+        </span>
+      );
+    case 'read':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {!thread.isRead && (
+            <span className="h-2 w-2 rounded-full bg-[var(--primary)]" aria-label="Unread" />
+          )}
+        </span>
+      );
+    default:
+      return null;
+  }
+}
+
 const MessageRow = memo(function MessageRow({
   thread,
   selected,
   density,
-  onClick,
-  onDoubleClick,
-  onContextMenu,
+  ...handlers
 }: MessageRowProps) {
-  const {
-    fromName,
-    fromAddress,
-    subject,
-    snippet,
-    lastMessageAt,
-    isRead,
-    isStarred,
-    isImportant,
-    classificationId,
-    isEncrypted,
-    isSigned,
-  } = thread;
-  const state: MessageState = !isRead
-    ? 'unread'
-    : isStarred
-      ? 'flagged'
-      : isImportant
-        ? 'vip'
-        : 'read';
-  const unread = state === 'unread';
-  const { getLevelById } = useClassification();
-  const level = getLevelById(classificationId);
-  const prominent = level ? isProminent(level) : false;
-  const style = level ? levelStyle(level) : null;
-  const preview = snippet ?? '';
-  const showPreview = density !== 'compact' && preview.length > 0;
-  const sender = fromName ?? fromAddress ?? 'Unknown';
-  const initials = getInitials(sender);
-  const time =
-    lastMessageAt != null ? formatMessageTime(new Date(lastMessageAt * 1000).toISOString()) : '';
+  const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
+  const visibleColumns = visibleColumnIds
+    .map((id) => COLUMN_REGISTRY.get(id))
+    .filter((c): c is ColumnDef => c != null);
+
   return (
     <div
       role="listitem"
       aria-selected={selected}
       tabIndex={0}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
-      onContextMenu={onContextMenu}
+      {...handlers}
+      className={`group flex cursor-pointer items-stretch gap-1 px-1 ${DENSITY_ROW_CLASSES[density]} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          onClick?.();
+          handlers.onClick?.();
         }
       }}
-      className={`
-        flex items-stretch gap-2.5 pr-3 pl-0 cursor-pointer
-        ${DENSITY_ROW_CLASSES[density]}
-        ${selected ? 'bg-[var(--selected)]' : prominent ? '' : 'hover:bg-[var(--hover)]'}
-      `}
-      style={prominent && !selected && style ? { backgroundColor: style.tint } : undefined}
     >
-      <div
-        className={`w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[state]}`}
-        style={prominent && style ? { backgroundColor: style.border } : undefined}
-      />
-      <div className="w-7 h-7 rounded-full bg-[var(--border)] grid place-items-center text-[10px] font-bold text-[var(--muted-text)] shrink-0">
-        {initials}
-      </div>
-      <div className="flex-1 min-w-0 flex flex-col gap-[2px]">
-        <div className="flex items-baseline justify-between gap-2 min-w-0">
-          <span
-            className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
-          >
-            {level && (
-              <span className="inline-flex items-center gap-1.5 mr-1.5 align-[-2px]">
-                <ClassificationBadge level={level} size={density === 'compact' ? 'xs' : 'sm'} />
-              </span>
-            )}
-            {sender}
-          </span>
-          <span className="flex items-center gap-1.5 shrink-0">
-            <SecurityChips
-              isEncrypted={isEncrypted}
-              isSigned={isSigned}
-              variant="icon"
-              size={density === 'compact' ? 10 : 12}
-            />
-            {isStarred && (
-              <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
-                <FlagIcon size={14} />
-              </span>
-            )}
-            <span className="text-[11px] font-mono text-[var(--muted-text)]">{time}</span>
-          </span>
-        </div>
-        <span
-          className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
+      {visibleColumns.map((col) => (
+        <div
+          key={col.id}
+          className={`message-list-col-${col.id} flex min-w-0 items-center`}
+          style={cellWidth(col)}
         >
-          {subject ?? '(no subject)'}
-        </span>
-        {showPreview && (
-          <span className="text-[12px] truncate text-[var(--muted-text)]">{preview}</span>
-        )}
-      </div>
+          <MessageRowCell col={col} thread={thread} density={density} />
+        </div>
+      ))}
     </div>
   );
 });
@@ -350,12 +414,15 @@ export function MessageList() {
   return (
     <div className="message-list flex flex-col h-full bg-[var(--card)]">
       {visibleColumns.length > 0 && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
+        <div
+          className="flex items-center gap-1 px-1 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]"
+          aria-rowcount={items.length}
+        >
           {visibleColumns.map((col) => (
             <span
               key={col.id}
               className={`message-list-col-${col.id} truncate`}
-              style={{ width: col.width }}
+              style={cellWidth(col)}
             >
               {col.label}
             </span>
@@ -413,7 +480,11 @@ export function MessageList() {
             </span>
           </div>
         ) : (
-          <div role="list" style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          <div
+            role="list"
+            aria-rowcount={items.length}
+            style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
+          >
             {virtualItems.map((vi) => {
               const item = items[vi.index];
               if (!item) return null;
@@ -421,6 +492,7 @@ export function MessageList() {
                 <div
                   key={vi.key}
                   data-index={vi.index}
+                  aria-rowindex={vi.index + 1}
                   ref={virtualizer.measureElement}
                   style={{
                     position: 'absolute',

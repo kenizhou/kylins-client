@@ -9,6 +9,8 @@ import { useFolderStore } from '../../../src/stores/folderStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
 import { useComposerStore } from '../../../src/stores/composerStore';
 import { usePreferencesStore } from '../../../src/stores/preferencesStore';
+import { useViewStore } from '../../../src/features/view/viewStore';
+import { DEFAULT_VIEW_STATE } from '../../../src/features/view/defaults';
 import { getThreads, getMessagesForThread } from '../../../src/services/db/threads';
 import { getMessageBody } from '../../../src/services/db/messageBodies';
 import type { Thread, DbMessageRow } from '../../../src/services/db/threads';
@@ -95,6 +97,13 @@ beforeEach(() => {
   vi.mocked(getThreads).mockReset();
   vi.mocked(getMessagesForThread).mockReset();
   vi.mocked(getMessageBody).mockReset();
+  useViewStore.setState({
+    ...DEFAULT_VIEW_STATE,
+    selectedMessage: null,
+    inlineReplyMode: null,
+    isHydrated: false,
+    selectedThreadIds: [],
+  });
   useThreadStore.setState({
     threads: [],
     selectedThreadId: null,
@@ -130,6 +139,19 @@ describe('MessageList', () => {
     expect(getAllByText('Bob')).toHaveLength(2); // sender appears on each row
   });
 
+  it('renders only visible columns', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello', fromName: 'Bob', isStarred: true })],
+      nextCursor: null,
+    });
+    useViewStore.setState({ visibleColumnIds: ['from', 'subject', 'received'] });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    const { getByText, queryByLabelText } = render(<MessageList />);
+    await waitFor(() => expect(getByText('Hello')).toBeInTheDocument());
+    expect(getByText('Bob')).toBeInTheDocument();
+    expect(queryByLabelText('Flagged')).not.toBeInTheDocument();
+  });
+
   it('shows the empty state when there are no threads', async () => {
     vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
@@ -145,6 +167,7 @@ describe('MessageList', () => {
       ],
       nextCursor: null,
     });
+    useViewStore.setState({ messageListDensity: 'comfortable' });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
     const { getByText, getByLabelText, queryAllByLabelText } = render(<MessageList />);
     await waitFor(() => expect(getByText('Preview text')).toBeInTheDocument());
