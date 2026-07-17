@@ -358,6 +358,10 @@ export function MessageList() {
   const isInbox = selectedRole === 'inbox';
   const [focusedTab, setFocusedTab] = useState<'focused' | 'other'>('focused');
 
+  useEffect(() => {
+    setFocusedTab('focused');
+  }, [selectedFolder?.labelId]);
+
   const threads = useThreadStore((s) => s.threads);
   const selectedThreadId = useThreadStore((s) => s.selectedThreadId);
   const isLoading = useThreadStore((s) => s.isLoading);
@@ -392,12 +396,26 @@ export function MessageList() {
 
   const filteredItems = useMemo(() => {
     if (!isInbox) return items;
-    return items.filter((item) => {
-      if (item.kind === 'group') return true;
+    const result: ListItem[] = [];
+    let pendingGroup: ListItem | null = null;
+    for (const item of items) {
+      if (item.kind === 'group') {
+        pendingGroup = item;
+        continue;
+      }
       const t = item.thread;
       const focused = !t.isRead || t.isStarred || t.isImportant;
-      return focusedTab === 'focused' ? focused : !focused;
-    });
+      const matches = focusedTab === 'focused' ? focused : !focused;
+      if (matches) {
+        if (pendingGroup) {
+          result.push(pendingGroup);
+          pendingGroup = null;
+        }
+        result.push(item);
+      }
+    }
+    if (result.length === items.length) return items;
+    return result;
   }, [items, isInbox, focusedTab]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -427,7 +445,8 @@ export function MessageList() {
   // (a new array reference on every measure pass), so the effect doesn't
   // re-run on every scroll tick.
   const virtualItems = virtualizer.getVirtualItems();
-  const nearEnd = items.length > 0 && (virtualItems.at(-1)?.index ?? -1) >= items.length - 6;
+  const nearEnd =
+    filteredItems.length > 0 && (virtualItems.at(-1)?.index ?? -1) >= filteredItems.length - 6;
   useEffect(() => {
     if (nearEnd && cursor && !isLoading) {
       void loadMore();
@@ -549,7 +568,11 @@ export function MessageList() {
       )}
 
       {isInbox && (
-        <div className="flex items-center gap-1 border-b border-[var(--border)] px-3 py-1.5">
+        <div
+          role="tablist"
+          aria-label="Inbox view"
+          className="flex items-center gap-1 border-b border-[var(--border)] px-3 py-1.5"
+        >
           <button
             type="button"
             role="tab"
@@ -576,7 +599,7 @@ export function MessageList() {
         tabIndex={0}
         role="listbox"
         aria-label="Messages"
-        aria-busy={isLoading && items.length === 0 ? true : undefined}
+        aria-busy={isLoading && filteredItems.length === 0 ? true : undefined}
         aria-activedescendant={activeDescendantId ?? undefined}
         className={`flex-1 flex flex-col overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
         onKeyDown={(e) => {
@@ -619,7 +642,7 @@ export function MessageList() {
           }
         }}
       >
-        {isLoading && items.length === 0 ? (
+        {isLoading && filteredItems.length === 0 ? (
           <div
             role="status"
             className="flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]"
