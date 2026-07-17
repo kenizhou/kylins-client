@@ -52,6 +52,7 @@ import type { MailFolder } from '../../../services/mail/folders/folderModel';
 import { FolderPickerMenu } from './FolderPickerMenu';
 import { ClassificationBadge } from '../../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../../features/classification/components/SecurityChips';
+import { CryptoBadge } from '../../../features/view/CryptoBadge';
 import { RibbonButton, RibbonGroup, RibbonStatusItem } from './RibbonPrimitives';
 import { RibbonShell } from './RibbonShell';
 import { ShieldCheck, Eye } from '@phosphor-icons/react';
@@ -311,6 +312,13 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
     ? getLevelById(selectedMessage.classificationId)
     : undefined;
 
+  // G6 Task 4: crypto badge hoist. The granular CryptoBadge is rendered for
+  // any encrypted or signed message, INDEPENDENT of the `level` gate, so
+  // encrypted mail without a classification level still surfaces its badge
+  // in the ribbon. Mirrors the ReadingPane hoist.
+  const isCryptoMessage =
+    !!selectedMessage && (selectedMessage.isEncrypted || selectedMessage.isSigned);
+
   return (
     <RibbonShell>
       {!viewer && (
@@ -471,6 +479,21 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             {selectedMessage?.readReceiptRequested && (
               <RibbonStatusItem icon={<Eye size={12} />} label="Read Receipt" color={level.color} />
             )}
+          </div>
+        </RibbonGroup>
+      )}
+
+      {isCryptoMessage && (
+        <RibbonGroup>
+          <div className="flex items-center gap-2 px-1">
+            <CryptoBadge
+              signatureState={selectedMessage?.signatureState}
+              decryptState={selectedMessage?.decryptState}
+              revocationState={selectedMessage?.revocationState}
+              signerEmail={selectedMessage?.signerEmail}
+              signerFingerprint={selectedMessage?.signerFingerprint}
+              variant="label"
+            />
           </div>
         </RibbonGroup>
       )}

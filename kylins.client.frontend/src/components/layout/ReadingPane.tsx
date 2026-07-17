@@ -20,6 +20,8 @@ import { ClassificationBanner } from '../../features/classification/components/C
 import { ClassificationWatermark } from '../../features/classification/components/ClassificationWatermark';
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../features/classification/components/SecurityChips';
+import { CryptoBadge } from '../../features/view/CryptoBadge';
+import { TrustDialog } from '../email/TrustDialog';
 import { IcalHelper, type ParsedEvent } from '../../services/calendar/icalHelper';
 
 export function ReadingPane() {
@@ -30,6 +32,7 @@ export function ReadingPane() {
   const accountEmail = account?.email ?? null;
   const accountDisplayName = account?.displayName ?? null;
   const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
+  const openPreferences = usePreferencesStore((s) => s.openPreferences);
   const { getLevelById } = useClassification();
   const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
@@ -41,6 +44,11 @@ export function ReadingPane() {
   const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
   const [contactAdded, setContactAdded] = useState(false);
   const [inviteEvents, setInviteEvents] = useState<ParsedEvent[]>([]);
+  // G6 Task 5: TrustDialog dismissal tracking. The user can dismiss the trust
+  // prompt for the current message (Escape / backdrop / "Don't trust") without
+  // it re-popping on every re-render. Reset whenever the selected message
+  // changes so a fresh selection re-prompts.
+  const [dismissedTrustMsgId, setDismissedTrustMsgId] = useState<string | undefined>(undefined);
   // Reset per-message ephemeral state when the selected message changes. Uses
   // the prev-value render pattern (setState-during-render to correct stale
   // state) rather than setState-in-effect (the project's eslint rule
@@ -51,10 +59,100 @@ export function ReadingPane() {
     setInlineReplyMode(null);
     setCidMap(new Map());
     setInviteEvents([]);
+    setDismissedTrustMsgId(undefined);
   }
   if (!message?.id && inviteEvents.length > 0) {
     setInviteEvents([]);
   }
+
+  // G6 Task 5: derive the TrustDialog mount from the selected message's
+  // signature state. The dialog is shown when ALL of:
+  //   - we have an account + signer fingerprint (no point prompting without
+  //     a key to write the decision against),
+  //   - signatureState is one of the user-decidable states
+  //     (`valid-unverified` | `unknown-key` | `mismatch`),
+  //   - the user hasn't already dismissed the prompt for THIS message.
+  // Derived synchronously per render — no effect, so it can't get out of sync
+  // with `message`.
+  type DecidableSignatureState = 'valid-unverified' | 'unknown-key' | 'mismatch';
+  const DECIDABLE: ReadonlySet<DecidableSignatureState> = new Set([
+    'valid-unverified',
+    'unknown-key',
+    'mismatch',
+  ]);
+  type PendingTrust = {
+    accountId: string;
+    messageId: string;
+    signerEmail: string | null;
+    signerFingerprint: string;
+    signatureState: DecidableSignatureState;
+    chainInfo: string | null;
+  };
+  let pendingTrust: PendingTrust | null = null;
+  if (
+    message &&
+    activeAccountId &&
+    message.signerFingerprint &&
+    message.signatureState &&
+    DECIDABLE.has(message.signatureState as DecidableSignatureState) &&
+    message.id !== dismissedTrustMsgId
+  ) {
+    const state = message.signatureState as DecidableSignatureState;
+    // Map the granular crypto outcome into a one-line chain context string
+    // for the dialog body. Keeps the dialog self-contained without plumbing
+    // `chainValid` through MailMessage (not currently mapped).
+    let chainInfo = '';
+    if (state === 'valid-unverified') {
+      chainInfo = 'Signature valid; chain roots are not in your trust anchor set.';
+    } else if (state === 'unknown-key') {
+      chainInfo = "Signer's certificate is not in your keyring.";
+    } else if (state === 'mismatch') {
+      chainInfo = 'Signer identity does not match the message From header.';
+    }
+    pendingTrust = {
+      accountId: activeAccountId,
+      messageId: message.id,
+      signerEmail: message.signerEmail ?? null,
+      signerFingerprint: message.signerFingerprint,
+      signatureState: state,
+      chainInfo,
+    };
+  }
+
+  // After a successful 'verified' write, clear the session plaintext cache for
+  // the message and re-open the thread. The cache eviction forces the
+  // selectThread crypto path to re-run `openCryptoMessage` (instead of taking
+  // the cache-hit branch that only reads the STALE `message_crypto_results`
+  // row). The re-open crypto pipeline consults `resolve_signer_trust`
+  // (`mail/crypto.rs:312`), which now sees the fresh `verified` decision and
+  // emits `signatureState=valid-verified` — so the dialog unmounts (state no
+  // longer decidably-unverified) and the CryptoBadge flips to the success
+  // glyph.
+  const handleTrustResolved = () => {
+    const msgId = pendingTrust?.messageId;
+    const thread = selectedThread;
+    setDismissedTrustMsgId(undefined);
+    if (msgId) {
+      // Evict just this message's cached plaintext so re-selectThread goes
+      // through openCryptoMessage (cache-miss branch). We build a NEW object
+      // so Zustand sees a state change.
+      const cache = useViewStore.getState().decryptedCache;
+      if (Object.prototype.hasOwnProperty.call(cache, msgId)) {
+        const next = { ...cache };
+        delete next[msgId];
+        useViewStore.setState({ decryptedCache: next });
+      }
+    }
+    if (thread) {
+      void useThreadStore.getState().selectThread(thread);
+    }
+  };
+  const handleTrustCancel = () => {
+    // Suppress the dialog for this message until the user navigates away and
+    // back. (Triggered by Escape/backdrop, the "Don't trust" button — which
+    // already wrote a 'rejected' row — and any future explicit close action.)
+    setDismissedTrustMsgId(pendingTrust?.messageId ?? activeMsgId);
+  };
 
   // Inline `cid:` image resolution. When the selected message changes, fetch
   // its inline Content-ID parts in ONE round-trip and build a cid → data: URL
@@ -73,8 +171,16 @@ export function ReadingPane() {
     // + fetches the entire message just to check for CID parts.
     const body = message?.html;
     if (!body || !/\bcid:/i.test(body)) {
-      setCidMap(new Map());
-      return;
+      // Clear any stale cidMap from a prior message. Deferred (not synchronous
+      // in the effect body) to satisfy react-hooks/set-state-in-effect; the
+      // cancelled guard prevents a post-unmount update.
+      let cancelled = false;
+      Promise.resolve().then(() => {
+        if (!cancelled) setCidMap(new Map());
+      });
+      return () => {
+        cancelled = true;
+      };
     }
     let cancelled = false;
     fetchInlineImages(acct, id)
@@ -100,7 +206,7 @@ export function ReadingPane() {
     return () => {
       cancelled = true;
     };
-  }, [message?.id, activeAccountId]);
+  }, [message?.id, message?.html, activeAccountId]);
 
   // Calendar-invite detection: parse any text/calendar attachment whose METHOD
   // is REQUEST and render an RSVP card above the message body.
@@ -189,12 +295,48 @@ export function ReadingPane() {
   const level = message.classificationId ? getLevelById(message.classificationId) : undefined;
   const prominent = level ? isProminent(level) : false;
 
+  // G6 Task 4: crypto badge hoist. The granular CryptoBadge (signature /
+  // decrypt / revocation state) is shown for ANY encrypted or signed message,
+  // INDEPENDENT of the `level` classification gate. Encrypted mail with no
+  // classification level must still surface its badge. The legacy boolean
+  // SecurityChips stays inside the classification row below for parity with
+  // the message-list rows (where only the booleans are available).
+  const isCryptoMessage = message.isEncrypted || message.isSigned;
+
+  // G6 Task 4: decrypt-failure gate. When decryption could not produce
+  // plaintext (`no-key` = no matching private key in keyring; `failed` =
+  // decrypt attempted but errored), the body region renders a centered
+  // status panel instead of EmailRenderer/AttachmentList. All other states
+  // (`ok`, `n/a`, or undefined for non-crypto mail) fall through to the
+  // normal body path.
+  const decryptFailed = message.decryptState === 'no-key' || message.decryptState === 'failed';
+
   return (
     <div className="reading-pane relative flex h-full min-w-0 flex-col bg-[var(--card)]">
       {prominent && level && <ClassificationBanner level={level} position="top" />}
 
+      {isCryptoMessage && (
+        <div
+          className="reading-pane-crypto-row mt-2 flex items-center gap-2 px-5 pt-4"
+          data-testid="reading-pane-crypto-row"
+        >
+          <CryptoBadge
+            signatureState={message.signatureState}
+            decryptState={message.decryptState}
+            revocationState={message.revocationState}
+            signerEmail={message.signerEmail}
+            signerFingerprint={message.signerFingerprint}
+            variant="label"
+          />
+        </div>
+      )}
+
       {level && (
-        <div className="reading-pane-classification-row mt-2 flex items-center gap-2 px-5 pt-4">
+        <div
+          className={`reading-pane-classification-row mt-2 flex items-center gap-2 px-5 ${
+            isCryptoMessage ? 'pt-2' : 'pt-4'
+          }`}
+        >
           <ClassificationBadge level={level} />
           <SecurityChips
             isEncrypted={message.isEncrypted}
@@ -249,34 +391,43 @@ export function ReadingPane() {
         onContextMenu={message.preventCopy ? (e) => e.preventDefault() : undefined}
       >
         {prominent && level && <ClassificationWatermark level={level} identity={accountEmail} />}
-        {inviteEvents.length > 0 && activeAccountId && accountEmail && (
-          <div className="mb-4 flex flex-col gap-3">
-            {inviteEvents.map((ev) => (
-              <RsvpCard
-                key={ev.uid}
-                event={ev}
-                accountId={activeAccountId}
-                accountEmail={accountEmail}
-                accountDisplayName={accountDisplayName}
-              />
-            ))}
-          </div>
+        {decryptFailed ? (
+          <DecryptFailurePanel
+            decryptState={message.decryptState}
+            onManageKeys={() => openPreferences('Security')}
+          />
+        ) : (
+          <>
+            {inviteEvents.length > 0 && activeAccountId && accountEmail && (
+              <div className="mb-4 flex flex-col gap-3">
+                {inviteEvents.map((ev) => (
+                  <RsvpCard
+                    key={ev.uid}
+                    event={ev}
+                    accountId={activeAccountId}
+                    accountEmail={accountEmail}
+                    accountDisplayName={accountDisplayName}
+                  />
+                ))}
+              </div>
+            )}
+            <AttachmentList
+              accountId={activeAccountId}
+              messageId={message.id}
+              bodyHtml={message.html}
+            />
+            <EmailRenderer
+              html={message.html}
+              text={message.text}
+              blockImages={!automaticallyLoadImages}
+              senderAddress={message.from.address}
+              accountId={activeAccountId}
+              senderAllowlisted={false}
+              isMessageSuspicious={isSuspicious}
+              cidMap={cidMap}
+            />
+          </>
         )}
-        <AttachmentList
-          accountId={activeAccountId}
-          messageId={message.id}
-          bodyHtml={message.html}
-        />
-        <EmailRenderer
-          html={message.html}
-          text={message.text}
-          blockImages={!automaticallyLoadImages}
-          senderAddress={message.from.address}
-          accountId={activeAccountId}
-          senderAllowlisted={false}
-          isMessageSuspicious={isSuspicious}
-          cidMap={cidMap}
-        />
       </main>
       {prominent && level && <ClassificationBanner level={level} position="bottom" />}
       <InjectedComponentSet
@@ -285,6 +436,80 @@ export function ReadingPane() {
         message={message}
         accountId={activeAccountId}
       />
+      {pendingTrust && (
+        <TrustDialog
+          accountId={pendingTrust.accountId}
+          messageId={pendingTrust.messageId}
+          signerEmail={pendingTrust.signerEmail}
+          signerFingerprint={pendingTrust.signerFingerprint}
+          signatureState={pendingTrust.signatureState}
+          chainInfo={pendingTrust.chainInfo}
+          onResolved={handleTrustResolved}
+          onCancel={handleTrustCancel}
+        />
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// G6 Task 4: decrypt-failure panel.
+//
+// Rendered in place of EmailRenderer/AttachmentList when the selected message
+// is encrypted but the backend could not produce plaintext:
+//   - `no-key` → no matching private key in the user's keyring
+//   - `failed` → decrypt attempted but errored (CMS parse, padding, etc.)
+//
+// Stylistically mirrors the empty-state branch (centered icon + headline +
+// sub-text + action). The action opens the Security preferences tab, which
+// hosts the KeyManager section (key import / trust decisions).
+// ──────────────────────────────────────────────────────────────────────────
+
+interface DecryptFailurePanelProps {
+  decryptState: 'no-key' | 'failed' | 'ok' | 'n/a' | undefined;
+  onManageKeys: () => void;
+}
+
+function DecryptFailurePanel({ decryptState, onManageKeys }: DecryptFailurePanelProps) {
+  const isNoKey = decryptState === 'no-key';
+  const headline = isNoKey ? "Can't decrypt — no matching private key" : 'Decryption failed';
+  const subtext = isNoKey
+    ? 'This message was encrypted to a key that is not in your keyring. Import the matching private key to read it.'
+    : 'The backend could not decrypt this message. The encrypted payload may be corrupted or use an unsupported algorithm.';
+  return (
+    <div
+      data-testid="decrypt-failure-panel"
+      className="flex h-full min-h-[280px] flex-col items-center justify-center px-6 py-10 text-center"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface)] text-[var(--amber)]">
+        <svg
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.8}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <rect x="5" y="11" width="14" height="9" rx="2" />
+          <path d="M8 11V7a4 4 0 0 1 6.5-1.5" />
+          <path d="M4 4l16 16" />
+        </svg>
+      </div>
+      <p className="text-lg font-medium text-[var(--foreground)]">{headline}</p>
+      <p className="mt-1 max-w-md text-sm text-[var(--muted-text)]">{subtext}</p>
+      <button
+        type="button"
+        onClick={onManageKeys}
+        className="mt-5 inline-flex h-9 items-center rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      >
+        Manage keys
+      </button>
     </div>
   );
 }

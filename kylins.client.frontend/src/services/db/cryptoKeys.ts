@@ -11,6 +11,7 @@
 // `CryptoKeyRow { created_at: String, expires_at: Option<String> }`.
 
 import { invoke } from '@tauri-apps/api/core';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 
 /** Public-facing crypto key row (matches Rust `CryptoKeyRow`). */
 export interface CryptoKeyRow {
@@ -91,4 +92,141 @@ export function setDefaultSigningKey(
   fingerprint: string,
 ): Promise<void> {
   return invoke<void>('db_set_default_signing_key', { accountId, standard, fingerprint });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Trusted CA-root import path (G6 Task 6)
+// ──────────────────────────────────────────────────────────────────────────
+//
+// CA-root trust anchors are stored as `crypto_keys` rows with
+// `standard='smime'` AND `key_type='cert'`. G5's `list_trust_anchor_certs`
+// (db/crypto_keys.rs:306) reads exactly that slice and feeds the DER bytes
+// to the chain validator (`SmimeBackend::verify_with_context`).
+//
+// The existing `crypto_import_key_from_path` route is for cert+private-key
+// BUNDLES (it calls `SmimeBackend::import_key`, which expects a signing
+// identity). A CA root has no private key, so we use the lower-level
+// `db_upsert_crypto_key` Tauri command and build the `CryptoKeyRecord` on
+// the client. The cert DER is HEX-encoded into `publicData` to match the
+// read path (`list_trust_anchor_certs` hex-decodes it back to DER).
+//
+// Wire shape: `db_upsert_crypto_key` takes a single `input: CryptoKeyRecord`
+// arg. `CryptoKeyRecord` flattens `CryptoKeyRow` (camelCase via serde) +
+// adds `publicData: String` (+ optional `privateData` / `policyJson`).
+// `id: ''` + `createdAt: ''` cause the backend to generate a uuid + use
+// `strftime('%s','now')` (see upsert_crypto_key at db/crypto_keys.rs:111).
+
+/**
+ * Input shape for `db_upsert_crypto_key`. Mirrors the Rust
+ * `CryptoKeyRecord` (`db/crypto_keys.rs:62`, camelCase via serde + flattened
+ * `CryptoKeyRow`). `id` / `createdAt` may be empty — the backend fills them.
+ * `publicData` is HEX-encoded DER for cert rows; private blobs are encrypted
+ * at rest by the db layer (never populated by the Trusted-CAs path).
+ */
+export interface CryptoKeyRecordInput {
+  id?: string;
+  accountId: string;
+  standard: string;
+  keyType: string;
+  email?: string | null;
+  fingerprint: string;
+  origin: string;
+  isDefaultSign?: boolean;
+  isDefaultEncrypt?: boolean;
+  createdAt?: string;
+  expiresAt?: string | null;
+  /** HEX-encoded DER (cert rows) or armored key material (PGP rows). */
+  publicData: string;
+  privateData?: string | null;
+  policyJson?: string | null;
+}
+
+/**
+ * Upsert a crypto key/cert row via the low-level `db_upsert_crypto_key`
+ * command. Private material in `input.privateData` is encrypted at rest by
+ * the db layer (never sent in plaintext across IPC AFTER the write — this
+ * call IS the plaintext send; the backend wraps it before persisting).
+ */
+export function upsertCryptoKey(input: CryptoKeyRecordInput): Promise<void> {
+  return invoke<void>('db_upsert_crypto_key', { input });
+}
+
+/**
+ * Decode a PEM-encoded CERTIFICATE block to its raw DER bytes. Returns null
+ * when no `-----BEGIN CERTIFICATE-----` block is present. Only the FIRST
+ * block is decoded — multi-cert bundles (chains) use only the leaf here;
+ * the user imports each anchor separately (matches the KeyManager pattern
+ * where each row is one identity).
+ */
+export function pemCertificateToDer(pem: string): Uint8Array | null {
+  const match = pem.match(/-----BEGIN CERTIFICATE-----\s*([\s\S]*?)-----END CERTIFICATE-----/);
+  if (!match) return null;
+  const b64 = match[1]!.replace(/\s+/g, '');
+  if (!b64) return null;
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/** Hex-encode a Uint8Array (lowercase, no separators). */
+export function bytesToHex(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    out += bytes[i]!.toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+/**
+ * SHA-256(der) as a lowercase hex string. Uses the Web Crypto API
+ * (`crypto.subtle.digest`), which is available in both the Tauri webview and
+ * jsdom (Node ≥ 19). Mirrors the backend's `Sha256::digest(der)` fingerprint
+ * computation so a cert imported here matches the fingerprint the G5
+ * receive pipeline emits when verifying against this anchor.
+ */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  // Copy into a fresh ArrayBuffer-backed view so the TS lib types accept it
+  // as `BufferSource` (a `Uint8Array<ArrayBufferLike>` from a caller may be
+  // backed by a `SharedArrayBuffer`, which `crypto.subtle.digest` rejects).
+  const view = new Uint8Array(bytes);
+  const digest = await crypto.subtle.digest('SHA-256', view);
+  return bytesToHex(new Uint8Array(digest));
+}
+
+/**
+ * Import a PEM-encoded CA-root certificate at `path` as a `crypto_keys` row
+ * with `standard='smime'` + `key_type='cert'` (a trust anchor). The DER
+ * bytes are HEX-encoded into `publicData` so G5's `list_trust_anchor_certs`
+ * can hex-decode them back when feeding the chain validator. The fingerprint
+ * is SHA-256(der) — computed client-side via the Web Crypto API.
+ *
+ * Throws when the file has no PEM CERTIFICATE block or the SHA-256 digest
+ * is unavailable (older runtimes without `crypto.subtle`).
+ */
+export async function importTrustAnchorFromPath(accountId: string, path: string): Promise<void> {
+  const pem = await readTextFile(path);
+  const der = pemCertificateToDer(pem);
+  if (!der) {
+    throw new Error('No PEM CERTIFICATE block found in selected file');
+  }
+  const fingerprint = await sha256Hex(der);
+  const publicData = bytesToHex(der);
+  await upsertCryptoKey({
+    id: '',
+    accountId,
+    standard: 'smime',
+    keyType: 'cert',
+    email: null,
+    fingerprint,
+    origin: 'imported',
+    isDefaultSign: false,
+    isDefaultEncrypt: false,
+    createdAt: '',
+    publicData,
+  });
 }

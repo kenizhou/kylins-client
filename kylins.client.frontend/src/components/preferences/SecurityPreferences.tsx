@@ -4,6 +4,7 @@ import { useSecurityIndicatorIcons } from '../../features/classification/useSecu
 import { ClassificationIcon } from '../icons';
 import type { ClassificationLevel } from '../../features/classification/classificationTypes';
 import { KeyManagerSection } from './KeyManagerSection';
+import { TrustedCasSection } from './TrustedCasSection';
 
 const PRESET_COLORS = [
   '#6b7280',
@@ -298,6 +299,7 @@ export function SecurityPreferences() {
       </section>
 
       <KeyManagerSection />
+      <TrustedCasSection />
     </div>
   );
 }
