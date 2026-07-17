@@ -15,9 +15,11 @@ import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
 import { isProminent } from '../../features/classification/classificationStyle';
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
+import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import {
   MailIcon,
   FlagIcon,
+  StarIcon,
   AttachmentIcon,
   TrashIcon,
   CopyIcon,
@@ -43,6 +45,7 @@ interface MessageRowProps {
   thread: Thread;
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
+  visibleColumns: ColumnDef[];
   onClick?: () => void;
   onDoubleClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -85,7 +88,7 @@ function MessageRowCell({
       return (
         <span className="flex h-full items-stretch" style={cellWidth(col)}>
           <span
-            className={`w-[3px] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[thread.isRead ? 'read' : unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+            className={`w-[3px] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
             style={prominent && level ? { backgroundColor: level.color } : undefined}
           />
         </span>
@@ -95,7 +98,7 @@ function MessageRowCell({
         <span className="flex items-center justify-center" style={cellWidth(col)}>
           {thread.isImportant && (
             <span title="Important" aria-label="Important" className="text-[var(--warning)]">
-              !
+              <StarIcon size={14} />
             </span>
           )}
         </span>
@@ -116,6 +119,12 @@ function MessageRowCell({
             {getInitials(sender)}
           </span>
           <span className={`truncate ${unread ? 'font-semibold' : ''}`}>{sender}</span>
+          <SecurityChips
+            isEncrypted={thread.isEncrypted}
+            isSigned={thread.isSigned}
+            variant="icon"
+            size={12}
+          />
         </span>
       );
     }
@@ -155,7 +164,9 @@ function MessageRowCell({
         <span
           className="flex items-center justify-end text-[11px] text-[var(--muted-text)]"
           style={cellWidth(col)}
-        />
+        >
+          —
+        </span>
       );
     case 'attachments':
       return (
@@ -198,20 +209,16 @@ const MessageRow = memo(function MessageRow({
   thread,
   selected,
   density,
+  visibleColumns,
   ...handlers
 }: MessageRowProps) {
-  const visibleColumnIds = useViewStore((s) => s.visibleColumnIds);
-  const visibleColumns = visibleColumnIds
-    .map((id) => COLUMN_REGISTRY.get(id))
-    .filter((c): c is ColumnDef => c != null);
-
   return (
     <div
-      role="listitem"
+      role="option"
       aria-selected={selected}
       tabIndex={0}
       {...handlers}
-      className={`group flex cursor-pointer items-stretch gap-1 px-1 ${DENSITY_ROW_CLASSES[density]} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
+      className={`group flex cursor-pointer items-stretch gap-1 px-1 focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${DENSITY_ROW_CLASSES[density]} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -282,9 +289,13 @@ export function MessageList() {
   const deleteThread = useThreadStore((s) => s.deleteThread);
   const moveThread = useThreadStore((s) => s.moveThread);
 
-  const visibleColumns = visibleColumnIds
-    .map((id) => COLUMN_REGISTRY.get(id))
-    .filter((c): c is ColumnDef => c != null);
+  const visibleColumns = useMemo(
+    () =>
+      visibleColumnIds
+        .map((id) => COLUMN_REGISTRY.get(id))
+        .filter((c): c is ColumnDef => c != null),
+    [visibleColumnIds],
+  );
 
   // Load threads whenever the selected folder changes.
   useEffect(() => {
@@ -414,10 +425,7 @@ export function MessageList() {
   return (
     <div className="message-list flex flex-col h-full bg-[var(--card)]">
       {visibleColumns.length > 0 && (
-        <div
-          className="flex items-center gap-1 px-1 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]"
-          aria-rowcount={items.length}
-        >
+        <div className="flex items-center gap-1 px-1 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
           {visibleColumns.map((col) => (
             <span
               key={col.id}
@@ -439,6 +447,7 @@ export function MessageList() {
       <div
         ref={scrollRef}
         tabIndex={0}
+        role="listbox"
         className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
         onKeyDown={(e) => {
           if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
@@ -480,11 +489,7 @@ export function MessageList() {
             </span>
           </div>
         ) : (
-          <div
-            role="list"
-            aria-rowcount={items.length}
-            style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
-          >
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualItems.map((vi) => {
               const item = items[vi.index];
               if (!item) return null;
@@ -492,7 +497,7 @@ export function MessageList() {
                 <div
                   key={vi.key}
                   data-index={vi.index}
-                  aria-rowindex={vi.index + 1}
+                  role="presentation"
                   ref={virtualizer.measureElement}
                   style={{
                     position: 'absolute',
@@ -503,7 +508,10 @@ export function MessageList() {
                   }}
                 >
                   {item.kind === 'group' ? (
-                    <div className="py-1.5 px-3 border-b border-[var(--border)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]">
+                    <div
+                      role="presentation"
+                      className="py-1.5 px-3 border-b border-[var(--border)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]"
+                    >
                       {item.label}
                     </div>
                   ) : (
@@ -511,6 +519,7 @@ export function MessageList() {
                       thread={item.thread}
                       selected={selectedThreadId === item.thread.id}
                       density={density}
+                      visibleColumns={visibleColumns}
                       onClick={() => void selectThread(item.thread)}
                       onDoubleClick={() => void handleDoubleClick(item.thread)}
                       onContextMenu={(e) => openContextMenu(item.thread, e)}
