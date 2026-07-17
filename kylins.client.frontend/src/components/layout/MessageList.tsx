@@ -458,72 +458,78 @@ export function MessageList() {
         </div>
       )}
 
-      {isLoading && items.length === 0 ? (
-        <div
-          className={`flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)] ${autoHideScrollbarClass}`}
-        >
-          <MailIcon size={24} className="opacity-50" />
-          <span>Loading messages…</span>
-        </div>
-      ) : showEmpty ? (
-        <div
-          className={`flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)] ${autoHideScrollbarClass}`}
-        >
-          <MailIcon size={24} className="opacity-50" />
-          <span>No messages in this folder.</span>
-          <span className="text-[10px] opacity-70">
-            Select a different folder or check back later.
-          </span>
-        </div>
-      ) : (
-        <div
-          ref={scrollRef}
-          tabIndex={0}
-          role="listbox"
-          aria-label="Messages"
-          aria-activedescendant={activeDescendantId ?? undefined}
-          className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-              e.preventDefault();
-              const direction = e.key === 'ArrowDown' ? 1 : -1;
-              const currentIndex = items.findIndex(
-                (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
-              );
-              function nextThreadIndex(start: number, dir: 1 | -1): number | null {
-                let i = start + dir;
-                while (i >= 0 && i < items.length) {
-                  if (items[i]?.kind === 'thread') return i;
-                  i += dir;
-                }
-                return null;
+      <div
+        ref={scrollRef}
+        tabIndex={0}
+        role="listbox"
+        aria-label="Messages"
+        aria-busy={isLoading && items.length === 0 ? true : undefined}
+        aria-activedescendant={activeDescendantId ?? undefined}
+        className={`flex-1 flex flex-col overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            const direction = e.key === 'ArrowDown' ? 1 : -1;
+            const currentIndex = items.findIndex(
+              (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+            );
+            function nextThreadIndex(start: number, dir: 1 | -1): number | null {
+              let i = start + dir;
+              while (i >= 0 && i < items.length) {
+                if (items[i]?.kind === 'thread') return i;
+                i += dir;
               }
-              const nextIndex =
-                currentIndex === -1
-                  ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
-                  : nextThreadIndex(currentIndex, direction);
-              if (nextIndex == null) return;
-              const nextItem = items[nextIndex];
-              if (!nextItem || nextItem.kind !== 'thread') return;
-              setActiveDescendantId(optionId(nextItem.thread.id));
-              void selectThread(nextItem.thread);
-              virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
-              return;
+              return null;
             }
+            const nextIndex =
+              currentIndex === -1
+                ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
+                : nextThreadIndex(currentIndex, direction);
+            if (nextIndex == null) return;
+            const nextItem = items[nextIndex];
+            if (!nextItem || nextItem.kind !== 'thread') return;
+            setActiveDescendantId(optionId(nextItem.thread.id));
+            void selectThread(nextItem.thread);
+            virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+            return;
+          }
 
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              const activeThreadId = activeDescendantId?.replace(/^message-option-/, '');
-              const activeItem = activeThreadId
-                ? items.find((i) => i.kind === 'thread' && i.thread.id === activeThreadId)
-                : undefined;
-              if (activeItem?.kind === 'thread') {
-                void selectThread(activeItem.thread);
-              }
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            const activeThreadId = activeDescendantId?.replace(/^message-option-/, '');
+            const activeItem = activeThreadId
+              ? items.find((i) => i.kind === 'thread' && i.thread.id === activeThreadId)
+              : undefined;
+            if (activeItem?.kind === 'thread') {
+              void selectThread(activeItem.thread);
             }
-          }}
-        >
-          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          }
+        }}
+      >
+        {isLoading && items.length === 0 ? (
+          <div
+            role="status"
+            className="flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]"
+          >
+            <MailIcon size={24} className="opacity-50" />
+            <span>Loading messages…</span>
+          </div>
+        ) : showEmpty ? (
+          <div
+            role="status"
+            className="flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]"
+          >
+            <MailIcon size={24} className="opacity-50" />
+            <span>No messages in this folder.</span>
+            <span className="text-[10px] opacity-70">
+              Select a different folder or check back later.
+            </span>
+          </div>
+        ) : (
+          <div
+            role="presentation"
+            style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
+          >
             {virtualItems.map((vi) => {
               const item = items[vi.index];
               if (!item) return null;
@@ -566,8 +572,8 @@ export function MessageList() {
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
