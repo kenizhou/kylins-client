@@ -73,15 +73,17 @@ const DENSITY_ROW_CLASSES = {
 
 interface QuickActionsProps {
   thread: Thread;
+  visible: boolean;
 }
 
-function MessageRowQuickActions({ thread }: QuickActionsProps) {
+function MessageRowQuickActions({ thread, visible }: QuickActionsProps) {
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
 
   return (
     <span
-      className="absolute right-2 top-1/2 z-10 hidden -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-0.5 shadow-sm group-hover:flex group-focus-within:flex"
+      data-testid="message-quick-actions"
+      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-0.5 shadow-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'}`}
       onClick={(e) => e.stopPropagation()}
     >
       <button
@@ -275,13 +277,15 @@ const MessageRow = memo(function MessageRow({
   const { getLevelById } = useClassification();
   const level = getLevelById(thread.classificationId);
   const prominent = level ? isProminent(level) : false;
+  const [isHovered, setIsHovered] = useState(false);
   return (
     <div
       id={optionId(thread.id)}
-      role="listitem"
+      role="option"
       aria-selected={selected}
-      tabIndex={0}
       {...handlers}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       style={
         {
           '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
@@ -300,7 +304,7 @@ const MessageRow = memo(function MessageRow({
           </div>
         ))}
       </div>
-      <MessageRowQuickActions thread={thread} />
+      <MessageRowQuickActions thread={thread} visible={isHovered} />
     </div>
   );
 });

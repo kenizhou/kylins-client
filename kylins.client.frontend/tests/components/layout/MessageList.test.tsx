@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor, fireEvent, screen } from '@testing-library/react';
+import { render, waitFor, fireEvent, screen, within } from '@testing-library/react';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve([])) }));
 
@@ -268,9 +268,16 @@ describe('MessageList', () => {
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
 
-    const row = screen.getByRole('listitem');
+    const row = screen.getByRole('option');
+    const actions = within(row).getByTestId('message-quick-actions');
+    expect(actions.classList.contains('hidden')).toBe(true);
+    expect(actions.classList.contains('flex')).toBe(false);
+
     fireEvent.mouseEnter(row);
-    const archiveBtn = await screen.findByRole('button', { name: 'Archive' });
+    expect(actions.classList.contains('hidden')).toBe(false);
+    expect(actions.classList.contains('flex')).toBe(true);
+
+    const archiveBtn = within(actions).getByRole('button', { name: 'Archive' });
     fireEvent.click(archiveBtn);
     expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
     archiveThread.mockRestore();
