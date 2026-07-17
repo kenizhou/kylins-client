@@ -122,6 +122,7 @@ export function TasksPage() {
             defaultSize: 40,
             minSize: CONSTRAINTS.list.min,
             card: false,
+            className: 'flex min-w-0 flex-col',
           },
           {
             id: 'tasks-detail',
@@ -135,6 +136,7 @@ export function TasksPage() {
             defaultSize: 60,
             minSize: CONSTRAINTS.detail.min,
             card: false,
+            className: 'flex min-w-0 flex-col',
           },
         ]}
       />

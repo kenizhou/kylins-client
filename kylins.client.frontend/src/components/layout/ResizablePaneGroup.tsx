@@ -23,7 +23,7 @@ export interface ResizablePaneGroupProps {
 
 function PanelCard({ children }: { children: ReactNode }) {
   return (
-    <div className="h-full overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
       {children}
     </div>
   );

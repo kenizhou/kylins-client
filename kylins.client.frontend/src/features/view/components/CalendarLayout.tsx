@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useViewStore } from '../viewStore';
 import { useWindowSize } from '@/hooks/useWindowSize';
 import { FolderPaneDrawer } from '@/components/layout/FolderPaneDrawer';
@@ -19,24 +20,27 @@ export function CalendarLayout({ folderPane, children }: CalendarLayoutProps) {
   const showPane = !isCompact && visible;
   const drawerOpen = isCompact && visible;
 
-  const panels = [
-    {
-      id: 'calendar-folder-pane',
-      content: folderPane,
-      defaultSize: size,
-      minSize: 12,
-      maxSize: 80,
-      visible: showPane,
-      card: true,
-    },
-    {
-      id: 'calendar-content',
-      content: children,
-      defaultSize: showPane ? 100 - size : 100,
-      minSize: 30,
-      card: false,
-    },
-  ];
+  const panels = useMemo(
+    () => [
+      {
+        id: 'calendar-folder-pane',
+        content: folderPane,
+        defaultSize: size,
+        minSize: 12,
+        maxSize: 80,
+        visible: showPane,
+        card: true,
+      },
+      {
+        id: 'calendar-content',
+        content: children,
+        defaultSize: showPane ? 100 - size : 100,
+        minSize: 30,
+        card: false,
+      },
+    ],
+    [folderPane, children, size, showPane],
+  );
 
   return (
     <>
