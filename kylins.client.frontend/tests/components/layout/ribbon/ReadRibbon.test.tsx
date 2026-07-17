@@ -9,7 +9,8 @@ import type { Thread } from '../../../../src/services/db/threads';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
-const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+let originalResizeObserver: typeof globalThis.ResizeObserver;
+let originalGetBoundingClientRect: typeof Element.prototype.getBoundingClientRect;
 
 function setRibbonWidth(width: number) {
   const rect = {
@@ -38,6 +39,9 @@ function setRibbonWidth(width: number) {
 }
 
 beforeEach(() => {
+  originalResizeObserver = globalThis.ResizeObserver;
+  originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+
   useViewStore.setState({ selectedMessage: null, inlineReplyMode: null });
   useThreadStore.setState({ threads: [], selectedThreadId: null });
   useAccountStore.setState({ accounts: [], activeAccountId: null });
@@ -73,6 +77,7 @@ beforeEach(() => {
 
 afterEach(() => {
   Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+  globalThis.ResizeObserver = originalResizeObserver;
 });
 
 describe('ReadRibbon', () => {
