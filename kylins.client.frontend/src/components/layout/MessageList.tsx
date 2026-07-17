@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
 import type { ColumnDef, MessageListDensity } from '../../features/view/types';
+import type { ClassificationLevel } from '../../features/classification/classificationTypes';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -13,13 +14,13 @@ import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
-import { isProminent } from '../../features/classification/classificationStyle';
+import { isProminent, levelStyle } from '../../features/classification/classificationStyle';
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import {
   MailIcon,
   FlagIcon,
-  StarIcon,
+  WarningIcon,
   AttachmentIcon,
   TrashIcon,
   CopyIcon,
@@ -73,13 +74,13 @@ function MessageRowCell({
   col,
   thread,
   density,
+  level,
 }: {
   col: ColumnDef;
   thread: Thread;
   density: MessageListDensity;
+  level: ClassificationLevel | undefined;
 }) {
-  const { getLevelById } = useClassification();
-  const level = getLevelById(thread.classificationId);
   const prominent = level ? isProminent(level) : false;
   const unread = !thread.isRead;
 
@@ -98,7 +99,7 @@ function MessageRowCell({
         <span className="flex items-center justify-center" style={cellWidth(col)}>
           {thread.isImportant && (
             <span title="Important" aria-label="Important" className="text-[var(--warning)]">
-              <StarIcon size={14} />
+              <WarningIcon size={14} />
             </span>
           )}
         </span>
@@ -212,13 +213,20 @@ const MessageRow = memo(function MessageRow({
   visibleColumns,
   ...handlers
 }: MessageRowProps) {
+  const { getLevelById } = useClassification();
+  const level = getLevelById(thread.classificationId);
+  const prominent = level ? isProminent(level) : false;
   return (
     <div
       role="option"
       aria-selected={selected}
-      tabIndex={0}
       {...handlers}
-      className={`group flex cursor-pointer items-stretch gap-1 px-1 focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${DENSITY_ROW_CLASSES[density]} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
+      style={
+        {
+          '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
+        } as React.CSSProperties
+      }
+      className={`group flex cursor-pointer items-stretch gap-1 px-1 focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -232,7 +240,7 @@ const MessageRow = memo(function MessageRow({
           className={`message-list-col-${col.id} flex min-w-0 items-center`}
           style={cellWidth(col)}
         >
-          <MessageRowCell col={col} thread={thread} density={density} />
+          <MessageRowCell col={col} thread={thread} density={density} level={level} />
         </div>
       ))}
     </div>
@@ -444,51 +452,56 @@ export function MessageList() {
         </div>
       )}
 
-      <div
-        ref={scrollRef}
-        tabIndex={0}
-        role="listbox"
-        className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
-        onKeyDown={(e) => {
-          if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-          e.preventDefault();
-          const direction = e.key === 'ArrowDown' ? 1 : -1;
-          const currentIndex = items.findIndex(
-            (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
-          );
-          function nextThreadIndex(start: number, dir: 1 | -1): number | null {
-            let i = start + dir;
-            while (i >= 0 && i < items.length) {
-              if (items[i]?.kind === 'thread') return i;
-              i += dir;
+      {isLoading && items.length === 0 ? (
+        <div
+          className={`flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)] ${autoHideScrollbarClass}`}
+        >
+          <MailIcon size={24} className="opacity-50" />
+          <span>Loading messages…</span>
+        </div>
+      ) : showEmpty ? (
+        <div
+          className={`flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)] ${autoHideScrollbarClass}`}
+        >
+          <MailIcon size={24} className="opacity-50" />
+          <span>No messages in this folder.</span>
+          <span className="text-[10px] opacity-70">
+            Select a different folder or check back later.
+          </span>
+        </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          tabIndex={0}
+          role="listbox"
+          aria-label="Messages"
+          className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
+          onKeyDown={(e) => {
+            if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+            e.preventDefault();
+            const direction = e.key === 'ArrowDown' ? 1 : -1;
+            const currentIndex = items.findIndex(
+              (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+            );
+            function nextThreadIndex(start: number, dir: 1 | -1): number | null {
+              let i = start + dir;
+              while (i >= 0 && i < items.length) {
+                if (items[i]?.kind === 'thread') return i;
+                i += dir;
+              }
+              return null;
             }
-            return null;
-          }
-          const nextIndex =
-            currentIndex === -1
-              ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
-              : nextThreadIndex(currentIndex, direction);
-          if (nextIndex == null) return;
-          const nextItem = items[nextIndex];
-          if (!nextItem || nextItem.kind !== 'thread') return;
-          void selectThread(nextItem.thread);
-          virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
-        }}
-      >
-        {isLoading && items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
-            <MailIcon size={24} className="opacity-50" />
-            <span>Loading messages…</span>
-          </div>
-        ) : showEmpty ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
-            <MailIcon size={24} className="opacity-50" />
-            <span>No messages in this folder.</span>
-            <span className="text-[10px] opacity-70">
-              Select a different folder or check back later.
-            </span>
-          </div>
-        ) : (
+            const nextIndex =
+              currentIndex === -1
+                ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
+                : nextThreadIndex(currentIndex, direction);
+            if (nextIndex == null) return;
+            const nextItem = items[nextIndex];
+            if (!nextItem || nextItem.kind !== 'thread') return;
+            void selectThread(nextItem.thread);
+            virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+          }}
+        >
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualItems.map((vi) => {
               const item = items[vi.index];
@@ -529,8 +542,8 @@ export function MessageList() {
               );
             })}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
