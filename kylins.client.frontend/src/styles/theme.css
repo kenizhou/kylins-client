@@ -225,7 +225,7 @@
 }
 
 [data-contrast='high'],
-[data-contrast='high'] .light {
+[data-contrast='high'].light {
   --background: #ffffff;
   --foreground: #000000;
   --surface: #ffffff;
@@ -250,7 +250,7 @@
   --error: #ff0000;
 }
 
-[data-contrast='high'] .dark {
+[data-contrast='high'].dark {
   --background: #000000;
   --foreground: #ffffff;
   --surface: #000000;
