@@ -541,7 +541,14 @@ export function MessageList() {
         danger: true,
         onSelect: () => void deleteThread(menu.thread),
       },
-      { label: 'Archive', icon: ArchiveIcon, disabled: true },
+      {
+        label: 'Archive',
+        icon: ArchiveIcon,
+        onSelect: () => {
+          if (!menu.thread) return;
+          void archiveThread(menu.thread);
+        },
+      },
     ];
   }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
 

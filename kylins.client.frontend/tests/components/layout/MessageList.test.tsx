@@ -216,6 +216,7 @@ describe('MessageList', () => {
     ]);
     expect(items[0]).toHaveAttribute('aria-disabled', 'true'); // Copy placeholder
     expect(items[items.length - 2]).not.toHaveAttribute('aria-disabled', 'true'); // Delete
+    expect(items[items.length - 1]).not.toHaveAttribute('aria-disabled', 'true'); // Archive
   });
 
   it('marks a thread as unread from the context menu', async () => {
@@ -254,6 +255,26 @@ describe('MessageList', () => {
     fireEvent.click(item);
     expect(deleteThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
     deleteThread.mockRestore();
+  });
+
+  it('archives a thread from the context menu', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    const archiveThread = vi.spyOn(
+      await import('../../../src/services/mail/actions'),
+      'archiveThread',
+    );
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.contextMenu(screen.getByText('Hello'));
+    const item = screen.getByRole('menuitem', { name: 'Archive' });
+    fireEvent.click(item);
+    expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
+    archiveThread.mockRestore();
   });
 
   it('shows hover quick actions and archives on click', async () => {

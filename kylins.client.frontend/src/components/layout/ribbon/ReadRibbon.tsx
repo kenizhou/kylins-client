@@ -25,10 +25,8 @@ import {
   CaretDownIcon,
   DeleteIcon,
   MoveIcon,
-  TagIcon,
   MailIcon,
   FlagIcon,
-  PinIcon,
   MoreIcon,
   ArchiveIcon,
   ClassificationIcon,
@@ -402,10 +400,15 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
           <>
             <RibbonButton
               icon={<ArchiveIcon size={18} />}
-              iconOnly={iconOnly}
-              disabled={!hasMessage}
+              disabled={!hasThread}
               title="Archive"
-            />
+              onClick={() => {
+                if (!selectedThread) return;
+                void archiveThread(selectedThread);
+              }}
+            >
+              Archive
+            </RibbonButton>
             <RibbonButton
               icon={<DeleteIcon size={17} />}
               iconOnly={iconOnly}
@@ -460,14 +463,6 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
 
       {!compact && (
         <RibbonGroup>
-          <RibbonButton icon={<TagIcon />} split iconOnly={iconOnly}>
-            Categorize
-          </RibbonButton>
-        </RibbonGroup>
-      )}
-
-      {!compact && (
-        <RibbonGroup>
           <RibbonButton
             icon={<MailIcon />}
             split
@@ -492,9 +487,6 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             }}
           >
             {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
-          </RibbonButton>
-          <RibbonButton icon={<PinIcon />} iconOnly={iconOnly} disabled={!hasThread}>
-            Pin
           </RibbonButton>
         </RibbonGroup>
       )}

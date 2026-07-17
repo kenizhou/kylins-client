@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ReadRibbon } from '../../../../src/components/layout/ribbon/ReadRibbon';
 import { useViewStore } from '../../../../src/features/view/viewStore';
 import { useThreadStore } from '../../../../src/stores/threadStore';
@@ -10,6 +10,32 @@ import type { Thread } from '../../../../src/services/db/threads';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+
+function setRibbonWidth(width: number) {
+  const rect = {
+    width,
+    height: 100,
+    top: 0,
+    left: 0,
+    bottom: 100,
+    right: width,
+    x: 0,
+    y: 0,
+    toJSON: () => {},
+  } as unknown as DOMRect;
+  Element.prototype.getBoundingClientRect = vi.fn(() => rect);
+  globalThis.ResizeObserver = class ResizeObserverMock {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(el: Element) {
+      this.callback(
+        [{ target: el, contentRect: { width, height: 100 } as DOMRectReadOnly }],
+        this as unknown as ResizeObserver,
+      );
+    }
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof globalThis.ResizeObserver;
+}
 
 beforeEach(() => {
   useViewStore.setState({ selectedMessage: null, inlineReplyMode: null });
@@ -63,6 +89,26 @@ describe('ReadRibbon', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /^pin$/i })).not.toBeInTheDocument();
     });
+  });
+
+  it('archives the selected thread when Archive is clicked', async () => {
+    const archiveThread = vi.spyOn(
+      await import('../../../../src/services/mail/actions'),
+      'archiveThread',
+    );
+    useThreadStore.setState({
+      threads: [{ id: 't1', accountId: 'a1', subject: 'x', isRead: true } as never],
+      selectedThreadId: 't1',
+    });
+    useAccountStore.setState({
+      accounts: [{ id: 'a1', email: 'me@x.com' } as never],
+      activeAccountId: 'a1',
+    });
+    setRibbonWidth(1024);
+    render(<ReadRibbon />);
+    fireEvent.click(screen.getByRole('button', { name: /archive/i }));
+    expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
+    archiveThread.mockRestore();
   });
 
   it('disables the compact More button when no message or thread is selected', async () => {
