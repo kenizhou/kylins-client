@@ -23,6 +23,7 @@ import {
   WarningIcon,
   AttachmentIcon,
   TrashIcon,
+  DeleteIcon,
   CopyIcon,
   FileTextIcon,
   ReplyIcon,
@@ -39,6 +40,7 @@ import { ContextMenu } from '../ui/ContextMenu';
 import { openComposerForThread } from '../../utils/composerActions';
 import { FolderPickerMenu } from './ribbon/FolderPickerMenu';
 import type { MailFolder } from '../../services/mail/folders/folderModel';
+import { archiveThread, trashThread } from '../../services/mail/actions';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -68,6 +70,59 @@ const DENSITY_ROW_CLASSES = {
   normal: 'min-h-11 py-1.5',
   comfortable: 'min-h-[52px] py-3',
 };
+
+interface QuickActionsProps {
+  thread: Thread;
+}
+
+function MessageRowQuickActions({ thread }: QuickActionsProps) {
+  const markThreadRead = useThreadStore((s) => s.markThreadRead);
+  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
+
+  return (
+    <span
+      className="absolute right-2 top-1/2 z-10 hidden -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-0.5 shadow-sm group-hover:flex group-focus-within:flex"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        aria-label="Archive"
+        title="Archive"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void archiveThread(thread)}
+      >
+        <ArchiveIcon size={14} />
+      </button>
+      <button
+        type="button"
+        aria-label="Delete"
+        title="Delete"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void trashThread(thread)}
+      >
+        <DeleteIcon size={14} />
+      </button>
+      <button
+        type="button"
+        aria-label={thread.isStarred ? 'Unflag' : 'Flag'}
+        title={thread.isStarred ? 'Unflag' : 'Flag'}
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void toggleThreadStarred(thread)}
+      >
+        <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
+      </button>
+      <button
+        type="button"
+        aria-label={thread.isRead ? 'Mark unread' : 'Mark read'}
+        title={thread.isRead ? 'Mark unread' : 'Mark read'}
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void markThreadRead(thread, !thread.isRead)}
+      >
+        <MailIcon size={14} />
+      </button>
+    </span>
+  );
+}
 
 function cellWidth(col: ColumnDef): React.CSSProperties {
   if (col.width) return { width: col.width, minWidth: col.width };
@@ -223,25 +278,29 @@ const MessageRow = memo(function MessageRow({
   return (
     <div
       id={optionId(thread.id)}
-      role="option"
+      role="listitem"
       aria-selected={selected}
+      tabIndex={0}
       {...handlers}
       style={
         {
           '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
         } as React.CSSProperties
       }
-      className={`group flex cursor-pointer items-stretch gap-1 px-1 ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
+      className={`group relative cursor-pointer ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
     >
-      {visibleColumns.map((col) => (
-        <div
-          key={col.id}
-          className={`message-list-col-${col.id} flex min-w-0 items-center`}
-          style={cellWidth(col)}
-        >
-          <MessageRowCell col={col} thread={thread} density={density} level={level} />
-        </div>
-      ))}
+      <div className="flex items-stretch gap-1 px-1">
+        {visibleColumns.map((col) => (
+          <div
+            key={col.id}
+            className={`message-list-col-${col.id} flex min-w-0 items-center`}
+            style={cellWidth(col)}
+          >
+            <MessageRowCell col={col} thread={thread} density={density} level={level} />
+          </div>
+        ))}
+      </div>
+      <MessageRowQuickActions thread={thread} />
     </div>
   );
 });

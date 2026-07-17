@@ -255,6 +255,27 @@ describe('MessageList', () => {
     deleteThread.mockRestore();
   });
 
+  it('shows hover quick actions and archives on click', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello', isRead: true })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    const archiveThread = vi.spyOn(
+      await import('../../../src/services/mail/actions'),
+      'archiveThread',
+    );
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    const row = screen.getByRole('listitem');
+    fireEvent.mouseEnter(row);
+    const archiveBtn = await screen.findByRole('button', { name: 'Archive' });
+    fireEvent.click(archiveBtn);
+    expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
+    archiveThread.mockRestore();
+  });
+
   it('toggles the star / follow-up flag from the context menu', async () => {
     vi.mocked(getThreads).mockResolvedValue({
       threads: [thread({ id: 't1', subject: 'Hello', isStarred: false })],
