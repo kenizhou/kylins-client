@@ -412,12 +412,20 @@ pub async fn delete_folder(
     label_id: &str,
 ) -> Result<(), String> {
     let mut tx = pool.begin().await.map_err(|e| format!("begin tx: {e}"))?;
-    sqlx::query("DELETE FROM thread_labels WHERE account_id = ? AND label_id = ?")
+    let removed = sqlx::query("DELETE FROM thread_labels WHERE account_id = ? AND label_id = ?")
         .bind(account_id)
         .bind(label_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+    // Attribute thread_labels wipes: a delete_folder here removes the folder's
+    // thread→label linkage; `upsert_message` only re-links messages upserted
+    // AFTER this point, so without the per-round reconcile this would empty the
+    // folder's message list until each message is re-synced.
+    log::info!(
+        "[labels] delete_folder {label_id}: removed {} thread_labels row(s) (label delete follows)",
+        removed.rows_affected()
+    );
     sqlx::query("DELETE FROM labels WHERE account_id = ? AND id = ?")
         .bind(account_id)
         .bind(label_id)
