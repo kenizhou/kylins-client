@@ -151,35 +151,6 @@ pub async fn apply_folder_delta(
     })
 }
 
-/// Reconcile `thread_labels` for an account: ensure every message currently in
-/// `messages` has a `thread_labels` row linking its thread to its folder's label
-/// (`{account_id}:{imap_folder}`). Self-heals any wipe.
-///
-/// `thread_labels` rows are only ever (re)created by `upsert_message` — for
-/// messages upserted *after* the wipe. So a folder whose linkage was deleted
-/// (by a `MutationOp::Move`, `delete_folder`/`prune_stale_labels`, or a direct
-/// delete) but whose messages were NOT re-upserted stays unlinked forever:
-/// `get_threads` does an `INNER JOIN thread_labels`, so it returns an empty
-/// message list even though `messages`/`threads` are full. Skip/flag-delta
-/// rounds re-upsert nothing, so the empty state never self-corrects. Running
-/// this at the tail of every sync round restores linkage regardless of whether
-/// the round had deltas. Idempotent (`ON CONFLICT DO NOTHING`); returns the
-/// number of rows added.
-pub async fn reconcile_thread_labels(pool: &SqlitePool, account_id: &str) -> Result<u64, String> {
-    let res = sqlx::query(
-        "INSERT INTO thread_labels (thread_id, account_id, label_id)
-         SELECT DISTINCT m.thread_id, m.account_id, (m.account_id || ':' || m.imap_folder)
-         FROM messages m
-         WHERE m.account_id = ?
-         ON CONFLICT(account_id, thread_id, label_id) DO NOTHING",
-    )
-    .bind(account_id)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(res.rows_affected())
-}
-
 /// Apply CONDSTORE flag-only deltas: update is_read/is_starred on `messages` and mirror
 /// to the owning `threads`. Touches NOTHING else (no subject/from/body clobber). Honors
 /// the 24-hr write-lock: a message with a pending local op is skipped.
@@ -1338,71 +1309,6 @@ mod tests {
     /// UPDATE (so a re-sync that picks up the stable ID later — e.g. after the
     /// server starts advertising OBJECTID — stamps the values). Locks the
     /// column list + bind ordering in `upsert_message`.
-    /// `reconcile_thread_labels` self-heals a wipe: after upserting a message
-    /// (which links its thread via `thread_labels`), a direct `DELETE FROM
-    /// thread_labels` (as `MutationOp::Move` / `delete_folder` do) leaves the
-    /// folder's message list empty until the message is re-upserted. The
-    /// reconcile must restore the linkage from `messages` alone.
-    #[tokio::test]
-    async fn reconcile_thread_labels_self_heals_after_wipe() {
-        let tmp = tempfile::tempdir().unwrap();
-        let pool = init_db(tmp.path()).await.unwrap();
-        seed(&pool, "acc").await;
-
-        // Upsert one INBOX message — upsert_message links its thread to "acc:INBOX".
-        let delta = FolderDelta {
-            added: vec![RemoteMessage {
-                uid: 7,
-                folder: "INBOX".into(),
-                message_id: Some("<m7>".into()),
-                subject: Some("hi".into()),
-                from_address: Some("a@b".into()),
-                date: 1000,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
-            .await
-            .unwrap();
-        let linked: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM thread_labels WHERE account_id = 'acc'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(linked, 1, "upsert must link the thread to its folder label");
-
-        // Simulate a wipe (what Move/delete_folder do) — linkage gone, message stays.
-        sqlx::query("DELETE FROM thread_labels WHERE account_id = 'acc'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let wiped: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM thread_labels WHERE account_id = 'acc'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(wiped, 0);
-
-        // Reconcile must rebuild the linkage from `messages` alone (no re-upsert).
-        let healed = reconcile_thread_labels(&pool, "acc").await.unwrap();
-        assert_eq!(healed, 1, "reconcile must re-add the wiped row");
-        let (tid, label): (String, String) = sqlx::query_as(
-            "SELECT thread_id, label_id FROM thread_labels WHERE account_id = 'acc'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(tid, "imap-acc-INBOX-7");
-        assert_eq!(label, "acc:INBOX");
-
-        // Idempotent: a second reconcile adds nothing.
-        let again = reconcile_thread_labels(&pool, "acc").await.unwrap();
-        assert_eq!(again, 0);
-    }
-
     #[tokio::test]
     async fn apply_folder_delta_persists_remote_stable_ids() {
         let tmp = tempfile::tempdir().unwrap();

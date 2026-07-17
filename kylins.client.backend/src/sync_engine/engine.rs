@@ -1691,20 +1691,6 @@ async fn run_sync_round_with_source(
         apply_folder_and_emit(engine, account_id, f, &delta, &own_emails).await;
     }
 
-    // Self-heal `thread_labels`: any wipe (Move / delete_folder / prune / direct
-    // delete) would otherwise leave the affected folder's message list empty until
-    // each message is re-upserted — and skip/flag-delta rounds re-upsert nothing,
-    // so the empty state never self-corrects. Re-link every message for the
-    // account here so `get_threads` (INNER JOIN thread_labels) always reflects
-    // what's in `messages`. Idempotent; runs every round regardless of deltas.
-    match crate::db::messages::reconcile_thread_labels(&engine.pool, account_id).await {
-        Ok(n) if n > 0 => log::info!(
-            "[sync] {account_id} reconciled {n} thread_labels row(s) (self-heal after a wipe)"
-        ),
-        Ok(_) => {}
-        Err(e) => log::warn!("[sync] {account_id} thread_labels reconcile failed: {e}"),
-    }
-
     let _ = accounts::touch_last_sync(&engine.pool, account_id).await;
     // Successful round end-to-end (list_folders + at least the folder iteration
     // completed without early-return): reset the breaker so a later outage must
