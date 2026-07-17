@@ -218,6 +218,19 @@
 
 [data-contrast='high'],
 [data-contrast='high'].light {
+  /* High-contrast grayscale — pure black/white with evenly spaced grays. */
+  --series-50: #ffffff;
+  --series-100: #f0f0f0;
+  --series-200: #e0e0e0;
+  --series-300: #c0c0c0;
+  --series-400: #a0a0a0;
+  --series-500: #808080;
+  --series-600: #606060;
+  --series-700: #404040;
+  --series-800: #202020;
+  --series-900: #000000;
+  --series-950: #000000;
+
   --background: #ffffff;
   --foreground: #000000;
   --surface: #ffffff;
@@ -225,8 +238,11 @@
   --card: #ffffff;
   --muted: #ffffff;
   --muted-foreground: #000000;
+  --text: #000000;
+  --muted-text: #000000;
   --border: #000000;
   --input: #ffffff;
+  --border-width: 2px;
   --ring: #0000ff;
   --primary: #0000ff;
   --primary-foreground: #ffffff;
@@ -243,6 +259,19 @@
 }
 
 [data-contrast='high'].dark {
+  /* High-contrast grayscale — pure black/white with evenly spaced grays. */
+  --series-50: #000000;
+  --series-100: #0a0a0a;
+  --series-200: #141414;
+  --series-300: #1f1f1f;
+  --series-400: #333333;
+  --series-500: #555555;
+  --series-600: #777777;
+  --series-700: #999999;
+  --series-800: #bbbbbb;
+  --series-900: #ffffff;
+  --series-950: #ffffff;
+
   --background: #000000;
   --foreground: #ffffff;
   --surface: #000000;
@@ -250,8 +279,11 @@
   --card: #000000;
   --muted: #000000;
   --muted-foreground: #ffffff;
+  --text: #ffffff;
+  --muted-text: #ffffff;
   --border: #ffffff;
   --input: #000000;
+  --border-width: 2px;
   --ring: #00ffff;
   --primary: #00ffff;
   --primary-foreground: #000000;
