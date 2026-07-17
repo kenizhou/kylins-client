@@ -31,6 +31,8 @@ import {
   MoreIcon,
   ArchiveIcon,
   ClassificationIcon,
+  ShieldCheckIcon,
+  EyeIcon,
 } from '../../icons';
 import { openComposerWindow } from '../../../utils/composeWindow';
 import {
@@ -54,7 +56,6 @@ import { ClassificationBadge } from '../../../features/classification/components
 import { SecurityChips } from '../../../features/classification/components/SecurityChips';
 import { RibbonButton, RibbonGroup, RibbonStatusItem } from './RibbonPrimitives';
 import { RibbonShell } from './RibbonShell';
-import { ShieldCheck, Eye } from '@phosphor-icons/react';
 
 function defaultSecurityForLevel(levelId: string): { isEncrypted: boolean; isSigned: boolean } {
   if (levelId === 'confidential' || levelId === 'restricted')
@@ -463,13 +464,17 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             />
             {selectedMessage?.preventCopy && (
               <RibbonStatusItem
-                icon={<ShieldCheck size={12} />}
+                icon={<ShieldCheckIcon size={12} />}
                 label="Prevent Copy"
                 color={level.color}
               />
             )}
             {selectedMessage?.readReceiptRequested && (
-              <RibbonStatusItem icon={<Eye size={12} />} label="Read Receipt" color={level.color} />
+              <RibbonStatusItem
+                icon={<EyeIcon size={12} />}
+                label="Read Receipt"
+                color={level.color}
+              />
             )}
           </div>
         </RibbonGroup>

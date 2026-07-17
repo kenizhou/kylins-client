@@ -1,4 +1,4 @@
-import { CaretDown } from '@phosphor-icons/react';
+import { CaretDownIcon } from '../../icons';
 import type { ReactNode } from 'react';
 import { Button, Checkbox } from 'react-aria-components';
 
@@ -48,7 +48,7 @@ export function RibbonButton({
     >
       {icon}
       <span className="whitespace-nowrap">{children}</span>
-      {split && <CaretDown size={10} className="ml-0.5 opacity-70" />}
+      {split && <CaretDownIcon size={10} className="ml-0.5 opacity-70" />}
     </Button>
   );
 }

@@ -79,7 +79,7 @@ import {
   Shield01Icon,
   ShieldCheck as ShieldCheckIconData,
   LockIcon as LockIconData,
-  EyeIcon,
+  EyeIcon as EyeIconData,
   Flag01Icon,
   SquareLock02Icon,
   CircleLock02Icon,
@@ -292,6 +292,7 @@ export const ArrowDownIcon = makeIcon(ArrowDown01Icon);
 export const MinusIcon = makeIcon(MinusSignIcon);
 export const ShieldCheckIcon = makeIcon(ShieldCheckIconData);
 export const LockIcon = makeIcon(LockIconData);
+export const EyeIcon = makeIcon(EyeIconData);
 export const CaretDownIcon = makeIcon(ArrowDown01Icon);
 export const MaximizeIcon = makeIcon(ArrowExpand01Icon);
 export const RestoreIcon = makeIcon(ArrowShrink01Icon);
@@ -362,7 +363,7 @@ const CLASSIFICATION_ICON_MAP: Record<
 > = {
   shield: Shield01Icon,
   lock: LockIconData,
-  eye: EyeIcon,
+  eye: EyeIconData,
   flag: Flag01Icon,
   star: StarIconData,
   alert: Alert01Icon,
