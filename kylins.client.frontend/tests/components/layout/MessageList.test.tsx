@@ -14,6 +14,7 @@ import { DEFAULT_VIEW_STATE } from '../../../src/features/view/defaults';
 import { getThreads, getMessagesForThread } from '../../../src/services/db/threads';
 import { getMessageBody } from '../../../src/services/db/messageBodies';
 import type { Thread, DbMessageRow } from '../../../src/services/db/threads';
+import type { MailFolder } from '../../../src/services/mail/folders/folderModel';
 import type { Account } from '../../../src/types';
 
 // Render every item (no real virtualization) so row logic is testable in jsdom.
@@ -328,5 +329,62 @@ describe('MessageList', () => {
     await waitFor(() => expect(useComposerStore.getState().isOpen).toBe(true));
     expect(useComposerStore.getState().mode).toBe('reply');
     expect(useComposerStore.getState().threadId).toBe('t1');
+  });
+
+  it('shows Focused/Other tabs in the inbox and filters threads', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'Focused unread', isRead: false }),
+        thread({ id: 't2', subject: 'Other read', isRead: true }),
+      ],
+      nextCursor: null,
+    });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      byAccount: {
+        a1: [{ id: 'inbox', accountId: 'a1', role: 'inbox' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Focused' })).toBeInTheDocument());
+    expect(screen.getByText('Focused unread')).toBeInTheDocument();
+    expect(screen.queryByText('Other read')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
+    await waitFor(() => expect(screen.queryByText('Focused unread')).not.toBeInTheDocument());
+    expect(screen.getByText('Other read')).toBeInTheDocument();
+  });
+
+  it('does not show Focused/Other tabs outside the inbox', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello', isRead: true })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'sent' },
+      byAccount: {
+        a1: [{ id: 'sent', accountId: 'a1', role: 'sent' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+    expect(screen.queryByRole('tab', { name: 'Focused' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Other' })).not.toBeInTheDocument();
+  });
+
+  it('shows the focused/other empty state when the active tab is empty', async () => {
+    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      byAccount: {
+        a1: [{ id: 'inbox', accountId: 'a1', role: 'inbox' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Focused' })).toBeInTheDocument());
+    expect(screen.getByText('No focused messages.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
+    await waitFor(() => expect(screen.getByText('No other messages.')).toBeInTheDocument());
   });
 });

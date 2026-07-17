@@ -311,6 +311,8 @@ const MessageRow = memo(function MessageRow({
 
 type ListItem = { kind: 'group'; label: string } | { kind: 'thread'; thread: Thread };
 
+const EMPTY_FOLDERS: MailFolder[] = [];
+
 function dayBucket(ts: number): string {
   const d = new Date(ts * 1000);
   const now = new Date();
@@ -346,6 +348,16 @@ export function MessageList() {
   const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
 
   const selectedFolder = useFolderStore((s) => s.selected);
+  const folders = useFolderStore((s) =>
+    selectedFolder ? (s.byAccount[selectedFolder.accountId] ?? EMPTY_FOLDERS) : EMPTY_FOLDERS,
+  );
+  const selectedRole = useMemo(
+    () => folders.find((f) => f.id === selectedFolder?.labelId)?.role ?? null,
+    [folders, selectedFolder],
+  );
+  const isInbox = selectedRole === 'inbox';
+  const [focusedTab, setFocusedTab] = useState<'focused' | 'other'>('focused');
+
   const threads = useThreadStore((s) => s.threads);
   const selectedThreadId = useThreadStore((s) => s.selectedThreadId);
   const isLoading = useThreadStore((s) => s.isLoading);
@@ -378,13 +390,23 @@ export function MessageList() {
 
   const items = useMemo(() => buildItems(threads), [threads]);
 
+  const filteredItems = useMemo(() => {
+    if (!isInbox) return items;
+    return items.filter((item) => {
+      if (item.kind === 'group') return true;
+      const t = item.thread;
+      const focused = !t.isRead || t.isStarred || t.isImportant;
+      return focusedTab === 'focused' ? focused : !focused;
+    });
+  }, [items, isInbox, focusedTab]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   // TanStack Virtual returns mutable function references that React Compiler
   // cannot safely memoize. Suppress the compiler warning here; the virtualizer
   // is used locally and its outputs are not memoized downstream.
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: filteredItems.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => (density === 'comfortable' ? 52 : 44),
     overscan: 12,
@@ -396,7 +418,7 @@ export function MessageList() {
   // rate-limited. See `hooks/useViewportBodyPrefetch.ts`.
   useViewportBodyPrefetch({
     virtualizer,
-    items,
+    items: filteredItems,
     accountId: selectedFolder?.accountId ?? null,
   });
 
@@ -429,7 +451,12 @@ export function MessageList() {
     setActiveDescendantId(selectedThreadId ? optionId(selectedThreadId) : null);
   }, [selectedThreadId]);
 
-  const showEmpty = !isLoading && items.length === 0;
+  const showEmpty = !isLoading && filteredItems.length === 0;
+  const emptyMessage = isInbox
+    ? focusedTab === 'focused'
+      ? 'No focused messages.'
+      : 'No other messages.'
+    : 'No messages in this folder.';
 
   const openContextMenu = (thread: Thread, e: React.MouseEvent) => {
     e.preventDefault();
@@ -521,6 +548,29 @@ export function MessageList() {
         </div>
       )}
 
+      {isInbox && (
+        <div className="flex items-center gap-1 border-b border-[var(--border)] px-3 py-1.5">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={focusedTab === 'focused'}
+            onClick={() => setFocusedTab('focused')}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${focusedTab === 'focused' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+          >
+            Focused
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={focusedTab === 'other'}
+            onClick={() => setFocusedTab('other')}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${focusedTab === 'other' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+          >
+            Other
+          </button>
+        </div>
+      )}
+
       <div
         ref={scrollRef}
         tabIndex={0}
@@ -533,23 +583,23 @@ export function MessageList() {
           if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();
             const direction = e.key === 'ArrowDown' ? 1 : -1;
-            const currentIndex = items.findIndex(
+            const currentIndex = filteredItems.findIndex(
               (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
             );
             function nextThreadIndex(start: number, dir: 1 | -1): number | null {
               let i = start + dir;
-              while (i >= 0 && i < items.length) {
-                if (items[i]?.kind === 'thread') return i;
+              while (i >= 0 && i < filteredItems.length) {
+                if (filteredItems[i]?.kind === 'thread') return i;
                 i += dir;
               }
               return null;
             }
             const nextIndex =
               currentIndex === -1
-                ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
+                ? nextThreadIndex(direction === 1 ? -1 : filteredItems.length, direction)
                 : nextThreadIndex(currentIndex, direction);
             if (nextIndex == null) return;
-            const nextItem = items[nextIndex];
+            const nextItem = filteredItems[nextIndex];
             if (!nextItem || nextItem.kind !== 'thread') return;
             setActiveDescendantId(optionId(nextItem.thread.id));
             void selectThread(nextItem.thread);
@@ -561,7 +611,7 @@ export function MessageList() {
             e.preventDefault();
             const activeThreadId = activeDescendantId?.replace(/^message-option-/, '');
             const activeItem = activeThreadId
-              ? items.find((i) => i.kind === 'thread' && i.thread.id === activeThreadId)
+              ? filteredItems.find((i) => i.kind === 'thread' && i.thread.id === activeThreadId)
               : undefined;
             if (activeItem?.kind === 'thread') {
               void selectThread(activeItem.thread);
@@ -583,10 +633,12 @@ export function MessageList() {
             className="flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]"
           >
             <MailIcon size={24} className="opacity-50" />
-            <span>No messages in this folder.</span>
-            <span className="text-[10px] opacity-70">
-              Select a different folder or check back later.
-            </span>
+            <span>{emptyMessage}</span>
+            {!isInbox && (
+              <span className="text-[10px] opacity-70">
+                Select a different folder or check back later.
+              </span>
+            )}
           </div>
         ) : (
           <div
@@ -594,7 +646,7 @@ export function MessageList() {
             style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
           >
             {virtualItems.map((vi) => {
-              const item = items[vi.index];
+              const item = filteredItems[vi.index];
               if (!item) return null;
               return (
                 <div
