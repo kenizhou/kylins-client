@@ -224,7 +224,9 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       threads: state.threads.filter((t) => t.id !== thread.id),
       selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
     });
-    useViewStore.getState().setSelectedThreadIds(nextThread?.id ? [nextThread.id] : []);
+    if (wasSelected) {
+      useViewStore.getState().setSelectedThreadIds(nextThread?.id ? [nextThread.id] : []);
+    }
 
     // If the deleted thread was being read, clear it and move the view to the
     // next thread. Otherwise, ensure the view store never points at a deleted
@@ -273,7 +275,9 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       threads: state.threads.filter((t) => t.id !== thread.id),
       selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
     });
-    useViewStore.getState().setSelectedThreadIds(nextThread?.id ? [nextThread.id] : []);
+    if (wasSelected) {
+      useViewStore.getState().setSelectedThreadIds(nextThread?.id ? [nextThread.id] : []);
+    }
 
     if (wasSelected) {
       useViewStore.getState().setSelectedMessage(null);
