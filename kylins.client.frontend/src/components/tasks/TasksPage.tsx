@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Panel, Group, Separator } from 'react-resizable-panels';
 import { useAccountStore } from '@/stores/accountStore';
 import { useTaskStore, useFilteredSortedTasks } from '@/stores/taskStore';
+import { ResizablePaneGroup } from '@/components/layout/ResizablePaneGroup';
 import { TaskToolbar } from './TaskToolbar';
 import { TaskList } from './TaskList';
 import { TaskDetail } from './TaskDetail';
@@ -104,28 +104,40 @@ export function TasksPage() {
         </div>
       )}
 
-      <Group className="flex flex-1 overflow-hidden">
-        <Panel defaultSize={40} minSize={CONSTRAINTS.list.min} className="flex min-w-0 flex-col">
-          <TaskList
-            tasks={filteredSortedTasks}
-            selectedTaskId={selectedTaskId}
-            onSelect={setSelectedTaskId}
-            onToggle={toggleComplete}
-            onEdit={handleEditTask}
-            onDelete={deleteTask}
-          />
-        </Panel>
-        <Separator className="w-px bg-border" />
-        <Panel defaultSize={60} minSize={CONSTRAINTS.detail.min} className="flex min-w-0 flex-col">
-          {selectedTask ? (
-            <TaskDetail task={selectedTask} onUpdate={updateTask} onDelete={deleteTask} />
-          ) : (
-            <div className="flex h-full flex-col items-center justify-center p-6 text-center text-muted-text">
-              <p className="text-sm">Select a task to view details.</p>
-            </div>
-          )}
-        </Panel>
-      </Group>
+      <ResizablePaneGroup
+        className="flex flex-1 overflow-hidden"
+        panels={[
+          {
+            id: 'tasks-list',
+            content: (
+              <TaskList
+                tasks={filteredSortedTasks}
+                selectedTaskId={selectedTaskId}
+                onSelect={setSelectedTaskId}
+                onToggle={toggleComplete}
+                onEdit={handleEditTask}
+                onDelete={deleteTask}
+              />
+            ),
+            defaultSize: 40,
+            minSize: CONSTRAINTS.list.min,
+            card: false,
+          },
+          {
+            id: 'tasks-detail',
+            content: selectedTask ? (
+              <TaskDetail task={selectedTask} onUpdate={updateTask} onDelete={deleteTask} />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center p-6 text-center text-muted-text">
+                <p className="text-sm">Select a task to view details.</p>
+              </div>
+            ),
+            defaultSize: 60,
+            minSize: CONSTRAINTS.detail.min,
+            card: false,
+          },
+        ]}
+      />
 
       <TaskCreateDialog
         isOpen={dialogOpen}
