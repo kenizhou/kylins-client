@@ -52,6 +52,10 @@ interface MessageRowProps {
   onContextMenu?: (e: React.MouseEvent) => void;
 }
 
+function optionId(threadId: string): string {
+  return `message-option-${threadId}`;
+}
+
 const RIBBON_COLOR: Record<MessageState, string> = {
   unread: 'bg-[var(--primary)]',
   read: 'bg-[var(--border)]',
@@ -218,6 +222,7 @@ const MessageRow = memo(function MessageRow({
   const prominent = level ? isProminent(level) : false;
   return (
     <div
+      id={optionId(thread.id)}
       role="option"
       aria-selected={selected}
       {...handlers}
@@ -226,13 +231,7 @@ const MessageRow = memo(function MessageRow({
           '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
         } as React.CSSProperties
       }
-      className={`group flex cursor-pointer items-stretch gap-1 px-1 focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          handlers.onClick?.();
-        }
-      }}
+      className={`group flex cursor-pointer items-stretch gap-1 px-1 ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
     >
       {visibleColumns.map((col) => (
         <div
@@ -358,7 +357,14 @@ export function MessageList() {
 
   const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
   const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+  const [activeDescendantId, setActiveDescendantId] = useState<string | null>(null);
   useAutoHideScrollbar(scrollRef);
+
+  // Keep the active descendant in sync with the selected thread so screen
+  // readers always announce the current option when focus is on the listbox.
+  useEffect(() => {
+    setActiveDescendantId(selectedThreadId ? optionId(selectedThreadId) : null);
+  }, [selectedThreadId]);
 
   const showEmpty = !isLoading && items.length === 0;
 
@@ -475,31 +481,46 @@ export function MessageList() {
           tabIndex={0}
           role="listbox"
           aria-label="Messages"
+          aria-activedescendant={activeDescendantId ?? undefined}
           className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
           onKeyDown={(e) => {
-            if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-            e.preventDefault();
-            const direction = e.key === 'ArrowDown' ? 1 : -1;
-            const currentIndex = items.findIndex(
-              (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
-            );
-            function nextThreadIndex(start: number, dir: 1 | -1): number | null {
-              let i = start + dir;
-              while (i >= 0 && i < items.length) {
-                if (items[i]?.kind === 'thread') return i;
-                i += dir;
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              e.preventDefault();
+              const direction = e.key === 'ArrowDown' ? 1 : -1;
+              const currentIndex = items.findIndex(
+                (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+              );
+              function nextThreadIndex(start: number, dir: 1 | -1): number | null {
+                let i = start + dir;
+                while (i >= 0 && i < items.length) {
+                  if (items[i]?.kind === 'thread') return i;
+                  i += dir;
+                }
+                return null;
               }
-              return null;
+              const nextIndex =
+                currentIndex === -1
+                  ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
+                  : nextThreadIndex(currentIndex, direction);
+              if (nextIndex == null) return;
+              const nextItem = items[nextIndex];
+              if (!nextItem || nextItem.kind !== 'thread') return;
+              setActiveDescendantId(optionId(nextItem.thread.id));
+              void selectThread(nextItem.thread);
+              virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+              return;
             }
-            const nextIndex =
-              currentIndex === -1
-                ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
-                : nextThreadIndex(currentIndex, direction);
-            if (nextIndex == null) return;
-            const nextItem = items[nextIndex];
-            if (!nextItem || nextItem.kind !== 'thread') return;
-            void selectThread(nextItem.thread);
-            virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              const activeThreadId = activeDescendantId?.replace(/^message-option-/, '');
+              const activeItem = activeThreadId
+                ? items.find((i) => i.kind === 'thread' && i.thread.id === activeThreadId)
+                : undefined;
+              if (activeItem?.kind === 'thread') {
+                void selectThread(activeItem.thread);
+              }
+            }
           }}
         >
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
@@ -533,7 +554,10 @@ export function MessageList() {
                       selected={selectedThreadId === item.thread.id}
                       density={density}
                       visibleColumns={visibleColumns}
-                      onClick={() => void selectThread(item.thread)}
+                      onClick={() => {
+                        setActiveDescendantId(optionId(item.thread.id));
+                        void selectThread(item.thread);
+                      }}
                       onDoubleClick={() => void handleDoubleClick(item.thread)}
                       onContextMenu={(e) => openContextMenu(item.thread, e)}
                     />
