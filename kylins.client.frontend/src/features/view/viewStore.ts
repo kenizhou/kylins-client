@@ -45,8 +45,12 @@ export interface ViewStore extends ViewState {
   inlineReplyMode: 'reply' | 'replyAll' | 'forward' | null;
   /** True once persisted settings have been loaded. */
   isHydrated: boolean;
+  /** Transient thread selection for the status bar / future multi-select. */
+  selectedThreadIds: string[];
   setSelectedMessage: (message: MailMessage | null) => void;
   setInlineReplyMode: (mode: 'reply' | 'replyAll' | 'forward' | null) => void;
+  setSelectedThreadIds: (ids: string[]) => void;
+  toggleSelectedThreadId: (id: string) => void;
   setReadingPanePosition: (position: ReadingPanePosition) => void;
   setFolderPaneVisible: (visible: boolean) => void;
   setCalendarPaneVisible: (visible: boolean) => void;
@@ -67,9 +71,17 @@ export const useViewStore = create<ViewStore>((set) => ({
   selectedMessage: null,
   inlineReplyMode: null,
   isHydrated: false,
+  selectedThreadIds: [],
 
   setSelectedMessage: (selectedMessage) => set({ selectedMessage }),
   setInlineReplyMode: (inlineReplyMode) => set({ inlineReplyMode }),
+  setSelectedThreadIds: (selectedThreadIds) => set({ selectedThreadIds }),
+  toggleSelectedThreadId: (id) =>
+    set((state) => ({
+      selectedThreadIds: state.selectedThreadIds.includes(id)
+        ? state.selectedThreadIds.filter((x) => x !== id)
+        : [...state.selectedThreadIds, id],
+    })),
   setReadingPanePosition: (readingPanePosition) => set({ readingPanePosition }),
   setFolderPaneVisible: (folderPaneVisible) => set({ folderPaneVisible }),
   setCalendarPaneVisible: (calendarPaneVisible) => set({ calendarPaneVisible }),
@@ -86,7 +98,12 @@ export const useViewStore = create<ViewStore>((set) => ({
   setHydrated: (isHydrated) => set({ isHydrated }),
 
   resetToDefaults: () =>
-    set({ ...DEFAULT_VIEW_STATE, selectedMessage: null, inlineReplyMode: null }),
+    set({
+      ...DEFAULT_VIEW_STATE,
+      selectedMessage: null,
+      inlineReplyMode: null,
+      selectedThreadIds: [],
+    }),
 
   hydrate: (partial) =>
     set((current) => ({

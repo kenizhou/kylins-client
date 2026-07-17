@@ -5,6 +5,7 @@ import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useThreadStore } from '../../stores/threadStore';
+import { useUIStore } from '../../stores/uiStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
 import { fetchAttachment, fetchInlineImages, getAttachments } from '../../services/db/attachments';
@@ -30,6 +31,7 @@ export function ReadingPane() {
   const accountEmail = account?.email ?? null;
   const accountDisplayName = account?.displayName ?? null;
   const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
+  const readerZoom = useUIStore((s) => s.readerZoom);
   const { getLevelById } = useClassification();
   const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
@@ -267,16 +269,18 @@ export function ReadingPane() {
           messageId={message.id}
           bodyHtml={message.html}
         />
-        <EmailRenderer
-          html={message.html}
-          text={message.text}
-          blockImages={!automaticallyLoadImages}
-          senderAddress={message.from.address}
-          accountId={activeAccountId}
-          senderAllowlisted={false}
-          isMessageSuspicious={isSuspicious}
-          cidMap={cidMap}
-        />
+        <div style={{ transform: `scale(${readerZoom})`, transformOrigin: 'top left' }}>
+          <EmailRenderer
+            html={message.html}
+            text={message.text}
+            blockImages={!automaticallyLoadImages}
+            senderAddress={message.from.address}
+            accountId={activeAccountId}
+            senderAllowlisted={false}
+            isMessageSuspicious={isSuspicious}
+            cidMap={cidMap}
+          />
+        </div>
       </main>
       {prominent && level && <ClassificationBanner level={level} position="bottom" />}
       <InjectedComponentSet

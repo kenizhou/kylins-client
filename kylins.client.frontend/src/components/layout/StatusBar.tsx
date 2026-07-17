@@ -1,5 +1,6 @@
 import { Button } from 'react-aria-components';
 import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { useUIStore } from '../../stores/uiStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -63,24 +64,45 @@ function SyncStatusIndicator() {
     return () => window.clearInterval(id);
   }, []);
 
+  const triggerSync = async () => {
+    try {
+      await invoke('sync_start');
+    } catch (e) {
+      console.error('StatusBar sync trigger failed:', e);
+    }
+  };
+
   const worst = pickWorstState(syncStateByAccount);
 
-  if (worst === 'rate_limited') {
-    return <span title="A provider asked us to slow down">Rate limited</span>;
-  }
-  if (worst === 'syncing') {
-    return <span>Syncing…</span>;
-  }
-  if (worst === 'error') {
-    return <span title="Last sync round failed for at least one account">Sync error</span>;
-  }
-  // idle or no state reported yet -> "Synced · {relative}".
-  const def = accounts.find((a) => a.isDefault) ?? accounts[0];
-  const rel = formatRelativeTime(def?.lastSyncAt ?? null);
+  const content = (() => {
+    if (worst === 'rate_limited') {
+      return <span title="A provider asked us to slow down">Rate limited</span>;
+    }
+    if (worst === 'syncing') {
+      return <span>Syncing…</span>;
+    }
+    if (worst === 'error') {
+      return <span title="Last sync round failed for at least one account">Sync error</span>;
+    }
+    // idle or no state reported yet -> "Synced · {relative}".
+    const def = accounts.find((a) => a.isDefault) ?? accounts[0];
+    const rel = formatRelativeTime(def?.lastSyncAt ?? null);
+    return (
+      <span title={def?.lastSyncAt ? new Date(def.lastSyncAt * 1000).toLocaleString() : undefined}>
+        {aggregatedPending > 0 ? `Offline — ${aggregatedPending} pending` : `Synced · ${rel}`}
+      </span>
+    );
+  })();
+
   return (
-    <span title={def?.lastSyncAt ? new Date(def.lastSyncAt * 1000).toLocaleString() : undefined}>
-      {aggregatedPending > 0 ? `Offline — ${aggregatedPending} pending` : `Synced · ${rel}`}
-    </span>
+    <button
+      type="button"
+      onClick={triggerSync}
+      aria-label="Sync now"
+      className="hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] rounded px-1"
+    >
+      {content}
+    </button>
   );
 }
 
@@ -98,6 +120,13 @@ function SendProgressIndicator() {
   );
 }
 
+function SelectionIndicator() {
+  const selectedThreadIds = useViewStore((s) => s.selectedThreadIds);
+  const count = selectedThreadIds.length;
+  if (count === 0) return null;
+  return <span>{count} selected</span>;
+}
+
 export function StatusBar() {
   const readerZoom = useUIStore((s) => s.readerZoom);
   const setReaderZoom = useUIStore((s) => s.setReaderZoom);
@@ -109,7 +138,7 @@ export function StatusBar() {
       <div className="flex items-center gap-3">
         <SyncStatusIndicator />
         <SendProgressIndicator />
-        <span>1 selected</span>
+        <SelectionIndicator />
       </div>
       <div className="flex items-center gap-3">
         <InjectedComponentSet role="status-bar" containersRequired={false} />
