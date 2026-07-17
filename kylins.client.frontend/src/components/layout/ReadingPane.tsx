@@ -269,7 +269,13 @@ export function ReadingPane() {
           messageId={message.id}
           bodyHtml={message.html}
         />
-        <div style={{ transform: `scale(${readerZoom})`, transformOrigin: 'top left' }}>
+        <div
+          style={{
+            transform: `scale(${readerZoom})`,
+            transformOrigin: 'top left',
+            width: `${100 / readerZoom}%`,
+          }}
+        >
           <EmailRenderer
             html={message.html}
             text={message.text}

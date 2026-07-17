@@ -5,6 +5,7 @@ import { ReadingPane } from '../../../src/components/layout/ReadingPane';
 import { useViewStore } from '../../../src/features/view/viewStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
 import { usePreferencesStore } from '../../../src/stores/preferencesStore';
+import { useUIStore } from '../../../src/stores/uiStore';
 import { useClassificationStore } from '../../../src/features/classification/classificationStore';
 import { getAttachments, fetchAttachment } from '../../../src/services/db/attachments';
 import type { MailMessage } from '../../../src/features/view/viewStore';
@@ -92,6 +93,15 @@ describe('ReadingPane', () => {
       expect(queryByText('No message selected')).not.toBeInTheDocument();
       expect(getByText('Test subject')).toBeInTheDocument();
     });
+  });
+
+  it('applies reader zoom to the email renderer wrapper', async () => {
+    useUIStore.setState({ readerZoom: 1.25 });
+    useViewStore.setState({ selectedMessage: message });
+    const { container } = render(<ReadingPane />);
+    await waitFor(() =>
+      expect(container.querySelector('[style*="scale(1.25)"]')).toBeInTheDocument(),
+    );
   });
 
   it('renders an RSVP card for calendar-invite attachments', async () => {
