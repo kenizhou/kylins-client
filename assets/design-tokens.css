@@ -53,42 +53,53 @@
 /* === SEMANTIC === */
 :root {
   --color-background: #ffffff;
-  --color-foreground: #0f172a;
-  --color-muted: #f1f5f9;
-  --color-muted-foreground: #64748b;
-  --color-border: #e2e8f0;
+  --color-foreground: #18181b;
+  --color-surface: #f4f4f5;
+  --color-chrome: #e4e4e7;
+  --color-card: #ffffff;
+  --color-muted: #f4f4f5;
+  --color-muted-foreground: #71717a;
+  --color-border: #e4e4e7;
   --color-primary: #2563eb;
   --color-primary-hover: #1d4ed8;
-  --color-primary-active: #1e40af;
-  --color-primary-light: #60a5fa;
-  --color-primary-lighter: #dbeafe;
-  --color-primary-dark: #1d4ed8;
-  --color-secondary: #3b82f6;
-  --color-secondary-hover: #2563eb;
-  --color-secondary-light: #93c5fd;
-  --color-secondary-dark: #2563eb;
-  --color-accent: #dc2626;
-  --color-accent-hover: #b91c1c;
-  --color-accent-light: #fca5a5;
-  --color-success: #22c55e;
-  --color-success-light: #86efac;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f4f4f5;
+  --color-secondary-foreground: #18181b;
+  --color-accent: #fafafa;
+  --color-accent-foreground: #18181b;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #10b981;
   --color-warning: #f59e0b;
-  --color-warning-light: #fcd34d;
   --color-error: #dc2626;
-  --color-error-light: #fca5a5;
   --color-info: #3b82f6;
-  --color-info-light: #93c5fd;
+  --color-link: #2563eb;
+  --color-link-hover: #1d4ed8;
+  --color-ring: color-mix(in oklab, #2563eb, transparent 75%);
   --font-ui:
-    "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
-    system-ui, sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
-    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New",
     monospace;
 }
 
 /* === COMPONENTS === */
 :root {
-  --button-secondary-bg-hover: #2563eb1a;
+  --button-primary-bg: var(--color-primary);
+  --button-primary-fg: var(--color-primary-foreground);
+  --button-secondary-bg-hover: color-mix(
+    in srgb,
+    var(--color-primary) 10%,
+    transparent
+  );
+  --input-bg: var(--color-background);
+  --input-border: var(--color-border);
+  --input-focus-ring: var(--color-ring);
+  --list-row-hover-bg: var(--color-chrome);
+  --list-row-selected-bg: var(--color-chrome);
+  --ribbon-bg: var(--color-chrome);
+  --ribbon-group-border: var(--color-border);
+  --statusbar-bg: var(--color-chrome);
 }
 
 /* === DARK MODE === */

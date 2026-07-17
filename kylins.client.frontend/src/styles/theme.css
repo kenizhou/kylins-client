@@ -128,6 +128,19 @@
 
   /* Shared typography */
   --text-overline: 700 11px / 1.2 var(--font-ui);
+
+  /* Component tokens */
+  --button-primary-bg: var(--primary);
+  --button-primary-fg: var(--primary-foreground);
+  --button-secondary-bg-hover: color-mix(in srgb, var(--primary) 10%, transparent);
+  --input-bg: var(--background);
+  --input-border: var(--border);
+  --input-focus-ring: var(--ring);
+  --list-row-hover-bg: var(--hover);
+  --list-row-selected-bg: var(--selected);
+  --ribbon-bg: var(--chrome);
+  --ribbon-group-border: var(--border);
+  --statusbar-bg: var(--chrome);
 }
 
 .dark {
