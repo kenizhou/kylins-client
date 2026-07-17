@@ -12,6 +12,7 @@ import {
   RootMenuTriggerStateContext,
 } from 'react-aria-components';
 import { useId, useRef, useState } from 'react';
+import { useElementWidth } from '../../../hooks/useElementWidth';
 import { useMenuTrigger } from 'react-aria';
 import { useMenuTriggerState } from 'react-stately';
 import {
@@ -43,6 +44,7 @@ import {
   openReplyAllComposerWithAttachments,
   openForwardComposerAsAttachment,
 } from '../../../utils/composerActions';
+import { archiveThread } from '../../../services/mail/actions';
 import { useViewStore } from '../../../features/view/viewStore';
 import { useAccountStore } from '../../../stores/accountStore';
 import { usePreferencesStore } from '../../../stores/preferencesStore';
@@ -154,6 +156,7 @@ interface SplitRibbonButtonProps {
   label: string;
   disabled?: boolean;
   title?: string;
+  iconOnly?: boolean;
   primary: () => void;
   items: SplitMenuItem[];
 }
@@ -164,6 +167,7 @@ function SplitRibbonButton({
   label,
   disabled,
   title,
+  iconOnly,
   primary,
   items,
 }: SplitRibbonButtonProps) {
@@ -177,11 +181,13 @@ function SplitRibbonButton({
           isDisabled={disabled}
           onPress={primary}
           aria-label={title ?? label}
-          className="flex items-center gap-1.5 rounded-l px-2.5 h-11 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent"
+          className={`flex items-center gap-1.5 rounded-l px-2.5 h-11 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent ${
+            iconOnly ? 'w-11 justify-center px-0' : ''
+          }`}
         >
           <span className="icon-default">{icon}</span>
           {selectedIcon && <span className="icon-selected">{selectedIcon}</span>}
-          <span className="whitespace-nowrap">{label}</span>
+          <span className={`whitespace-nowrap ${iconOnly ? 'sr-only' : ''}`}>{label}</span>
         </Button>
       }
       menu={
@@ -247,6 +253,11 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
   const { levels, getDefaultLevel, getLevelById } = useClassification();
   const [moveOpen, setMoveOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowButtonRef = useRef<HTMLButtonElement>(null);
+  const { ref: ribbonRef, width: ribbonWidth } = useElementWidth<HTMLElement>();
+  const compact = ribbonWidth > 0 && ribbonWidth < 640;
+  const iconOnly = ribbonWidth > 0 && ribbonWidth < 900;
 
   const handleMoveSelect = (folder: MailFolder) => {
     setMoveOpen(false);
@@ -313,13 +324,17 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
     : undefined;
 
   return (
-    <RibbonShell>
+    <RibbonShell ref={ribbonRef}>
       {!viewer && (
         <RibbonGroup>
           <SplitButton
             menuLabel="Choose classification"
             main={
-              <RibbonButton icon={<MailAddIcon size={18} />} onClick={handleNewEmail}>
+              <RibbonButton
+                icon={<MailAddIcon size={18} />}
+                iconOnly={iconOnly}
+                onClick={handleNewEmail}
+              >
                 New Email
               </RibbonButton>
             }
@@ -352,6 +367,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
           selectedIcon={<ReplyFilledIcon size={18} className="text-[var(--primary)]" />}
           label="Reply"
           disabled={!hasMessage}
+          iconOnly={iconOnly}
           primary={handleReply}
           items={[
             { label: 'Reply', onClick: handleReply },
@@ -363,6 +379,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
           selectedIcon={<ReplyAllFilledIcon size={18} className="text-[var(--primary)]" />}
           label="Reply all"
           disabled={!hasMessage}
+          iconOnly={iconOnly}
           primary={handleReplyAll}
           items={[
             { label: 'Reply all', onClick: handleReplyAll },
@@ -374,37 +391,168 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
           selectedIcon={<MailSendIcon size={18} className="text-[var(--primary)]" />}
           label="Forward"
           disabled={!hasMessage}
+          iconOnly={iconOnly}
           primary={handleForward}
           items={[
             { label: 'Forward', onClick: handleForward },
             { label: 'Forward as Attachment', onClick: handleForwardAsAttachment },
           ]}
         />
-        <RibbonButton icon={<ArchiveIcon size={18} />} disabled={!hasMessage} title="Archive" />
-        <RibbonButton
-          icon={<DeleteIcon size={17} />}
-          disabled={!hasThread}
-          title="Delete"
-          onClick={() => {
-            if (!selectedThread) return;
-            void deleteThread(selectedThread);
-          }}
-        />
-        <RibbonButton icon={<MoreIcon size={17} />} disabled={!hasMessage} title="More actions" />
+        {!compact && (
+          <>
+            <RibbonButton
+              icon={<ArchiveIcon size={18} />}
+              iconOnly={iconOnly}
+              disabled={!hasMessage}
+              title="Archive"
+            />
+            <RibbonButton
+              icon={<DeleteIcon size={17} />}
+              iconOnly={iconOnly}
+              disabled={!hasThread}
+              title="Delete"
+              onClick={() => {
+                if (!selectedThread) return;
+                void deleteThread(selectedThread);
+              }}
+            >
+              Delete
+            </RibbonButton>
+            <RibbonButton
+              icon={<MoreIcon size={17} />}
+              iconOnly={iconOnly}
+              disabled={!hasMessage}
+              title="More actions"
+            >
+              More
+            </RibbonButton>
+          </>
+        )}
       </RibbonGroup>
 
-      <RibbonGroup>
-        <DialogTrigger isOpen={moveOpen} onOpenChange={setMoveOpen}>
-          <RibbonButton
-            icon={<MoveIcon size={18} />}
-            split
-            disabled={!hasThread}
-            title="Move to folder"
-            onClick={() => setMoveOpen(true)}
-          >
-            Move
+      {!compact && (
+        <RibbonGroup>
+          <DialogTrigger isOpen={moveOpen} onOpenChange={setMoveOpen}>
+            <RibbonButton
+              icon={<MoveIcon size={18} />}
+              split
+              iconOnly={iconOnly}
+              disabled={!hasThread}
+              title="Move to folder"
+              onClick={() => setMoveOpen(true)}
+            >
+              Move
+            </RibbonButton>
+            <Popover className="min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-border bg-background py-1 shadow-lg">
+              {selectedThread && (
+                <FolderPickerMenu
+                  accountId={selectedThread.accountId}
+                  excludeLabelId={selectedFolder?.labelId}
+                  onSelect={handleMoveSelect}
+                  onClose={() => setMoveOpen(false)}
+                  portal={false}
+                />
+              )}
+            </Popover>
+          </DialogTrigger>
+        </RibbonGroup>
+      )}
+
+      {!compact && (
+        <RibbonGroup>
+          <RibbonButton icon={<TagIcon />} split iconOnly={iconOnly}>
+            Categorize
           </RibbonButton>
-          <Popover className="min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-border bg-background py-1 shadow-lg">
+        </RibbonGroup>
+      )}
+
+      {!compact && (
+        <RibbonGroup>
+          <RibbonButton
+            icon={<MailIcon />}
+            split
+            iconOnly={iconOnly}
+            disabled={!hasThread}
+            title={selectedThread?.isRead ? 'Mark as unread' : 'Mark as read'}
+            onClick={() => {
+              if (!selectedThread) return;
+              void markThreadRead(selectedThread, !selectedThread.isRead);
+            }}
+          >
+            {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
+          </RibbonButton>
+          <RibbonButton
+            icon={<FlagIcon />}
+            iconOnly={iconOnly}
+            disabled={!hasThread}
+            title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
+            onClick={() => {
+              if (!selectedThread) return;
+              void toggleThreadStarred(selectedThread);
+            }}
+          >
+            {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
+          </RibbonButton>
+          <RibbonButton icon={<PinIcon />} iconOnly={iconOnly} disabled={!hasThread}>
+            Pin
+          </RibbonButton>
+        </RibbonGroup>
+      )}
+
+      {compact && (
+        <RibbonGroup>
+          <DialogTrigger isOpen={overflowOpen} onOpenChange={setOverflowOpen}>
+            <RibbonButton
+              ref={overflowButtonRef}
+              icon={<MoreIcon size={18} />}
+              iconOnly
+              title="More actions"
+            >
+              More
+            </RibbonButton>
+            <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+              <Menu aria-label="More actions" className="outline-none">
+                <MenuItem
+                  onAction={() => selectedThread && void archiveThread(selectedThread)}
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                >
+                  <ArchiveIcon size={14} /> Archive
+                </MenuItem>
+                <MenuItem
+                  onAction={() => selectedThread && void deleteThread(selectedThread)}
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                >
+                  <DeleteIcon size={14} /> Delete
+                </MenuItem>
+                <MenuItem
+                  onAction={() => selectedThread && setMoveOpen(true)}
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                >
+                  <MoveIcon size={14} /> Move
+                </MenuItem>
+                <MenuItem
+                  onAction={() =>
+                    selectedThread && void markThreadRead(selectedThread, !selectedThread.isRead)
+                  }
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                >
+                  <MailIcon size={14} /> {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
+                </MenuItem>
+                <MenuItem
+                  onAction={() => selectedThread && void toggleThreadStarred(selectedThread)}
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                >
+                  <FlagIcon size={14} /> {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
+                </MenuItem>
+              </Menu>
+            </Popover>
+          </DialogTrigger>
+          <Popover
+            triggerRef={overflowButtonRef}
+            isOpen={moveOpen}
+            onOpenChange={setMoveOpen}
+            className="min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-border bg-background py-1 shadow-lg"
+          >
             {selectedThread && (
               <FolderPickerMenu
                 accountId={selectedThread.accountId}
@@ -415,43 +563,8 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
               />
             )}
           </Popover>
-        </DialogTrigger>
-      </RibbonGroup>
-
-      <RibbonGroup>
-        <RibbonButton icon={<TagIcon />} split>
-          Categorize
-        </RibbonButton>
-      </RibbonGroup>
-
-      <RibbonGroup>
-        <RibbonButton
-          icon={<MailIcon />}
-          split
-          disabled={!hasThread}
-          title={selectedThread?.isRead ? 'Mark as unread' : 'Mark as read'}
-          onClick={() => {
-            if (!selectedThread) return;
-            void markThreadRead(selectedThread, !selectedThread.isRead);
-          }}
-        >
-          {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
-        </RibbonButton>
-        <RibbonButton
-          icon={<FlagIcon />}
-          disabled={!hasThread}
-          title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}
-          onClick={() => {
-            if (!selectedThread) return;
-            void toggleThreadStarred(selectedThread);
-          }}
-        >
-          {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
-        </RibbonButton>
-        <RibbonButton icon={<PinIcon />} disabled={!hasThread}>
-          Pin
-        </RibbonButton>
-      </RibbonGroup>
+        </RibbonGroup>
+      )}
 
       {level && (
         <RibbonGroup>
