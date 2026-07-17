@@ -5,6 +5,7 @@ import { useViewStore } from '../../../../src/features/view/viewStore';
 import { useThreadStore } from '../../../../src/stores/threadStore';
 import { useAccountStore } from '../../../../src/stores/accountStore';
 import { usePreferencesStore } from '../../../../src/stores/preferencesStore';
+import type { Thread } from '../../../../src/services/db/threads';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
@@ -61,6 +62,41 @@ describe('ReadRibbon', () => {
     render(<ReadRibbon />);
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /^pin$/i })).not.toBeInTheDocument();
+    });
+  });
+
+  it('disables the compact More button when no message or thread is selected', async () => {
+    render(<ReadRibbon />);
+    await waitFor(() => {
+      const more = screen.getByRole('button', { name: /more actions/i });
+      expect(more).toHaveAttribute('data-disabled', 'true');
+    });
+  });
+
+  it('enables the compact More button when a thread is selected', async () => {
+    const thread: Thread = {
+      id: 't1',
+      accountId: 'a1',
+      subject: 'Test',
+      snippet: null,
+      lastMessageAt: null,
+      messageCount: 1,
+      isRead: true,
+      isStarred: false,
+      isImportant: false,
+      hasAttachments: false,
+      isSnoozed: false,
+      fromName: null,
+      fromAddress: null,
+      classificationId: null,
+      isEncrypted: false,
+      isSigned: false,
+    };
+    useThreadStore.setState({ threads: [thread], selectedThreadId: 't1' });
+    render(<ReadRibbon />);
+    await waitFor(() => {
+      const more = screen.getByRole('button', { name: /more actions/i });
+      expect(more).not.toHaveAttribute('data-disabled');
     });
   });
 });

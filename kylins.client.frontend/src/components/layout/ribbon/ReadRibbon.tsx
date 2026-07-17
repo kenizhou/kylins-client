@@ -203,7 +203,7 @@ function SplitRibbonButton({
           {(item) => (
             <MenuItem
               id={String(items.indexOf(item))}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
             >
               <span className="flex-1 whitespace-nowrap">{item.label}</span>
             </MenuItem>
@@ -225,7 +225,7 @@ function ClassificationMenuItem({
     <MenuItem
       id={level.id}
       onAction={onAction}
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
     >
       {level.icon ? (
         <span className="flex w-5 items-center justify-center">
@@ -506,6 +506,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
               ref={overflowButtonRef}
               icon={<MoreIcon size={18} />}
               iconOnly
+              disabled={!hasMessage && !hasThread}
               title="More actions"
             >
               More
@@ -513,34 +514,39 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
               <Menu aria-label="More actions" className="outline-none">
                 <MenuItem
+                  isDisabled={!hasThread}
                   onAction={() => selectedThread && void archiveThread(selectedThread)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
                 >
                   <ArchiveIcon size={14} /> Archive
                 </MenuItem>
                 <MenuItem
+                  isDisabled={!hasThread}
                   onAction={() => selectedThread && void deleteThread(selectedThread)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
                 >
                   <DeleteIcon size={14} /> Delete
                 </MenuItem>
                 <MenuItem
+                  isDisabled={!hasThread}
                   onAction={() => selectedThread && setMoveOpen(true)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
                 >
                   <MoveIcon size={14} /> Move
                 </MenuItem>
                 <MenuItem
+                  isDisabled={!hasThread}
                   onAction={() =>
                     selectedThread && void markThreadRead(selectedThread, !selectedThread.isRead)
                   }
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
                 >
                   <MailIcon size={14} /> {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
                 </MenuItem>
                 <MenuItem
+                  isDisabled={!hasThread}
                   onAction={() => selectedThread && void toggleThreadStarred(selectedThread)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
                 >
                   <FlagIcon size={14} /> {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
                 </MenuItem>
