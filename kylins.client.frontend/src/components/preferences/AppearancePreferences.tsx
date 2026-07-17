@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useUIStore, type ThemeMode } from '../../stores/uiStore';
+import { useUIStore, type ThemeMode, type ContrastMode } from '../../stores/uiStore';
 import { useViewStore } from '../../features/view/viewStore';
 import type { ReadingPanePosition, MessageListDensity } from '../../features/view/types';
 import { setSetting } from '../../services/settings';
@@ -23,6 +23,11 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'system', label: 'System' },
 ];
 
+const CONTRAST_OPTIONS: { value: ContrastMode; label: string }[] = [
+  { value: 'default', label: 'Default' },
+  { value: 'high', label: 'High contrast' },
+];
+
 const READING_PANE_OPTIONS: { value: ReadingPanePosition; label: string }[] = [
   { value: 'right', label: 'Right' },
   { value: 'bottom', label: 'Bottom' },
@@ -37,8 +42,10 @@ const DENSITY_OPTIONS: { value: MessageListDensity; label: string }[] = [
 
 export function AppearancePreferences() {
   const theme = useUIStore((s) => s.theme);
+  const contrast = useUIStore((s) => s.contrast);
   const skin = useUIStore((s) => s.skin);
   const setTheme = useUIStore((s) => s.setTheme);
+  const setContrast = useUIStore((s) => s.setContrast);
   const setSkin = useUIStore((s) => s.setSkin);
 
   const readingPanePosition = useViewStore((s) => s.readingPanePosition);
@@ -65,6 +72,15 @@ export function AppearancePreferences() {
     [setTheme],
   );
 
+  const handleContrastChange = useCallback(
+    (value: ContrastMode) => {
+      setContrast(value);
+      themeManager.setContrast(value);
+      setSetting('contrast', value).catch(() => {});
+    },
+    [setContrast],
+  );
+
   const handleSkinChange = useCallback(
     (value: SkinId) => {
       setSkin(value);
@@ -83,10 +99,14 @@ export function AppearancePreferences() {
     themeManager.applyTheme('system');
     setSetting('theme', 'system').catch(() => {});
 
+    setContrast('default');
+    themeManager.setContrast('default');
+    setSetting('contrast', 'default').catch(() => {});
+
     setSkin(DEFAULT_SKIN);
     themeManager.applySkin(DEFAULT_SKIN);
     setSetting('skin', DEFAULT_SKIN).catch(() => {});
-  }, [resetToDefaults, setTheme, setSkin]);
+  }, [resetToDefaults, setTheme, setContrast, setSkin]);
 
   return (
     <PreferencesTabLayout>
@@ -94,11 +114,18 @@ export function AppearancePreferences() {
         left={
           <>
             <PreferencesSectionCard title="Mode" icon={PreferencesSystemIcon}>
-              <SegmentedControl
-                options={THEME_OPTIONS}
-                value={theme}
-                onChange={handleThemeChange}
-              />
+              <div className="space-y-3">
+                <SegmentedControl
+                  options={THEME_OPTIONS}
+                  value={theme}
+                  onChange={handleThemeChange}
+                />
+                <SegmentedControl
+                  options={CONTRAST_OPTIONS}
+                  value={contrast}
+                  onChange={handleContrastChange}
+                />
+              </div>
             </PreferencesSectionCard>
 
             <PreferencesSectionCard title="Color skin" icon={PreferencesAppearanceIcon}>

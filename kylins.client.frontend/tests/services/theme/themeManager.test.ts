@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { ThemeManager } from '../../../src/services/theme/themeManager';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { ThemeManager, themeManager } from '../../../src/services/theme/themeManager';
 
 describe('ThemeManager', () => {
   it('applies dark theme class', () => {
@@ -87,5 +87,29 @@ describe('ThemeManager', () => {
 
     manager.applyTheme('light');
     expect(removeListener).toHaveBeenCalledWith('change', expect.any(Function));
+  });
+});
+
+describe('ThemeManager contrast', () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute('data-contrast');
+    document.documentElement.classList.remove('light', 'dark');
+  });
+
+  it('sets high contrast attribute', () => {
+    themeManager.setContrast('high');
+    expect(document.documentElement.getAttribute('data-contrast')).toBe('high');
+  });
+
+  it('removes high contrast attribute when set to default', () => {
+    themeManager.setContrast('high');
+    themeManager.setContrast('default');
+    expect(document.documentElement.hasAttribute('data-contrast')).toBe(false);
+  });
+
+  it('remembers contrast when applying theme', () => {
+    themeManager.setContrast('high');
+    themeManager.applyTheme('light');
+    expect(document.documentElement.getAttribute('data-contrast')).toBe('high');
   });
 });

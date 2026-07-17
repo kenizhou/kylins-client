@@ -5,8 +5,11 @@ export interface Theme {
   css: string;
 }
 
+export type ContrastMode = 'default' | 'high';
+
 export class ThemeManager {
   private activeTheme: string = 'system';
+  private activeContrast: ContrastMode = 'default';
   private mediaQueryListener: ((e: MediaQueryListEvent) => void) | null = null;
 
   applyTheme(themeName: 'light' | 'dark' | 'system'): void {
@@ -34,6 +37,8 @@ export class ThemeManager {
     } else {
       root.classList.add(themeName);
     }
+
+    this.applyContrast(this.activeContrast);
   }
 
   applySkin(skin: SkinId): void {
@@ -45,8 +50,26 @@ export class ThemeManager {
     document.documentElement.setAttribute('data-skin', DEFAULT_SKIN);
   }
 
+  setContrast(contrast: ContrastMode): void {
+    this.activeContrast = contrast;
+    this.applyContrast(contrast);
+  }
+
+  getActiveContrast(): ContrastMode {
+    return this.activeContrast;
+  }
+
   getActiveTheme(): string {
     return this.activeTheme;
+  }
+
+  private applyContrast(contrast: ContrastMode): void {
+    const root = document.documentElement;
+    if (contrast === 'high') {
+      root.setAttribute('data-contrast', 'high');
+    } else {
+      root.removeAttribute('data-contrast');
+    }
   }
 }
 

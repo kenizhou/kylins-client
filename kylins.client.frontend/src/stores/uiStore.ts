@@ -3,9 +3,11 @@ import { create } from 'zustand';
 import type { SkinId } from '../styles/skins';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
+export type ContrastMode = 'default' | 'high';
 
 export interface UIState {
   theme: ThemeMode;
+  contrast: ContrastMode;
   skin: SkinId;
   sidebarCollapsed: boolean;
   folderPaneWidth: number;
@@ -36,6 +38,7 @@ export interface UIState {
    */
   rateLimitedAccountIds: Set<string>;
   setTheme: (theme: ThemeMode) => void;
+  setContrast: (contrast: ContrastMode) => void;
   setSkin: (skin: SkinId) => void;
   setActiveApp: (app: 'mail' | 'calendar' | 'contacts' | 'tasks') => void;
   setAccountSetupOpen: (open: boolean) => void;
@@ -59,6 +62,7 @@ import { DEFAULT_SKIN } from '../styles/skins';
 
 export const useUIStore = create<UIState>((set) => ({
   theme: 'system',
+  contrast: 'default',
   skin: DEFAULT_SKIN,
   sidebarCollapsed: false,
   folderPaneWidth: 240,
@@ -77,6 +81,7 @@ export const useUIStore = create<UIState>((set) => ({
   setSendProgress: (sendProgress) => set({ sendProgress }),
   rateLimitedAccountIds: new Set<string>(),
   setTheme: (theme) => set({ theme }),
+  setContrast: (contrast) => set({ contrast }),
   setSkin: (skin) => set({ skin }),
   setActiveApp: (activeApp) => set({ activeApp }),
   setAccountSetupOpen: (accountSetupOpen) => set({ accountSetupOpen }),

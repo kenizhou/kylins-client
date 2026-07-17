@@ -10,7 +10,7 @@ import { getAllAccounts, deleteAccountByEmail } from './services/accounts';
 import { themeManager } from './services/theme/themeManager';
 import { pluginManager } from './services/plugins/pluginManager';
 import { activateBuiltInPlugins } from './services/plugins/builtInPlugins';
-import { useUIStore } from './stores/uiStore';
+import { useUIStore, type ContrastMode } from './stores/uiStore';
 import { useAccountStore } from './stores/accountStore';
 import { useFolderStore } from './stores/folderStore';
 import { useAccountSetupStore } from './stores/accountSetupStore';
@@ -48,12 +48,14 @@ function describeError(err: unknown): string {
 }
 
 function hydrateBackground(
-  applyAppearance: (theme: string | null, skin: string | null) => void,
+  applyAppearance: (theme: string | null, skin: string | null, contrast: string | null) => void,
 ): void {
   refreshAccounts().catch((err) => console.error('Background account refresh failed:', err));
 
-  Promise.all([getSetting('theme'), getSetting('skin')])
-    .then(([savedTheme, savedSkin]) => applyAppearance(savedTheme, savedSkin))
+  Promise.all([getSetting('theme'), getSetting('skin'), getSetting('contrast')])
+    .then(([savedTheme, savedSkin, savedContrast]) =>
+      applyAppearance(savedTheme, savedSkin, savedContrast),
+    )
     .catch(() => {
       /* ignore: appearance is cosmetic */
     });
@@ -82,6 +84,7 @@ export default function App() {
   const viewerParams = readViewerWindowParams();
   const isViewerWindow = viewerParams !== null;
   const setTheme = useUIStore((s) => s.setTheme);
+  const setContrast = useUIStore((s) => s.setContrast);
   const setSkin = useUIStore((s) => s.setSkin);
   const accountSetupOpen = useUIStore((s) => s.accountSetupOpen);
   const setAccountSetupOpen = useUIStore((s) => s.setAccountSetupOpen);
@@ -101,11 +104,18 @@ export default function App() {
   useEffect(() => {
     isMounted.current = true;
 
-    function applyAppearance(theme: string | null, skin: string | null): void {
+    function applyAppearance(
+      theme: string | null,
+      skin: string | null,
+      contrast: string | null,
+    ): void {
       if (theme === 'light' || theme === 'dark' || theme === 'system') {
         if (isMounted.current) setTheme(theme);
         themeManager.applyTheme(theme);
       }
+      const resolvedContrast: ContrastMode = contrast === 'high' ? 'high' : 'default';
+      if (isMounted.current) setContrast(resolvedContrast);
+      themeManager.setContrast(resolvedContrast);
       const resolvedSkin: SkinId = skin && isSkinId(skin) ? skin : DEFAULT_SKIN;
       if (isMounted.current) setSkin(resolvedSkin);
       themeManager.applySkin(resolvedSkin);
@@ -177,11 +187,12 @@ export default function App() {
             // Rust runs the embedded sqlx migrations on startup (db::init_db in
             // lib.rs setup), so the frontend no longer calls runMigrations.
 
-            const [savedTheme, savedSkin] = await Promise.all([
+            const [savedTheme, savedSkin, savedContrast] = await Promise.all([
               getSetting('theme'),
               getSetting('skin'),
+              getSetting('contrast'),
             ]);
-            applyAppearance(savedTheme, savedSkin);
+            applyAppearance(savedTheme, savedSkin, savedContrast);
 
             await Promise.all([
               useShortcutStore.getState().hydrate(),
@@ -216,7 +227,7 @@ export default function App() {
     return () => {
       isMounted.current = false;
     };
-  }, [setTheme, setSkin]);
+  }, [setTheme, setContrast, setSkin]);
 
   // Load folders (labels) + unread counts + favorites whenever the account set
   // changes. Covers initial startup (after refreshAccounts populates the store)

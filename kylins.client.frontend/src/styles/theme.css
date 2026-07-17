@@ -223,3 +223,54 @@
   --chrome: var(--series-100);
   --chrome-foreground: var(--foreground);
 }
+
+[data-contrast='high'],
+[data-contrast='high'] .light {
+  --background: #ffffff;
+  --foreground: #000000;
+  --surface: #ffffff;
+  --chrome: #f0f0f0;
+  --card: #ffffff;
+  --muted: #ffffff;
+  --muted-foreground: #000000;
+  --border: #000000;
+  --input: #ffffff;
+  --ring: #0000ff;
+  --primary: #0000ff;
+  --primary-foreground: #ffffff;
+  --secondary: #ffffff;
+  --secondary-foreground: #000000;
+  --hover: #ffff00;
+  --selected: #00ffff;
+  --link: #0000ff;
+  --link-hover: #000080;
+  --destructive: #ff0000;
+  --success: #008000;
+  --warning: #ff8c00;
+  --error: #ff0000;
+}
+
+[data-contrast='high'] .dark {
+  --background: #000000;
+  --foreground: #ffffff;
+  --surface: #000000;
+  --chrome: #1a1a1a;
+  --card: #000000;
+  --muted: #000000;
+  --muted-foreground: #ffffff;
+  --border: #ffffff;
+  --input: #000000;
+  --ring: #00ffff;
+  --primary: #00ffff;
+  --primary-foreground: #000000;
+  --secondary: #000000;
+  --secondary-foreground: #ffffff;
+  --hover: #ffff00;
+  --selected: #ff00ff;
+  --link: #00ffff;
+  --link-hover: #80ffff;
+  --destructive: #ff6666;
+  --success: #00ff00;
+  --warning: #ffd700;
+  --error: #ff6666;
+}
