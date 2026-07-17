@@ -726,12 +726,14 @@ pub async fn fetch_bodies_batch_on_session(
             let body_html = parsed.body_html(0).map(|s| s.to_string());
             let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
             let attachments = extract_attachments(&parsed, uid);
+            let raw_ciphertext = extract_raw_ciphertext(&parsed);
             out.push(FetchedBody {
                 uid,
                 body_html,
                 body_text,
                 snippet,
                 attachments,
+                raw_ciphertext,
             });
         }
     }
@@ -3164,7 +3166,7 @@ fn parse_message(
 /// fetch) so both paths produce identical `ImapAttachment` metadata that can be
 /// persisted to the `attachments` table and later used to fetch a single part
 /// via `BODY.PEEK[<part_id>]`. `uid` is for log correlation only.
-fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAttachment> {
+pub(crate) fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAttachment> {
     let section_map = build_imap_section_map(message);
 
     log::debug!(
@@ -3222,6 +3224,33 @@ fn extract_attachments(message: &mail_parser::Message, uid: u32) -> Vec<ImapAtta
             })
         })
         .collect()
+}
+
+/// Extract the raw CMS ciphertext (DER) from the body of an
+/// `application/pkcs7-mime` message (S/MIME enveloped-data OR opaque
+/// signed-data). Returns the already-CTE-decoded bytes so the receive
+/// orchestrator can decrypt/verify without re-fetching from IMAP.
+///
+/// Returns `None` for every other top-level Content-Type, INCLUDING
+/// `multipart/signed` (clear-signed mail).
+fn extract_raw_ciphertext(message: &mail_parser::Message) -> Option<Vec<u8>> {
+    let ct = message.content_type()?;
+    let full = match ct.subtype() {
+        Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
+        None => ct.ctype().to_lowercase(),
+    };
+    if full != "application/pkcs7-mime" {
+        return None;
+    }
+    let root = message.parts.first()?;
+    match &root.body {
+        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+            Some(d.as_ref().to_vec())
+        }
+        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+        mail_parser::PartType::Html(h) => Some(h.as_bytes().to_vec()),
+        mail_parser::PartType::Message(_) | mail_parser::PartType::Multipart(_) => None,
+    }
 }
 
 fn build_imap_section_map(

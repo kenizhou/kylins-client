@@ -143,6 +143,18 @@ pub struct SendResultEvent {
     pub error: Option<String>,
 }
 
+/// Emitted by `crypto_open_message` (G5 Task 4) after `open_crypto_message`
+/// runs. The frontend (G6) listens on `sync:crypto-result` to refresh crypto
+/// badges for the opened message — the result row is already persisted in
+/// `message_crypto_results`, so the UI re-reads via `db_get_message_crypto_result`
+/// (no plaintext is carried by this event; it's only a refresh signal).
+#[derive(Clone, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CryptoResultEvent {
+    pub account_id: String,
+    pub message_id: String,
+}
+
 /// Emit seam. Production impl wraps a Tauri `AppHandle`; tests collect into vectors.
 pub trait EventSink: Send + Sync {
     fn emit_delta(&self, evt: DeltaEvent);
@@ -160,6 +172,11 @@ pub trait EventSink: Send + Sync {
     /// the best-effort Sent-append so an append failure never flips a
     /// successful send to a failure signal (the send itself succeeded).
     fn emit_send_result(&self, evt: SendResultEvent);
+    /// Emitted by `crypto_open_message` after `open_crypto_message` runs.
+    /// The frontend listens on `sync:crypto-result` to refresh crypto badges
+    /// for the opened message (the persisted row is the source of truth;
+    /// this event only signals "go re-read").
+    fn emit_crypto_result(&self, evt: CryptoResultEvent);
 }
 
 struct TauriSink(AppHandle);
@@ -181,6 +198,9 @@ impl EventSink for TauriSink {
     }
     fn emit_send_result(&self, e: SendResultEvent) {
         let _ = self.0.emit("sync:send-result", e);
+    }
+    fn emit_crypto_result(&self, e: CryptoResultEvent) {
+        let _ = self.0.emit("sync:crypto-result", e);
     }
 }
 
@@ -716,6 +736,16 @@ impl SyncEngine {
     pub fn emit_bodies_written_public(&self, evt: BodiesWrittenEvent) {
         self.sink.emit_bodies_written(evt);
     }
+
+    /// Public accessor for the `sync:crypto-result` emit, used by the
+    /// `crypto_open_message` command (G5 Task 4) after `open_crypto_message`
+    /// runs. Mirrors [`emit_bodies_written_public`]: keeps the private sink
+    /// encapsulated while exposing a narrow command-facing surface so the
+    /// command can fire the "refresh badges" signal without re-reading the
+    /// row itself.
+    pub fn emit_crypto_result_public(&self, evt: CryptoResultEvent) {
+        self.sink.emit_crypto_result(evt);
+    }
 }
 
 /// Production round: resolve the source via the factory, then run.
@@ -995,6 +1025,8 @@ async fn send_op(
             draft,
             &account_email,
             default_key.as_ref(),
+            &engine.pool,
+            account_id,
         )
         .await
         {
@@ -1774,6 +1806,7 @@ mod tests {
         queues: std::sync::Mutex<Vec<QueueEvent>>,
         bodies_written: std::sync::Mutex<Vec<BodiesWrittenEvent>>,
         send_results: std::sync::Mutex<Vec<SendResultEvent>>,
+        crypto_results: std::sync::Mutex<Vec<CryptoResultEvent>>,
     }
     impl TestSink {
         fn new() -> Self {
@@ -1784,6 +1817,7 @@ mod tests {
                 queues: std::sync::Mutex::new(vec![]),
                 bodies_written: std::sync::Mutex::new(vec![]),
                 send_results: std::sync::Mutex::new(vec![]),
+                crypto_results: std::sync::Mutex::new(vec![]),
             }
         }
     }
@@ -1805,6 +1839,9 @@ mod tests {
         }
         fn emit_send_result(&self, e: SendResultEvent) {
             self.send_results.lock().unwrap().push(e);
+        }
+        fn emit_crypto_result(&self, e: CryptoResultEvent) {
+            self.crypto_results.lock().unwrap().push(e);
         }
     }
 
@@ -3610,6 +3647,44 @@ mod tests {
         }
     }
 
+    /// Copy the most recent S/MIME cert from `src_account_id` into
+    /// `dest_account_id`'s `crypto_keys` as a `key_type='cert'` trust-anchor
+    /// row. Mirrors the KeyManager "import contact cert" path: a recipient's
+    /// cert becomes a candidate anchor for the destination account so the
+    /// send-side `validate_recipient_certs` gate (G5 Task 5) accepts the
+    /// recipient as chaining-to-anchor. Required for encrypt tests that send
+    /// to a non-self recipient — without it, b's cert is only stored under
+    /// account "b" and is NOT in account "a"'s anchor set, so the validation
+    /// gate would reject b and `apply_crypto` would fail-closed.
+    async fn seed_anchor_from_account(
+        pool: &SqlitePool,
+        dest_account_id: &str,
+        src_account_id: &str,
+    ) {
+        let row: (String, String) = sqlx::query_as(
+            "SELECT public_data, fingerprint FROM crypto_keys
+             WHERE account_id = ? AND standard = 'smime'
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(src_account_id)
+        .fetch_one(pool)
+        .await
+        .expect("src account has a cert");
+        sqlx::query(
+            "INSERT INTO crypto_keys (
+                id, account_id, standard, key_type, email, fingerprint, public_data,
+                origin, is_default_sign, is_default_encrypt, created_at
+             ) VALUES (?, ?, 'smime', 'cert', NULL, ?, ?, 'imported', 0, 0, strftime('%s','now'))",
+        )
+        .bind(format!("anchor-{src_account_id}"))
+        .bind(dest_account_id)
+        .bind(&row.1)
+        .bind(&row.0)
+        .execute(pool)
+        .await
+        .expect("insert anchor row");
+    }
+
     /// Helper that extracts the raw bytes from the single recorded `Send` call.
     /// Mirrors the brief's `src.last_send_bytes()` pseudocode by filtering the
     /// existing `MockSource::recorded_calls()` recorder for `RecordedCall::Send`.
@@ -3676,6 +3751,11 @@ mod tests {
         // `find_by_email` (no account filter) locates it.
         seed_account(&pool, "b").await;
         seed_smime_key_for_account(&pool, "b", false).await;
+        // G5 Task 5: `apply_crypto` now validates recipient certs against the
+        // sender's trust anchors. b's cert is stored only under account "b";
+        // copy it into account "a"'s anchor set so validation passes (mirrors
+        // the KeyManager "import contact cert" path).
+        seed_anchor_from_account(&pool, "a", "b").await;
 
         let sink = Arc::new(TestSink::new());
         let engine = SyncEngine::with_data_dir(
