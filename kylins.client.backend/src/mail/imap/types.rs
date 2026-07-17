@@ -64,6 +64,19 @@ pub struct ImapMessage {
     /// `None` when absent — including every non-S/MIME message.
     #[serde(default)]
     pub smime_type: Option<String>,
+    /// Provider-stable message identifier parsed from the FETCH response:
+    /// Yahoo OBJECTID `EMAILID` (RFC 8474, parenthesized string atom) or Gmail
+    /// `X-GM-MSGID` (X-GM-EXT-1, bare number). `None` when the sync FETCH query
+    /// did not request the attribute (server lacks the cap) or the parser could
+    /// not extract it — the typed async-imap path cannot surface custom FETCH
+    /// attributes, so this is populated only by the raw-TCP FETCH path.
+    #[serde(default)]
+    pub remote_email_id: Option<String>,
+    /// Provider-stable thread identifier: Yahoo OBJECTID `THREADID` (RFC 8474)
+    /// or Gmail `X-GM-THRID` (X-GM-EXT-1). Same population rules as
+    /// `remote_email_id`.
+    #[serde(default)]
+    pub remote_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -105,6 +118,15 @@ pub struct ImapFolderSyncResult {
 /// parsed MIME attachment metadata (part_id/section, filename, mime_type, size,
 /// content_id, is_inline) so the engine can persist it to the `attachments`
 /// table without re-parsing.
+///
+/// `raw_ciphertext` carries the raw CMS payload (DER) when the top-level
+/// Content-Type is `application/pkcs7-mime` (S/MIME enveloped-data OR opaque
+/// signed-data); the engine persists it to `message_bodies.body_mime_ciphertext`
+/// so the receive orchestrator (Phase 1b G5 Task 3) can decrypt/verify on open
+/// WITHOUT re-fetching from IMAP. `None` for ordinary mail AND for
+/// `multipart/signed` (clear-signed: the body is already plaintext, the
+/// signature is a `smime.p7s` attachment handled separately). Plaintext is
+/// NEVER persisted via this path — only the opaque CMS blob.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FetchedBody {
     pub uid: u32,
@@ -112,6 +134,9 @@ pub struct FetchedBody {
     pub body_text: Option<String>,
     pub snippet: String,
     pub attachments: Vec<ImapAttachment>,
+    /// Raw CMS DER (`smime.p7m` body bytes) for `application/pkcs7-mime`
+    /// messages. See the struct doc for the full contract.
+    pub raw_ciphertext: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

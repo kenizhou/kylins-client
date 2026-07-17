@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Account } from '../../types';
 import { updateAccount, setDefaultAccount, deleteAccount } from '../../services/accounts';
 import {
@@ -6,11 +6,20 @@ import {
   testImapConnection,
   testEasConnection,
 } from '../../services/auth/accountSetupFlows';
+import { getSettingNumber, setSettingNumber } from '../../services/settings';
 import { useAccountStore } from '../../stores/accountStore';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { ProviderBadge } from './ProviderBadge';
 import { AliasManager } from './AliasManager';
 import { PreferencesAccountsIcon, TrashIcon } from '../icons';
+
+// Mirrors the backend clamp range in sync_engine/imap_source.rs
+// (IDLE_KEEPALIVE_DEFAULT_SECS / _MIN_SECS / _MAX_SECS). The default is 240s
+// (not 300s) on purpose: Yahoo kills IDLE connections after ~5 min of silence,
+// and a 5 min timeout loses that race by ~1s in production logs.
+const IDLE_TIMEOUT_DEFAULT_SECS = 240;
+const IDLE_TIMEOUT_MIN_SECS = 60;
+const IDLE_TIMEOUT_MAX_SECS = 1740;
 
 function statusColorClass(type: string): string {
   if (type === 'success') return 'text-green-600';
@@ -51,6 +60,31 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
     type: 'idle',
     message: '',
   });
+  const [idleTimeoutSecs, setIdleTimeoutSecs] = useState(IDLE_TIMEOUT_DEFAULT_SECS);
+
+  const idleTimeoutKey = `account.${account.id}.idle_timeout_secs`;
+  useEffect(() => {
+    let cancelled = false;
+    getSettingNumber(idleTimeoutKey)
+      .then((v) => {
+        if (!cancelled && v !== null) setIdleTimeoutSecs(v);
+      })
+      .catch(() => {
+        // Unavailable in tests / non-Tauri contexts — keep the default.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [idleTimeoutKey]);
+
+  async function handleIdleTimeoutCommit() {
+    const clamped = Math.min(
+      IDLE_TIMEOUT_MAX_SECS,
+      Math.max(IDLE_TIMEOUT_MIN_SECS, Math.round(idleTimeoutSecs) || IDLE_TIMEOUT_DEFAULT_SECS),
+    );
+    setIdleTimeoutSecs(clamped);
+    await setSettingNumber(idleTimeoutKey, clamped);
+  }
 
   async function handleSaveIdentity(e: React.FormEvent) {
     e.preventDefault();
@@ -198,7 +232,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
 
         {account.provider === 'imap' && (
           <>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <ReadOnlyField label="IMAP host" value={account.imapHost} />
               <ReadOnlyField label="IMAP port" value={account.imapPort} />
               <ReadOnlyField label="IMAP security" value={account.imapSecurity} />
@@ -220,6 +254,30 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
               />
               <span className="text-sm text-[var(--foreground)]">
                 Accept invalid / self-signed certificates
+              </span>
+            </label>
+            <label className="flex flex-col gap-1 mt-3">
+              <span className="text-xs text-[var(--muted-text)]">
+                IMAP IDLE re-issue interval (seconds)
+              </span>
+              <input
+                type="number"
+                min={IDLE_TIMEOUT_MIN_SECS}
+                max={IDLE_TIMEOUT_MAX_SECS}
+                step={30}
+                value={idleTimeoutSecs}
+                onChange={(e) => setIdleTimeoutSecs(Number(e.target.value))}
+                onBlur={() => void handleIdleTimeoutCommit()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                }}
+                className="h-11 w-full sm:w-40 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+              />
+              <span className="text-xs text-[var(--muted-text)]">
+                How often the IDLE connection is refreshed (default {IDLE_TIMEOUT_DEFAULT_SECS}s,
+                range {IDLE_TIMEOUT_MIN_SECS}–{IDLE_TIMEOUT_MAX_SECS}s). Lower values detect new
+                mail faster on servers like Yahoo that drop IDLE early; higher values reduce server
+                load. Applies on the next sync cycle.
               </span>
             </label>
           </>

@@ -248,6 +248,8 @@ fn imap_message_to_remote(m: ImapMessage) -> RemoteMessage {
         auth_results: m.auth_results,
         has_attachments,
         crypto_kind,
+        remote_email_id: m.remote_email_id,
+        remote_thread_id: m.remote_thread_id,
     }
 }
 
@@ -287,6 +289,34 @@ impl MailSource for ImapSource {
     async fn list_folders(&self) -> Result<Vec<RemoteFolder>, SourceError> {
         let config = self.imap_config();
         let account_id = self.account.id.clone();
+
+        // Read caps BEFORE any execute() closure (same hoist pattern as
+        // `use_move` in `move_messages` and `caps_captured` in `sync_folder`)
+        // so no `&self.caps` borrow is held inside the closure. `None` on the
+        // very first sync round → unwrap_or_default() gives the poll-only set
+        // with `list_status = false`, so the first round takes the legacy N+1
+        // path (which ALSO refreshes caps below); subsequent rounds that cached
+        // `list_status = true` take the single-round-trip LIST-STATUS path.
+        let list_status = self.caps.lock().unwrap().unwrap_or_default().list_status;
+
+        // P3 LIST-STATUS (RFC 5819): when the server advertises LIST-STATUS,
+        // discover folders + counts in ONE round-trip over a short-lived raw
+        // TCP connection. `list_with_status` opens its OWN connection (LOGIN →
+        // LIST...RETURN(STATUS) → LOGOUT) and does NOT run inside the actor's
+        // execute() closure — so the actor's persistent session is not held
+        // open for the folder-discovery round. The actor's idle connection
+        // (if any) may briefly coexist; Yahoo (the sole server for which
+        // `list_status` is true today) allows concurrent connections, and the
+        // round completes in ~1s. Caps are already cached from a prior
+        // connect, so this branch intentionally skips the caps-refresh the
+        // legacy path performs — caps were last validated on the connection
+        // that set the flag.
+        if list_status {
+            let folders = imap_client::list_with_status(&config)
+                .await
+                .map_err(other)?;
+            return Ok(folders.into_iter().map(imap_folder_to_remote).collect());
+        }
 
         // Single execute() trip: fetch folders AND refresh caps on the SAME call
         // through the persistent session (folder=None: LIST has no per-folder
@@ -475,7 +505,7 @@ impl MailSource for ImapSource {
                         };
 
                         let status =
-                            imap_client::get_folder_status(session, &folder_remote).await?;
+                            imap_client::get_folder_status(session, &folder_remote, caps.condstore).await?;
 
                         // UIDVALIDITY change -> the server rebuilt the folder;
                         // signal a cache wipe and a full resync from uid 0. The
@@ -502,6 +532,46 @@ impl MailSource for ImapSource {
                             });
                         }
 
+                        // Skip unchanged folder: when HIGHESTMODSEQ matches the
+                        // cursor AND the server advertises QRESYNC, nothing
+                        // changed (no new messages, no flag updates, no expunges)
+                        // — QRESYNC tracks expunges in the modseq, so an
+                        // unchanged modseq guarantees no expunges either. Skip
+                        // the entire SELECT+FETCH+SEARCH. Gate on qresync (NOT
+                        // condstore): vanilla CONDSTORE does NOT bump
+                        // HIGHESTMODSEQ on EXPUNGE (RFC 7162 §3.1.1), so skipping
+                        // on a condstore-only server would miss expunges and leave
+                        // ghost rows. Biggest per-round optimization.
+                        if caps.qresync && since_modseq > 0 {
+                            if let Some(current_modseq) = status.highest_modseq {
+                                if current_modseq == since_modseq {
+                                    log::debug!(
+                                        "[sync] {} HIGHESTMODSEQ unchanged ({}), skipping fetch",
+                                        folder_remote, current_modseq
+                                    );
+                                    // Caps are unchanged on the skip path (the
+                                    // folder didn't change) — reuse the already-
+                                    // captured `caps` instead of a CAPABILITY RTT.
+                                    let caps_tuple = Some(caps);
+                                    return Ok::<_, String>(Stage1Result::Done {
+                                        delta: FolderDelta {
+                                            added: vec![],
+                                            updated: vec![],
+                                            flag_updates: vec![],
+                                            vanished_uids: vec![],
+                                            next_cursor: Cursor::Imap {
+                                                uidvalidity: status.uidvalidity,
+                                                highest_uid: since_high,
+                                                highest_modseq: current_modseq,
+                                            },
+                                            uidvalidity_changed: false,
+                                        },
+                                        caps_tuple,
+                                    });
+                                }
+                            }
+                        }
+
                         let new_uids =
                             imap_client::fetch_new_uids(session, &folder_remote, since_high)
                                 .await?;
@@ -526,7 +596,7 @@ impl MailSource for ImapSource {
                         let mut added: Vec<RemoteMessage> = Vec::new();
                         for (i, chunk) in chunks.iter().enumerate() {
                             let range = uid_set(chunk);
-                            match imap_client::fetch_messages(session, &folder_remote, &range).await
+                            match imap_client::fetch_messages(session, &folder_remote, &range, &caps).await
                             {
                                 Ok(r) => {
                                     for m in r.messages {
@@ -740,7 +810,7 @@ impl MailSource for ImapSource {
                         remaining_uids.len()
                     );
                     let bulk =
-                        imap_client::raw_fetch_folder(&config, &folder_remote, &remaining_uids, 100)
+                        imap_client::raw_fetch_folder(&config, &folder_remote, &remaining_uids, 100, &caps_captured)
                             .await
                             .map_err(other)?;
                     for m in bulk.messages {
@@ -1247,6 +1317,8 @@ mod tests {
             }],
             content_type: None,
             smime_type: None,
+            remote_email_id: None,
+            remote_thread_id: None,
         };
         let r = imap_message_to_remote(m);
         assert_eq!(r.uid, 7);
@@ -1311,6 +1383,8 @@ mod tests {
             attachments: Vec::new(),
             content_type: None,
             smime_type: None,
+            remote_email_id: None,
+            remote_thread_id: None,
         }
     }
 

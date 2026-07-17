@@ -446,6 +446,12 @@ pub(crate) struct CmsSigCheck {
     /// RFC 5280 method-1 SKI (SHA-1 of SPKI, hex-lower) of the signer cert,
     /// when one was located. Matches the framework's `Fingerprint` format.
     pub signer_fingerprint: Option<String>,
+    /// CMS `signingTime` signed attribute (OID 1.2.840.113549.1.9.5) as Unix
+    /// seconds. `None` when the attribute is absent; the caller (Task 5's
+    /// `SmimeBackend::verify`) falls back to `now()` for cert-chain validation
+    /// at the verify-time rather than at the signing-time.
+    #[allow(dead_code)] // consumed by Task 5's SmimeBackend::verify
+    pub signing_time_unix: Option<i64>,
 }
 
 /// SHA-256 OID (2.16.840.1.101.3.4.2.1) — matches the build side.
@@ -459,6 +465,10 @@ const ID_ECDSA_WITH_SHA_256: const_oid::ObjectIdentifier =
 /// messageDigest signed-attribute OID (1.2.840.113549.1.9.4, RFC 5652 §11.2).
 const ID_MESSAGE_DIGEST: const_oid::ObjectIdentifier =
     const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.4");
+
+/// signingTime signed-attribute OID (1.2.840.113549.1.9.5, RFC 5652 §11.3).
+const ID_SIGNING_TIME: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.5");
 
 /// Verify a CMS `SignedData` signature (wrapped in `ContentInfo`).
 ///
@@ -545,6 +555,12 @@ pub(crate) fn verify_signed(
     let signed_attrs = signer_info.signed_attrs.as_ref().ok_or_else(|| {
         CryptoError::Malformed("SignedData: missing signed_attrs".into())
     })?;
+    // Extract the CMS signingTime signed attribute (RFC 5652 §11.3). `None`
+    // when absent — the caller (Task 5's `SmimeBackend::verify`) falls back to
+    // `now()` for cert-chain validation. Extracted here (before the digest
+    // check) so both the early-return (digest mismatch) and the final return
+    // carry the same value.
+    let signing_time_unix = find_signing_time(signed_attrs);
     let stored_digest = find_message_digest(signed_attrs).ok_or_else(|| {
         CryptoError::Malformed("SignedData: missing messageDigest attr".into())
     })?;
@@ -558,6 +574,7 @@ pub(crate) fn verify_signed(
             sig_ok: false,
             signer_cert_der: Some(signer_cert_der),
             signer_fingerprint: Some(fp),
+            signing_time_unix,
         });
     }
 
@@ -586,6 +603,7 @@ pub(crate) fn verify_signed(
         sig_ok,
         signer_cert_der: Some(signer_cert_der),
         signer_fingerprint: Some(fp),
+        signing_time_unix,
     })
 }
 
@@ -604,32 +622,7 @@ fn locate_signer_cert(certs: &CertificateSet, sid: &SignerIdentifier) -> Result<
             // OtherCertificateFormat is not a leaf cert — skip.
             _ => continue,
         };
-        let tbs = cert.tbs_certificate();
-        let matches = match sid {
-            SignerIdentifier::IssuerAndSerialNumber(target) => {
-                let candidate = IssuerAndSerialNumber {
-                    issuer: tbs.issuer().clone(),
-                    serial_number: tbs.serial_number().clone(),
-                };
-                &candidate == target
-            }
-            SignerIdentifier::SubjectKeyIdentifier(target_ski) => {
-                // `SignerIdentifier::SubjectKeyIdentifier` carries the cert's
-                // SKI extension value (NOT the SHA-1-of-SPKI fingerprint we
-                // use as the framework Fingerprint). Match against the cert
-                // extension if present. Forward-compat only — our builder
-                // always emits IssuerAndSerialNumber today.
-                match tbs
-                    .get_extension::<x509_cert::ext::pkix::SubjectKeyIdentifier>()
-                    .map_err(|e| cms_err("SubjectKeyIdentifier ext lookup", e))?
-                    .map(|(_crit, ext_ski)| ext_ski)
-                {
-                    Some(ext_ski) => ext_ski.0.as_bytes() == target_ski.0.as_bytes(),
-                    None => false,
-                }
-            }
-        };
-        if matches {
+        if cert_matches_signer_id(cert, sid)? {
             return cert
                 .to_der()
                 .map_err(|e| cms_err("encode signer cert", e));
@@ -638,6 +631,111 @@ fn locate_signer_cert(certs: &CertificateSet, sid: &SignerIdentifier) -> Result<
     Err(CryptoError::Malformed(
         "no signer cert matching SignerIdentifier".into(),
     ))
+}
+
+/// Return `true` if `cert` matches the `SignerIdentifier` `sid`. Shared by
+/// `locate_signer_cert` (find the signer leaf) and `extract_intermediates`
+/// (exclude the signer leaf) so the two call sites cannot drift.
+///
+/// - `IssuerAndSerialNumber`: compare issuer Name + serialNumber.
+/// - `SubjectKeyIdentifier`: compare the cert's SKI extension value (NOT the
+///   SHA-1-of-SPKI fingerprint used as the framework `Fingerprint`).
+///   Forward-compat only — our builder emits IssuerAndSerialNumber today.
+fn cert_matches_signer_id(cert: &Certificate, sid: &SignerIdentifier) -> Result<bool> {
+    let tbs = cert.tbs_certificate();
+    Ok(match sid {
+        SignerIdentifier::IssuerAndSerialNumber(target) => {
+            let candidate = IssuerAndSerialNumber {
+                issuer: tbs.issuer().clone(),
+                serial_number: tbs.serial_number().clone(),
+            };
+            &candidate == target
+        }
+        SignerIdentifier::SubjectKeyIdentifier(target_ski) => {
+            match tbs
+                .get_extension::<x509_cert::ext::pkix::SubjectKeyIdentifier>()
+                .map_err(|e| cms_err("SubjectKeyIdentifier ext lookup", e))?
+                .map(|(_crit, ext_ski)| ext_ski)
+            {
+                Some(ext_ski) => ext_ski.0.as_bytes() == target_ski.0.as_bytes(),
+                None => false,
+            }
+        }
+    })
+}
+
+/// Extract every cert in the SignedData `certificates` set EXCEPT the signer
+/// leaf — the intermediates the G5 receive orchestrator passes to
+/// [`crate::SmimeBackend::verify_with_context`]'s `intermediate_ders`
+/// argument. The signer leaf is identified by the first `SignerInfo`'s
+/// `SignerIdentifier` (IssuerAndSerialNumber or SubjectKeyIdentifier),
+/// mirroring `locate_signer_cert` via the shared `cert_matches_signer_id`
+/// helper so the two call sites cannot drift.
+///
+/// # Returns
+///
+/// - `Ok(Vec<intermediate DERs>)` — every `CertificateChoices::Certificate(c)`
+///   whose Issuer+Serial / SKI does NOT match the first signer info's `sid`.
+///   Order follows the `CertificateSet` iteration order.
+/// - `Ok(empty Vec)` when `certificates` is `None` / empty, OR when the signer
+///   leaf is the only cert in the set, OR when there are no `signer_infos`
+///   (nothing to exclude → returns every PKIX cert in the set).
+/// - `Err(Malformed)` only on unparseable CMS DER. An absent `certificates`
+///   field is NOT an error (returns empty).
+///
+/// `CertificateChoices::Other` (`OtherCertificateFormat`) entries are skipped
+/// — only PKIX `Certificate(c)` leaves are collected, matching `locate_signer_cert`'s
+/// filter.
+///
+/// Visibility: declared `pub` so it can be re-exported from the crate root
+/// (`pub use cms_parse::extract_intermediates`) for the backend G5 orchestrator.
+/// The `cms_parse` module itself is private (`mod cms_parse;` in lib.rs), so
+/// external callers cannot reach `cms_parse::extract_intermediates` directly —
+/// they go through `crypto_smime::extract_intermediates`. This mirrors the
+/// existing `chain::validate_signer_chain` pattern.
+pub fn extract_intermediates(signed_data_der: &[u8]) -> Result<Vec<Vec<u8>>> {
+    // Parse ContentInfo → SignedData (same idiom as verify_signed and
+    // decrypt_enveloped: the cms crate stores SignedData as an `Any` inside the
+    // ContentInfo; re-deriving the Any content yields the raw SignedData DER).
+    let ci = ContentInfo::from_der(signed_data_der)
+        .map_err(|e| cms_err("parse ContentInfo", e))?;
+    let inner = ci
+        .content
+        .to_der()
+        .map_err(|e| cms_err("re-derive ContentInfo content", e))?;
+    let sd = SignedData::from_der(&inner).map_err(|e| cms_err("parse SignedData", e))?;
+
+    let Some(cert_set) = sd.certificates.as_ref() else {
+        // No certificates set at all — nothing to extract.
+        return Ok(Vec::new());
+    };
+
+    // Identify the signer leaf via the first SignerInfo's SignerIdentifier.
+    // If there are no signer infos (degenerate but valid CMS), exclude nothing
+    // — return every PKIX cert in the set. The orchestrator decides what to do
+    // with them; we don't silently drop user-visible cert material.
+    let signer_sid = sd.signer_infos.0.get(0).map(|si| &si.sid);
+
+    let mut intermediates = Vec::new();
+    for choice in cert_set.0.iter() {
+        let cert = match choice {
+            CertificateChoices::Certificate(c) => c,
+            // OtherCertificateFormat (and any future non-PKIX variants) are
+            // not intermediate CA certs — skip them entirely.
+            _ => continue,
+        };
+        let is_signer = match signer_sid {
+            Some(sid) => cert_matches_signer_id(cert, sid)?,
+            None => false,
+        };
+        if !is_signer {
+            let der = cert
+                .to_der()
+                .map_err(|e| cms_err("encode intermediate cert", e))?;
+            intermediates.push(der);
+        }
+    }
+    Ok(intermediates)
 }
 
 /// RFC 5280 method-1 SubjectKeyIdentifier = SHA-1 of the SPKI DER, hex-lower.
@@ -662,6 +760,26 @@ fn find_message_digest(attrs: &x509_cert::attr::Attributes) -> Option<Vec<u8>> {
     let val = md.values.get(0)?;
     let octets: OctetString = val.decode_as().ok()?;
     Some(octets.as_bytes().to_vec())
+}
+
+/// Find the signingTime signed-attribute value (RFC 5652 §11.3) and convert it
+/// to Unix seconds. Returns `None` if the attribute is absent or malformed.
+///
+/// `signingTime` is a `Time` (CHOICE of UTCTime `tag 0x17` / GeneralizedTime
+/// `tag 0x18`). The attribute value is stored as a `der::Any` wrapping the full
+/// Time DER (tag + length + value). We re-encode the `Any` → `to_der()` →
+/// decode as `x509_cert::time::Time`, which dispatches on the tag to the
+/// matching arm. `Time::to_unix_duration()` yields seconds since `UNIX_EPOCH`.
+fn find_signing_time(attrs: &x509_cert::attr::Attributes) -> Option<i64> {
+    let attr = attrs.iter().find(|a| a.oid == ID_SIGNING_TIME)?;
+    let val = attr.values.get(0)?;
+    // Re-encode the Any to full DER (tag + length + value), then decode as
+    // Time. The tag is load-bearing for the CHOICE dispatch (UTCTime vs
+    // GeneralizedTime), so `decode_as` alone (which reads only the value
+    // bytes) would not work — `to_der()` + `from_der()` round-trips the tag.
+    let time_der = val.to_der().ok()?;
+    let time = <x509_cert::time::Time as der::Decode>::from_der(&time_der).ok()?;
+    Some(time.to_unix_duration().as_secs() as i64)
 }
 
 /// Verify an ECDSA-P256 signature over the DER-encoded `signed_attrs`.
@@ -923,6 +1041,336 @@ mod tests {
         assert!(
             matches!(err, CryptoError::Malformed(ref m) if m.contains("no signer cert")),
             "missing signer cert must surface as `no signer cert` Malformed (mapped to UnknownKey by the backend); got {err:?}"
+        );
+    }
+
+    // ──── signingTime extraction (Task 3) ────
+
+    /// Build a CMS SignedData that includes a `signingTime` signed attribute.
+    ///
+    /// The production `cms_build::build_signed_data` does NOT emit signingTime
+    /// (the cms `SignerInfoBuilder` only auto-adds `messageDigest` +
+    /// `contentType`). This helper mirrors `build_signed_data`'s sequence but
+    /// calls `signer_info_builder.add_signed_attribute(
+    /// create_signing_time_attribute()?)` to attach the attribute, producing a
+    /// fixture that exercises `verify_signed`'s signingTime extraction.
+    fn build_signed_data_with_signing_time(
+        payload: &[u8],
+        signer_cert_der: &[u8],
+        signer_priv_pkcs8_der: &[u8],
+    ) -> Vec<u8> {
+        use cms::builder::{
+            create_signing_time_attribute, SignedDataBuilder, SignerInfoBuilder,
+        };
+        use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
+        use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
+        use der::Any;
+        use pkcs8::DecodePrivateKey;
+        use spki::AlgorithmIdentifierOwned;
+        use x509_cert::Certificate;
+
+        let cert = <Certificate as der::Decode>::from_der(signer_cert_der).unwrap();
+        let tbs = cert.tbs_certificate();
+        let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: tbs.issuer().clone(),
+            serial_number: tbs.serial_number().clone(),
+        });
+        let secret = p256::SecretKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
+        let signing_key = p256::ecdsa::SigningKey::from(&secret);
+
+        let oct = der::asn1::OctetString::new(payload.to_vec()).unwrap();
+        let oct_der = oct.to_der().unwrap();
+        let econtent = Some(Any::new(der::Tag::OctetString, oct_der).unwrap());
+        let encap = EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent,
+        };
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: ID_SHA_256,
+            parameters: None,
+        };
+
+        let mut signer_info_builder = SignerInfoBuilder::new(
+            sid,
+            digest_algorithm.clone(),
+            &encap,
+            None, // encapsulated → builder computes the digest
+        )
+        .unwrap();
+        // Attach signingTime (the one attribute build_signed_data omits).
+        signer_info_builder
+            .add_signed_attribute(create_signing_time_attribute().unwrap())
+            .unwrap();
+
+        let content_info = SignedDataBuilder::new(&encap)
+            .add_digest_algorithm(digest_algorithm)
+            .unwrap()
+            .add_certificate(CertificateChoices::Certificate(cert))
+            .unwrap()
+            .add_signer_info::<ecdsa::SigningKey<p256::NistP256>, p256::ecdsa::DerSignature>(
+                signer_info_builder,
+                &signing_key,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        content_info.to_der().unwrap()
+    }
+
+    /// `signingTime` present in the SignedData's signed_attrs →
+    /// `CmsSigCheck.signing_time_unix` is `Some(unix_secs)` close to now.
+    #[test]
+    fn verify_extracts_signing_time_from_signed_attrs() {
+        let (cert_der, priv_pkcs8) = p256_test_cert_and_key(20);
+        let payload = b"signed with signingTime";
+
+        let now_before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let signed_data_der =
+            build_signed_data_with_signing_time(payload, &cert_der, &priv_pkcs8);
+
+        let now_after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let check = verify_signed(&signed_data_der, None).unwrap();
+        assert!(check.sig_ok, "signature must still verify with signingTime");
+        let signing_time = check
+            .signing_time_unix
+            .expect("signingTime must be extracted when the attribute is present");
+        // signingTime was captured during build (between now_before and
+        // now_after). Allow a 5s slack for clock granularity / test latency.
+        assert!(
+            signing_time >= now_before && signing_time <= now_after + 5,
+            "signing_time_unix {signing_time} must be within [{now_before}, {now_after}+5]"
+        );
+    }
+
+    /// `signingTime` absent (production `build_signed_data` output) →
+    /// `CmsSigCheck.signing_time_unix` is `None` (Task 5 falls back to now()).
+    #[test]
+    fn verify_signing_time_absent_yields_none() {
+        let (cert_der, priv_pkcs8) = p256_test_cert_and_key(21);
+        let payload = b"signed without signingTime";
+        let signed_data_der =
+            crate::cms_build::build_signed_data(payload, false, &cert_der, &priv_pkcs8).unwrap();
+
+        let check = verify_signed(&signed_data_der, None).unwrap();
+        assert!(check.sig_ok, "signature must still verify");
+        assert!(
+            check.signing_time_unix.is_none(),
+            "signingTime absent → None (Task 5 falls back to now()); got {:?}",
+            check.signing_time_unix
+        );
+    }
+
+    // ─── Task 2 (G5): extract_intermediates ───
+
+    /// Build a CMS SignedData over `payload`, signed by `signer_cert_der` +
+    /// `signer_priv_pkcs8_der`, with the signer cert PLUS every entry in
+    /// `extra_certs` embedded in the `certificates` set. Mirrors
+    /// `build_signed_data_with_signing_time` but injects additional certs
+    /// (the production `build_signed_data` only embeds the signer leaf).
+    fn build_signed_data_with_extra_certs(
+        payload: &[u8],
+        signer_cert_der: &[u8],
+        signer_priv_pkcs8_der: &[u8],
+        extra_certs: &[Vec<u8>],
+    ) -> Vec<u8> {
+        use cms::builder::{SignedDataBuilder, SignerInfoBuilder};
+        use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
+        use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
+        use der::Any;
+        use pkcs8::DecodePrivateKey;
+        use spki::AlgorithmIdentifierOwned;
+        use x509_cert::Certificate;
+
+        let cert = <Certificate as der::Decode>::from_der(signer_cert_der).unwrap();
+        let tbs = cert.tbs_certificate();
+        let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: tbs.issuer().clone(),
+            serial_number: tbs.serial_number().clone(),
+        });
+        let secret = p256::SecretKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
+        let signing_key = p256::ecdsa::SigningKey::from(&secret);
+
+        let oct = der::asn1::OctetString::new(payload.to_vec()).unwrap();
+        let oct_der = oct.to_der().unwrap();
+        let econtent = Some(Any::new(der::Tag::OctetString, oct_der).unwrap());
+        let encap = EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent,
+        };
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: ID_SHA_256,
+            parameters: None,
+        };
+
+        let signer_info_builder = SignerInfoBuilder::new(
+            sid,
+            digest_algorithm.clone(),
+            &encap,
+            None, // encapsulated → builder computes the digest
+        )
+        .unwrap();
+
+        // Step-by-step assembly (instead of a fluent chain) so the
+        // intermediate builder is an owned `let` rather than a borrowed
+        // temporary — `add_digest_algorithm` / `add_certificate` borrow
+        // `&mut self`, and breaking the chain mid-way for the extra-certs
+        // loop would otherwise drop the temporary at the end of the chain
+        // statement (E0716).
+        let mut builder = SignedDataBuilder::new(&encap);
+        builder
+            .add_digest_algorithm(digest_algorithm)
+            .unwrap()
+            .add_certificate(CertificateChoices::Certificate(cert))
+            .unwrap();
+        for extra_der in extra_certs {
+            let extra_cert = <Certificate as der::Decode>::from_der(extra_der)
+                .expect("extra cert DER parses");
+            builder
+                .add_certificate(CertificateChoices::Certificate(extra_cert))
+                .unwrap();
+        }
+        let content_info = builder
+            .add_signer_info::<ecdsa::SigningKey<p256::NistP256>, p256::ecdsa::DerSignature>(
+                signer_info_builder,
+                &signing_key,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        content_info.to_der().unwrap()
+    }
+
+    /// SignedData with signer + 1 intermediate → returns the intermediate DER,
+    /// NOT the signer leaf.
+    #[test]
+    fn extract_intermediates_returns_non_signer_certs() {
+        let (signer_der, signer_priv) = p256_test_cert_and_key(30);
+        let (intermediate_der, _intermediate_priv) = p256_test_cert_and_key(31);
+
+        let signed_data_der = build_signed_data_with_extra_certs(
+            b"multi-cert payload",
+            &signer_der,
+            &signer_priv,
+            std::slice::from_ref(&intermediate_der),
+        );
+
+        let intermediates =
+            extract_intermediates(&signed_data_der).expect("extract ok");
+        assert_eq!(
+            intermediates.len(),
+            1,
+            "exactly one intermediate (signer leaf excluded)"
+        );
+        assert_eq!(
+            intermediates[0], intermediate_der,
+            "intermediate DER must round-trip verbatim"
+        );
+        assert_ne!(
+            intermediates[0], signer_der,
+            "signer leaf must NOT appear in the intermediates set"
+        );
+    }
+
+    /// Multiple intermediates: all non-signer certs returned, signer excluded.
+    #[test]
+    fn extract_intermediates_returns_multiple_non_signer_certs() {
+        let (signer_der, signer_priv) = p256_test_cert_and_key(32);
+        let (int1, _) = p256_test_cert_and_key(33);
+        let (int2, _) = p256_test_cert_and_key(34);
+
+        let signed_data_der = build_signed_data_with_extra_certs(
+            b"signer + 2 intermediates",
+            &signer_der,
+            &signer_priv,
+            &[int1.clone(), int2.clone()],
+        );
+
+        let intermediates =
+            extract_intermediates(&signed_data_der).expect("extract ok");
+        assert_eq!(intermediates.len(), 2, "two intermediates");
+        assert!(intermediates.contains(&int1), "intermediate 1 present");
+        assert!(intermediates.contains(&int2), "intermediate 2 present");
+        assert!(
+            !intermediates.contains(&signer_der),
+            "signer leaf excluded"
+        );
+    }
+
+    /// Single-cert SignedData (only the signer leaf) → empty intermediates.
+    #[test]
+    fn extract_intermediates_empty_when_only_signer_present() {
+        let (signer_der, signer_priv) = p256_test_cert_and_key(35);
+        let signed_data_der = crate::cms_build::build_signed_data(
+            b"single-cert",
+            false,
+            &signer_der,
+            &signer_priv,
+        )
+        .unwrap();
+
+        let intermediates =
+            extract_intermediates(&signed_data_der).expect("extract ok");
+        assert!(
+            intermediates.is_empty(),
+            "no intermediates when the signer leaf is the only cert"
+        );
+    }
+
+    /// SignedData with the `certificates` field stripped → empty intermediates
+    /// (not an error; the orchestrator passes an empty slice downstream).
+    #[test]
+    fn extract_intermediates_empty_when_cert_set_absent() {
+        let (signer_der, signer_priv) = p256_test_cert_and_key(36);
+        let signed_data_der = crate::cms_build::build_signed_data(
+            b"no-certs",
+            false,
+            &signer_der,
+            &signer_priv,
+        )
+        .unwrap();
+
+        // Re-parse, drop `certificates`, re-encode (mirrors the
+        // verify_no_signer_cert_yields_unknown_key_marker fixture pattern).
+        let ci = ContentInfo::from_der(&signed_data_der).unwrap();
+        let sd = SignedData::from_der(ci.content.to_der().unwrap().as_slice()).unwrap();
+        let stripped = SignedData {
+            version: sd.version,
+            digest_algorithms: sd.digest_algorithms.clone(),
+            encap_content_info: sd.encap_content_info.clone(),
+            certificates: None,
+            crls: sd.crls.clone(),
+            signer_infos: sd.signer_infos.clone(),
+        };
+        let stripped_ci = ContentInfo {
+            content_type: const_oid::db::rfc5911::ID_SIGNED_DATA,
+            content: der::Any::from_der(&stripped.to_der().unwrap()).unwrap(),
+        };
+        let stripped_der = stripped_ci.to_der().unwrap();
+
+        let intermediates = extract_intermediates(&stripped_der).expect("extract ok");
+        assert!(
+            intermediates.is_empty(),
+            "no certificates set -> empty intermediates (not an error)"
+        );
+    }
+
+    /// Malformed SignedData DER → `Malformed` error (no silent empty Vec on
+    /// unparseable input — that would hide real corruption).
+    #[test]
+    fn extract_intermediates_malformed_input_is_error() {
+        let garbage = [0x00u8; 4];
+        let err = extract_intermediates(&garbage).unwrap_err();
+        assert!(
+            matches!(err, CryptoError::Malformed(_)),
+            "non-CMS input must be Malformed, got {err:?}"
         );
     }
 }

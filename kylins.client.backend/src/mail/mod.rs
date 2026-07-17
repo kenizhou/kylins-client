@@ -3,5 +3,6 @@
 pub mod address;
 pub mod builder;
 pub mod crypto;
+pub mod crypto_crl;
 pub mod imap;
 pub mod smtp;

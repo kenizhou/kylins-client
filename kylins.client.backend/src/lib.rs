@@ -254,6 +254,9 @@ pub fn run() {
             db::commands::crypto_generate_key,
             db::commands::crypto_import_key_from_path,
             db::commands::crypto_export_public_to_path,
+            // Plan 3 / G5 Task 4 — S/MIME receive orchestrator commands.
+            db::commands::crypto_open_message,
+            db::commands::db_get_message_crypto_result,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,

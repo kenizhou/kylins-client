@@ -62,6 +62,19 @@ hex = "0.4"
 secrecy = "0.10"
 zeroize = "1"
 subtle = "2"
+# G5 Task 3 receive orchestrator: cRLDistributionPoints URL extraction from
+# signer + intermediate certs (parsed via x509-parser 0.18). Was a dev-dep
+# (Plan 2 Task 6 re-parse test); promoted so the production receive pipeline
+# can read CDP URLs for `fetch_crl_cached`.
+x509-parser = "0.18"
+# G5 Task 3: the receive orchestrator parses CMS ContentInfo to dispatch on
+# id-enveloped-data vs id-signed-data, and extracts SignedData encapsulated
+# content (the plaintext MIME) for the verify path. Same vendored snapshot
+# crypto-smime uses. Promoted from dev-deps (where they were used by the
+# Plan 2b Task 5 + Plan 4a Task 5 round-trip tests).
+cms = { path = "../kylins.client.crypto/vendor/cms" }
+const-oid = { version = "0.10", features = ["db"] }
+der = "0.8"
 # Crypto framework core (neutral envelope + KeyHandle + CryptoBackend trait).
 # Workspace lives at repo-root `kylins.client.crypto/` (sibling to backend/frontend).
 crypto-core = { path = "../kylins.client.crypto/core" }
@@ -100,18 +113,6 @@ uuid = { version = "1", features = ["v4"] }
 mail-parser = "0.9"
 # Temp dirs for db migration tests
 tempfile = "3"
-# S/MIME lifecycle smoke test (Plan 2 Task 6): re-parse exported cert DER to
-# assert SAN email + EKU emailProtection.
-x509-parser = "0.18"
-# Plan 2b Task 5: S/MIME sign lifecycle integration test parses the signed
-# ContentInfo DER to assert id-signed-data. `cms` reaches the backend only
-# transitively (via crypto-smime), so the test must name it as a direct dev-dep
-# to `use cms::...`. Same vendored snapshot path crypto-smime uses (identical
-# version). `const-oid` needs the `db` feature for `const_oid::db::rfc5911::*`;
-# `der` is needed for the `der::Decode` trait bound in the test.
-cms = { path = "../kylins.client.crypto/vendor/cms" }
-const-oid = { version = "0.10", features = ["db"] }
-der = "0.8"
 # Plan 4a Task 5: the apply_crypto cryptographic gate asserts the p7s
 # `messageDigest` signed attribute equals `SHA-256(part1)`. `sha2` is transitive
 # (via crypto-smime); naming it directly here lets the test call `Sha256::digest`.

@@ -51,6 +51,10 @@ pub struct ProviderProfile {
     /// (Yahoo docs: "IDLE responses include only new messages and updates.
     /// Message deletes or EXPUNGE will not be available."). Everyone else → true.
     idle_reports_expunges: bool,
+    /// Whether IDLE is reliable enough to use. Yahoo → false (pushes arrive at
+    /// ~120s, socket reaped at ~300s, unreliable). When false, the engine uses
+    /// efficient 60s polling with CONDSTORE delta sync instead.
+    supports_idle: bool,
     /// Per-response cap if the server enforces MESSAGELIMIT (Yahoo UIDONLY).
     /// None = uncapped.
     message_limit: Option<u32>,
@@ -74,6 +78,7 @@ impl ProviderProfile {
             id_name: None,
             enable_requests: Vec::new(),
             idle_reports_expunges: true,
+            supports_idle: true,
             message_limit: None,
             all_mail_folder: None,
             stable_id_kind: StableIdKind::None,
@@ -85,6 +90,9 @@ impl ProviderProfile {
     }
     pub fn idle_reports_expunges(&self) -> bool {
         self.idle_reports_expunges
+    }
+    pub fn supports_idle(&self) -> bool {
+        self.supports_idle
     }
     pub fn message_limit(&self) -> Option<u32> {
         self.message_limit
@@ -114,6 +122,7 @@ pub fn detect(hostname: &str, id_name: Option<&str>, caps: &Capabilities) -> Pro
             id_name: id_name.map(str::to_owned),
             enable_requests: vec!["UIDONLY"],
             idle_reports_expunges: false,
+            supports_idle: false, // Yahoo IDLE: ~120s latency, socket reaped at ~300s — use 60s polling instead.
             // Yahoo's MESSAGELIMIT is 1000 (from the CAPABILITY token; the value
             // isn't extractable via has_str, so hardcode the known value).
             message_limit: Some(1000),
@@ -130,6 +139,7 @@ pub fn detect(hostname: &str, id_name: Option<&str>, caps: &Capabilities) -> Pro
             id_name: id_name.map(str::to_owned),
             enable_requests: Vec::new(),
             idle_reports_expunges: true,
+            supports_idle: true,
             message_limit: None,
             all_mail_folder: Some("[Gmail]/All Mail"),
             stable_id_kind: StableIdKind::GmExt1,

@@ -142,6 +142,20 @@ pub struct RemoteMessage {
     /// onto `messages.is_encrypted` / `is_signed` at upsert time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_kind: Option<CryptoKind>,
+    /// Provider-stable message identifier that survives UIDVALIDITY resets and
+    /// cross-folder moves: Yahoo's OBJECTID `EMAILID` (RFC 8474) or Gmail's
+    /// `X-GM-MSGID` (X-GM-EXT-1). `None` when the server exposes neither scheme
+    /// (generic IMAP) or the source adapter couldn't parse the attribute. The
+    /// engine persists this onto `messages.remote_email_id` so a folder rebuild
+    /// can re-link the same logical message without a full re-download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_email_id: Option<String>,
+    /// Provider-stable thread/conversation identifier: Yahoo's OBJECTID
+    /// `THREADID` (RFC 8474) or Gmail's `X-GM-THRID` (X-GM-EXT-1). `None` when
+    /// unsupported or unparsed. Carried alongside `remote_email_id` so future
+    /// server-side threading can group messages the client never saw together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_thread_id: Option<String>,
 }
 
 /// Detected S/MIME (Phase 1b) / future-PGP structure of an inbound message,

@@ -1,0 +1,501 @@
+Yahoo IMAP/SMTP Exchange using OAUTH2
+Basic Requirements
+To review the OAuth 2.0 Authorization protocol and for information on the available Yahoo API methods needed to obtain the appropriate OAUTH2 credentials (ie. access_token)
+
+Please visit: https://developer.yahoo.com/oauth2/guide
+
+
+Yahoo Oauth2 Guide
+All identities supported by Yahoo share the same identify infrastructure. This means applications can use the same mechanism to obtain Oauth2 tokens for both Yahoo and AOL accounts. However applications and services need a separate set of client credentials for each namespace.
+
+Applications and services also need access to the mail scope. If that is not already available or approved for information about the available interfaces and to start the review and approval process.
+
+
+Request Developer Access to Yahoo Mail
+IMAP
+Yahoo/Aol IMAP uses the standard Simple Authentication and Security Layer (SASL), via the IMAP AUTHENTICATE command, to authenticate users. The SASL OAUTHBEARER mechanism enables clients to provide OAuth 2.0 credentials for authentication.
+
+It is important to note that OAUTHBEARER authentication is only allowed if AUTH=OAUTHBEARER is specified in the IMAP capability response.
+
+An example of IMAP CAPABILITY command interaction is shown below:
+
+C: A001 CAPABILITY
+S: * CAPABILITY IMAP4rev1 AUTH=PLAIN AUTH=OAUTHBEARER SASL-IR NAMESPACE ENABLE OBJECTID CONDSTORE QRESYNC UIDONLY PARTIAL MESSAGELIMIT=1000
+S: A001 OK Completed
+Client Request
+The SASL OAUTHBEARER initial client response contains the following parts:
+
+{Authentication Identity or SASL Name}	GS2 authorization id as defined in RFC 5801. Mailbox email is provided here.
+{Auth Token}	OAuth2 access token prefixed with "Bearer ".
+Host	(Optional) Contains the host to which client connected.
+Port	(Optional) Contains the port to which client connected.
+The IMAP protocol uses the following base64-encoded value string when authenticating with XOAuth2:
+
+base64("n,a=user@yahoo.com,^Ahost=imap.mail.yahoo.com^Aport=993^Aauth=Bearer vF9dft4qmTc2Nvb3RlckBhbHRhdmlzdGEuY29tCg==^A^A")
+
+1. ^A represents a Control+A(\001) character.
+2. There is a space after 'Bearer'.
+
+Response
+Before Base64 Encoding
+After Base64 Encoding
+n,a=user@yahoo.com,^Aauth=Bearer %2FwQAAAAAAAQWYXBpLXNhYWIubG9naW4uYW9sLmNvbbahHqM4YUdLENu8CHfeoI3lkAKyVpN25pCIaP%2FMkc%2Fetd3zBkJgewo3Uy%2FFv38xwnRWfROcAdRNg1IPIwK%2B82DK0X%2Fxng1w5t5escxLniPqIzxTLzQFsFuUGFV3wguWHjWOm30wV%2FCQVSoM96kWT%2BxpZ62OOKnjZsKpfdLarH6vmc3vs5tFcMQvTbI0^A^A
+Authentication
+IMAP client invokes the AUTHENTICATE command with OAUTHBEARER mechanism parameter and the initial client response as constructed above. Server also supports SASL-IR or a single line AUTHENTICATE command.
+
+Examples of IMAP AUTHENTICATE command with OAUTHBEARER interaction are shown below:
+
+
+OAUTHBEARER using SASL
+C: L001 AUTHENTICATE OAUTHBEARER
+S: +
+C: bixhdXNlcj11c2Vyb21hZzFAdmVyaXpvbm1lZGlhLmNvbQFhdXRoPUJlYXJlciAlMkZ3UUFBQUFBQUFRV1lYQnBMWE5oWVdJdWJHOW5hVzR1WVc5c0xtTnZiYmFoSHFNNFlVZExFTnU4Q0hmZW9JM2xrQUt5VnBOMjVwQ0lhUCUyRk1rYyUyRmV0ZDN6QmtKZ2V3bzNVeSUyRkZ2Mzh4d25SV2ZST2NBZFJOZzFJUEl3SyUyQjgyREswWCUyRnhuZzF3NXQ1ZXNjeExuaVBxSXp4VEx6UUZzRnVVR0ZWM3dndVdIaldPbTMwd1YlMkZDUVZTb005NmtXVCUyQnhwWjYyT09Lbmpac0twZmRMYXJINnZtYzN2czV0RmNNUXZUYkkwAQE=
+S: L001 OK AUTHENTICATE completed
+
+OAUTHBEARER using SASL-IR
+C: L002 AUTHENTICATE OAUTHBEARER bixhdXNlcj11c2Vyb21hZzFAdmVyaXpvbm1lZGlhLmNvbQFhdXRoPUJlYXJlciAlMkZ3UUFBQUFBQUFRV1lYQnBMWE5oWVdJdWJHOW5hVzR1WVc5c0xtTnZiYmFoSHFNNFlVZExFTnU4Q0hmZW9JM2xrQUt5VnBOMjVwQ0lhUCUyRk1rYyUyRmV0ZDN6QmtKZ2V3bzNVeSUyRkZ2Mzh4d25SV2ZST2NBZFJOZzFJUEl3SyUyQjgyREswWCUyRnhuZzF3NXQ1ZXNjeExuaVBxSXp4VEx6UUZzRnVVR0ZWM3dndVdIaldPbTMwd1YlMkZDUVZTb005NmtXVCUyQnhwWjYyT09Lbmpac0twZmRMYXJINnZ tYzN2czV0RmNNUXZUYkkwAQE=
+S: L002 OK AUTHENTICATE completed
+
+OAUTHBEARER Authentication Failure
+C: L003 AUTHENTICATE OAUTHBEARER incorrect-tokenyb21hZzFAdmVyaXpvbm1lZGlhLmNvbQFhdXRoPUJlYXJlciAlMkZ3UUFBQUFBQUFRV1lYQnBMWE5oWVdJdWJHOW5hVzR1WVc5c0xtTnZiYmFoSHFNNFlVZExFTnU4Q0hmZW9JM2xrQUt5VnBOMjVwQ0lhUCUyRk1rYyUyRmV0ZDN6QmtKZ2V3bzNVeSUyRkZ2Mzh4d25SV2ZST2NBZFJOZzFJUEl3SyUyQjgyREswWCUyRnhuZzF3NXQ1ZXNjeExuaVBxSXp4VEx6UUZzRnVVR0ZWM3dndVdIaldPbTMwd1YlMkZDUVZTb005NmtXVCUyQnhwWjYyT09Lbmpac0twZmRMYXJINnZ tYzN2czV0RmNNUXZUYkkwAQE=
+S: L003 NO [AUTHENTICATIONFAILED] AUTHENTICATE Server error - Please try again later
+IMAP Features
+Yahoo/Aol IMAP servers support the following features:
+
+Client Identification
+The Yahoo/Aol IMAP server supports the IMAP ID to gather statistics and facilitate troubleshooting.
+
+An IMAP client connecting to the Yahoo servers should issue the ID command with the following attributes:
+
+NAME - should be the partner name or the ID assigned during the approval process.
+VERSION - IMAP client version.
+OS - Operating system running the IMAP Client.
+OS-VERSION - Operating system version running the IMAP Client.
+An example of IMAP ID command interaction is shown below:
+
+C: A002 ID ("name" "Yahoo Mail Client" "version" "1.0" "os" "Linux" "os-version" "7.9.4" "vendor" "Yahoo")
+S: * ID ("version" "1.1.19341" "host" "jimap300030.imap.mail.yahoo.yahoo.cloud" "name" "Y!IMAP" "vendor" "Yahoo! Inc." "support-url" "https://help.yahoo.com/" "remote-host" "98.136.3.198")
+S: A002 OK ID completed
+List Special Use
+The Yahoo/Aol IMAP server supports the IMAP LIST SPECIAL-USE to identify the special use folders on the server.
+
+An IMAP client can localize the names of the special folders as needed while using the appropriate folders for standard operations.
+
+An example of IMAP List Special Use interaction is shown below:
+
+C: A004 LIST "" "*" RETURN (SPECIAL-USE)
+S: * LIST (\All \NoInferiors) "/" "All Mail"
+S: * LIST (\Archive \HasNoChildren) "/" "Archive"
+S: * LIST (\Drafts \HasNoChildren) "/" "Draft"
+S: * LIST (\HasNoChildren) "/" "Inbox"
+S: * LIST (\Sent \HasNoChildren) "/" "Sent"
+S: * LIST (\Junk \HasNoChildren) "/" "Spam"
+S: * LIST (\Trash \HasNoChildren) "/" "Trash"
+S: A004 OK LIST completed
+List Status
+The Yahoo/Aol IMAP server supports the IMAP LIST-STATUS extension to get the folder status efficiently.
+
+An IMAP client can get the folder updates efficiently without sending multiple STATUS commands querying for changes.
+
+An example of IMAP List Status interaction is shown below:
+
+C: A005 LIST "" "*" RETURN (STATUS (MAILBOXID MESSAGES RECENT UNSEEN UIDNEXT UIDVALIDITY HIGHESTMODSEQ))
+S: * LIST (\NoInferiors) "/" "All Mail"
+S: * STATUS "All Mail" (MESSAGES 37772 RECENT 0 UIDNEXT 60871 UIDVALIDITY 1631320478 UNSEEN 26304 MAILBOXID (A1) HIGHESTMODSEQ 1638340202700)
+S: * LIST (\HasNoChildren) "/" "Archive"
+S: * STATUS "Archive" (MESSAGES 0 RECENT 0 UIDNEXT 1 UIDVALIDITY 1631320482 UNSEEN 0 MAILBOXID (21) HIGHESTMODSEQ 1)
+S: * LIST (\HasNoChildren) "/" "Draft"
+S: * STATUS "Draft" (MESSAGES 0 RECENT 0 UIDNEXT 15 UIDVALIDITY 1631320479 UNSEEN 0 MAILBOXID (3) HIGHESTMODSEQ 29)
+S: * LIST (\HasNoChildren) "/" "Inbox"
+S: * STATUS "Inbox" (MESSAGES 37726 RECENT 0 UIDNEXT 44627 UIDVALIDITY 1631320479 UNSEEN 26272 MAILBOXID (1) HIGHESTMODSEQ 83535)
+S: * LIST (\HasNoChildren) "/" "Sent"
+S: * STATUS "Sent" (MESSAGES 14 RECENT 0 UIDNEXT 20 UIDVALIDITY 1631320479 UNSEEN 0 MAILBOXID (2) HIGHESTMODSEQ 26)
+S: * LIST (\HasNoChildren) "/" "Spam"
+S: * STATUS "Spam" (MESSAGES 32 RECENT 0 UIDNEXT 16225 UIDVALIDITY 1631320479 UNSEEN 32 MAILBOXID (6) HIGHESTMODSEQ 32417)
+S: * LIST (\HasNoChildren) "/" "Trash"
+S: * STATUS "Trash" (MESSAGES 0 RECENT 0 UIDNEXT 7 UIDVALIDITY 1631320479 UNSEEN 0 MAILBOXID (4) HIGHESTMODSEQ 13)
+S: A005 OK LIST completed
+Idle
+The Yahoo/Aol server supports IMAP IDLE for the server to push updates to clients as they happen on the user’s mailbox.
+
+An example of IMAP IDLE interaction is shown below:
+
+C: A006 SELECT INBOX
+S: * 37726 EXISTS
+S: * 0 RECENT
+S: * OK [UIDVALIDITY 1631320479] UIDs valid
+S: * OK [UIDNEXT 44627] Predicted next UID
+S: * FLAGS (\Answered \Deleted \Draft \Flagged \Seen $Forwarded $Junk $NotJunk)
+S: * OK [PERMANENTFLAGS (\Answered \Deleted \Draft \Flagged \Seen $Forwarded $Junk $NotJunk)] Permanent flags
+S: * OK [HIGHESTMODSEQ 83535]
+S: * OK [MAILBOXID (1)] Ok
+S: A006 OK [READ-WRITE] SELECT completed; now in selected state
+
+C: A007 IDLE
+S: + idling
+S: * 37727 EXISTS
+S: * 0 RECENT
+S: * 37726 FETCH (UID 44626 FLAGS (\Seen))
+S: * 37727 FETCH (UID 44627 FLAGS ($NotJunk))
+C: DONE
+S: A007 OK IDLE completed
+Please note that due to server limitations, IDLE responses include only new messages and updates. Message deletes or EXPUNGE will not be available. IMAP Clients have to list all the messages in a folder to identify the message deletes. Alternatively, using “All Mail” will publish the deleted messages.
+
+Folder Changes (XYMHighestModSeq Capability)
+The Yahoo/Aol IMAP server exposes the HIGHESTMODSEQ, from IMAP CONDSTORE, on a mailbox. A change in HIGHESTMODSEQ identifies mailbox changes like new messages, message updates and deletes.
+
+The following example shows a subsequent interaction for the previously selected mailbox with a modified highestmodseq value:
+
+C: B008 SELECT INBOX
+S: * 37727 EXISTS
+S: * 0 RECENT
+S: * OK [UIDVALIDITY 1631320479] UIDs valid
+S: * OK [UIDNEXT 44627] Predicted next UID
+S: * FLAGS (\Answered \Deleted \Draft \Flagged \Seen $Forwarded $Junk $NotJunk)
+S: * OK [PERMANENTFLAGS (\Answered \Deleted \Draft \Flagged \Seen $Forwarded $Junk $NotJunk)] Permanent flags
+S: * OK [HIGHESTMODSEQ 83539]
+S: * OK [MAILBOXID (1)] Ok
+S: B008 OK [READ-WRITE] SELECT completed; now in selected state
+Enable
+The Yahoo/Aol IMAP server supports IMAP ENABLE allowing clients to switch between the various modes: (a) Unlimited and (b) Uid only modes.
+
+The following example shows how an IMAP client can switch to the Unlimited mode:
+
+C: A009 ENABLE UIDONLY
+S: * ENABLED UIDONLY
+S: A009 OK ENABLE completed
+For a detailed explanation of the various IMAP server modes, please refer to the Yahoo/Aol Pagination & Mail Sync detailed protocol document.
+
+Mail Object ID
+The Yahoo/Aol IMAP server supports the IMAP OBJECTID allowing clients to obtain unique IDs for mailboxes, messages and threads.
+
+Mailboxes IDs will allow clients to understand IMAP RENAME and not to re-download the entire mailbox.
+
+Email IDs will allow clients to uniquely identify messages and can also be used to identify when a message is moved across mailboxes. This eliminates the need for re-downloading the message content.
+
+The following example shows how an IMAP client can retrieve the various OBJECTID fields:
+
+C: A010 UID FETCH 44627:44631 (UID MAILBOXID EMAILID THREADID)
+S: * 44631 FETCH (UID 44631 MODSEQ (1638340694104) EMAILID (AHv3_oRrlHYyYacYYwjlWCQNEtA) THREADID (28050) MAILBOXID (1))
+S: * 44630 FETCH (UID 44630 MODSEQ (1638340479030) EMAILID (AODWoxNBevpbYacXdADikA2z-Ok) THREADID (31052) MAILBOXID (1))
+S: * 44629 FETCH (UID 44629 MODSEQ (1638340484965) EMAILID (AKlZCNxCO0yAYacXbwImyEytico) THREADID (30889) MAILBOXID (1))
+S: * 44628 FETCH (UID 44628 MODSEQ (1638340433320) EMAILID (AFYDK5gxAnUlYacXXAYmONeqQuI) THREADID (30889) MAILBOXID (1))
+S: * 44627 FETCH (UID 44627 MODSEQ (1638340365019) EMAILID (AEJMONF_UOvLYacXIgqLOFpvrfQ) THREADID (31051) MAILBOXID (1))
+S: A010 OK UID FETCH completed
+Mail Message ID Extensions
+In addition to the above IDs, the Yahoo/Aol IMAP server also returns the unique POP UIDL of the message. This allows clients to efficiently move messages and switch the POP server without impacting the end user experience.
+
+The following example show how an IMAP client can retrieve the POP uidl and decos for the messages:
+
+C: A011 UID FETCH 44627:44631 (X-POP-UIDL X-MSG-DECOS)
+S: * 44631 FETCH (UID 44631 MODSEQ (1638340694104) X-POP-UIDL "AHv3/oRrlHYyYacYYwjlWCQNEtA" X-MSG-DECOS ("ALG" "BTD" "UC" "USB" "EML" "F1" "FTI"))
+S: * 44630 FETCH (UID 44630 MODSEQ (1638340479030) X-POP-UIDL "AODWoxNBevpbYacXdADikA2z+Ok" X-MSG-DECOS ("ALG" "UC" "BTD" "USB" "EML" "F1" "FTI"))
+S: * 44629 FETCH (UID 44629 MODSEQ (1638340484965) X-POP-UIDL "AKlZCNxCO0yAYacXbwImyEytico" X-MSG-DECOS ("ALG" "UC" "BTD" "USB" "EML" "F1" "FTI"))
+S: * 44628 FETCH (UID 44628 MODSEQ (1638340433320) X-POP-UIDL "AFYDK5gxAnUlYacXXAYmONeqQuI" X-MSG-DECOS ("ALG" "UC" "BTD" "USB" "EML" "F1" "FTI"))
+S: * 44627 FETCH (UID 44627 MODSEQ (1638340365019) X-POP-UIDL "AEJMONF/UOvLYacXIgqLOFpvrfQ" X-MSG-DECOS ("ALG" "PE" "EML" "F1" "FTI"))
+S: A011 OK UID FETCH completed
+Partial
+The Yahoo/Aol IMAP server supports the IMAP PARTIAL allowing clients to walk through a mailbox without using sequence numbers.
+
+Clients should first fetch MESSAGELIMIT capability and keep the message requests below the server announced MESSAGELIMIT.
+
+C: A012 CAPABILITY
+S: * CAPABILITY IMAP4rev1 ENABLE OBJECTID CONDSTORE QRESYNC UIDONLY PARTIAL MESSAGELIMIT=1000
+S: A012 OK Completed
+The example below shows how clients can iterate through a mailbox retrieving the FETCH responses:
+
+C: A013 UID FETCH 1:44631 (UID EMAILID INTERNALDATE RFC822.SIZE) (PARTIAL -1:-5)
+S: * 44631 FETCH (UID 44631 MODSEQ (1638340694104) INTERNALDATE "01-Dec-2021 06:38:27 +0000" RFC822.SIZE 6867 EMAILID (AHv3_oRrlHYyYacYYwjlWCQNEtA))
+S: * 44630 FETCH (UID 44630 MODSEQ (1638340479030) INTERNALDATE "01-Dec-2021 06:34:28 +0000" RFC822.SIZE 8668 EMAILID (AODWoxNBevpbYacXdADikA2z-Ok))
+S: * 44629 FETCH (UID 44629 MODSEQ (1638340484965) INTERNALDATE "01-Dec-2021 06:34:23 +0000" RFC822.SIZE 7222 EMAILID (AKlZCNxCO0yAYacXbwImyEytico))
+S: * 44628 FETCH (UID 44628 MODSEQ (1638340433320) INTERNALDATE "01-Dec-2021 06:34:04 +0000" RFC822.SIZE 7070 EMAILID (AFYDK5gxAnUlYacXXAYmONeqQuI))
+S: * 44627 FETCH (UID 44627 MODSEQ (1638340365019) INTERNALDATE "01-Dec-2021 06:33:06 +0000" RFC822.SIZE 10067 EMAILID (AEJMONF_UOvLYacXIgqLOFpvrfQ))
+S: A013 OK UID FETCH completed
+
+C: A014 UID FETCH 1:44626 (UID EMAILID INTERNALDATE RFC822.SIZE) (PARTIAL -1:-5)
+S: * 44626 FETCH (UID 44626 MODSEQ (1638340064511) INTERNALDATE "01-Dec-2021 06:27:23 +0000" RFC822.SIZE 6971 EMAILID (AKWjYdxprPG4YacVywJ40JiHcUE))
+S: * 44625 FETCH (UID 44625 MODSEQ (1638339349985) INTERNALDATE "01-Dec-2021 06:16:09 +0000" RFC822.SIZE 6796 EMAILID (APwFlV5rr19HYacTKQH70DIXh8I))
+S: * 44624 FETCH (UID 44624 MODSEQ (1638339241549) INTERNALDATE "01-Dec-2021 06:13:48 +0000" RFC822.SIZE 7044 EMAILID (ABwPBFJZRC5eYacSnAaTmD9MAbc))
+S: * 44623 FETCH (UID 44623 MODSEQ (1638339185129) INTERNALDATE "01-Dec-2021 06:13:26 +0000" RFC822.SIZE 7302 EMAILID (AAmL-2gpWRVKYacShgTiAGow5yE))
+S: * 44622 FETCH (UID 44622 MODSEQ (1638338991404) INTERNALDATE "01-Dec-2021 06:10:02 +0000" RFC822.SIZE 7272 EMAILID (AOcAh50vdCQJYacRugdPGAbuesU))
+S: A014 OK UID FETCH completed
+Mail Message Move
+The Yahoo/Aol IMAP server supports the IMAP MOVE to easily move a message to a different mailbox.
+
+The MOVE command will efficiently move a message to a new folder than the typical IMAP COPY/STORE/EXPUNGE command sequence.
+
+The MOVE command has the added benefit of not affecting any mailbox quotas as there is only one copy of the message.
+
+The sequence of COPY/STORE/EXPUNGE commands as shown below:
+
+C: A015 UID COPY 44627 Trash
+S: A015 OK [COPYUID 1631320479 44627 7] COPY Completed
+C: A016 UID STORE 44627 +FLAGS (\DELETED)
+S: * 37727 FETCH (FLAGS (\Deleted))
+C: A016 OK STORE Completed
+C: A017 UID EXPUNGE 44627
+S: * 37727 EXPUNGE
+S: * 37730 EXISTS
+S: A017 OK UID EXPUNGE Completed
+Will be replaced with the following command:
+
+C: A015 UID MOVE 44627 Trash
+S: * OK [COPYUID 1631320479 44627 7]
+S: * 37727 EXPUNGE
+S: * 37730 EXISTS
+S: A015 OK UID MOVE completed
+All Mail (Experimental)
+The Yahoo/Aol IMAP server supports an “All Mail” folder that lists all messages in a user's mailbox. IMAP Clients can use IMAP CONDSTORE & QRESYNC queries to identify new messages, updates and deletes across the entire mailbox.
+
+The following example shows how an IMAP client can iterate through the entire mailbox:
+
+C: A018 SELECT "All Mail"
+S: * 37780 EXISTS
+S: * 0 RECENT
+S: * OK [UIDVALIDITY 1631320478] UIDs valid
+S: * OK [UIDNEXT 60879] Predicted next UID
+S: * FLAGS (\Answered \Deleted \Draft \Flagged \Seen $Forwarded $Junk $NotJunk)
+S: * OK [PERMANENTFLAGS (\Answered \Deleted \Draft \Flagged \Seen $Forwarded $Junk $NotJunk)] Permanent flags
+S: * OK [HIGHESTMODSEQ 1638342529714]
+S: * OK [MAILBOXID (A1)] Ok
+S: A018 OK [READ-WRITE] SELECT completed; now in selected state
+
+C: A019 UID FETCH 1:60878 (UID RFC822.SIZE EMAILID MAILBOXID) (PARTIAL -1:-5)
+S: * 60878 FETCH (UID 60878 MODSEQ (1638342392186) MAILBOXID (4) RFC822.SIZE 6971 EMAILID (AEcpDx9EEu_MYace5AW42M5F2AY) MAILBOXID (4))
+S: * 60877 FETCH (UID 60877 MODSEQ (1638341918564) MAILBOXID (1) RFC822.SIZE 7407 EMAILID (AIcJkv5GAj_VYacdKQfESHkEBbI) MAILBOXID (1))
+S: * 60876 FETCH (UID 60876 MODSEQ (1638341501368) MAILBOXID (1) RFC822.SIZE 6836 EMAILID (AK9wdk50bPFWYacbcQ2QqDy6l7Q) MAILBOXID (1))
+S: * 60875 FETCH (UID 60875 MODSEQ (1638340694104) MAILBOXID (1) RFC822.SIZE 6867 EMAILID (AHv3_oRrlHYyYacYYwjlWCQNEtA) MAILBOXID (1))
+S: * 60874 FETCH (UID 60874 MODSEQ (1638340479030) MAILBOXID (1) RFC822.SIZE 8668 EMAILID (AODWoxNBevpbYacXdADikA2z-Ok) MAILBOXID (1))
+S: A019 OK UID FETCH completed
+
+C: A020 UID FETCH 1:60873 (UID RFC822.SIZE EMAILID MAILBOXID) (PARTIAL -1:-5)
+S: * 60873 FETCH (UID 60873 MODSEQ (1638340484965) MAILBOXID (1) RFC822.SIZE 7222 EMAILID (AKlZCNxCO0yAYacXbwImyEytico) MAILBOXID (1))
+S: * 60872 FETCH (UID 60872 MODSEQ (1638340433320) MAILBOXID (1) RFC822.SIZE 7070 EMAILID (AFYDK5gxAnUlYacXXAYmONeqQuI) MAILBOXID (1))
+S: * 60871 FETCH (UID 60871 MODSEQ (1638342134247) MAILBOXID (4) RFC822.SIZE 10067 EMAILID (AEJMONF_UOvLYacXIgqLOFpvrfQ) MAILBOXID (4))
+S: * 60870 FETCH (UID 60870 MODSEQ (1638340064511) MAILBOXID (1) RFC822.SIZE 6971 EMAILID (AKWjYdxprPG4YacVywJ40JiHcUE) MAILBOXID (1))
+S: * 60869 FETCH (UID 60869 MODSEQ (1638339349985) MAILBOXID (1) RFC822.SIZE 6796 EMAILID (APwFlV5rr19HYacTKQH70DIXh8I) MAILBOXID (1))
+S: A020 OK UID FETCH completed
+For a more detailed list of IMAP client requests and server responses, please refer to the Yahoo/Aol Pagination & Mail Sync detailed protocol document.
+
+IMAP Modes
+There will be 2 primary ways that clients will be able to access mailboxes. The Default or Limited mode that gives access to a partial mailbox. The Uid mode works only with UIDs, opens up the entire mailbox and has more efficient ways of getting incremental changes. All the modes are described in detail below.
+
+Limited Mode (Default mode)
+Limited mode is the default mode when a client connects to Yahoo/Aol IMAP servers. For folders with messages above the defined MESSAGELIMIT, clients can only access a partial view of the folder. In order to retrieve all the messages in a folder, clients are advised to use the other unlimited and uid modes for downloading the entire folder.
+
+
+Limited Mode Functionality
+Message count limit, MESSAGELIMIT, identifying maximum messages available in a folder as part of the CAPABILITY command response.
+Select/Examine will return the folder count limited to MESSAGELIMIT or the total for folders with less than MESSAGELIMIT.
+All queries (fetch, search) will operate on top of the mailbox limited to MESSAGELIMIT results with an OK response.
+New messages added to the folder will remove the oldest uids.
+Message deletes in a session will not make older uids accessible. Subsequent or newer sessions will see older uids becoming accessible in the folder.
+CONDSTORE support on all folders.
+IDLE support on all folders.
+
+MSN support in Limited mode
+IMAP server will assign an available sequence number between 1 and mailbox count or up to the MESSAGELIMIT. The msns assigned will be in the increasing order of UIDs and will follow the IMAP protocol specification.
+Clients are encouraged to avoid using message sequence numbers.
+UID Mode
+The clients will be able to fetch and operate on all messages on the mailbox using UIDs. This mode is enabled/activated by enabling the “UIDONLY" extension.
+
+
+UID Mode Functionality
+This mode implements the functionality specified in IMAP UID ONLY RFC.
+Message count limit, MESSAGELIMIT, identifying maximum messages in a response will be available as part of the CAPABILITY command response.
+All range queries (FETCH/SEARCH) return up to a maximum of MESSAGELIMIT results. A NO tagged response along with partial results error code is returned for range queries (FETCH/SEARCH) with more than N results.
+MSNs returned as described in MSN support in IMAP UID Mode
+All MSN based IMAP requests will fail.
+New IMAP PARTIAL RFC extension to traverse messages in a mailbox.
+CONDSTORE support on all folders.
+IDLE support on all folders.
+
+MSN support in UID mode
+The sequence number returned is the UID of the message.
+MSN numbers have the same properties as UIDs (1 to UIDNext-1).
+No Reads/Writes on MSN based calls.
+SMTP
+Yahoo SMTP Protocol Exchange using OAUTHBEARER
+To review the OAuth 2.0 Authorization protocol and for information on the available Yahoo API methods needed to obtain the appropriate OAUTH2 credentials (ie. access_token)
+
+Please visit: https://developer.yahoo.com/oauth2/guide
+
+
+Yahoo Oauth2 Guide
+Yahoo SMTP uses the standard Simple Authentication and Security Layer (SASL), via the SMTP AUTH command, to authenticate users. The SASL OAUTHBEARER mechanism enables clients to provide OAuth 2.0 credentials for authentication.
+
+It is important to note that XOAUTH2 authentication is only allowed if SMTP capabilities list as part of the AUTH methods XOAUTH2.
+
+
+EXAMPLE
+C: EHLO my.mua.host.name
+S: 250-mtaout-aah01.mx.aol.com
+S: 250-PIPELINING
+S: 250-SIZE 36700160
+S: 250-ETRN
+S: 250-STARTTLS
+S: 250-AUTH XAOL-UAS-MB XOAUTH2 OAUTHBEARER PLAIN LOGIN
+S: 250-AUTH=XAOL-UAS-MB XOAUTH2 OAUTHBEARER PLAIN LOGIN
+S: 250-ENHANCEDSTATUSCODES
+S: 250-8BITMIME
+S: 250 DSN
+Client Response
+The SASL OAUTHBEARER client response contains the following parts:
+
+{Authentication Identity or SASL Name}	GS2 authorization id as defined in RFC 5801. Mailbox email is provided here
+{Auth Token}	OAUTH2 access_token prefixed with "Bearer"
+Host	(Optional) Contains the host to which client connected
+Port	(Optional) Contains the port to which client connected
+The SMTP protocol uses the following base64-encoded value string when authenticating with XOAuth2.
+
+base64("n,a=user@yahoo.com,^Ahost=smtp.mail.yahoo.com^Aport=465^Aauth=Bearer vF9dft4qmTc2Nvb3RlckBhbHRhdmlzdGEuY29tCg==^A^A"
+
+^A represents a Control+A ( \001 ).
+It is important to note that XOAUTH2 authentication is only allowed if SMTP capabilities list as part of the AUTH methods XOAUTH2
+
+
+RESPONSE
+Before Base64 encoding
+After Base64 encoding
+n,a=user@yahoo.com,^Aauth=Bearer %2FwQAAAAAAAQWYXBpLXNhYWIubG9naW4uYW9sLmNvbbahHqM4YUdLENu8CHfeoI3lkAKyVpN25pCIaP%2FMkc%2Fetd3zBkJgewo3Uy%2FFv38xwnRWfROcAdRNg1IPIwK%2B82DK0X%2Fxng1w5t5escxLniPqIzxTLzQFsFuUGFV3wguWHjWOm30wV%2FCQVSoM96kWT%2BxpZ62OOKnjZsKpfdLarH6vmc3vs5tFcMQvTbI0^A^A
+Authentication
+SMTP Authentication with SASL OAUTHBEARER Mechanism
+The client invokes the AUTH command with the mechanism parameter of XOAUTH2 and the initial client response as constructed above.
+
+
+EXAMPLE
+[connection begins]
+C: EHLO my.mua.host.name
+S: 250-mtaout-aah01.mx.aol.com
+S: 250-PIPELINING
+S: 250-SIZE 36700160
+S: 250-ETRN
+S: 250-STARTTLS
+S: 250-AUTH XAOL-UAS-MB XOAUTH2 PLAIN LOGIN
+S: 250-AUTH=XAOL-UAS-MB XOAUTH2 PLAIN LOGIN
+S: 250-ENHANCEDSTATUSCODES
+S: 250-8BITMIME
+S: 250 DSN
+C: AUTH OAUTHBEARER bixhdXNlcj11c2Vyb21hZzFAdmVyaXpvbm1lZGlhLmNvbQFhdXRoPUJlYXJlciAlMkZ3UUFBQUFBQUFRV1lYQnBMWE5oWVdJdWJHOW5hVzR1WVc5c0xtTnZiYmFoSHFNNFlVZExFTnU4Q0hmZW9JM2xrQUt5VnBOMjVwQ0lhUCU yRk1rYyUyRmV0ZDN6QmtKZ2V3bzNVeSUyRkZ2Mzh4d25SV2ZST2NBZFJOZzFJUEl3SyUyQjgyREswWCUyRnhuZzF3NXQ1ZXNjeExuaVBxSXp4VEx6UUZzRnVVR0ZWM3dndVdIaldPbTMwd1YlMkZDUVZTb005NmtXVCUyQnhwWjYyT09Lbmpac0twZmRMYX JINnZtYzN2czV0RmNNUXZUYkkwAQE=
+S: 235 2.7.0 Authentication successful
+
+[connection continues...]
+Things to note about the SMTP Protocol Exchange:
+
+The SMTP AUTH command is documented in RFC 4954.
+Single line login (sending the initial client response in the first line of the AUTH command) is only allowed if SASL-IR is specified in the capability response. The SASL-IR capability is documented in RFC 4959.
+The AUTH=OAUTHBEARER capability declares that the server supports the SASL mechanism defined in RFC 7628, and that this mechanism is activated by specifying OAUTHBEARER as the first argument to the AUTHENTICATE command.
+AUTHENTICATE SASL commands are multi-line. Yahoo also supports SASL-IR as defined in RFC 4959 to allow clients complete successful AUTHENTICATE on a single line or request.
+Error Response:
+Authentication failures are also returned via the SMTP AUTHENTICATE command:
+
+[connection begins]
+C: EHLO my.mua.host.name
+S: 250-mtaout-aah01.mx.aol.com
+S: 250-PIPELINING
+S: 250-SIZE 36700160
+S: 250-ETRN
+S: 250-STARTTLS
+S: 250-AUTH XAOL-UAS-MB XOAUTH2 PLAIN LOGIN
+S: 250-AUTH=XAOL-UAS-MB XOAUTH2 PLAIN LOGIN
+S: 250-ENHANCEDSTATUSCODES
+S: 250-8BITMIME
+S: 250 DSN
+C: AUTH OAUTHBEARER {......}
+S: 535 5.7.8 Error: authentication failed: authentication failure§
+
+§ Currently, a 535 response is returned upon authentication failure. This error response is subject to change based on industry standards
+Supported Scopes
+OAUTH2 scopes supported by Yahoo
+Supported mail, contacts and calendar scopes are also listed in your YDN application profile once approved.
+
+email
+profile
+mail-r - mail read
+mail-w - mail write
+sdct-r - contacts read
+sdct-w - contacts write
+ycal-r - calendar read
+ycal-w - calendar write
+Server Addresses
+Yahoo
+AOL
+IMAP
+imap.mail.yahoo.com
+SMTP
+smtp.mail.yahoo.com
+CALDAV
+caldav.calendar.yahoo.com
+CARDDAV
+carddav.address.yahoo.com
+Known Endpoints
+API login Yahoo
+API login AOL
+https://api.login.yahoo.com/.well-known/openid-configuration
+{
+  "issuer": "https://api.login.yahoo.com",
+  "authorization_endpoint": "https://api.login.yahoo.com/oauth2/request_auth",
+  "token_endpoint": "https://api.login.yahoo.com/oauth2/get_token",
+  "introspection_endpoint": "https://api.login.yahoo.com/oauth2/introspect",
+  "userinfo_endpoint": "https://api.login.yahoo.com/openid/v1/userinfo",
+  "token_revocation_endpoint": "https://api.login.yahoo.com/oauth2/revoke",
+  "jwks_uri": "https://api.login.yahoo.com/openid/v1/certs",
+  "response_types_supported": [
+    "code",
+    "token",
+    "id_token",
+    "code token",
+    "code id_token",
+    "token id_token",
+    "code token id_token"
+  ],
+  "subject_types_supported": [
+    "public"
+  ],
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "ES256",
+    "RS256"
+  ],
+  "scopes_supported": [
+    "openid",
+    "openid2",
+    "profile",
+    "email"
+  ],
+  "acr_values_supported": [
+    "AAL1",
+    "AAL2"
+  ],
+  "token_endpoint_auth_methods_supported": [
+    "client_secret_basic",
+    "client_secret_post"
+  ],
+  "claims_supported": [
+    "aud",
+    "email",
+    "email_verified",
+    "birthdate",
+    "exp",
+    "family_name",
+    "given_name",
+    "iat",
+    "iss",
+    "locale",
+    "name",
+    "sub",
+    "auth_time"
+  ],
+  "response_modes_supported": [
+    "query"
+  ],
+  "display_values_supported": [
+    "page"
+  ],
+  "claims_parameter_supported": false,
+  "request_parameter_supported": false,
+  "request_uri_parameter_supported": false
+}
