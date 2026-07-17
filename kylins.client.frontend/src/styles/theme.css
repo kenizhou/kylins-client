@@ -100,14 +100,6 @@
   --pane-header-h: 32px;
   --row-h: 28px;
 
-  /*
-   * Title-bar search fallback. MeasuredPanelCard overwrites these once the
-   * message list is mounted; these defaults keep the search reasonably placed
-   * on initial render and when no message list is visible.
-   */
-  --message-list-left: 16rem;
-  --message-list-width: 24rem;
-
   /* Motion tokens */
   --duration-fast: 120ms;
   --duration-normal: 200ms;

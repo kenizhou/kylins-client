@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import { Panel, Group, Separator, type GroupImperativeHandle } from 'react-resizable-panels';
 import type { ReadingPanePosition, PanelSizeMap } from '../types';
 import { useViewStore } from '../viewStore';
@@ -34,42 +34,6 @@ function PanelCard({ children }: { children: React.ReactNode }) {
 function HDivider() {
   return (
     <Separator className="my-1 h-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />
-  );
-}
-
-/**
- * Wraps a panel and exposes its screen position/size as CSS variables so the
- * title-bar search box can track the panel.
- */
-function MeasuredPanelCard({ children }: { children: React.ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function update() {
-      const el = ref.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      document.documentElement.style.setProperty('--message-list-left', `${rect.left}px`);
-      document.documentElement.style.setProperty('--message-list-width', `${rect.width}px`);
-    }
-
-    update();
-    const observer = new ResizeObserver(update);
-    if (ref.current) observer.observe(ref.current);
-    window.addEventListener('resize', update);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', update);
-      document.documentElement.style.removeProperty('--message-list-left');
-      document.documentElement.style.removeProperty('--message-list-width');
-    };
-  }, []);
-
-  return (
-    <div ref={ref} className="h-full">
-      <PanelCard>{children}</PanelCard>
-    </div>
   );
 }
 
@@ -295,7 +259,7 @@ export function ReadingPaneLayout({
             defaultSize={outerLayout['message-list']}
             minSize={offConstraints.list.min}
           >
-            <MeasuredPanelCard>{messageList}</MeasuredPanelCard>
+            <PanelCard>{messageList}</PanelCard>
           </Panel>
         </Group>
 
@@ -334,7 +298,7 @@ export function ReadingPaneLayout({
             defaultSize={outerLayout['message-list']}
             minSize={rightConstraints.list.min}
           >
-            <MeasuredPanelCard>{messageList}</MeasuredPanelCard>
+            <PanelCard>{messageList}</PanelCard>
           </Panel>
           <VDivider />
           <Panel
@@ -391,7 +355,7 @@ export function ReadingPaneLayout({
               defaultSize={innerBottomLayout['message-list']}
               minSize={bottomInnerConstraints.list.min}
             >
-              <MeasuredPanelCard>{messageList}</MeasuredPanelCard>
+              <PanelCard>{messageList}</PanelCard>
             </Panel>
             <HDivider />
             <Panel
