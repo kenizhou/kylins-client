@@ -78,7 +78,7 @@ export function AppearancePreferences() {
     (value: ThemeMode) => {
       setTheme(value);
       themeManager.applyTheme(value);
-      setSetting('theme', value).catch(() => {});
+      setSetting(SETTING_KEYS.theme, value).catch(() => {});
     },
     [setTheme],
   );
@@ -87,7 +87,7 @@ export function AppearancePreferences() {
     (value: ContrastMode) => {
       setContrast(value);
       themeManager.setContrast(value);
-      setSetting('contrast', value).catch(() => {});
+      setSetting(SETTING_KEYS.contrast, value).catch(() => {});
     },
     [setContrast],
   );
@@ -96,7 +96,7 @@ export function AppearancePreferences() {
     (value: SkinId) => {
       setSkin(value);
       themeManager.applySkin(value);
-      setSetting('skin', value).catch(() => {});
+      setSetting(SETTING_KEYS.skin, value).catch(() => {});
     },
     [setSkin],
   );
@@ -135,15 +135,15 @@ export function AppearancePreferences() {
     // Reset theme and skin.
     setTheme('system');
     themeManager.applyTheme('system');
-    setSetting('theme', 'system').catch(() => {});
+    setSetting(SETTING_KEYS.theme, 'system').catch(() => {});
 
     setContrast('default');
     themeManager.setContrast('default');
-    setSetting('contrast', 'default').catch(() => {});
+    setSetting(SETTING_KEYS.contrast, 'default').catch(() => {});
 
     setSkin(DEFAULT_SKIN);
     themeManager.applySkin(DEFAULT_SKIN);
-    setSetting('skin', DEFAULT_SKIN).catch(() => {});
+    setSetting(SETTING_KEYS.skin, DEFAULT_SKIN).catch(() => {});
 
     setFontSize('default');
     themeManager.setFontSize('default');

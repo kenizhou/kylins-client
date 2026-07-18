@@ -3,8 +3,8 @@ import { renderHook } from '@testing-library/react';
 import { useAutoHideScrollbar } from '../../src/hooks/useAutoHideScrollbar';
 
 describe('useAutoHideScrollbar', () => {
-  it('returns the combined CSS class string', () => {
+  it('returns the auto-hide scrollbar class string', () => {
     const { result } = renderHook(() => useAutoHideScrollbar());
-    expect(result.current).toBe('kylins-auto-scrollbar scrollbar-thin');
+    expect(result.current).toBe('kylins-auto-scrollbar');
   });
 });

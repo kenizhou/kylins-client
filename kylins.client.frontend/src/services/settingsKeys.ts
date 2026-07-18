@@ -57,6 +57,9 @@ export const SETTING_KEYS = {
   securityIndicatorIcons: 'security_indicator_icons',
 
   // Appearance
+  theme: 'theme',
+  skin: 'skin',
+  contrast: 'contrast',
   fontSize: 'font_size',
   serifSubjects: 'serif_subjects',
   reduceMotion: 'reduce_motion',
