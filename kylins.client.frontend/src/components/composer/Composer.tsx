@@ -954,18 +954,21 @@ export function Composer({ windowed = false }: ComposerProps) {
               size="sm"
               icon={isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
               title={isFullpage ? 'Collapse' : 'Expand'}
+              aria-label={isFullpage ? 'Collapse composer' : 'Maximize composer'}
               onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
             />
             <IconButton
               size="sm"
               icon={<PopOutIcon size={14} />}
               title="Open in new window"
+              aria-label="Pop out composer"
               onClick={handlePopOutComposer}
             />
             <IconButton
               size="sm"
               icon={<CloseIcon size={14} />}
               title="Close composer"
+              aria-label="Close composer"
               onClick={handleClose}
             />
           </div>

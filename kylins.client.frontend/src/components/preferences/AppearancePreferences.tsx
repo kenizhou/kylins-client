@@ -219,7 +219,9 @@ export function AppearancePreferences() {
                       type="button"
                       onClick={() => handleSkinChange(s.id)}
                       title={s.name}
-                      className={`group flex flex-col items-center gap-1.5 rounded-lg p-2 transition-colors ${
+                      aria-label={`Select ${s.name} skin`}
+                      aria-pressed={active}
+                      className={`group setup-focus-ring flex flex-col items-center gap-1.5 rounded-lg p-2 transition-colors ${
                         active
                           ? 'bg-[var(--highlight)] ring-1 ring-[var(--primary)]'
                           : 'hover:bg-[var(--hover)]'
@@ -293,7 +295,7 @@ export function AppearancePreferences() {
               <button
                 type="button"
                 onClick={handleReset}
-                className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
+                className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors setup-focus-ring"
               >
                 Reset appearance and layout
               </button>

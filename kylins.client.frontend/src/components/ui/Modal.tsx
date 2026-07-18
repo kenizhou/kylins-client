@@ -13,6 +13,7 @@ export interface ModalProps {
   className?: string;
   contentClassName?: string;
   disableBackdropClose?: boolean;
+  closeAriaLabel?: string;
 }
 
 const SIZE_CLASSES: Record<NonNullable<ModalProps['size']>, string> = {
@@ -40,6 +41,7 @@ export function Modal({
   className = '',
   contentClassName = '',
   disableBackdropClose = false,
+  closeAriaLabel = 'Close',
 }: ModalProps) {
   const hasHeader = Boolean(title || subtitle || Icon);
 
@@ -76,7 +78,7 @@ export function Modal({
                     type="button"
                     onClick={close}
                     className="flex h-11 w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Close"
+                    aria-label={closeAriaLabel}
                   >
                     <CloseIcon size={16} />
                   </button>
@@ -88,7 +90,7 @@ export function Modal({
                   type="button"
                   onClick={close}
                   className="absolute right-3 top-3 z-10 flex h-11 w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close"
+                  aria-label={closeAriaLabel}
                 >
                   <CloseIcon size={16} />
                 </button>

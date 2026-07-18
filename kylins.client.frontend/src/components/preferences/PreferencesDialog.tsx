@@ -60,6 +60,7 @@ export function PreferencesDialog() {
       icon={PreferencesGeneralIcon}
       size="lg"
       disableBackdropClose
+      closeAriaLabel="Close preferences"
       footer={
         <>
           <span className="text-xs text-muted-text">Changes are applied automatically.</span>
