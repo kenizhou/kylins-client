@@ -332,6 +332,23 @@ export const PreferencesSignaturesIcon = makeIcon(SignatureIcon);
 export const PreferencesTemplatesIcon = makeIcon(File01Icon);
 
 export const PreferencesReadingIcon = makeIcon(MailOpen01Icon);
+
+export function InfoIcon({ size = 20, ...rest }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      {...rest}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4M12 8h.01" />
+    </svg>
+  );
+}
 export const PreferencesSendingIcon = makeIcon(MailSend01Icon);
 export const PreferencesComposingIcon = makeIcon(PencilEdit01Icon);
 export const PreferencesNotificationsIcon = makeIcon(Notification03Icon);

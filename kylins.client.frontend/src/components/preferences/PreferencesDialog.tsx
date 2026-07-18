@@ -2,10 +2,10 @@ import { usePreferencesStore, type PreferenceTab } from '../../stores/preference
 import { GeneralPreferences } from './GeneralPreferences';
 import { AppearancePreferences } from './AppearancePreferences';
 import { ShortcutsPreferences } from './ShortcutsPreferences';
-import { SignaturesPreferences } from './SignaturesPreferences';
 import { AccountsPreferences } from './AccountsPreferences';
 import { ContactsPreferences } from './ContactsPreferences';
-import { SecurityPreferences } from './SecurityPreferences';
+import { MailPreferences } from './MailPreferences';
+import { AboutPreferences } from './AboutPreferences';
 import { Modal } from '../ui/Modal';
 import { Button } from 'react-aria-components';
 import { Tabs, TabList, Tab } from 'react-aria-components';
@@ -14,57 +14,30 @@ import {
   PreferencesAccountsIcon,
   PreferencesAppearanceIcon,
   PreferencesShortcutsIcon,
-  PreferencesMailRulesIcon,
-  PreferencesSignaturesIcon,
-  PreferencesTemplatesIcon,
+  MailIcon,
   ContactsIcon,
-  PreferencesPrivacySecurityIcon,
+  InfoIcon,
 } from '../icons';
 
 const TABS: { id: PreferenceTab; icon: React.ComponentType<{ size?: number }> }[] = [
   { id: 'General', icon: PreferencesGeneralIcon },
   { id: 'Accounts', icon: PreferencesAccountsIcon },
   { id: 'Appearance', icon: PreferencesAppearanceIcon },
+  { id: 'Mail', icon: MailIcon },
+  { id: 'Calendar & Contacts', icon: ContactsIcon },
   { id: 'Shortcuts', icon: PreferencesShortcutsIcon },
-  { id: 'Mail Rules', icon: PreferencesMailRulesIcon },
-  { id: 'Signatures', icon: PreferencesSignaturesIcon },
-  { id: 'Templates', icon: PreferencesTemplatesIcon },
-  { id: 'Contacts', icon: ContactsIcon },
-  { id: 'Security', icon: PreferencesPrivacySecurityIcon },
+  { id: 'About', icon: InfoIcon },
 ];
 
-const TAB_COMPONENTS: Record<string, React.ComponentType> = {
+const TAB_COMPONENTS: Record<PreferenceTab, React.ComponentType> = {
   General: GeneralPreferences,
   Accounts: AccountsPreferences,
   Appearance: AppearancePreferences,
+  Mail: MailPreferences,
+  'Calendar & Contacts': ContactsPreferences,
   Shortcuts: ShortcutsPreferences,
-  Signatures: SignaturesPreferences,
-  Contacts: ContactsPreferences,
-  Security: SecurityPreferences,
+  About: AboutPreferences,
 };
-
-function ComingSoonTab({ tab }: { tab: string }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-text">
-      <svg
-        width="48"
-        height="48"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="opacity-40"
-        aria-hidden="true"
-      >
-        <rect x="3" y="3" width="18" height="18" rx="2" strokeDasharray="4 3" />
-        <path d="M9 12h6M12 9v6" />
-      </svg>
-      <p className="text-sm">{tab} preferences are coming soon.</p>
-    </div>
-  );
-}
 
 export function PreferencesDialog() {
   const isOpen = usePreferencesStore((s) => s.isOpen);
@@ -128,7 +101,7 @@ export function PreferencesDialog() {
         </TabList>
 
         <div className="flex-1 overflow-auto kylins-scrollbar">
-          {TabComponent ? <TabComponent /> : <ComingSoonTab tab={activeTab} />}
+          {TabComponent && <TabComponent />}
         </div>
       </Tabs>
     </Modal>
