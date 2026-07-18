@@ -68,7 +68,6 @@ import {
   PaintBoardIcon,
   KeyboardIcon,
   FilterIcon,
-  File01Icon,
   SignatureIcon,
   GlobeIcon,
   MailSend01Icon,
@@ -329,7 +328,6 @@ export const PreferencesAppearanceIcon = makeIcon(PaintBoardIcon);
 export const PreferencesShortcutsIcon = makeIcon(KeyboardIcon);
 export const PreferencesMailRulesIcon = makeIcon(FilterIcon);
 export const PreferencesSignaturesIcon = makeIcon(SignatureIcon);
-export const PreferencesTemplatesIcon = makeIcon(File01Icon);
 
 export const PreferencesReadingIcon = makeIcon(MailOpen01Icon);
 
@@ -356,7 +354,6 @@ export const PreferencesNotificationsIcon = makeIcon(Notification03Icon);
 export const PreferencesLanguageIcon = makeIcon(GlobeIcon);
 export const PreferencesLocalDataIcon = makeIcon(Database01Icon);
 export const PreferencesSystemIcon = makeIcon(UserCircleIcon);
-export const PreferencesPrivacySecurityIcon = makeIcon(Shield01Icon);
 
 export const CLASSIFICATION_ICON_IDS = [
   'shield',

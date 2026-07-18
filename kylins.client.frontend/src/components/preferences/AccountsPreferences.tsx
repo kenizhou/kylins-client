@@ -7,6 +7,7 @@ import { AccountSetupFlow } from '../account-setup/AccountSetupFlow';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { PreferencesTabLayout } from './PreferencesTabLayout';
 import { AccountDetailsEditor } from './AccountDetailsEditor';
+import { KeyManagerSection } from './KeyManagerSection';
 import { ProviderBadge } from './ProviderBadge';
 import { PreferencesAccountsIcon, PlusIcon, CloseIcon } from '../icons';
 
@@ -127,6 +128,8 @@ export function AccountsPreferences() {
           </p>
         )}
       </PreferencesSectionCard>
+
+      {selectedAccount && <KeyManagerSection accountId={selectedAccount.id} />}
 
       {showSetup && <SetupOverlay onClose={handleCloseSetup} onComplete={handleSetupComplete} />}
     </PreferencesTabLayout>

@@ -1,5 +1,5 @@
 // Task 5 (Plan 4b): S/MIME key manager section, mounted inside
-// SecurityPreferences. Mirrors the master/detail pattern of
+// AccountsPreferences. Mirrors the master/detail pattern of
 // SignaturesPreferences: account picker + list + Default chip + action
 // buttons, all wrapped in a `PreferencesSectionCard`.
 //
