@@ -29,8 +29,9 @@
 | `src/components/composer/Composer.tsx` | Main composer UI. Task 1 collapses Cc/Bcc/Reply-To by default and adds a reveal link. |
 | `src/components/composer/AttachmentPicker.tsx` | Attachment staging UI. Task 1 renders inline chips when collapsed. |
 | `src/utils/composerActions.ts` | Reply/forward entry helpers. Task 1 adds a unit test, no behavior change. |
-| `src/components/preferences/PreferencesDialog.tsx` | Preferences shell + tab list. Task 2 reduces to 7 tabs and removes ComingSoonTab. |
+| `src/components/preferences/PreferencesDialog.tsx` | Preferences shell + tab list. Task 2 reduces to 8 tabs and removes ComingSoonTab. |
 | `src/components/preferences/MailPreferences.tsx` | **New.** Reading, conversation, and signature settings (moved from General/Signatures tabs). |
+| `src/components/preferences/SecurityPreferences.tsx` | **New.** Privacy settings and S/MIME key manager. |
 | `src/components/preferences/AboutPreferences.tsx` | **New.** Version, attributions, updates. |
 | `src/components/preferences/GeneralPreferences.tsx` | Task 2 removes appearance/layout/signatures content (moved to Appearance/Mail tabs). |
 | `src/components/preferences/AppearancePreferences.tsx` | Task 3 adds font size, serif subjects, and reduced motion controls. |
@@ -318,6 +319,7 @@ export type PreferenceTab =
   | 'Mail'
   | 'Calendar & Contacts'
   | 'Shortcuts'
+  | 'Security'
   | 'About';
 ```
 
@@ -338,10 +340,10 @@ beforeEach(() => {
 });
 
 describe('PreferencesDialog', () => {
-  it('renders exactly seven tabs', () => {
+  it('renders exactly eight tabs', () => {
     render(<PreferencesDialog />);
     const tabs = screen.getAllByRole('tab');
-    expect(tabs).toHaveLength(7);
+    expect(tabs).toHaveLength(8);
   });
 
   it('does not contain any coming-soon text', () => {
@@ -349,16 +351,23 @@ describe('PreferencesDialog', () => {
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
   });
 
-  it('labels tabs with General, Accounts, Appearance, Mail, Calendar & Contacts, Shortcuts, About', () => {
+  it('labels tabs with General, Accounts, Appearance, Mail, Calendar & Contacts, Shortcuts, Security, About', () => {
     render(<PreferencesDialog />);
-    ['General', 'Accounts', 'Appearance', 'Mail', 'Calendar & Contacts', 'Shortcuts', 'About'].forEach(
-      (label) => expect(screen.getByRole('tab', { name: label })).toBeInTheDocument(),
-    );
+    [
+      'General',
+      'Accounts',
+      'Appearance',
+      'Mail',
+      'Calendar & Contacts',
+      'Shortcuts',
+      'Security',
+      'About',
+    ].forEach((label) => expect(screen.getByRole('tab', { name: label })).toBeInTheDocument());
   });
 });
 ```
 
-- [ ] **Step 3: Reduce PreferencesDialog to seven tabs and remove ComingSoonTab**
+- [ ] **Step 3: Reduce PreferencesDialog to eight tabs and remove ComingSoonTab**
 
 In `src/components/preferences/PreferencesDialog.tsx`, replace the imports, `TABS` array, `TAB_COMPONENTS` map, and remove `ComingSoonTab`.
 
@@ -399,6 +408,7 @@ const TABS: { id: PreferenceTab; icon: React.ComponentType<{ size?: number }> }[
   { id: 'Mail', icon: MailIcon },
   { id: 'Calendar & Contacts', icon: ContactsIcon },
   { id: 'Shortcuts', icon: PreferencesShortcutsIcon },
+  { id: 'Security', icon: PreferencesPrivacySecurityIcon },
   { id: 'About', icon: InfoIcon },
 ];
 ```
@@ -413,6 +423,7 @@ const TAB_COMPONENTS: Record<PreferenceTab, React.ComponentType> = {
   Mail: MailPreferences,
   'Calendar & Contacts': ContactsPreferences,
   Shortcuts: ShortcutsPreferences,
+  Security: SecurityPreferences,
   About: AboutPreferences,
 };
 ```
@@ -588,12 +599,13 @@ Expected: PASS.
 
 ```bash
 git add src/stores/preferencesStore.ts src/components/preferences/PreferencesDialog.tsx src/components/preferences/GeneralPreferences.tsx src/components/preferences/MailPreferences.tsx src/components/preferences/AboutPreferences.tsx src/components/icons/index.ts tests/components/preferences/PreferencesDialog.test.tsx tests/components/preferences/MailPreferences.test.tsx
-git commit -m "feat(frontend): reorganize preferences into seven stable tabs
+git commit -m "feat(frontend): reorganize preferences into eight stable tabs
 
-- Replace Mail Rules, Signatures, Templates, Contacts, Security tabs
-- New tabs: General, Accounts, Appearance, Mail, Calendar & Contacts, Shortcuts, About
+- Replace Mail Rules, Signatures, Templates tabs
+- New tabs: General, Accounts, Appearance, Mail, Calendar & Contacts, Shortcuts, Security, About
 - Move reading/conversation controls to Mail tab
 - Add About section with version and attributions
+- Restore Security tab with S/MIME key manager
 - Add PreferencesDialog and MailPreferences tests"
 ```
 
