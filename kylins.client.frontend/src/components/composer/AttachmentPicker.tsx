@@ -13,12 +13,12 @@ export function AttachmentPicker() {
   const totalSize = attachments.reduce((sum, a) => sum + a.size, 0);
 
   return (
-    <div className="px-4">
+    <div className="flex flex-wrap items-center gap-2 px-3 py-2">
       <TagGroup
         onRemove={(keys) => {
           for (const id of keys) removeAttachment(String(id));
         }}
-        className="flex flex-wrap items-center gap-2"
+        className="contents"
       >
         <Label className="sr-only">Attachments</Label>
         <TagList items={attachments} className="contents">
@@ -26,13 +26,13 @@ export function AttachmentPicker() {
             <Tag
               id={att.id}
               textValue={att.filename}
-              className="flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--foreground)] outline-none transition-colors hover:bg-[var(--hover)] focus-visible:ring-2 focus-visible:ring-ring data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)]"
+              className="inline-flex items-center gap-1.5 rounded-full bg-highlight px-2.5 py-1 text-xs text-highlight-text outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring data-[selected]:opacity-100"
             >
               <span className="max-w-[150px] truncate">{att.filename}</span>
-              <span className="text-[var(--muted-foreground)]">{formatFileSize(att.size)}</span>
+              <span className="text-highlight-text/70">{formatFileSize(att.size)}</span>
               <Button
                 slot="remove"
-                className="text-[var(--muted-foreground)] outline-none transition-colors hover:text-[var(--foreground)] focus-visible:ring-1 focus-visible:ring-ring"
+                className="text-highlight-text/70 outline-none transition-colors hover:text-highlight-text focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={`Remove ${att.filename}`}
               >
                 <CloseIcon size={12} />
