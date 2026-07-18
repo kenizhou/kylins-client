@@ -56,6 +56,12 @@ export interface UIState {
   clearAccount: (accountId: string) => void;
   /** Toggle an account's rate-limit flag (Phase 3f → prefetch gate). */
   setRateLimited: (accountId: string, rateLimited: boolean) => void;
+  fontSize: 'small' | 'default' | 'large';
+  setFontSize: (size: 'small' | 'default' | 'large') => void;
+  serifSubjects: boolean;
+  setSerifSubjects: (enabled: boolean) => void;
+  reduceMotion: boolean;
+  setReduceMotion: (enabled: boolean) => void;
 }
 
 import { DEFAULT_SKIN } from '../styles/skins';
@@ -80,6 +86,9 @@ export const useUIStore = create<UIState>((set) => ({
   sendProgress: { active: false },
   setSendProgress: (sendProgress) => set({ sendProgress }),
   rateLimitedAccountIds: new Set<string>(),
+  fontSize: 'default',
+  serifSubjects: false,
+  reduceMotion: false,
   setTheme: (theme) => set({ theme }),
   setContrast: (contrast) => set({ contrast }),
   setSkin: (skin) => set({ skin }),
@@ -131,4 +140,7 @@ export const useUIStore = create<UIState>((set) => ({
       else next.delete(accountId);
       return { rateLimitedAccountIds: next };
     }),
+  setFontSize: (fontSize) => set({ fontSize }),
+  setSerifSubjects: (serifSubjects) => set({ serifSubjects }),
+  setReduceMotion: (reduceMotion) => set({ reduceMotion }),
 }));

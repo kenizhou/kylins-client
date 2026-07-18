@@ -33,6 +33,9 @@ vi.mock('../src/services/theme/themeManager', () => ({
     setContrast: vi.fn(),
     applySkin: vi.fn(),
     resetSkin: vi.fn(),
+    setFontSize: vi.fn(),
+    setSerifSubjects: vi.fn(),
+    setReduceMotion: vi.fn(),
   },
 }));
 vi.mock('../src/services/plugins/pluginManager', () => ({

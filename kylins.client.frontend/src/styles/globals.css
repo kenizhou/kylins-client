@@ -354,6 +354,18 @@
   color: var(--link-hover);
 }
 
+.serif-subjects .reading-pane-subject,
+.serif-subjects .message-list-subject {
+  font-family: 'Source Serif 4', Georgia, Cambria, 'Times New Roman', serif;
+}
+
+[data-reduce-motion='true'],
+[data-reduce-motion='true'] * {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
 /* ---- Reusable badge utilities ---- */
 .kylins-badge {
   display: inline-flex;

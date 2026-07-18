@@ -56,6 +56,11 @@ export const SETTING_KEYS = {
   autoExtractContactsFromReceived: 'auto_extract_contacts_from_received',
   securityIndicatorIcons: 'security_indicator_icons',
 
+  // Appearance
+  fontSize: 'font_size',
+  serifSubjects: 'serif_subjects',
+  reduceMotion: 'reduce_motion',
+
   // Tools / developer
   installedPluginPaths: 'installed_plugin_paths',
   debugFlags: 'debug_flags',

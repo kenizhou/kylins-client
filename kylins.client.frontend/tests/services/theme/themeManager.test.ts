@@ -113,3 +113,54 @@ describe('ThemeManager contrast', () => {
     expect(document.documentElement.getAttribute('data-contrast')).toBe('high');
   });
 });
+
+describe('ThemeManager font size', () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute('data-font-size');
+  });
+
+  it('sets data-font-size attribute', () => {
+    themeManager.setFontSize('large');
+    expect(document.documentElement.getAttribute('data-font-size')).toBe('large');
+  });
+
+  it('updates to small', () => {
+    themeManager.setFontSize('large');
+    themeManager.setFontSize('small');
+    expect(document.documentElement.getAttribute('data-font-size')).toBe('small');
+  });
+});
+
+describe('ThemeManager serif subjects', () => {
+  beforeEach(() => {
+    document.documentElement.classList.remove('serif-subjects');
+  });
+
+  it('adds serif-subjects class', () => {
+    themeManager.setSerifSubjects(true);
+    expect(document.documentElement.classList.contains('serif-subjects')).toBe(true);
+  });
+
+  it('removes serif-subjects class', () => {
+    themeManager.setSerifSubjects(true);
+    themeManager.setSerifSubjects(false);
+    expect(document.documentElement.classList.contains('serif-subjects')).toBe(false);
+  });
+});
+
+describe('ThemeManager reduce motion', () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute('data-reduce-motion');
+  });
+
+  it('sets data-reduce-motion attribute', () => {
+    themeManager.setReduceMotion(true);
+    expect(document.documentElement.getAttribute('data-reduce-motion')).toBe('true');
+  });
+
+  it('removes data-reduce-motion attribute', () => {
+    themeManager.setReduceMotion(true);
+    themeManager.setReduceMotion(false);
+    expect(document.documentElement.hasAttribute('data-reduce-motion')).toBe(false);
+  });
+});

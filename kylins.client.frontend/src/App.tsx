@@ -48,13 +48,42 @@ function describeError(err: unknown): string {
 }
 
 function hydrateBackground(
-  applyAppearance: (theme: string | null, skin: string | null, contrast: string | null) => void,
+  applyAppearance: (
+    theme: string | null,
+    skin: string | null,
+    contrast: string | null,
+    fontSize: string | null,
+    serifSubjects: string | null,
+    reduceMotion: string | null,
+  ) => void,
 ): void {
   refreshAccounts().catch((err) => console.error('Background account refresh failed:', err));
 
-  Promise.all([getSetting('theme'), getSetting('skin'), getSetting('contrast')])
-    .then(([savedTheme, savedSkin, savedContrast]) =>
-      applyAppearance(savedTheme, savedSkin, savedContrast),
+  Promise.all([
+    getSetting('theme'),
+    getSetting('skin'),
+    getSetting('contrast'),
+    getSetting('font_size'),
+    getSetting('serif_subjects'),
+    getSetting('reduce_motion'),
+  ])
+    .then(
+      ([
+        savedTheme,
+        savedSkin,
+        savedContrast,
+        savedFontSize,
+        savedSerifSubjects,
+        savedReduceMotion,
+      ]) =>
+        applyAppearance(
+          savedTheme,
+          savedSkin,
+          savedContrast,
+          savedFontSize,
+          savedSerifSubjects,
+          savedReduceMotion,
+        ),
     )
     .catch(() => {
       /* ignore: appearance is cosmetic */
@@ -86,6 +115,9 @@ export default function App() {
   const setTheme = useUIStore((s) => s.setTheme);
   const setContrast = useUIStore((s) => s.setContrast);
   const setSkin = useUIStore((s) => s.setSkin);
+  const setFontSize = useUIStore((s) => s.setFontSize);
+  const setSerifSubjects = useUIStore((s) => s.setSerifSubjects);
+  const setReduceMotion = useUIStore((s) => s.setReduceMotion);
   const accountSetupOpen = useUIStore((s) => s.accountSetupOpen);
   const setAccountSetupOpen = useUIStore((s) => s.setAccountSetupOpen);
   const accounts = useAccountStore((s) => s.accounts);
@@ -108,6 +140,9 @@ export default function App() {
       theme: string | null,
       skin: string | null,
       contrast: string | null,
+      fontSize: string | null,
+      serifSubjects: string | null,
+      reduceMotion: string | null,
     ): void {
       if (theme === 'light' || theme === 'dark' || theme === 'system') {
         if (isMounted.current) setTheme(theme);
@@ -116,9 +151,23 @@ export default function App() {
       const resolvedContrast: ContrastMode = contrast === 'high' ? 'high' : 'default';
       if (isMounted.current) setContrast(resolvedContrast);
       themeManager.setContrast(resolvedContrast);
+
       const resolvedSkin: SkinId = skin && isSkinId(skin) ? skin : DEFAULT_SKIN;
       if (isMounted.current) setSkin(resolvedSkin);
       themeManager.applySkin(resolvedSkin);
+
+      const resolvedFontSize: 'small' | 'default' | 'large' =
+        fontSize === 'small' || fontSize === 'large' ? fontSize : 'default';
+      if (isMounted.current) setFontSize(resolvedFontSize);
+      themeManager.setFontSize(resolvedFontSize);
+
+      const resolvedSerifSubjects = serifSubjects === 'true';
+      if (isMounted.current) setSerifSubjects(resolvedSerifSubjects);
+      themeManager.setSerifSubjects(resolvedSerifSubjects);
+
+      const resolvedReduceMotion = reduceMotion === 'true';
+      if (isMounted.current) setReduceMotion(resolvedReduceMotion);
+      themeManager.setReduceMotion(resolvedReduceMotion);
     }
 
     async function init() {
@@ -187,12 +236,29 @@ export default function App() {
             // Rust runs the embedded sqlx migrations on startup (db::init_db in
             // lib.rs setup), so the frontend no longer calls runMigrations.
 
-            const [savedTheme, savedSkin, savedContrast] = await Promise.all([
+            const [
+              savedTheme,
+              savedSkin,
+              savedContrast,
+              savedFontSize,
+              savedSerifSubjects,
+              savedReduceMotion,
+            ] = await Promise.all([
               getSetting('theme'),
               getSetting('skin'),
               getSetting('contrast'),
+              getSetting('font_size'),
+              getSetting('serif_subjects'),
+              getSetting('reduce_motion'),
             ]);
-            applyAppearance(savedTheme, savedSkin, savedContrast);
+            applyAppearance(
+              savedTheme,
+              savedSkin,
+              savedContrast,
+              savedFontSize,
+              savedSerifSubjects,
+              savedReduceMotion,
+            );
 
             await Promise.all([
               useShortcutStore.getState().hydrate(),
@@ -227,7 +293,7 @@ export default function App() {
     return () => {
       isMounted.current = false;
     };
-  }, [setTheme, setContrast, setSkin]);
+  }, [setTheme, setContrast, setSkin, setFontSize, setSerifSubjects, setReduceMotion]);
 
   // Load folders (labels) + unread counts + favorites whenever the account set
   // changes. Covers initial startup (after refreshAccounts populates the store)

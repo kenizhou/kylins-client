@@ -63,6 +63,29 @@ export class ThemeManager {
     return this.activeTheme;
   }
 
+  setFontSize(size: 'small' | 'default' | 'large'): void {
+    const root = document.documentElement;
+    root.setAttribute('data-font-size', size);
+  }
+
+  setSerifSubjects(enabled: boolean): void {
+    const root = document.documentElement;
+    if (enabled) {
+      root.classList.add('serif-subjects');
+    } else {
+      root.classList.remove('serif-subjects');
+    }
+  }
+
+  setReduceMotion(enabled: boolean): void {
+    const root = document.documentElement;
+    if (enabled) {
+      root.setAttribute('data-reduce-motion', 'true');
+    } else {
+      root.removeAttribute('data-reduce-motion');
+    }
+  }
+
   private applyContrast(contrast: ContrastMode): void {
     const root = document.documentElement;
     if (contrast === 'high') {

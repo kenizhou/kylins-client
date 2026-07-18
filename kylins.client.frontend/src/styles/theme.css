@@ -298,3 +298,20 @@
   --warning: #ffd700;
   --error: #ff6666;
 }
+
+[data-font-size='small'] {
+  --text-base: 13px;
+}
+
+[data-font-size='default'] {
+  --text-base: 14px;
+}
+
+[data-font-size='large'] {
+  --text-base: 16px;
+}
+
+html[data-font-size] body,
+html[data-font-size] #root {
+  font-size: var(--text-base);
+}

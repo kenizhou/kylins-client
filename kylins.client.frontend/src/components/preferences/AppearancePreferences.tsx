@@ -3,6 +3,7 @@ import { useUIStore, type ThemeMode, type ContrastMode } from '../../stores/uiSt
 import { useViewStore } from '../../features/view/viewStore';
 import type { ReadingPanePosition, MessageListDensity } from '../../features/view/types';
 import { setSetting } from '../../services/settings';
+import { SETTING_KEYS } from '../../services/settingsKeys';
 import { themeManager } from '../../services/theme/themeManager';
 import { SKINS, DEFAULT_SKIN, type SkinId } from '../../styles/skins';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
@@ -40,6 +41,12 @@ const DENSITY_OPTIONS: { value: MessageListDensity; label: string }[] = [
   { value: 'comfortable', label: 'Comfortable' },
 ];
 
+const FONT_SIZE_OPTIONS: { value: 'small' | 'default' | 'large'; label: string }[] = [
+  { value: 'small', label: 'Small' },
+  { value: 'default', label: 'Default' },
+  { value: 'large', label: 'Large' },
+];
+
 export function AppearancePreferences() {
   const theme = useUIStore((s) => s.theme);
   const contrast = useUIStore((s) => s.contrast);
@@ -47,6 +54,12 @@ export function AppearancePreferences() {
   const setTheme = useUIStore((s) => s.setTheme);
   const setContrast = useUIStore((s) => s.setContrast);
   const setSkin = useUIStore((s) => s.setSkin);
+  const fontSize = useUIStore((s) => s.fontSize);
+  const serifSubjects = useUIStore((s) => s.serifSubjects);
+  const reduceMotion = useUIStore((s) => s.reduceMotion);
+  const setFontSize = useUIStore((s) => s.setFontSize);
+  const setSerifSubjects = useUIStore((s) => s.setSerifSubjects);
+  const setReduceMotion = useUIStore((s) => s.setReduceMotion);
 
   const readingPanePosition = useViewStore((s) => s.readingPanePosition);
   const messageListDensity = useViewStore((s) => s.messageListDensity);
@@ -88,6 +101,33 @@ export function AppearancePreferences() {
     [setSkin],
   );
 
+  const handleFontSizeChange = useCallback(
+    (value: 'small' | 'default' | 'large') => {
+      setFontSize(value);
+      themeManager.setFontSize(value);
+      setSetting(SETTING_KEYS.fontSize, value).catch(() => {});
+    },
+    [setFontSize],
+  );
+
+  const handleSerifSubjectsChange = useCallback(
+    (value: boolean) => {
+      setSerifSubjects(value);
+      themeManager.setSerifSubjects(value);
+      setSetting(SETTING_KEYS.serifSubjects, String(value)).catch(() => {});
+    },
+    [setSerifSubjects],
+  );
+
+  const handleReduceMotionChange = useCallback(
+    (value: boolean) => {
+      setReduceMotion(value);
+      themeManager.setReduceMotion(value);
+      setSetting(SETTING_KEYS.reduceMotion, String(value)).catch(() => {});
+    },
+    [setReduceMotion],
+  );
+
   const handleReset = useCallback(() => {
     // Reset view/layout state.
     resetToDefaults();
@@ -104,7 +144,27 @@ export function AppearancePreferences() {
     setSkin(DEFAULT_SKIN);
     themeManager.applySkin(DEFAULT_SKIN);
     setSetting('skin', DEFAULT_SKIN).catch(() => {});
-  }, [resetToDefaults, setTheme, setContrast, setSkin]);
+
+    setFontSize('default');
+    themeManager.setFontSize('default');
+    setSetting(SETTING_KEYS.fontSize, 'default').catch(() => {});
+
+    setSerifSubjects(false);
+    themeManager.setSerifSubjects(false);
+    setSetting(SETTING_KEYS.serifSubjects, 'false').catch(() => {});
+
+    setReduceMotion(false);
+    themeManager.setReduceMotion(false);
+    setSetting(SETTING_KEYS.reduceMotion, 'false').catch(() => {});
+  }, [
+    resetToDefaults,
+    setTheme,
+    setContrast,
+    setSkin,
+    setFontSize,
+    setSerifSubjects,
+    setReduceMotion,
+  ]);
 
   return (
     <PreferencesTabLayout>
@@ -122,6 +182,29 @@ export function AppearancePreferences() {
                   options={CONTRAST_OPTIONS}
                   value={contrast}
                   onChange={handleContrastChange}
+                />
+              </div>
+            </PreferencesSectionCard>
+
+            <PreferencesSectionCard title="Text" icon={PreferencesReadingIcon}>
+              <div className="space-y-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs text-[var(--muted-text)]">Font size</span>
+                  <SegmentedControl
+                    options={FONT_SIZE_OPTIONS}
+                    value={fontSize}
+                    onChange={handleFontSizeChange}
+                  />
+                </div>
+                <CheckboxRow
+                  label="Serif subjects"
+                  checked={serifSubjects}
+                  onChange={handleSerifSubjectsChange}
+                />
+                <CheckboxRow
+                  label="Reduce motion"
+                  checked={reduceMotion}
+                  onChange={handleReduceMotionChange}
                 />
               </div>
             </PreferencesSectionCard>
