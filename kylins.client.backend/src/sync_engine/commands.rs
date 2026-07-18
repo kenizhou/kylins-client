@@ -169,12 +169,20 @@ pub async fn request_bodies_inner(
                                         }
                                     }
                                     // Cache the raw CMS ciphertext for the receive
-                                    // orchestrator (Phase 1b G5 Task 1). This MUST
-                                    // run AFTER set_message_body above — the helper
-                                    // is an UPDATE that requires the row to exist.
-                                    // Best-effort: a failure here leaves the body row
-                                    // valid but without the cached ciphertext, so the
-                                    // orchestrator will fall back to re-fetching.
+                                    // orchestrator (Phase 1b G5 Task 1 + G7 Task 2).
+                                    // This MUST run AFTER set_message_body above —
+                                    // the helper is an UPDATE that requires the row
+                                    // to exist. Best-effort: a failure here leaves
+                                    // the body row valid but without the cached
+                                    // ciphertext, so the orchestrator will fall
+                                    // back to re-fetching.
+                                    //
+                                    // For `application/pkcs7-mime` (enveloped /
+                                    // opaque-signed) this is the CMS body DER; for
+                                    // `multipart/signed` (clear-signed) this is the
+                                    // detached `smime.p7s` SignedData DER (a CMS
+                                    // blob — the column is overloaded across both
+                                    // shapes).
                                     if let Some(ct) = fb.raw_ciphertext.as_deref() {
                                         if let Err(e) = message_bodies::set_message_ciphertext(
                                             pool, account_id, mid, ct,
@@ -183,6 +191,24 @@ pub async fn request_bodies_inner(
                                         {
                                             log::warn!(
                                                 "[crypto] request_bodies: persist ciphertext for {mid} (uid {uid} in {folder}) failed: {e}"
+                                            );
+                                        }
+                                    }
+                                    // For `multipart/signed` clear-signed mail,
+                                    // cache the raw part-1 MIME entity bytes (the
+                                    // bytes the detached `.p7s` covers). Persisted
+                                    // alongside the p7s DER above so the receive
+                                    // orchestrator can verify WITHOUT re-fetching.
+                                    // Best-effort (same failure semantics as the
+                                    // ciphertext column above).
+                                    if let Some(part1) = fb.raw_signed_part.as_deref() {
+                                        if let Err(e) = message_bodies::set_message_signed_part(
+                                            pool, account_id, mid, part1,
+                                        )
+                                        .await
+                                        {
+                                            log::warn!(
+                                                "[crypto] request_bodies: persist signed_part for {mid} (uid {uid} in {folder}) failed: {e}"
                                             );
                                         }
                                     }

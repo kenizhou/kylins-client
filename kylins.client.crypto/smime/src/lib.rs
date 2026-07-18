@@ -14,6 +14,11 @@ mod chain;
 mod cms_build;
 mod cms_parse;
 
+// G7 Task 3: cross-implementation (openssl) round-trip fixtures. Tests skip
+// silently when openssl is not on PATH; see `interop_tests` module docs.
+#[cfg(test)]
+mod interop_tests;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
