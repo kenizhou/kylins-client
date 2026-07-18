@@ -1408,10 +1408,29 @@ pub async fn crypto_import_key_from_path_inner(
     // `SecretBox<String>` for the scope of `import_key` only.
     let pass = passphrase.map(|p| crypto_core::SecretBox::new(Box::new(p)));
     let backend = smime_backend(pool, account_id);
-    let h = backend
-        .import_key(&bytes, pass)
+    // Use `import_key_with_chain` (NOT the trait `import_key`) so the `.p12`
+    // arm's intermediate CA cert DERs are returned to the backend for direct
+    // INSERT with `key_type='intermediate'`. Persisting them through the
+    // trait `import_key` would drop them on the floor; persisting through
+    // `SqliteKeyStore::put` would hardcode `key_type='cert'` (the known quirk)
+    // and pollute the trust-anchor candidate set — a trust overreach.
+    let (h, intermediate_ders) = backend
+        .import_key_with_chain(&bytes, pass)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Persist each returned intermediate via a direct INSERT. Failures here
+    // are logged + skipped (one bad intermediate must not fail the leaf
+    // import — the spec's "skip JUST that cert" failure mode); the leaf is
+    // already persisted by `import_key_with_chain`'s internal `persist_imported`.
+    for inter_der in &intermediate_ders {
+        if let Err(e) = crypto_keys::upsert_intermediate_cert(pool, account_id, inter_der).await {
+            log::warn!(
+                "[crypto] failed to persist .p12 intermediate for account {account_id}: {e}"
+            );
+        }
+    }
+
     crypto_keys::get_crypto_key_public(pool, h.standard.as_str(), h.fingerprint.as_str())
         .await?
         .ok_or_else(|| "import_key: row not found after put".into())

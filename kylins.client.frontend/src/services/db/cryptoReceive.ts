@@ -55,6 +55,13 @@ export interface MessageCryptoResult {
   revocationState: string;
   /** Epoch-seconds string (SQLite `strftime('%s','now')` output). */
   verifiedAt: string;
+  /** Granular cert-chain failure reason (2026-07-18 spec) surfaced from
+   *  `ChainOutcome.failure_reason` via `VerificationResult.failure_reason`.
+   *  `null` for pre-migration rows, the UnknownKey / sig-fail early-return
+   *  arms, and all success states. Optional on the wire because the Rust side
+   *  uses `#[serde(skip_serializing_if = "Option::is_none")]` (None → absent
+   *  key, not `null`). */
+  failureReason?: string | null;
 }
 
 /**
@@ -249,6 +256,12 @@ export interface SignerDetails {
   /** `null` for `encrypted-signed` (no re-parseable SignedData in the DB). */
   signer: SignerCertDetails | null;
   chainPath: ChainPathEntry[];
+  /** Granular cert-chain failure reason (2026-07-18 spec). The backend's
+   *  `get_signer_details` prefers the persisted `message_crypto_results.failure_reason`
+   *  (surfaced from `VerificationResult.failure_reason` by `verify_with_context`)
+   *  and falls back to the coarse `failure_reason_for_state` fixed map when the
+   *  column is `null` (pre-migration rows, the UnknownKey / sig-fail early-return
+   *  arms, and all success states). Rendered verbatim by the dialog. */
   failureReason: string | null;
 }
 

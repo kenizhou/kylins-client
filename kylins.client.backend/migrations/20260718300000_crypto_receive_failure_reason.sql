@@ -1,0 +1,21 @@
+-- Granular ChainOutcome surfacing (2026-07-18 spec
+-- `2026-07-18-crypto-granular-chain-outcome-design.md`).
+--
+-- The granular `ChainOutcome.failure_reason` (computed in
+-- `crypto_smime::chain::validate_signer_chain` — pkix path errors, CRL reason
+-- names like "KeyCompromise", identity-mismatch format) is now threaded
+-- end-to-end through `SmimeBackend::verify_with_context` →
+-- `VerificationResult.failure_reason` (crypto-core) → this column →
+-- `get_signer_details` → the Signature Details dialog. Today the column is
+-- absent and the reason is dropped at `build_crypto_result_row`, leaving the
+-- dialog to show a coarse 5-string enum→map for every Invalid cause.
+--
+-- Nullable TEXT, no default, no backfill — pre-migration rows + the
+-- `verify_with_context` early-return arms (UnknownKey, sig-fail Invalid)
+-- surface NULL, and `get_signer_details` falls back to the existing
+-- `failure_reason_for_state` fixed map for those (no regression).
+--
+-- SQLite ALTER TABLE ADD COLUMN is fine for a nullable column with no default.
+-- sqlx::migrate! tracks applied migrations by checksum in `_sqlx_migrations`,
+-- so the ALTER runs exactly once per DB.
+ALTER TABLE message_crypto_results ADD COLUMN failure_reason TEXT;

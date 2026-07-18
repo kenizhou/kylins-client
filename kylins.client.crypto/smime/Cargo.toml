@@ -6,6 +6,14 @@ edition = "2021"
 # crypto-core stays at 1.77.2 (it does not depend on cms).
 rust-version = "1.85"
 
+[features]
+default = []
+# Cross-crate test helpers (cert + SignedData builders) used by the backend's
+# `mail/crypto.rs::tests` + `tests/crypto_smime_lifecycle.rs`. NOT part of the
+# public API; backend enables via `[dev-dependencies] crypto-smime = { path =
+# "...", features = ["testing"] }`.
+testing = []
+
 [dependencies]
 crypto-core = { path = "../core" }
 # RustCrypto formats stack. NOTE: x509-cert 0.3 requires the signature v3 /
@@ -83,6 +91,10 @@ uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 thiserror = "1"
 zeroize = "1"
+# Used by `import_p12_with_chain` to soft-skip a single intermediate cert that
+# fails to parse (one bad cert must not block the leaf import). Mirrors the
+# backend's `log::warn!`-on-decode-failure pattern in `list_trust_anchor_certs`.
+log = "0.4"
 # Plan 3 (PKCS#12 import): `p12-keystore` parses .p12/.pfx DER, decrypts the bag
 # PBE with the user's passphrase, and exposes the leaf cert + private key as
 # raw DER bytes (`Certificate::as_der`, `PrivateKey::as_der`). We use ONLY the

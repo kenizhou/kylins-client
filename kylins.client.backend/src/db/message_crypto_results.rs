@@ -42,6 +42,14 @@ pub struct MessageCryptoResultRow {
     /// Epoch-seconds string (matches `strftime('%s','now')` written by the
     /// verify pipeline). The DB column is TEXT NOT NULL.
     pub verified_at: String,
+    /// Granular cert-chain failure reason surfaced from
+    /// `ChainOutcome.failure_reason` (pkix path errors, CRL reason names,
+    /// identity-mismatch format) via `VerificationResult.failure_reason`.
+    /// `None` for pre-migration rows, the early-return arms (UnknownKey /
+    /// sig-fail Invalid), and all success states — the dialog's
+    /// `failure_reason_for_state` fixed-map handles those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
 }
 
 /// Insert or update a per-message crypto result. On conflict (same
@@ -56,8 +64,9 @@ pub async fn upsert_message_crypto_result(
     sqlx::query(
         "INSERT INTO message_crypto_results
             (account_id, message_id, crypto_kind, decrypt_state, signature_state,
-             signer_fingerprint, signer_email, chain_valid, revocation_state, verified_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             signer_fingerprint, signer_email, chain_valid, revocation_state, verified_at,
+             failure_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(account_id, message_id) DO UPDATE SET
             crypto_kind = excluded.crypto_kind,
             decrypt_state = excluded.decrypt_state,
@@ -66,7 +75,8 @@ pub async fn upsert_message_crypto_result(
             signer_email = excluded.signer_email,
             chain_valid = excluded.chain_valid,
             revocation_state = excluded.revocation_state,
-            verified_at = excluded.verified_at",
+            verified_at = excluded.verified_at,
+            failure_reason = excluded.failure_reason",
     )
     .bind(&row.account_id)
     .bind(&row.message_id)
@@ -78,6 +88,7 @@ pub async fn upsert_message_crypto_result(
     .bind(row.chain_valid)
     .bind(&row.revocation_state)
     .bind(&row.verified_at)
+    .bind(&row.failure_reason)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -93,7 +104,8 @@ pub async fn get_message_crypto_result(
 ) -> Result<Option<MessageCryptoResultRow>, String> {
     let row: Option<MessageCryptoResultRow> = sqlx::query_as(
         "SELECT account_id, message_id, crypto_kind, decrypt_state, signature_state,
-                signer_fingerprint, signer_email, chain_valid, revocation_state, verified_at
+                signer_fingerprint, signer_email, chain_valid, revocation_state, verified_at,
+                failure_reason
          FROM message_crypto_results WHERE account_id = ? AND message_id = ?",
     )
     .bind(account_id)
@@ -160,6 +172,7 @@ mod tests {
             chain_valid: Some(1),
             revocation_state: "good".to_string(),
             verified_at: "1770000000".to_string(),
+            failure_reason: None,
         }
     }
 
@@ -239,6 +252,12 @@ mod tests {
         ] {
             assert!(obj.contains_key(key), "expected camelCase key {key}");
         }
+        // failure_reason is skip_serializing_if = None — sample_row holds None,
+        // so it must NOT appear in the JSON.
+        assert!(
+            !obj.contains_key("failureReason"),
+            "None failure_reason must be skipped"
+        );
         // snake_case keys must NOT leak.
         for key in ["account_id", "message_id", "crypto_kind", "decrypt_state"] {
             assert!(!obj.contains_key(key), "snake_case key {key} leaked");

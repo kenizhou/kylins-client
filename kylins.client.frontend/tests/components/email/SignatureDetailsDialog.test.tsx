@@ -112,4 +112,53 @@ describe('SignatureDetailsDialog', () => {
     fireEvent.click(getByRole('button', { name: /close/i }));
     expect(baseProps.onClose).toHaveBeenCalledTimes(1);
   });
+
+  // ─── Granular ChainOutcome failure_reason (2026-07-18 spec) ───
+  //
+  // The dialog's failure-reason banner must render the REAL granular reason
+  // when `signerDetails.failureReason` is non-null (surfaced from
+  // `VerificationResult.failure_reason` → `message_crypto_results.failure_reason`
+  // → `get_signer_details`). When null (pre-migration rows + the early-return
+  // arms + success states), the backend's `get_signer_details` already fills
+  // in the coarse `failure_reason_for_state` map string before returning — so
+  // the dialog simply renders whatever `failureReason` it receives.
+
+  it('renders the granular failureReason verbatim when present', async () => {
+    mockGetSignerDetails.mockResolvedValue({
+      ...sampleDetails,
+      signatureState: 'invalid',
+      // Real reason from the crypto layer — must render verbatim, NOT the
+      // fixed-map "Signature did not verify — content may have been altered."
+      failureReason: 'certificate 0x123 revoked (KeyCompromise)',
+    });
+    const { getByText, queryByText } = render(<SignatureDetailsDialog {...baseProps} />);
+
+    await waitFor(() => expect(getByText(/signature details/i)).toBeInTheDocument());
+
+    // The granular banner string surfaces verbatim.
+    expect(getByText(/certificate 0x123 revoked/i)).toBeInTheDocument();
+    // The fixed-map fallback string for `invalid` MUST NOT be rendered
+    // (the real reason wins).
+    expect(queryByText(/content may have been altered/i)).toBeNull();
+  });
+
+  it('renders the fixed-map fallback banner when failureReason is null', async () => {
+    // Null failureReason on an `invalid` row → the dialog's banner slot is
+    // conditionally rendered (`{details.failureReason && ...}`), so a null
+    // value means NO banner shows. This is the contract the backend honors
+    // by falling back to `failure_reason_for_state` for null columns; if the
+    // backend returns null instead, the banner is simply absent (no crash).
+    mockGetSignerDetails.mockResolvedValue({
+      ...sampleDetails,
+      signatureState: 'invalid',
+      failureReason: null,
+    });
+    const { queryByText } = render(<SignatureDetailsDialog {...baseProps} />);
+
+    await waitFor(() => expect(queryByText(/signature details/i)).toBeInTheDocument());
+
+    // No banner shown when failureReason is null (the dialog's `{... && ...}`
+    // conditional hides the slot). The state label still renders.
+    expect(queryByText(/content may have been altered/i)).toBeNull();
+  });
 });

@@ -117,6 +117,13 @@ tempfile = "3"
 # `messageDigest` signed attribute equals `SHA-256(part1)`. `sha2` is transitive
 # (via crypto-smime); naming it directly here lets the test call `Sha256::digest`.
 sha2 = "0.11"
+# Persist + Use .p12 Chain Intermediates (2026-07-18): the `testing` feature
+# exposes cert-chain + SignedData builders (`crypto_smime::testing::*`) so the
+# backend's `mail/crypto.rs::tests` + `tests/crypto_smime_lifecycle.rs` can
+# build a real CA → leaf chain + a SignedData whose path needs a stored
+# intermediate, without duplicating the x509-cert 0.3 builder stack. NOT part
+# of crypto-smime's public API; release builds of crypto-smime exclude it.
+crypto-smime = { path = "../kylins.client.crypto/smime", features = ["testing"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_UI_Shell"] }

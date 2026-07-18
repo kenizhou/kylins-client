@@ -14,6 +14,14 @@ mod chain;
 mod cms_build;
 mod cms_parse;
 
+// Cross-crate test helpers (backend `mail/crypto.rs::tests` + integration
+// tests). Gated by the `testing` Cargo feature so release builds exclude it
+// entirely; the backend enables it via `[dev-dependencies] features = ["testing"]`.
+// All items are `#[doc(hidden)]` — NOT public API.
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub mod testing;
+
 // G7 Task 3: cross-implementation (openssl) round-trip fixtures. Tests skip
 // silently when openssl is not on PATH; see `interop_tests` module docs.
 #[cfg(test)]
@@ -51,6 +59,14 @@ pub use chain::{validate_signer_chain, ChainOutcome, RevocationState};
 // here; external callers reach it only through this crate-root alias, never via
 // `cms_parse::extract_intermediates` directly.
 pub use cms_parse::extract_intermediates;
+
+// Persist + Use `.p12` Chain Intermediates (2026-07-18): re-export the shared
+// fingerprint helper so the backend persistence layer (`upsert_intermediate_cert`)
+// and the receive path (`run_verify_path` intermediate-set dedup) compute the
+// SAME `(account_id, standard, fingerprint)` UNIQUE key `persist_imported`
+// derives for the leaf. A mismatch would break re-import idempotency and
+// cross-set dedup.
+pub use cert::fingerprint_of_cert_der;
 
 /// S/MIME `CryptoBackend`. Owns the framework policy plus the `KeyStore` where
 /// generated cert/key material is persisted (public DER cert + encrypted PKCS#8
@@ -152,6 +168,9 @@ impl SmimeBackend {
                 return Ok(VerificationResult {
                     state: SignatureState::UnknownKey,
                     signer: None,
+                    // Early-return arm (spec decision #2): chain validation never
+                    // runs, so there's no ChainOutcome.failure_reason to surface.
+                    failure_reason: None,
                 });
             }
             Err(e) => return Err(e),
@@ -174,6 +193,11 @@ impl SmimeBackend {
             return Ok(VerificationResult {
                 state: SignatureState::Invalid,
                 signer,
+                // Early-return arm (spec decision #2): cryptographic signature
+                // failure short-circuits before chain validation runs, so there
+                // is no ChainOutcome.failure_reason to surface. The dialog's
+                // fixed-map fallback handles this state.
+                failure_reason: None,
             });
         }
 
@@ -225,7 +249,18 @@ impl SmimeBackend {
             SignatureState::ValidUnverified
         };
 
-        Ok(VerificationResult { state, signer })
+        // Surface the granular ChainOutcome.failure_reason end-to-end (spec
+        // 2026-07-18 decision #2). On the success states (ValidVerified /
+        // ValidUnverified) ChainOutcome leaves it `None`; on chain failures it
+        // carries the pkix path error / CRL reason / identity-mismatch detail;
+        // on Mismatch it carries the identity-mismatch format string. Thread
+        // it through so the Signature Details dialog can show the REAL reason
+        // instead of the coarse fixed enum→map.
+        Ok(VerificationResult {
+            state,
+            signer,
+            failure_reason: outcome.failure_reason,
+        })
     }
 }
 
@@ -421,6 +456,9 @@ impl CryptoBackend for SmimeBackend {
                 return Ok(VerificationResult {
                     state: SignatureState::UnknownKey,
                     signer: None,
+                    // Pre-chain trait impl: no ChainOutcome computed, so no
+                    // granular reason to surface.
+                    failure_reason: None,
                 });
             }
             Err(e) => return Err(e),
@@ -443,7 +481,13 @@ impl CryptoBackend for SmimeBackend {
                 algorithm: "ECDSA-P256".into(),
             }
         });
-        Ok(VerificationResult { state, signer })
+        Ok(VerificationResult {
+            state,
+            signer,
+            // Pre-chain trait impl: chain/trust assessment (G4) is not run
+            // here, so there is no ChainOutcome.failure_reason to surface.
+            failure_reason: None,
+        })
     }
 
     async fn generate_key(&self, params: KeyGenParams) -> crypto_core::Result<KeyHandleRef> {
@@ -492,51 +536,16 @@ impl CryptoBackend for SmimeBackend {
         data: &[u8],
         passphrase: Option<SecretBox<String>>,
     ) -> crypto_core::Result<KeyHandleRef> {
-        // Content-sniff by content, NOT extension: PEM iff the bytes are UTF-8
-        // starting with `-----BEGIN` (a `.crt`/`.cer`/`.p12`/`.pfx`/keyless
-        // extension all route correctly). Binary PKCS#12 (DER SEQUENCE) routes
-        // to the p12 arm; everything else that isn't a PEM bundle is a malformed
-        // import (surfaced as Malformed in the PEM parse path).
-        let is_pem = std::str::from_utf8(data)
-            .map(|s| s.trim_start().starts_with("-----BEGIN"))
-            .unwrap_or(false);
-
-        if is_pem {
-            let text = std::str::from_utf8(data).map_err(|e| {
-                CryptoError::Malformed(format!("import_key: input not UTF-8: {e}"))
-            })?;
-            let blocks = parse_pem_blocks(text)?;
-
-            let cert_der = blocks
-                .iter()
-                .find(|(label, _)| label == "CERTIFICATE")
-                .map(|(_, der)| der.clone())
-                .ok_or_else(|| CryptoError::Malformed("no CERTIFICATE PEM block".into()))?;
-
-            // Private-key arm: ENCRYPTED PRIVATE KEY takes precedence over
-            // PRIVATE KEY (a bundle shouldn't carry both, but if it does, the
-            // encrypted block is the one the user means to import).
-            let priv_der = if let Some((_, block)) = blocks
-                .iter()
-                .find(|(label, _)| label == "ENCRYPTED PRIVATE KEY")
-            {
-                decrypt_encrypted_pkcs8(block, expose_passphrase(&passphrase))?
-            } else if let Some((_, block)) =
-                blocks.iter().find(|(label, _)| label == "PRIVATE KEY")
-            {
-                block.clone()
-            } else {
-                return Err(CryptoError::Malformed(
-                    "no PRIVATE KEY PEM block (expected 'PRIVATE KEY' or 'ENCRYPTED PRIVATE KEY')"
-                        .into(),
-                ));
-            };
-
-            self.persist_imported(cert_der, priv_der).await
-        } else {
-            // PKCS#12 / PFX binary arm (Plan 3 Task 1).
-            self.import_p12(data, &passphrase).await
-        }
+        // Delegates to the inherent `import_key_with_chain` and discards the
+        // returned intermediate cert DERs (the trait contract returns only the
+        // leaf handle). The backend IPC layer (`crypto_import_key_from_path_inner`)
+        // calls `import_key_with_chain` directly so it can persist the
+        // intermediates with `key_type='intermediate'` (see persist-pkcs12-chain
+        // spec). The trait method is kept for callers (interior crypto-core
+        // flows, future PGP/SMIME backends) that don't care about the bag's
+        // chain.
+        let (handle, _intermediates) = self.import_key_with_chain(data, passphrase).await?;
+        Ok(handle)
     }
 
     async fn export_public(&self, handle: &KeyHandle) -> crypto_core::Result<Vec<u8>> {
@@ -550,6 +559,67 @@ impl CryptoBackend for SmimeBackend {
 }
 
 impl SmimeBackend {
+    /// Import a key bundle (PEM or `.p12`/`.pfx`) AND return any intermediate
+    /// CA cert DERs found in the bag, so the backend persistence layer can
+    /// store them with `crypto_keys.key_type = 'intermediate'` (NOT `'cert'` —
+    /// intermediates must NOT join the trust-anchor candidate set; see the
+    /// G4 corporate-PKI landmine note in `mail/crypto.rs`).
+    ///
+    /// This is an inherent method (not a `CryptoBackend` trait method) because
+    /// the trait `import_key` returns only the leaf `KeyHandleRef` — there is
+    /// no way to surface the intermediate DERs through the trait signature.
+    /// The trait impl delegates here and discards the intermediates; the
+    /// backend IPC layer (`crypto_import_key_from_path_inner`) calls this
+    /// directly so it can persist each intermediate via
+    /// `db::crypto_keys::upsert_intermediate_cert`.
+    ///
+    /// # Returns
+    ///
+    /// `(leaf_handle, intermediate_ders)`:
+    /// - `leaf_handle` — the canonical keystore `KeyHandleRef` for the imported
+    ///   leaf cert + private key (same shape `import_key` returns).
+    /// - `intermediate_ders` — every cert in the `.p12` bag's private-key chain
+    ///   EXCEPT the leaf (which is paired with the private key), deduped by
+    ///   the shared `fingerprint_of_cert_der` (SHA-1-of-SPKI hex) so a re-import
+    ///   of the same `.p12` does not produce duplicate rows. Empty for the PEM
+    ///   path (PEM bundles carry a single cert + key; chain PEM parsing is a
+    ///   carry-forward).
+    ///
+    /// # Security
+    ///
+    /// The intermediates are returned (not persisted here) because the
+    /// `KeyStore::put` trait contract hardcoded `key_type='cert'` for every
+    /// key (a known quirk documented at `keystore_bridge::put`). Persisting
+    /// an intermediate through `put` would land it in the
+    /// `list_trust_anchor_certs` candidate set — a trust overreach. The
+    /// backend writes them via a direct INSERT with `key_type='intermediate'`.
+    pub async fn import_key_with_chain(
+        &self,
+        data: &[u8],
+        passphrase: Option<SecretBox<String>>,
+    ) -> crypto_core::Result<(KeyHandleRef, Vec<Vec<u8>>)> {
+        // Content-sniff by content, NOT extension (mirrors the historical
+        // `import_key` dispatch): PEM iff the bytes are UTF-8 starting with
+        // `-----BEGIN`; otherwise treat as binary PKCS#12.
+        let is_pem = std::str::from_utf8(data)
+            .map(|s| s.trim_start().starts_with("-----BEGIN"))
+            .unwrap_or(false);
+
+        if is_pem {
+            // PEM path: cert + private key only. PEM bundles with extra chain
+            // certs are NOT enumerated here (carry-forward — the leaf is the
+            // load-bearing identity; a follow-up can parse every CERTIFICATE
+            // block and append non-leaf ones). Returns an empty intermediates
+            // Vec to keep the trait symmetric.
+            let (cert_der, priv_der) = parse_pem_import_bundle(data, &passphrase)?;
+            let handle = self.persist_imported(cert_der, priv_der).await?;
+            Ok((handle, Vec::new()))
+        } else {
+            // PKCS#12 / PFX binary arm — extract + return intermediate chain.
+            self.import_p12_with_chain(data, &passphrase).await
+        }
+    }
+
     /// Shared tail for `import_key`: build a `StoredKey` from the cert + private
     /// key DER (both PEM-extracted and p12-extracted paths converge here) and
     /// persist it via the keystore. Computes the SPKI algorithm label + the
@@ -589,9 +659,22 @@ impl SmimeBackend {
         self.keystore.put(stored).await
     }
 
-    /// PKCS#12 / PFX binary import arm (Plan 3 Task 1). Parses the PFX, decrypts
-    /// the bag PBE with the user's passphrase, extracts the leaf cert + private
-    /// key as raw DER bytes, and funnels them through `persist_imported`.
+    /// PKCS#12 / PFX binary import arm with intermediate extraction (Plan 3 +
+    /// the 2026-07-18 intermediates spec). Parses the PFX, decrypts the bag
+    /// PBE with the user's passphrase, extracts the leaf cert + private key +
+    /// every non-leaf cert in the chain, and:
+    ///
+    /// 1. Persists the leaf via `persist_imported` (identity — `key_type='cert'`
+    ///    via `keystore.put`).
+    /// 2. Returns the non-leaf chain certs (intermediates) so the backend can
+    ///    INSERT them directly with `key_type='intermediate'` (NOT through
+    ///    `keystore.put`, which would land them in the trust-anchor set).
+    ///
+    /// Intermediates are deduped within the bag by `fingerprint_of_cert_der` —
+    /// a chain that carries the same cert twice (e.g. a root that is both the
+    /// chain tail AND a bag entry) yields a single intermediate row. Cross-bag
+    /// dedup happens at the SQL UNIQUE constraint `(account_id, standard,
+    /// fingerprint)` (see `upsert_intermediate_cert`).
     ///
     /// We touch ONLY `p12-keystore`'s `&[u8]`-returning surface
     /// (`KeyStore::from_pkcs12`, `private_key_chain`, `Certificate::as_der`,
@@ -601,11 +684,11 @@ impl SmimeBackend {
     /// `p12_keystore::error::Error` enum is matched by variant name with wildcard
     /// inner payloads, so the transitive `der::Error` / `MacError` types never
     /// need to be named from this crate.
-    async fn import_p12(
+    async fn import_p12_with_chain(
         &self,
         data: &[u8],
         passphrase: &Option<SecretBox<String>>,
-    ) -> crypto_core::Result<KeyHandleRef> {
+    ) -> crypto_core::Result<(KeyHandleRef, Vec<Vec<u8>>)> {
         // p12-keystore's `from_pkcs12` takes `password: &str`. An empty
         // passphrase is valid for unencrypted bags; `None` maps to "".
         let pass = expose_passphrase(passphrase).unwrap_or_default();
@@ -613,10 +696,10 @@ impl SmimeBackend {
             data,
             pass,
             // Relaxed: import everything (key + cert + chain) rather than
-            // dropping "unmatched" entries under Strict. We only read the
-            // first private-key chain, so extra certs (intermediates) are
-            // ignored (carry-forward: intermediates in the .p12 chain —
-            // spec §3 Out).
+            // dropping "unmatched" entries under Strict. We read the full
+            // private-key chain (leaf + intermediates) — `certs()[0]` is the
+            // leaf (paired with the key), `certs()[1..]` are the intermediates
+            // the bag carried (rebuilt by p12-keystore's issuer-chase loop).
             p12_keystore::Pkcs12ImportPolicy::Relaxed,
         )
         .map_err(map_p12_error)?;
@@ -632,7 +715,36 @@ impl SmimeBackend {
             .to_vec();
         let priv_der = chain.key().as_der().to_vec();
 
-        self.persist_imported(cert_der, priv_der).await
+        // Intermediates = every non-leaf cert in the chain, deduped by the
+        // shared fingerprint (same SHA-1-of-SPKI hex the leaf uses). The leaf's
+        // own fingerprint is seeded into `seen` so a malformed chain that
+        // repeats the leaf is also deduped (defensive — p12-keystore's own
+        // chase loop already excludes the self-signed leaf, but a future
+        // change there could regress; the seed keeps us correct regardless).
+        let mut seen = std::collections::HashSet::new();
+        let leaf_fp = cert::fingerprint_of_cert_der(&cert_der)?;
+        let _ = seen.insert(leaf_fp);
+
+        let mut intermediates = Vec::new();
+        for cert in chain.certs().iter().skip(1) {
+            let der = cert.as_der().to_vec();
+            // A cert whose DER we cannot parse is skipped with an in-band log:
+            // one malformed intermediate must not block the leaf import (the
+            // spec's "skip JUST that cert" failure mode).
+            let fp = match cert::fingerprint_of_cert_der(&der) {
+                Ok(fp) => fp,
+                Err(e) => {
+                    log::warn!("[crypto] p12 intermediate fingerprint failed: {e}");
+                    continue;
+                }
+            };
+            if seen.insert(fp) {
+                intermediates.push(der);
+            }
+        }
+
+        let handle = self.persist_imported(cert_der, priv_der).await?;
+        Ok((handle, intermediates))
     }
 }
 
@@ -643,6 +755,47 @@ impl SmimeBackend {
 fn expose_passphrase(pass: &Option<SecretBox<String>>) -> Option<&str> {
     use secrecy::ExposeSecret;
     pass.as_ref().map(|p| p.expose_secret().as_str())
+}
+
+/// Parse a PEM bundle (`CERTIFICATE` + (`PRIVATE KEY` | `ENCRYPTED PRIVATE KEY`))
+/// into `(cert_der, priv_der)`. Extracted from the historical `import_key` body
+/// so `import_key_with_chain` can dispatch PEM → this helper + `persist_imported`
+/// without re-implementing the dispatch in two places.
+///
+/// `ENCRYPTED PRIVATE KEY` takes precedence over `PRIVATE KEY` (a bundle should
+/// not carry both, but if it does, the encrypted block is the one the user
+/// means to import). Missing either block → `Malformed`.
+fn parse_pem_import_bundle(
+    data: &[u8],
+    passphrase: &Option<SecretBox<String>>,
+) -> crypto_core::Result<(Vec<u8>, Vec<u8>)> {
+    let text = std::str::from_utf8(data)
+        .map_err(|e| CryptoError::Malformed(format!("import_key: input not UTF-8: {e}")))?;
+    let blocks = parse_pem_blocks(text)?;
+
+    let cert_der = blocks
+        .iter()
+        .find(|(label, _)| label == "CERTIFICATE")
+        .map(|(_, der)| der.clone())
+        .ok_or_else(|| CryptoError::Malformed("no CERTIFICATE PEM block".into()))?;
+
+    // Private-key arm: ENCRYPTED PRIVATE KEY takes precedence over PRIVATE KEY
+    // (a bundle shouldn't carry both, but if it does, the encrypted block is
+    // the one the user means to import).
+    let priv_der = if let Some((_, block)) = blocks
+        .iter()
+        .find(|(label, _)| label == "ENCRYPTED PRIVATE KEY")
+    {
+        decrypt_encrypted_pkcs8(block, expose_passphrase(passphrase))?
+    } else if let Some((_, block)) = blocks.iter().find(|(label, _)| label == "PRIVATE KEY") {
+        block.clone()
+    } else {
+        return Err(CryptoError::Malformed(
+            "no PRIVATE KEY PEM block (expected 'PRIVATE KEY' or 'ENCRYPTED PRIVATE KEY')".into(),
+        ));
+    };
+
+    Ok((cert_der, priv_der))
 }
 
 /// Decrypt an `ENCRYPTED PRIVATE KEY` PEM block (Plan 3 Task 2 — retires the
@@ -1051,6 +1204,389 @@ mod tests {
             .mac_algorithm(p12_keystore::MacAlgorithm::HmacSha256)
             .write()
             .expect("p12 fixture: write")
+    }
+
+    // ─── Persist + Use .p12 Chain Intermediates (2026-07-18 spec) ───
+    //
+    // The next two helpers + tests exercise `SmimeBackend::import_key_with_chain`,
+    // which returns the leaf handle AND any intermediate CA cert DERs in the bag
+    // so the backend can persist them with `key_type='intermediate'` (NOT
+    // `key_type='cert'` — they must NOT join the trust-anchor candidate set).
+    //
+    // Building a real signed chain (CA root → leaf) is required: p12-keystore's
+    // reader reconstructs the chain via an issuer-chase loop that matches
+    // `subject == leaf.issuer`, so a leaf + intermediate fixture only round-trips
+    // when the intermediate actually signed the leaf (self-signed leafs break
+    // the chase at the first iteration).
+
+    /// Built cert + private key for the in-test chain fixture.
+    struct ChainCert {
+        cert_der: Vec<u8>,
+        priv_pkcs8_der: Vec<u8>,
+    }
+
+    /// Test profile parameterized on subject + issuer (self-signed when they
+    /// coincide). Mirrors `chain.rs::spike_tests::TestCertProfile` — extracted
+    /// here so lib.rs tests can build real signed chains without reaching into
+    /// the (test-module-private) spike_tests helpers.
+    struct TestChainProfile {
+        subject: x509_cert::name::Name,
+        issuer: x509_cert::name::Name,
+    }
+
+    impl x509_cert::builder::profile::BuilderProfile for TestChainProfile {
+        fn get_subject(&self) -> x509_cert::name::Name {
+            self.subject.clone()
+        }
+        fn get_issuer(&self, _subject: &x509_cert::name::Name) -> x509_cert::name::Name {
+            // Ignore the implicit subject arg — CA-signed certs carry their
+            // own issuer (the parent CA's subject).
+            self.issuer.clone()
+        }
+        fn build_extensions(
+            &self,
+            _spk: spki::SubjectPublicKeyInfoRef<'_>,
+            _issuer_spk: spki::SubjectPublicKeyInfoRef<'_>,
+            _tbs: &x509_cert::certificate::TbsCertificate,
+        ) -> x509_cert::builder::Result<Vec<x509_cert::ext::Extension>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Build a self-signed CA cert (BasicConstraints cA:TRUE, KeyUsage
+    /// keyCertSign | cRLSign, SubjectKeyIdentifier) over a fresh ECDSA P-256
+    /// keypair. This is the test fixture's "intermediate" — a self-signed
+    /// root the leaf chains up to.
+    fn build_self_signed_ca_fixture(cn: &str) -> ChainCert {
+        use der::referenced::OwnedToRef;
+        use der::Encode;
+        use p256::elliptic_curve::Generate;
+        use pkcs8::EncodePrivateKey;
+        use std::str::FromStr;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        use x509_cert::builder::{Builder, CertificateBuilder};
+        use x509_cert::ext::pkix::{
+            BasicConstraints, KeyUsage, KeyUsages, SubjectKeyIdentifier,
+        };
+        use x509_cert::serial_number::SerialNumber;
+        use x509_cert::time::Validity;
+        use x509_cert::SubjectPublicKeyInfo;
+
+        let mut rng = rand::rng();
+        let signing_key = p256::ecdsa::SigningKey::generate_from_rng(&mut rng);
+        let verifying_key = signing_key.verifying_key();
+        let pub_spki = SubjectPublicKeyInfo::from_key(verifying_key).expect("ca spki");
+        let ski = SubjectKeyIdentifier::try_from(pub_spki.owned_to_ref()).expect("ca ski");
+
+        let subject = x509_cert::name::Name::from_str(&format!("CN={cn}")).expect("ca subject");
+        let profile = TestChainProfile {
+            subject: subject.clone(),
+            issuer: subject,
+        };
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(1);
+        let serial = SerialNumber::from(secs as u32);
+        let validity = Validity::from_now(Duration::from_secs(200 * 24 * 60 * 60))
+            .expect("ca validity");
+
+        let mut builder = CertificateBuilder::new(profile, serial, validity, pub_spki)
+            .expect("ca builder");
+        builder
+            .add_extension(&BasicConstraints {
+                ca: true,
+                path_len_constraint: None,
+            })
+            .expect("ca bc ext");
+        builder
+            .add_extension(&KeyUsage(
+                KeyUsages::KeyCertSign | KeyUsages::CRLSign,
+            ))
+            .expect("ca keyusage ext");
+        builder.add_extension(&ski).expect("ca ski ext");
+
+        let cert = builder
+            .build::<_, p256::ecdsa::DerSignature>(&signing_key)
+            .expect("ca build/sign");
+        let cert_der = cert.to_der().expect("ca to_der");
+        let priv_pkcs8_der = signing_key
+            .to_pkcs8_der()
+            .expect("ca pkcs8")
+            .as_bytes()
+            .to_vec();
+        ChainCert {
+            cert_der,
+            priv_pkcs8_der,
+        }
+    }
+
+    /// Build an S/MIME leaf cert signed by `parent` (KeyUsage digitalSignature
+    /// | keyEncipherment, EKU emailProtection, SAN rfc822Name(email), SKI).
+    /// Mirrors `cert::build_self_signed_smime_cert`'s leaf shape but signed by
+    /// the parent CA (so the issuer chain is real, not self-signed).
+    fn build_leaf_signed_by_ca_fixture(email: &str, parent: &ChainCert) -> ChainCert {
+        use der::referenced::OwnedToRef;
+        use der::Encode;
+        use der::asn1::Ia5String;
+        use p256::elliptic_curve::Generate;
+        use p256::pkcs8::DecodePrivateKey;
+        use pkcs8::EncodePrivateKey;
+        use std::str::FromStr;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        use x509_cert::builder::{Builder, CertificateBuilder};
+        use x509_cert::ext::pkix::name::GeneralName;
+        use x509_cert::ext::pkix::{
+            ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName, SubjectKeyIdentifier,
+        };
+        use x509_cert::serial_number::SerialNumber;
+        use x509_cert::time::Validity;
+        use x509_cert::SubjectPublicKeyInfo;
+
+        const EKU_EMAIL_PROTECTION: der::asn1::ObjectIdentifier =
+            der::asn1::ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.4");
+
+        let mut rng = rand::rng();
+        let signing_key = p256::ecdsa::SigningKey::generate_from_rng(&mut rng);
+        let verifying_key = signing_key.verifying_key();
+        let pub_spki = SubjectPublicKeyInfo::from_key(verifying_key).expect("leaf spki");
+        let ski = SubjectKeyIdentifier::try_from(pub_spki.owned_to_ref()).expect("leaf ski");
+
+        let cn = email.split('@').next().filter(|s| !s.is_empty()).unwrap_or("leaf");
+        let subject = x509_cert::name::Name::from_str(&format!("CN={cn}")).expect("leaf subject");
+        // Issuer = parent CA's subject (so p12-keystore's issuer-chase finds it).
+        let parent_cert =
+            <x509_cert::Certificate as der::Decode>::from_der(&parent.cert_der)
+                .expect("parse parent cert");
+        let issuer = parent_cert.tbs_certificate().subject().clone();
+        let profile = TestChainProfile { subject, issuer };
+
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(1);
+        let serial = SerialNumber::from(secs as u32);
+        let validity = Validity::from_now(Duration::from_secs(200 * 24 * 60 * 60))
+            .expect("leaf validity");
+
+        let mut builder = CertificateBuilder::new(profile, serial, validity, pub_spki)
+            .expect("leaf builder");
+        builder
+            .add_extension(&KeyUsage(
+                KeyUsages::DigitalSignature | KeyUsages::KeyEncipherment,
+            ))
+            .expect("leaf keyusage ext");
+        builder
+            .add_extension(&ExtendedKeyUsage(vec![EKU_EMAIL_PROTECTION]))
+            .expect("leaf eku ext");
+        let email_ia5 = Ia5String::new(email.as_bytes()).expect("leaf san ia5");
+        builder
+            .add_extension(&SubjectAltName(vec![GeneralName::Rfc822Name(email_ia5)]))
+            .expect("leaf san ext");
+        builder.add_extension(&ski).expect("leaf ski ext");
+
+        let parent_sk =
+            p256::ecdsa::SigningKey::from_pkcs8_der(&parent.priv_pkcs8_der).expect("parent key");
+        let cert = builder
+            .build::<_, p256::ecdsa::DerSignature>(&parent_sk)
+            .expect("leaf build/sign");
+        let cert_der = cert.to_der().expect("leaf to_der");
+        let priv_pkcs8_der = signing_key
+            .to_pkcs8_der()
+            .expect("leaf pkcs8")
+            .as_bytes()
+            .to_vec();
+        ChainCert {
+            cert_der,
+            priv_pkcs8_der,
+        }
+    }
+
+    /// Build a `.p12` with `leaf + intermediate` in the private-key chain.
+    /// The leaf is paired with the private key; the intermediate is appended to
+    /// the chain so p12-keystore's reader picks it up via the issuer-chase loop
+    /// (intermediate.subject == leaf.issuer).
+    fn build_p12_fixture_with_chain(
+        leaf_der: &[u8],
+        leaf_priv: &[u8],
+        intermediate_der: &[u8],
+        password: &str,
+    ) -> Vec<u8> {
+        let mut ks = p12_keystore::KeyStore::new();
+        let leaf_cert = p12_keystore::Certificate::from_der(leaf_der)
+            .expect("p12 fixture: leaf cert from der");
+        let inter_cert = p12_keystore::Certificate::from_der(intermediate_der)
+            .expect("p12 fixture: intermediate cert from der");
+        let key = p12_keystore::PrivateKey::from_der(leaf_priv)
+            .expect("p12 fixture: leaf priv from der");
+        // Chain order per p12-keystore's `PrivateKeyChain::new` docs: leaf first.
+        let chain = p12_keystore::PrivateKeyChain::new(
+            "smime-identity",
+            key,
+            vec![leaf_cert, inter_cert],
+        );
+        ks.add_entry(
+            "smime-identity",
+            p12_keystore::KeyStoreEntry::PrivateKeyChain(chain),
+        );
+        ks.writer(password)
+            .encryption_algorithm(p12_keystore::EncryptionAlgorithm::PbeWithHmacSha256AndAes256)
+            .mac_algorithm(p12_keystore::MacAlgorithm::HmacSha256)
+            .write()
+            .expect("p12 fixture with chain: write")
+    }
+
+    /// `import_key_with_chain` on a `.p12` with leaf + 1 intermediate returns
+    /// the intermediate DER (NOT the leaf). The leaf handle resolves through
+    /// the StubKeyStore and matches the leaf cert's SKI fingerprint.
+    #[tokio::test]
+    async fn import_p12_persists_intermediate_certs() {
+        let ca = build_self_signed_ca_fixture("Test Intermediate CA");
+        let leaf = build_leaf_signed_by_ca_fixture("chainimport@kylins.com", &ca);
+
+        let pfx = build_p12_fixture_with_chain(
+            &leaf.cert_der,
+            &leaf.priv_pkcs8_der,
+            &ca.cert_der,
+            "test-secret",
+        );
+
+        let b = backend();
+        let pass = SecretBox::new(Box::new("test-secret".to_string()));
+        let (handle, intermediates) = b
+            .import_key_with_chain(&pfx, Some(pass))
+            .await
+            .expect("import_key_with_chain ok");
+
+        // Leaf handle resolves + fingerprint matches the leaf's SKI.
+        assert_eq!(handle.standard, Standard::Smime);
+        let expected_leaf_fp = fingerprint_of_cert_der(&leaf.cert_der).expect("leaf fp");
+        assert_eq!(handle.fingerprint.as_str(), expected_leaf_fp);
+
+        // Exactly one intermediate returned (the CA we built). Leaf excluded.
+        assert_eq!(
+            intermediates.len(),
+            1,
+            "expected exactly 1 intermediate, got {}",
+            intermediates.len()
+        );
+        assert_eq!(
+            intermediates[0], ca.cert_der,
+            "returned intermediate must match the bag's CA cert DER"
+        );
+        assert_ne!(
+            intermediates[0], leaf.cert_der,
+            "leaf cert must NOT appear in the intermediates set"
+        );
+    }
+
+    /// Regression guard: a `.p12` with only a leaf (the common self-signed /
+    /// generated case) yields an EMPTY intermediates Vec. No spurious rows
+    /// would be written by the backend persistence layer.
+    #[tokio::test]
+    async fn import_p12_bag_with_only_leaf_returns_no_intermediates() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "leaf-only@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+
+        let pfx = build_p12_fixture(&cert_der, &priv_der, "pw");
+
+        let b2 = backend();
+        let pass = SecretBox::new(Box::new("pw".to_string()));
+        let (handle, intermediates) = b2
+            .import_key_with_chain(&pfx, Some(pass))
+            .await
+            .expect("import_key_with_chain ok (leaf-only bag)");
+
+        assert_eq!(handle.standard, Standard::Smime);
+        assert!(
+            intermediates.is_empty(),
+            "leaf-only bag must return no intermediates; got {intermediates:?}"
+        );
+    }
+
+    /// PEM path returns an empty intermediates Vec (PEM chain parsing is a
+    /// carry-forward; only the `.p12` arm extracts intermediates today).
+    #[tokio::test]
+    async fn import_key_with_chain_pem_returns_empty_intermediates() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "pem-chain@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+
+        let pem = format!(
+            "{}\n{}\n",
+            pem_block("CERTIFICATE", &cert_der),
+            pem_block("PRIVATE KEY", &priv_der),
+        );
+
+        let b2 = backend();
+        let (handle, intermediates) = b2
+            .import_key_with_chain(pem.as_bytes(), None)
+            .await
+            .expect("import_key_with_chain (PEM) ok");
+        assert_eq!(handle.standard, Standard::Smime);
+        assert!(
+            intermediates.is_empty(),
+            "PEM path must return empty intermediates; got {intermediates:?}"
+        );
+    }
+
+    /// `fingerprint_of_cert_der` matches the in-process SKI computation used
+    /// by `persist_imported` / `generate_key`. A leaf cert's fingerprint
+    /// computed via the pub helper must equal the handle's fingerprint
+    /// returned by `generate_key`.
+    #[tokio::test]
+    async fn fingerprint_of_cert_der_matches_generate_key_fingerprint() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "fp-consistency@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+
+        let helper_fp = fingerprint_of_cert_der(&cert_der).expect("helper fingerprint ok");
+        assert_eq!(
+            helper_fp,
+            gen.fingerprint.as_str(),
+            "pub helper must match generate_key's in-process SKI fingerprint"
+        );
     }
 
     /// Build an encrypted-PKCS#8 PEM (`ENCRYPTED PRIVATE KEY` + `CERTIFICATE`)
@@ -1816,6 +2352,125 @@ mod tests {
             res.state,
             SignatureState::ValidVerified,
             "no from_email → no identity binding → chain OK + trusted → ValidVerified (not Mismatch)"
+        );
+    }
+
+    // ─── Granular ChainOutcome (2026-07-18 spec) ───
+    //
+    // The granular `failure_reason: Option<String>` surfaced from
+    // `ChainOutcome.failure_reason` through `VerificationResult.failure_reason`.
+    // Today the field is dropped at the `verify_with_context` return boundary;
+    // these tests pin its presence (Some + substring on chain failure) and its
+    // absence (None on ValidVerified).
+
+    /// A failing cert chain (unrelated trust anchor) MUST surface the real
+    /// `ChainOutcome.failure_reason` (pkix path-validation error) via
+    /// `VerificationResult.failure_reason` — not drop it. The exact pkix
+    /// error string depends on the verifier's path-validation code, so the
+    /// assertion is "Some and non-empty" rather than a fixed substring
+    /// (path-build / no-issuer / profile-violation wording varies across
+    /// pkix-* releases; the load-bearing property is that it's surfaced, not
+    /// dropped).
+    #[tokio::test]
+    async fn verify_with_context_surfaces_chain_failure_reason() {
+        let (_b1, _signer1, unrelated_cert_der, _signed1) =
+            sign_with_self_signed("unrelated-anchor-fr@kylins.com").await;
+        // Use a SECOND backend / key to produce the actual signed envelope,
+        // then verify against the FIRST (unrelated) cert as the anchor.
+        let (b2, _signer2, _cert2, signed2) =
+            sign_with_self_signed("actual-signer-fr@kylins.com").await;
+
+        let res = b2
+            .verify_with_context(
+                &signed2,
+                Some("actual-signer-fr@kylins.com"),
+                // unrelated_cert_der never signed the actual-signer cert.
+                std::slice::from_ref(&unrelated_cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::Invalid,
+            "sig OK but chain doesn't validate against unrelated anchor → Invalid"
+        );
+        let reason = res
+            .failure_reason
+            .as_ref()
+            .expect("failure_reason must be Some on a chain failure (not dropped)");
+        assert!(
+            !reason.is_empty(),
+            "failure_reason must be a non-empty diagnostic string, got empty"
+        );
+    }
+
+    /// Identity mismatch (path OK but From↔SAN binding fails) MUST surface
+    /// the granular reason too — the ChainOutcome carries "identity mismatch: …".
+    #[tokio::test]
+    async fn verify_with_context_surfaces_identity_mismatch_failure_reason() {
+        let (b, _signer, cert_der, signed) =
+            sign_with_self_signed("real-identity@kylins.com").await;
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                // Different From: the cert's SAN is real-identity@kylins.com.
+                Some("imposter-identity@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::Mismatch,
+            "sig OK + chain OK + From↔SAN mismatch → Mismatch"
+        );
+        let reason = res
+            .failure_reason
+            .as_ref()
+            .expect("failure_reason must be Some on identity mismatch");
+        assert!(
+            reason.to_lowercase().contains("identity mismatch"),
+            "failure_reason must mention 'identity mismatch'; got {reason:?}"
+        );
+    }
+
+    /// Success path: `ValidVerified` MUST surface `failure_reason: None`
+    /// (the dialog renders no banner for a clean verification).
+    #[tokio::test]
+    async fn verify_with_context_success_has_no_failure_reason() {
+        let (b, _signer, cert_der, signed) =
+            sign_with_self_signed("success-fr@kylins.com").await;
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                Some("success-fr@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                &[],
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        assert_eq!(
+            res.state,
+            SignatureState::ValidVerified,
+            "baseline: chain OK + identity match + Verified trust → ValidVerified"
+        );
+        assert!(
+            res.failure_reason.is_none(),
+            "ValidVerified must carry no failure_reason; got {:?}",
+            res.failure_reason
         );
     }
 }

@@ -38,7 +38,7 @@ use der::{Decode, Encode};
 use sqlx::SqlitePool;
 
 use crate::db::crypto_keys::{
-    list_crypto_keys_for_account, list_trust_anchor_certs, DefaultKeyRow,
+    list_crypto_keys_for_account, list_intermediate_certs, list_trust_anchor_certs, DefaultKeyRow,
 };
 use crate::db::message_bodies::{get_message_ciphertext, get_message_signed_part};
 use crate::db::message_crypto_results::{
@@ -345,9 +345,11 @@ pub struct SignerDetails {
     /// `None` for `encrypted-signed` (no re-parseable SignedData in the DB).
     pub signer: Option<SignerCertDetails>,
     pub chain_path: Vec<ChainPathEntry>,
-    /// Human-readable inference from `signature_state` (UI-level; the granular
-    /// `ChainOutcome.failure_reason` is internal to `verify_with_context` and
-    /// not persisted).
+    /// Persisted granular `ChainOutcome.failure_reason` (surfaced via
+    /// `VerificationResult.failure_reason` → `message_crypto_results.failure_reason`).
+    /// Falls back to the coarse `failure_reason_for_state` fixed map when the
+    /// persisted column is NULL (pre-migration rows, the UnknownKey / sig-fail
+    /// early-return arms, and all success states).
     pub failure_reason: Option<String>,
 }
 
@@ -478,9 +480,11 @@ async fn resolve_crls(
 
 /// Build the row for `message_crypto_results` from the decrypt + signature
 /// verdicts. `chain_valid` + `revocation_state` are inferred coarsely from the
-/// `SignatureState` (the granular `ChainOutcome` is internal to
-/// `verify_with_context` and not re-exposed): Valid* + Mismatch → chain valid;
-/// Invalid → chain invalid; UnknownKey / NotSigned → unchecked (NULL chain).
+/// `SignatureState`; `failure_reason` is the granular reason surfaced from
+/// `ChainOutcome.failure_reason` via `VerificationResult.failure_reason` by
+/// `SmimeBackend::verify_with_context` (None on the early-return arms and on
+/// success states). The orchestrator threads it in here.
+#[allow(clippy::too_many_arguments)] // row-builder; bundling adds ceremony without clarity
 fn build_crypto_result_row(
     account_id: &str,
     message_id: &str,
@@ -489,6 +493,7 @@ fn build_crypto_result_row(
     signature_state: SignatureState,
     signer_fingerprint: Option<String>,
     signer_email: Option<String>,
+    failure_reason: Option<String>,
 ) -> MessageCryptoResultRow {
     let sig_str = match signature_state {
         SignatureState::NotSigned => "not-signed",
@@ -498,9 +503,10 @@ fn build_crypto_result_row(
         SignatureState::UnknownKey => "unknown-key",
         SignatureState::Mismatch => "mismatch",
     };
-    // Coarse chain/revocation inference from the SignatureState. A fine-grained
-    // ChainOutcome surfacing (e.g. distinguishing revoked vs. unchecked on
-    // Invalid) is a G6 carry-forward.
+    // Coarse chain/revocation inference from the SignatureState. The granular
+    // ChainOutcome.failure_reason is now threaded through `failure_reason`
+    // (2026-07-18 spec); chain/revocation columns remain coarse inferences
+    // (revoked vs. unchecked distinction on Invalid is a future carry-forward).
     let (chain_valid, revocation_state) = match signature_state {
         SignatureState::ValidVerified
         | SignatureState::ValidUnverified
@@ -522,6 +528,7 @@ fn build_crypto_result_row(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
             .unwrap_or_else(|_| "0".to_string()),
+        failure_reason,
     }
 }
 
@@ -544,6 +551,50 @@ fn is_signed_data(der: &[u8]) -> bool {
         return false;
     };
     ci.content_type == const_oid::db::rfc5911::ID_SIGNED_DATA
+}
+
+/// Merge two intermediate-cert sets, deduping by fingerprint. The
+/// [`run_verify_path`] receiver concatenates the SignedData-embedded
+/// intermediates (the sender's intent) with the receiver's stored
+/// `crypto_keys.key_type='intermediate'` rows (the `.p12`-imported CA cache)
+/// so a chain needing a stored intermediate validates. Without dedup a cert
+/// present in both sets would be passed twice — harmless for path validation,
+/// but wasteful and would distort the CRL fetch list.
+///
+/// Dedup key: SHA-1-of-SPKI hex via [`crypto_smime::fingerprint_of_cert_der`]
+/// — the SAME computation `persist_imported` / `generate_key` use for the
+/// leaf's `Fingerprint` and `upsert_intermediate_cert` uses for the
+/// `(account_id, standard, fingerprint)` UNIQUE key. A cert whose fingerprint
+/// cannot be computed is logged + skipped (the soft-fail discipline).
+///
+/// Order is preserved: SignedData intermediates first, then stored
+/// intermediates not already present.
+fn merge_intermediates_by_fingerprint(
+    signed_data_intermediates: Vec<Vec<u8>>,
+    stored_intermediates: Vec<Vec<u8>>,
+) -> Vec<Vec<u8>> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut merged: Vec<Vec<u8>> = Vec::with_capacity(
+        signed_data_intermediates.len() + stored_intermediates.len(),
+    );
+    for der in signed_data_intermediates
+        .iter()
+        .chain(stored_intermediates.iter())
+    {
+        let fp = match crypto_smime::fingerprint_of_cert_der(der) {
+            Ok(fp) => fp,
+            Err(e) => {
+                log::warn!(
+                    "[crypto] intermediate fingerprint compute failed during merge; skipping: {e}"
+                );
+                continue;
+            }
+        };
+        if seen.insert(fp) {
+            merged.push(der.clone());
+        }
+    }
+    merged
 }
 
 /// Run the verify path on a SignedData DER blob. Returns the plaintext MIME
@@ -572,10 +623,40 @@ async fn run_verify_path(
     signed_data_der: &[u8],
     from_email: Option<&str>,
     covered_content: Option<&[u8]>,
-) -> Result<(Option<Vec<u8>>, SignatureState, Option<String>, Option<String>), String> {
+) -> Result<(Option<Vec<u8>>, SignatureState, Option<String>, Option<String>, Option<String>), String> {
     // Intermediates from the SignedData certificates set (excludes the signer leaf).
-    let intermediates = crypto_smime::extract_intermediates(signed_data_der)
+    let signed_data_intermediates = crypto_smime::extract_intermediates(signed_data_der)
         .map_err(|e| format!("extract_intermediates: {e}"))?;
+
+    // Stored intermediates: every `crypto_keys` row this account has with
+    // `key_type='intermediate'` (persisted from a `.p12` bag's non-leaf chain
+    // certs on import — see `upsert_intermediate_cert`). Soft-fail on DB
+    // error: a query failure must NOT block message open; we proceed with
+    // the SignedData intermediates only.
+    let stored_intermediates = match list_intermediate_certs(pool, account_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[crypto] list_intermediate_certs failed for account {account_id}; \
+                 proceeding with SignedData intermediates only: {e}"
+            );
+            Vec::new()
+        }
+    };
+
+    // Merge the two intermediate sets, deduping by fingerprint (SHA-1-of-SPKI
+    // hex via `crypto_smime::fingerprint_of_cert_der` — the SAME computation
+    // the leaf's `persist_imported` uses, so a cert present in both sets is
+    // passed to `verify_with_context` exactly once). The merge is order-
+    // preserving: SignedData intermediates first (the sender's intent), then
+    // stored intermediates not already present (the receiver's CA cache).
+    // Errors computing a fingerprint are logged + the cert is skipped (one bad
+    // cert must not break the chain — the soft-fail discipline established by
+    // `list_intermediate_certs`'s hex-decode skip).
+    let intermediates = merge_intermediates_by_fingerprint(
+        signed_data_intermediates,
+        stored_intermediates,
+    );
 
     // Trust anchors (user-imported CA roots for this account).
     let anchors = list_trust_anchor_certs(pool, account_id).await?;
@@ -702,6 +783,11 @@ async fn run_verify_path(
         result.state,
         final_signer_fp,
         signer_email_for_trust,
+        // Granular ChainOutcome.failure_reason (2026-07-18 spec) — surfaced
+        // via `VerificationResult.failure_reason` by `verify_with_context`.
+        // None on the early-return arms (UnknownKey, sig-fail Invalid) and on
+        // success states; the real reason on chain failures + Mismatch.
+        result.failure_reason,
     ))
 }
 
@@ -785,7 +871,7 @@ pub async fn open_crypto_message(
         (signed_part.as_deref(), ciphertext.as_deref())
     {
         let covered = part1_bytes.to_vec();
-        let (plaintext, sig_state, sfp, semail) = run_verify_path(
+        let (plaintext, sig_state, sfp, semail, sfailure_reason) = run_verify_path(
             &backend,
             pool,
             &client,
@@ -808,6 +894,7 @@ pub async fn open_crypto_message(
             sig_state,
             sfp,
             semail,
+            sfailure_reason,
         )
         .await;
     }
@@ -826,6 +913,8 @@ pub async fn open_crypto_message(
                 "failed",
                 SignatureState::NotSigned,
                 None,
+                None,
+                // No verify path ran → no ChainOutcome.failure_reason.
                 None,
             );
             upsert_message_crypto_result(pool, &row).await?;
@@ -850,9 +939,18 @@ pub async fn open_crypto_message(
     );
 
     // Default crypto_kind from the outer blob; refined below if we recurse
-    // (decrypt-then-verify → encrypted-signed).
-    let (plaintext_mime, crypto_kind, decrypt_state, signature_state, signer_fp, signer_email) =
-        if is_enveloped {
+    // (decrypt-then-verify → encrypted-signed). The 7th tuple slot is the
+    // granular `failure_reason` threaded from `run_verify_path`
+    // (None on the encrypt-only / not-signed branch where no verify ran).
+    let (
+        plaintext_mime,
+        crypto_kind,
+        decrypt_state,
+        signature_state,
+        signer_fp,
+        signer_email,
+        failure_reason,
+    ) = if is_enveloped {
             // Step 3: decrypt path.
             let keys = list_crypto_keys_for_account(pool, account_id, "smime")
                 .await
@@ -943,6 +1041,8 @@ pub async fn open_crypto_message(
                     SignatureState::NotSigned,
                     None,
                     None,
+                    // No verify path ran → no ChainOutcome.failure_reason.
+                    None,
                 );
                 upsert_message_crypto_result(pool, &row).await?;
                 return Ok(OpenCryptoResult {
@@ -956,7 +1056,7 @@ pub async fn open_crypto_message(
             // Step 3c: if the inner is itself a SignedData (sign-then-encrypt
             // send-side composition), recurse into the verify path.
             if is_signed_data(&inner_bytes) {
-                let (plaintext, sig_state, sfp, semail) = run_verify_path(
+                let (plaintext, sig_state, sfp, semail, sfailure_reason) = run_verify_path(
                     &backend,
                     pool,
                     &client,
@@ -973,14 +1073,23 @@ pub async fn open_crypto_message(
                     sig_state,
                     sfp,
                     semail,
+                    sfailure_reason,
                 )
             } else {
                 // Plaintext MIME — no inner signature.
-                (Some(inner_bytes), "encrypted", "ok", SignatureState::NotSigned, None, None)
+                (
+                    Some(inner_bytes),
+                    "encrypted",
+                    "ok",
+                    SignatureState::NotSigned,
+                    None,
+                    None,
+                    None,
+                )
             }
         } else if is_signed {
             // Step 4: opaque-signed verify path (no decryption).
-            let (plaintext, sig_state, sfp, semail) = run_verify_path(
+            let (plaintext, sig_state, sfp, semail, sfailure_reason) = run_verify_path(
                 &backend,
                 pool,
                 &client,
@@ -990,7 +1099,15 @@ pub async fn open_crypto_message(
                 None, // encapsulated (eContent inside the SignedData)
             )
             .await?;
-            (plaintext, "signed", "n/a", sig_state, sfp, semail)
+            (
+                plaintext,
+                "signed",
+                "n/a",
+                sig_state,
+                sfp,
+                semail,
+                sfailure_reason,
+            )
         } else {
             return Err(format!(
                 "open_crypto_message: unsupported CMS content type OID: {}",
@@ -1009,6 +1126,9 @@ pub async fn open_crypto_message(
         signature_state,
         signer_fp,
         signer_email,
+        // Granular ChainOutcome.failure_reason threaded from run_verify_path.
+        // None for the not-signed / encrypt-only branch (no verify path ran).
+        failure_reason,
     )
     .await
 }
@@ -1029,6 +1149,7 @@ async fn finish_open_crypto(
     signature_state: SignatureState,
     signer_fp: Option<String>,
     signer_email: Option<String>,
+    failure_reason: Option<String>,
 ) -> Result<OpenCryptoResult, String> {
     // Parse the plaintext MIME → html/text/attachments.
     let (plaintext_html, plaintext_text, attachments) = match plaintext_mime.as_deref() {
@@ -1045,6 +1166,7 @@ async fn finish_open_crypto(
         signature_state,
         signer_fp,
         signer_email,
+        failure_reason,
     );
     upsert_message_crypto_result(pool, &row).await?;
 
@@ -1364,9 +1486,12 @@ fn summarize_cert(der: &[u8]) -> Option<CertSummary> {
     })
 }
 
-/// UI-level failure-reason mapping from the persisted `signature_state`. The
-/// granular `ChainOutcome.failure_reason` is internal to `verify_with_context`
-/// and not persisted; this mirrors its semantics for the dialog.
+/// UI-level failure-reason fallback for the persisted `signature_state`. Used
+/// by [`get_signer_details`] ONLY when the persisted
+/// `message_crypto_results.failure_reason` column is NULL (pre-migration rows,
+/// the UnknownKey / sig-fail early-return arms where `verify_with_context`
+/// short-circuits before chain validation, and all success states). The real
+/// `ChainOutcome.failure_reason` is otherwise surfaced verbatim from the row.
 fn failure_reason_for_state(state: &str) -> Option<String> {
     match state {
         "invalid" => Some("Signature did not verify — content may have been altered.".into()),
@@ -1522,7 +1647,17 @@ pub(crate) async fn get_signer_details(
     // TrustState serializes kebab-case via crypto_core; format explicitly so
     // the wire value matches the dialog's expectations (lowercase).
     let trust_state_str = format!("{trust_state:?}").to_lowercase();
-    let failure_reason = failure_reason_for_state(&row.signature_state);
+    // Granular ChainOutcome.failure_reason (2026-07-18 spec): prefer the
+    // persisted real reason (surfaced from `VerificationResult.failure_reason`
+    // by `verify_with_context`); fall back to the coarse `failure_reason_for_state`
+    // fixed map when the column is NULL (pre-migration rows, the
+    // UnknownKey/sig-fail early-return arms, and all success states). This
+    // belt-and-suspenders fallback preserves the dialog's existing banner for
+    // rows that never had a real reason persisted.
+    let failure_reason = row
+        .failure_reason
+        .clone()
+        .or_else(|| failure_reason_for_state(&row.signature_state));
 
     Ok(Some(SignerDetails {
         signature_state: row.signature_state,
@@ -3069,6 +3204,206 @@ mod tests {
         assert_eq!(details.trust_state, "personal", "own key → Personal trust");
     }
 
+    // ─── Granular ChainOutcome persistence + retrieval (2026-07-18 spec) ───
+    //
+    // The granular `failure_reason` surfaced by `SmimeBackend::verify_with_context`
+    // (now threaded through `VerificationResult.failure_reason`) MUST reach the
+    // persisted `message_crypto_results.failure_reason` column, and
+    // `get_signer_details` MUST return it (falling back to the fixed
+    // `failure_reason_for_state` map when NULL — the dialog's null-fallback).
+
+    /// `build_crypto_result_row` (called via `finish_open_crypto`) persists the
+    /// real `VerificationResult.failure_reason` for a failing verification — NOT
+    /// NULL, NOT the coarse fixed-map string. Driven via a real
+    /// `open_crypto_message` call so the entire threading path
+    /// (`run_verify_path` → `finish_open_crypto` → `build_crypto_result_row` →
+    /// `upsert_message_crypto_result`) is exercised.
+    ///
+    /// Scenario: clear-signed mail signed by the account's own key (SAN =
+    /// ACCOUNT_EMAIL), but the seeded `messages.from_address` is a DIFFERENT
+    /// address. The orchestrator's identity binding (From↔SAN) fails →
+    /// `signature_state=mismatch` + a granular reason containing
+    /// "identity mismatch". Without end-to-end threading, the row's
+    /// `failure_reason` would be NULL and the dialog would fall back to the
+    /// generic "Signer identity does not match…" fixed-map string.
+    #[tokio::test]
+    async fn build_crypto_result_row_persists_failure_reason() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-fr-persist";
+
+        let own_fp = h.signer_handle.fingerprint.as_str().to_string();
+        sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+            .bind(&own_fp)
+            .execute(pool.as_ref())
+            .await
+            .expect("flag default signer");
+        let signer_row =
+            crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+                .await
+                .expect("query default signing key");
+
+        // Sign with ACCOUNT_EMAIL (the own-key SAN).
+        let draft = SendDraft {
+            draft_id: "fr-persist".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr("bob@kylins.com")],
+            subject: "FailureReason Persist".into(),
+            text_body: Some("clear-signed body for fr persistence".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            signer_row.as_ref(),
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign-only");
+        let (part1, p7s_der) = parse_clear_signed_blobs(&wrapped);
+
+        // Seed the message with a From address that does NOT match the signer's
+        // SAN (ACCOUNT_EMAIL). The identity binding fails → Mismatch +
+        // failure_reason = "identity mismatch: …".
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, "imposter@kylins.com").await;
+        persist_clear_signed(&pool, ACCOUNT_ID, message_id, &part1, &p7s_der).await;
+
+        let result = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok");
+
+        assert_eq!(
+            result.crypto_result.signature_state,
+            "mismatch",
+            "From↔SAN mismatch → Mismatch; got {:?}",
+            result.crypto_result.signature_state
+        );
+        // The persisted failure_reason is the granular reason (NOT NULL, NOT
+        // the fixed-map string). Drives the dialog's real-reason banner.
+        let persisted = result.crypto_result.failure_reason.as_ref().expect(
+            "failure_reason column must be non-NULL for a Mismatch (the real reason was threaded through)",
+        );
+        assert!(
+            persisted.to_lowercase().contains("identity mismatch"),
+            "persisted failure_reason must carry the granular 'identity mismatch' detail; got {persisted:?}"
+        );
+
+        // Re-read from the DB to confirm the column actually holds the value
+        // (not just the in-memory OpenCryptoResult.crypto_result echo).
+        let row = crate::db::message_crypto_results::get_message_crypto_result(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            message_id,
+        )
+        .await
+        .expect("get_message_crypto_result ok")
+        .expect("row present");
+        assert_eq!(
+            row.failure_reason.as_deref(),
+            result.crypto_result.failure_reason.as_deref(),
+            "DB row failure_reason must mirror OpenCryptoResult.crypto_result.failure_reason"
+        );
+    }
+
+    /// `get_signer_details` surfaces the persisted `failure_reason` straight
+    /// through when the column is non-NULL (real reason wins over the
+    /// fixed-map fallback). A NULL row → the dialog's null-fallback path
+    /// (`failure_reason_for_state`) kicks in, returning the coarse map string.
+    ///
+    /// Two arms:
+    ///   (a) row.failure_reason = Some("custom reason") → details.failure_reason
+    ///       == Some("custom reason") (verbatim — no fixed-map fallback).
+    ///   (b) row.failure_reason = None (pre-migration rows + early-return arms)
+    ///       → details.failure_reason == failure_reason_for_state(signature_state)
+    ///       (the coarse map — no regression for rows without a real reason).
+    #[tokio::test]
+    async fn get_signer_details_returns_persisted_failure_reason() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+
+        // ── (a) Real reason persisted → surfaces verbatim ──────────────────
+        let msg_with_reason = "msg-details-with-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_with_reason, ACCOUNT_EMAIL).await;
+        // Minimal row shape: invalid signature_state + a non-NULL failure_reason
+        // value the dialog must render verbatim. The get_signer_details query
+        // reads the row as-is — no transformation.
+        let row_with = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_with_reason.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: Some("fp1".into()),
+            signer_email: Some(ACCOUNT_EMAIL.into()),
+            chain_valid: Some(0),
+            revocation_state: "unchecked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: Some("certificate revoked (KeyCompromise)".into()),
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(
+            pool.as_ref(),
+            &row_with,
+        )
+        .await
+        .expect("seed row with failure_reason");
+
+        let details_with = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_with_reason)
+            .await
+            .expect("get_signer_details ok (a)")
+            .expect("details present (a)");
+        assert_eq!(
+            details_with.failure_reason.as_deref(),
+            Some("certificate revoked (KeyCompromise)"),
+            "(a) real failure_reason must surface verbatim, NOT the fixed-map string"
+        );
+
+        // ── (b) NULL failure_reason → fall back to the fixed-map ───────────
+        let msg_null = "msg-details-null-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_null, ACCOUNT_EMAIL).await;
+        let row_null = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_null.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: None,
+            signer_email: None,
+            chain_valid: Some(0),
+            revocation_state: "unchecked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: None,
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(
+            pool.as_ref(),
+            &row_null,
+        )
+        .await
+        .expect("seed row with NULL failure_reason");
+
+        let details_null = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_null)
+            .await
+            .expect("get_signer_details ok (b)")
+            .expect("details present (b)");
+        // NULL → fallback to the fixed-map string for `invalid`.
+        assert_eq!(
+            details_null.failure_reason.as_deref(),
+            failure_reason_for_state("invalid").as_deref(),
+            "(b) NULL failure_reason must fall back to the fixed-map string for the state"
+        );
+        assert_ne!(
+            details_null.failure_reason,
+            details_with.failure_reason,
+            "(b) fallback must produce a different value than the real reason in (a)"
+        );
+    }
+
     /// Clear-signed with a tampered part-1 byte (one byte flipped between
     /// persist and open) → the detached signature MUST NOT verify
     /// (`signature_state=invalid`). Pins the cryptographic gate: the
@@ -3148,5 +3483,143 @@ mod tests {
              (not a re-decoded body_text), which is load-bearing for Thunderbird interop",
             result.crypto_result.signature_state
         );
+    }
+
+    // ─── Persist + Use .p12 Chain Intermediates (2026-07-18 spec) ───
+    //
+    // Drives `run_verify_path` directly (the private async fn the orchestrator
+    // calls) so we can assert the merge of SignedData + stored intermediates
+    // without going through the full `open_crypto_message` pipeline. The
+    // fixture builds a real CA → leaf chain (CA self-signed, leaf signed by CA),
+    // embeds ONLY the leaf in the SignedData cert set, and persists the CA as
+    // a `key_type='intermediate'` row. Without the merge, the chain cannot
+    // link leaf → CA → anchor and validation fails; with the merge it succeeds.
+
+    /// `run_verify_path` merges stored intermediates: a SignedData whose chain
+    /// NEEDS an intermediate NOT in its cert set BUT stored as
+    /// `key_type='intermediate'` validates (previously failed). The negative
+    /// case (no stored intermediate) is also asserted to confirm no trust
+    /// weakening (the intermediate alone, with no anchor, must NOT validate).
+    #[tokio::test]
+    async fn run_verify_path_uses_stored_intermediates() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+        seed_account(&pool, ACCOUNT_ID, ACCOUNT_EMAIL).await;
+
+        // 3-cert chain fixture: root (self-signed CA) → intermediate (signed
+        // by root, CA:TRUE) → leaf (signed by intermediate, S/MIME leaf).
+        // The root is the trust anchor; the intermediate is the cert we'll
+        // persist as `key_type='intermediate'`; the leaf is the signer in the
+        // SignedData. The SignedData embeds ONLY the leaf — the chain cannot
+        // link leaf → root without the stored intermediate.
+        let root = crypto_smime::testing::build_self_signed_ca("Test Chain Root");
+        let intermediate =
+            crypto_smime::testing::build_intermediate_signed_by("Test Chain Intermediate", &root);
+        let leaf = crypto_smime::testing::build_leaf_signed_by(
+            "stored-inter@kylins.com",
+            &intermediate,
+        );
+
+        // Register the ROOT as the trust anchor (`key_type='cert'`).
+        let anchor_fp = crypto_smime::fingerprint_of_cert_der(&root.cert_der)
+            .expect("root fingerprint");
+        let anchor_row = crate::db::crypto_keys::CryptoKeyRecord {
+            row: crate::db::crypto_keys::CryptoKeyRow {
+                id: String::new(),
+                account_id: ACCOUNT_ID.into(),
+                standard: "smime".into(),
+                key_type: "cert".into(),
+                email: None,
+                fingerprint: anchor_fp.clone(),
+                origin: "imported".into(),
+                ..Default::default()
+            },
+            public_data: hex::encode(&root.cert_der),
+            private_data: None,
+            policy_json: None,
+        };
+        crate::db::crypto_keys::upsert_crypto_key(&pool, &anchor_row)
+            .await
+            .expect("seed root as anchor");
+
+        // Build a SignedData signed by the leaf, with ONLY the leaf in the
+        // cert set (no intermediate embedded).
+        let signed_data_der = crypto_smime::testing::build_signed_data_with_certs(
+            b"stored-intermediate payload",
+            &leaf.cert_der,
+            &leaf.priv_pkcs8_der,
+            &[],
+        );
+
+        let ks = Arc::new(SqliteKeyStore::new(pool.clone(), ACCOUNT_ID));
+        let backend = SmimeBackend::new(ks, CryptoPolicy::default_baseline());
+
+        // Negative case: with NO stored intermediate, the chain cannot link
+        // leaf → root (no intermediate cert in either the SignedData or the
+        // DB). Must NOT reach ValidVerified / ValidUnverified. This is the
+        // no-trust-weakening guard (the leaf alone, with no path to the
+        // anchor, must NOT validate).
+        let (_pt, neg_state, _fp, _em, _fr) = run_verify_path(
+            &backend,
+            &pool,
+            &reqwest::Client::new(),
+            ACCOUNT_ID,
+            &signed_data_der,
+            Some("stored-inter@kylins.com"),
+            None,
+        )
+        .await
+        .expect("run_verify_path (negative) ok");
+        assert!(
+            !matches!(
+                neg_state,
+                SignatureState::ValidVerified | SignatureState::ValidUnverified
+            ),
+            "without the stored intermediate, the chain MUST NOT validate (got {neg_state:?}); \
+             this is the no-trust-weakening guard"
+        );
+
+        // Persist the INTERMEDIATE as `key_type='intermediate'` — the merge
+        // source. (Root stays as the anchor; intermediate stays out of the
+        // anchor set.)
+        crate::db::crypto_keys::upsert_intermediate_cert(
+            &pool,
+            ACCOUNT_ID,
+            &intermediate.cert_der,
+        )
+        .await
+        .expect("seed intermediate as `key_type='intermediate'`");
+
+        // Positive case: the merge adds the stored intermediate to the
+        // intermediates list → the validator builds
+        // leaf → intermediate(stored) → root(anchor), chain validates.
+        let (_pt, pos_state, _fp, _em, _fr) = run_verify_path(
+            &backend,
+            &pool,
+            &reqwest::Client::new(),
+            ACCOUNT_ID,
+            &signed_data_der,
+            Some("stored-inter@kylins.com"),
+            None,
+        )
+        .await
+        .expect("run_verify_path (positive) ok");
+        assert!(
+            matches!(
+                pos_state,
+                SignatureState::ValidUnverified | SignatureState::ValidVerified
+            ),
+            "with the stored intermediate, the chain MUST validate (got {pos_state:?}); \
+             previously failed without the stored intermediate"
+        );
+
+        // Cleanup (temp dir reclaims, but explicit for hygiene).
+        let _ = crate::db::crypto_keys::delete_crypto_key(
+            &pool,
+            ACCOUNT_ID,
+            "smime",
+            &anchor_fp,
+        )
+        .await;
     }
 }

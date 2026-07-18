@@ -108,6 +108,21 @@ pub struct VerificationResult {
     /// The signer key, when one was identified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<KeyHandleRef>,
+    /// Granular cert-chain failure reason surfaced from `ChainOutcome.failure_reason`
+    /// by the smime backend's `verify_with_context`. `None` on success states
+    /// (`ValidVerified` / `ValidUnverified`), on the `UnknownKey` + sig-fail
+    /// `Invalid` early-return arms (where chain validation never runs), and on
+    /// the trait `verify` impl (pre-chain — no chain outcome yet).
+    ///
+    /// Surfaced end-to-end (2026-07-18 granular-chain-outcome spec): populated
+    /// by `SmimeBackend::verify_with_context` from `ChainOutcome.failure_reason`
+    /// → persisted in `message_crypto_results.failure_reason` → returned by
+    /// `get_signer_details` → rendered by the `SignatureDetailsDialog`.
+    /// Diagnostic text from the crypto layer (pkix path errors, CRL reason
+    /// names, identity-mismatch format) — NOT attacker-controlled, rendered as
+    /// plain text by the dialog (no HTML).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -155,8 +170,13 @@ mod tests {
         let v = VerificationResult {
             state: SignatureState::NotSigned,
             signer: None,
+            failure_reason: None,
         };
         let json = serde_json::to_string(&v).unwrap();
         assert!(!json.contains("signer"), "None signer is skipped");
+        assert!(
+            !json.contains("failure_reason"),
+            "None failure_reason is skipped"
+        );
     }
 }
