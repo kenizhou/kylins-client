@@ -1,0 +1,20 @@
+-- Clear-signed multipart/signed support (Crypto Phase 1b Plan 5 / G7 Task 2).
+--
+-- A clear-signed `multipart/signed` message has NO opaque CMS blob in its body
+-- (unlike `application/pkcs7-mime` enveloped/signed-data). Instead the body is
+-- plaintext (part 1 — the signed MIME entity) and the signature is a detached
+-- `smime.p7s` attachment (part 2). To verify such a message the receive
+-- orchestrator needs BOTH:
+--
+--   - the raw bytes of part 1 (the MIME entity the signer covered) — stored here
+--     in `body_mime_signed_part`;
+--   - the raw DER of the detached `smime.p7s` SignedData blob — stored in the
+--     existing `body_mime_ciphertext` column (semantically consistent: it is a
+--     raw CMS payload processed by the verify pipeline).
+--
+-- `body_mime_signed_part` is NULL for ordinary mail AND for
+-- `application/pkcs7-mime` (opaque) S/MIME — only populated for
+-- `multipart/signed`. Plaintext is NEVER persisted through either column; for
+-- clear-signed mail the plaintext is the part-1 MIME entity and is parsed
+-- in-memory at open time (see `open_crypto_message`).
+ALTER TABLE message_bodies ADD COLUMN body_mime_signed_part BLOB;

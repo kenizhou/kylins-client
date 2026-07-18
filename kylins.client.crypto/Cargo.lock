@@ -346,6 +346,7 @@ dependencies = [
  "pkix-revocation",
  "rand 0.10.2",
  "rsa 0.10.0-rc.18",
+ "sha1",
  "sha2 0.11.0",
  "signature 2.2.0",
  "signature 3.0.0",

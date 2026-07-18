@@ -9,7 +9,8 @@
 //! Two recipient-info paths are supported:
 //! - **ktri** (key transport, RSA): PKCS#1v1.5 unwrap of the content-encryption key.
 //! - **kari** (key agreement, ECC P-256): ephemeral-static ECDH with ANSI X9.63 KDF
-//!   (SHA-256) to derive a KEK, then AES key-wrap (RFC 3394) unwrap of the CEK.
+//!   (SHA-1/224/256/384/512, dispatched on the kari KDF OID per RFC 5753 §7.2)
+//!   to derive a KEK, then AES key-wrap (RFC 3394) unwrap of the CEK.
 //!
 //! The kari path is written fresh (no upstream consume-side template); it reverses
 //! the build-side `KeyAgreeRecipientInfoBuilder<NistP256, DhSinglePassStdDhKdf<Sha256>,
@@ -181,7 +182,9 @@ fn unwrap_ktri_cek(
 /// 2. ECDH: `diffie_hellman(our_static_secret, originator_ephemeral_pubkey)`.
 /// 3. Reconstruct `EccCmsSharedInfo { key_info=kw_alg, entity_u_info=ukm, supp_pub_info=kek_bits }`
 ///    and DER-encode it — this is the KDF `SharedInfo`.
-/// 4. ANSI X9.63 KDF (SHA-256): derive the 192-bit KEK from `Z || SharedInfo`.
+/// 4. ANSI X9.63 KDF, hash dispatched on `kari.key_enc_alg.oid`
+///    (RFC 5753 §7.2 — SHA-1/224/256/384/512): derive the KEK from
+///    `Z || SharedInfo`.
 /// 5. AES-192-KW unwrap `rek.enc_key` → CEK (AES-128 key).
 fn unwrap_kari_cek(
     kari: &cms::enveloped_data::KeyAgreeRecipientInfo,
@@ -230,8 +233,21 @@ fn unwrap_kari_cek(
         .map_err(|e| cms_err("encode EccCmsSharedInfo", e))?;
 
     // 4. ANSI X9.63 KDF (X9.63 / NIST SP 800-56A §5.8.1.2 "concatenation KDF"):
-    //    K_i = SHA-256(Z || Counter_i || SharedInfo), Counter starts at 1 (32-bit BE).
-    let kek = ansi_x963_kdf_sha256(shared.raw_secret_bytes(), &shared_info_der, kek_byte_len)?;
+    //    K_i = Hash(Z || Counter_i || SharedInfo), Counter starts at 1 (32-bit BE).
+    //
+    //    Hash dispatch per RFC 5753 §7.2: the KDF hash is identified by
+    //    `kari.key_enc_alg.oid` itself (the vendored cms builder writes
+    //    `KA::OID` there — e.g. `dhSinglePass-stdDH-sha256kdf-scheme` for our
+    //    build side, `dhSinglePass-stdDH-sha1kdf-scheme` for openssl's default).
+    //    SHA-1 is the historical openssl/NSS default and the G7 T3 interop gap;
+    //    SHA-256 is our build-side path. SHA-224/384/512 are included for
+    //    forward-compat (RFC 5753 §7.2.1 MUST-implement list).
+    let kek = ansi_x963_kdf_dispatch(
+        &kari.key_enc_alg.oid,
+        shared.raw_secret_bytes(),
+        &shared_info_der,
+        kek_byte_len,
+    )?;
 
     // 5. AES-KW unwrap the CEK.
     aes_kw_unwrap(&kek, rek.enc_key.as_bytes())
@@ -266,14 +282,52 @@ fn aes_kek_byte_len(oid: &der::asn1::ObjectIdentifier) -> Result<usize> {
     }
 }
 
-/// ANSI X9.63 KDF with SHA-256. Produces `out_len` key bytes from `Z` (shared
-/// secret) and `shared_info` (DER). K_i = SHA-256(Z || Counter_i || SharedInfo),
-/// Counter_i = i as 32-bit big-endian starting at 1.
+/// Dispatch the ANSI X9.63 KDF over the hash identified by `kdf_oid`. Per
+/// RFC 5753 §7.2, the KDF hash is identified by the `kari.key_enc_alg.oid`
+/// itself (a `dhSinglePass-stdDH-shaXkdf-scheme` OID). Supports SHA-1 (openssl
+/// / NSS historical default), SHA-256 (our build side), and SHA-224/384/512
+/// (RFC 5753 §7.2.1 full list). Any other OID → `Malformed`.
 ///
-/// This matches the build-side `ansi_x963_kdf::derive_key_into::<Sha256>` call
-/// exactly (same hash, same counter layout, same SharedInfo bytes).
-fn ansi_x963_kdf_sha256(z: &[u8], shared_info: &[u8], out_len: usize) -> Result<Vec<u8>> {
-    use sha2::Digest;
+/// This dispatch is the G7 T5 fix for the interop gap where openssl-encrypted
+/// kari messages (SHA-1 KDF) failed to decrypt because the receive path
+/// hardcoded SHA-256.
+fn ansi_x963_kdf_dispatch(
+    kdf_oid: &der::asn1::ObjectIdentifier,
+    z: &[u8],
+    shared_info: &[u8],
+    out_len: usize,
+) -> Result<Vec<u8>> {
+    use const_oid::db::rfc5753 as kdf;
+    if *kdf_oid == kdf::DH_SINGLE_PASS_STD_DH_SHA_1_KDF_SCHEME {
+        ansi_x963_kdf::<sha1::Sha1>(z, shared_info, out_len)
+    } else if *kdf_oid == kdf::DH_SINGLE_PASS_STD_DH_SHA_224_KDF_SCHEME {
+        ansi_x963_kdf::<sha2::Sha224>(z, shared_info, out_len)
+    } else if *kdf_oid == kdf::DH_SINGLE_PASS_STD_DH_SHA_256_KDF_SCHEME {
+        ansi_x963_kdf::<sha2::Sha256>(z, shared_info, out_len)
+    } else if *kdf_oid == kdf::DH_SINGLE_PASS_STD_DH_SHA_384_KDF_SCHEME {
+        ansi_x963_kdf::<sha2::Sha384>(z, shared_info, out_len)
+    } else if *kdf_oid == kdf::DH_SINGLE_PASS_STD_DH_SHA_512_KDF_SCHEME {
+        ansi_x963_kdf::<sha2::Sha512>(z, shared_info, out_len)
+    } else {
+        Err(CryptoError::Malformed(format!(
+            "kari: unsupported KDF scheme OID: {kdf_oid} \
+             (supported: SHA-1/224/256/384/512 dhSinglePass-stdDH-shaXkdf-scheme)"
+        )))
+    }
+}
+
+/// ANSI X9.63 KDF generic over the hash `D`. Produces `out_len` key bytes from
+/// `Z` (shared secret) and `shared_info` (DER). K_i = Hash(Z || Counter_i ||
+/// SharedInfo), Counter_i = i as 32-bit big-endian starting at 1.
+///
+/// `D` is `sha2::Digest` (= `digest::Digest` from `digest 0.11`), shared by
+/// `sha1::Sha1` and `sha2::Sha256` (both on the 0.11 line). This matches the
+/// build-side `ansi_x963_kdf::derive_key_into::<D>` call exactly (same hash,
+/// same counter layout, same SharedInfo bytes).
+fn ansi_x963_kdf<D>(z: &[u8], shared_info: &[u8], out_len: usize) -> Result<Vec<u8>>
+where
+    D: sha2::Digest,
+{
     if z.is_empty() || out_len == 0 {
         return Err(CryptoError::Malformed(
             "ansi_x963_kdf: empty secret or zero output length".into(),
@@ -282,7 +336,7 @@ fn ansi_x963_kdf_sha256(z: &[u8], shared_info: &[u8], out_len: usize) -> Result<
     let mut out = Vec::with_capacity(out_len);
     let mut counter: u32 = 1;
     while out.len() < out_len {
-        let mut hasher = sha2::Sha256::new();
+        let mut hasher = D::new();
         hasher.update(z);
         hasher.update(counter.to_be_bytes());
         hasher.update(shared_info);
@@ -514,13 +568,13 @@ pub(crate) fn verify_signed(
 
     // 2. Recover covered content for the messageDigest check.
     //
-    //    - **Encapsulated** (eContent present): hash the bytes the cms builder
-    //      hashed. The builder hashes `econtent.value()` (the bytes stored
-    //      inside the `Any`). We do the same — the caller-supplied
-    //      `covered_content` is IGNORED in this arm (it would only be the raw
-    //      payload, not the same byte sequence the builder hashed, since the
-    //      builder wraps the payload in an OctetString before hashing its
-    //      `.value()`).
+    //    - **Encapsulated** (eContent present): hash `econtent.value()`, which
+    //      is the raw payload (the cms builder stores the payload directly as
+    //      the Any's value — see `cms_build::build_signed_data`'s RFC 5652 §3
+    //      comment). Per RFC 5652 §5.4 the messageDigest is over the OCTET
+    //      STRING's *value*, so this matches what an OpenSSL/Thunderbird
+    //      verifier computes. The caller-supplied `covered_content` is IGNORED
+    //      in this arm (the payload lives inside the SignedData).
     //    - **Detached** (eContent absent): the covered content is external;
     //      the caller MUST supply it via `covered_content`.
     let content_bytes: Vec<u8> = match sd.encap_content_info.econtent.as_ref() {
@@ -1078,9 +1132,9 @@ mod tests {
         let secret = p256::SecretKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
         let signing_key = p256::ecdsa::SigningKey::from(&secret);
 
-        let oct = der::asn1::OctetString::new(payload.to_vec()).unwrap();
-        let oct_der = oct.to_der().unwrap();
-        let econtent = Some(Any::new(der::Tag::OctetString, oct_der).unwrap());
+        // RFC 5652 §3 single-wrap: Any IS the OCTET STRING (tag 0x04), value =
+        // the raw payload. Mirrors the production `build_signed_data` (G7 T1).
+        let econtent = Some(Any::new(der::Tag::OctetString, payload.to_vec()).unwrap());
         let encap = EncapsulatedContentInfo {
             econtent_type: const_oid::db::rfc5911::ID_DATA,
             econtent,
@@ -1198,9 +1252,9 @@ mod tests {
         let secret = p256::SecretKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
         let signing_key = p256::ecdsa::SigningKey::from(&secret);
 
-        let oct = der::asn1::OctetString::new(payload.to_vec()).unwrap();
-        let oct_der = oct.to_der().unwrap();
-        let econtent = Some(Any::new(der::Tag::OctetString, oct_der).unwrap());
+        // RFC 5652 §3 single-wrap: Any IS the OCTET STRING (tag 0x04), value =
+        // the raw payload. Mirrors the production `build_signed_data` (G7 T1).
+        let econtent = Some(Any::new(der::Tag::OctetString, payload.to_vec()).unwrap());
         let encap = EncapsulatedContentInfo {
             econtent_type: const_oid::db::rfc5911::ID_DATA,
             econtent,

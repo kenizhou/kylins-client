@@ -40,7 +40,7 @@ use sqlx::SqlitePool;
 use crate::db::crypto_keys::{
     list_crypto_keys_for_account, list_trust_anchor_certs, DefaultKeyRow,
 };
-use crate::db::message_bodies::get_message_ciphertext;
+use crate::db::message_bodies::{get_message_ciphertext, get_message_signed_part};
 use crate::db::message_crypto_results::{upsert_message_crypto_result, MessageCryptoResultRow};
 use crate::db::trust_decisions::get_latest_trust_decision;
 use crate::keystore_bridge::SqliteKeyStore;
@@ -479,6 +479,12 @@ fn is_signed_data(der: &[u8]) -> bool {
 /// Inputs:
 /// - `signed_data_der`: the DER bytes of the outer ContentInfo (id-signed-data).
 /// - `from_email`: the RFC 5322 `From:` address for SAN binding (identity check).
+/// - `covered_content`: `Some(bytes)` for a **detached** signature (a
+///   `multipart/signed` clear-signed mail — the externally-supplied part-1
+///   MIME entity bytes that the detached `.p7s` covers); `None` for an
+///   **encapsulated** signature (opaque `application/pkcs7-mime;
+///   smime-type=signed-data` — the payload lives inside the SignedData's
+///   `encapContent.eContent` and `verify_signed` reads it directly).
 ///
 /// Builds the `SignedEnvelope` (signature DER = SignedData; payload = covered
 /// content when detached, empty otherwise), resolves trust anchors +
@@ -491,6 +497,7 @@ async fn run_verify_path(
     account_id: &str,
     signed_data_der: &[u8],
     from_email: Option<&str>,
+    covered_content: Option<&[u8]>,
 ) -> Result<(Option<Vec<u8>>, SignatureState, Option<String>, Option<String>), String> {
     // Intermediates from the SignedData certificates set (excludes the signer leaf).
     let intermediates = crypto_smime::extract_intermediates(signed_data_der)
@@ -507,13 +514,13 @@ async fn run_verify_path(
     // From header (the only sender identity we have for a received message).
     let signer_email_for_trust = from_email.map(|s| s.to_string());
 
-    // The payload for the SignedEnvelope: covered content for detached
-    // signatures, or empty bytes for encapsulated (verify_with_context reads
-    // eContent itself). Pass empty — verify_signed detects encapsulated vs.
-    // detached from the SignedData structure.
+    // The payload for the SignedEnvelope: the covered content for detached
+    // signatures (passed through to `verify_signed` which uses it ONLY when the
+    // SignedData has no eContent), or empty bytes for encapsulated
+    // (verify_signed reads eContent itself).
     let signed = SignedEnvelope {
         standard: Standard::Smime,
-        payload: Vec::new(),
+        payload: covered_content.unwrap_or(&[]).to_vec(),
         signature: crypto_core::DetachedSignature {
             standard: Standard::Smime,
             signer: KeyHandleRef {
@@ -601,8 +608,15 @@ async fn run_verify_path(
         .await
         .map_err(|e| format!("verify_with_context: {e}"))?;
 
-    // Extract the encapsulated content (plaintext MIME) from the SignedData.
-    let plaintext = extract_signed_data_econtent(signed_data_der);
+    // Extract the plaintext MIME. For encapsulated SignedData the eContent IS
+    // the plaintext MIME (read it out of the DER). For detached signatures
+    // (`multipart/signed` clear-signed) the SignedData has no eContent and
+    // the plaintext IS the externally-supplied covered content — return it
+    // directly. `run_verify_path` callers therefore always get back the
+    // plaintext MIME bytes regardless of detached vs encapsulated shape.
+    let plaintext = covered_content
+        .map(|cc| cc.to_vec())
+        .or_else(|| extract_signed_data_econtent(signed_data_der));
 
     let final_signer_fp = result
         .signer
@@ -649,30 +663,9 @@ pub async fn open_crypto_message(
     account_id: &str,
     message_id: &str,
 ) -> Result<OpenCryptoResult, String> {
-    // Step 1: load ciphertext + From header.
-    let ciphertext = match get_message_ciphertext(pool, account_id, message_id).await? {
-        Some(c) => c,
-        None => {
-            // No ciphertext → record a Failed outcome + return it (so callers
-            // can show a meaningful error rather than a hard Err).
-            let row = build_crypto_result_row(
-                account_id,
-                message_id,
-                "encrypted",
-                "failed",
-                SignatureState::NotSigned,
-                None,
-                None,
-            );
-            upsert_message_crypto_result(pool, &row).await?;
-            return Ok(OpenCryptoResult {
-                plaintext_html: None,
-                plaintext_text: None,
-                attachments: Vec::new(),
-                crypto_result: row,
-            });
-        }
-    };
+    // Step 1: load ciphertext + From header + (Plan 5 / G7) signed_part.
+    let ciphertext = get_message_ciphertext(pool, account_id, message_id).await?;
+    let signed_part = get_message_signed_part(pool, account_id, message_id).await?;
 
     // messages.from_address — the RFC 5322 From: used for SAN identity binding
     // + the trust_decisions peer_email lookup. NULL when the column is NULL
@@ -697,6 +690,73 @@ pub async fn open_crypto_message(
 
     // Per-call SmimeBackend (not Clone — constructed fresh; cheap).
     let backend = smime_backend(pool, account_id);
+
+    // ── Plan 5 / G7 Task 2: clear-signed `multipart/signed` branch ───────
+    //
+    // When the message is clear-signed, `signed_part` carries the raw part-1
+    // MIME entity bytes (the bytes the detached `.p7s` covers) and
+    // `ciphertext` carries the `.p7s` SignedData DER (a detached CMS blob).
+    // The branch runs `run_verify_path` in detached mode
+    // (`covered_content = Some(part1)`) and uses the part-1 bytes as the
+    // plaintext (clear-signed mail's body IS already plaintext — no decrypt
+    // step). Falls through to the existing pkcs7-mime path when `signed_part`
+    // is None.
+    if let (Some(part1_bytes), Some(p7s_der)) =
+        (signed_part.as_deref(), ciphertext.as_deref())
+    {
+        let covered = part1_bytes.to_vec();
+        let (plaintext, sig_state, sfp, semail) = run_verify_path(
+            &backend,
+            pool,
+            &client,
+            account_id,
+            p7s_der,
+            from_address.as_deref(),
+            Some(&covered),
+        )
+        .await?;
+        // `plaintext` is `covered` itself (detached: no eContent) — but use
+        // the value returned by run_verify_path for clarity.
+        let plaintext_mime = plaintext.or(Some(covered));
+        return finish_open_crypto(
+            pool,
+            account_id,
+            message_id,
+            plaintext_mime,
+            "signed",
+            "n/a",
+            sig_state,
+            sfp,
+            semail,
+        )
+        .await;
+    }
+
+    // Existing opaque pkcs7-mime path.
+    let ciphertext = match ciphertext {
+        Some(c) => c,
+        None => {
+            // No ciphertext AND no signed_part → record a Failed outcome +
+            // return it (so callers can show a meaningful error rather than a
+            // hard Err).
+            let row = build_crypto_result_row(
+                account_id,
+                message_id,
+                "encrypted",
+                "failed",
+                SignatureState::NotSigned,
+                None,
+                None,
+            );
+            upsert_message_crypto_result(pool, &row).await?;
+            return Ok(OpenCryptoResult {
+                plaintext_html: None,
+                plaintext_text: None,
+                attachments: Vec::new(),
+                crypto_result: row,
+            });
+        }
+    };
 
     // Step 2: parse the CMS blob to dispatch on its content type.
     let ci = ContentInfo::from_der(&ciphertext)
@@ -787,6 +847,7 @@ pub async fn open_crypto_message(
                     account_id,
                     &inner_bytes,
                     from_address.as_deref(),
+                    None, // encapsulated (eContent inside the SignedData)
                 )
                 .await?;
                 (
@@ -810,6 +871,7 @@ pub async fn open_crypto_message(
                 account_id,
                 &ciphertext,
                 from_address.as_deref(),
+                None, // encapsulated (eContent inside the SignedData)
             )
             .await?;
             (plaintext, "signed", "n/a", sig_state, sfp, semail)
@@ -820,13 +882,45 @@ pub async fn open_crypto_message(
             ));
         };
 
-    // Step 5: parse the plaintext MIME → html/text/attachments.
+    // Step 5-7: parse plaintext → upsert → return.
+    finish_open_crypto(
+        pool,
+        account_id,
+        message_id,
+        plaintext_mime,
+        crypto_kind,
+        decrypt_state,
+        signature_state,
+        signer_fp,
+        signer_email,
+    )
+    .await
+}
+
+/// Post-dispatch tail of [`open_crypto_message`]: parse the plaintext MIME
+/// into (html, text, attachments), build + upsert the `message_crypto_results`
+/// row, and return the in-memory `OpenCryptoResult`. Shared by the clear-signed
+/// branch (G7 Task 2) and the existing opaque pkcs7-mime dispatch so both
+/// paths converge on the same persist + return shape.
+#[allow(clippy::too_many_arguments)] // orchestrator tail; bundling adds ceremony without clarity
+async fn finish_open_crypto(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+    plaintext_mime: Option<Vec<u8>>,
+    crypto_kind: &str,
+    decrypt_state: &str,
+    signature_state: SignatureState,
+    signer_fp: Option<String>,
+    signer_email: Option<String>,
+) -> Result<OpenCryptoResult, String> {
+    // Parse the plaintext MIME → html/text/attachments.
     let (plaintext_html, plaintext_text, attachments) = match plaintext_mime.as_deref() {
         Some(bytes) => parse_plaintext_mime(bytes),
         None => (None, None, Vec::new()),
     };
 
-    // Step 6: upsert the crypto-result row.
+    // Upsert the crypto-result row.
     let row = build_crypto_result_row(
         account_id,
         message_id,
@@ -838,7 +932,7 @@ pub async fn open_crypto_message(
     );
     upsert_message_crypto_result(pool, &row).await?;
 
-    // Step 7: return (plaintext in-memory).
+    // Return (plaintext in-memory).
     Ok(OpenCryptoResult {
         plaintext_html,
         plaintext_text,
@@ -1085,6 +1179,7 @@ mod tests {
 
     use crypto_core::{CryptoPolicy, KeyGenParams};
     use der::Encode;
+    use mail_parser::MimeHeaders;
     use sha2::Digest;
 
     use crate::db::crypto_keys::get_default_signing_key;
@@ -2215,5 +2310,280 @@ mod tests {
         );
         assert!(result.plaintext_text.is_none());
         assert!(result.plaintext_html.is_none());
+    }
+
+    // ─── G7 Task 2: open_crypto_message clear-signed `multipart/signed` path ───
+    //
+    // Clear-signed mail has a plaintext body (part 1 of the multipart) + a
+    // detached `smime.p7s` signature (part 2). The orchestrator's
+    // clear-signed branch:
+    //   1. Loads `body_mime_signed_part` (the raw part-1 MIME entity bytes)
+    //      AND `body_mime_ciphertext` (the detached p7s SignedData DER).
+    //   2. Calls `run_verify_path` in detached mode (covered_content=Some(part1)).
+    //   3. Parses part-1 bytes as the plaintext MIME (no decrypt step).
+    //
+    // These tests build a clear-signed mail via the send side's `apply_crypto`
+    // (sign-only), persist both blobs (mirroring the IMAP body-fetch path),
+    // and assert the orchestrator verifies the signature and surfaces the
+    // plaintext. The cryptographic gate is `signature_state=valid-verified`
+    // (the signer is the account's own key → Personal trust).
+
+    /// Helper mirroring `mail::imap::client::extract_clear_signed_parts` for
+    /// test setup: parse a built `multipart/signed` MIME and return
+    /// `(part1_bytes, p7s_der)`. Used to derive the two blobs to persist from
+    /// `apply_crypto`'s output, exactly as the IMAP body-fetch path would.
+    fn parse_clear_signed_blobs(wrapped: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let parsed = mail_parser::MessageParser::default()
+            .parse(wrapped)
+            .expect("multipart/signed output must parse");
+        // Top-level Content-Type MUST be multipart/signed.
+        let ct = parsed.content_type().expect("Content-Type present");
+        let full = match ct.subtype() {
+            Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
+            None => ct.ctype().to_lowercase(),
+        };
+        assert_eq!(
+            full, "multipart/signed",
+            "apply_crypto sign-only must produce multipart/signed"
+        );
+        let root = parsed.parts.first().expect("root part");
+        let kids: &[usize] = match &root.body {
+            mail_parser::PartType::Multipart(ids) => ids.as_ref(),
+            _ => panic!("root must be multipart"),
+        };
+        assert_eq!(kids.len(), 2, "multipart/signed has exactly two parts");
+        let p1 = &parsed.parts[kids[0]];
+        // Slice raw part-1 entity bytes + canonicalize trailing CRLF (same
+        // logic as `extract_clear_signed_parts` in `mail::imap::client`).
+        let mut part1 = parsed.raw_message[p1.offset_header..p1.offset_end].to_vec();
+        if !part1.ends_with(b"\r\n") {
+            part1.extend_from_slice(b"\r\n");
+        }
+        let p7s_part = &parsed.parts[kids[1]];
+        let p7s_der: Vec<u8> = match &p7s_part.body {
+            mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+                d.as_ref().to_vec()
+            }
+            mail_parser::PartType::Text(t) => t.as_bytes().to_vec(),
+            _ => panic!("p7s part must be Binary or Text"),
+        };
+        (part1, p7s_der)
+    }
+
+    /// Persist both blobs needed for the clear-signed branch: the raw part-1
+    /// MIME entity bytes via `set_message_signed_part` AND the detached p7s
+    /// SignedData DER via `set_message_ciphertext` (the column is overloaded
+    /// across opaque pkcs7-mime and clear-signed multipart/signed — both carry
+    /// a raw CMS blob the orchestrator must process).
+    async fn persist_clear_signed(
+        pool: &SqlitePool,
+        account_id: &str,
+        message_id: &str,
+        part1: &[u8],
+        p7s_der: &[u8],
+    ) {
+        use crate::db::message_bodies::{set_message_body, set_message_ciphertext, set_message_signed_part};
+        // Row must exist before the UPDATEs.
+        set_message_body(pool, account_id, message_id, "").await.expect("placeholder body");
+        set_message_ciphertext(pool, account_id, message_id, p7s_der)
+            .await
+            .expect("persist p7s ciphertext");
+        set_message_signed_part(pool, account_id, message_id, part1)
+            .await
+            .expect("persist signed part");
+    }
+
+    /// Load-bearing clear-signed round-trip: `apply_crypto` (sign-only) →
+    /// persist both blobs → `open_crypto_message` →
+    /// `decrypt_state=n/a`, `signature_state=valid-verified`, plaintext
+    /// contains the original body. Proves the clear-signed branch verifies
+    /// the detached signature over the raw part-1 MIME entity bytes.
+    #[tokio::test]
+    async fn open_crypto_message_verifies_clear_signed_multipart_signed() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-clear-signed";
+
+        // Flag the account's own key as the default signing key so apply_crypto
+        // can sign. (make_open_crypto_harness doesn't flag it by default.)
+        let own_fp = h.signer_handle.fingerprint.as_str().to_string();
+        sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+            .bind(&own_fp)
+            .execute(pool.as_ref())
+            .await
+            .expect("flag default signer");
+        let signer_row =
+            crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+                .await
+                .expect("query default signing key");
+
+        // Build a clear-signed multipart/signed via apply_crypto (sign-only).
+        let draft = SendDraft {
+            draft_id: "clear1".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr("bob@kylins.com")],
+            subject: "Clear Signed".into(),
+            text_body: Some("clear-signed plaintext body".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            signer_row.as_ref(),
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign-only");
+
+        // Sanity: the wrapped output IS a multipart/signed.
+        let wrapped_str = std::str::from_utf8(&wrapped).unwrap_or("");
+        assert!(
+            wrapped_str.contains("multipart/signed"),
+            "apply_crypto sign-only must produce multipart/signed; got:\n{wrapped_str}"
+        );
+        assert!(
+            wrapped_str.contains("application/pkcs7-signature"),
+            "multipart/signed must carry the detached signature part"
+        );
+
+        // Derive the part-1 bytes + p7s DER from the wrapped output, exactly as
+        // the IMAP body-fetch path would (extract_clear_signed_parts).
+        let (part1, p7s_der) = parse_clear_signed_blobs(&wrapped);
+
+        // Sanity: the p7s DER parses as a SignedData ContentInfo.
+        let ci = ContentInfo::from_der(&p7s_der).expect("parse ContentInfo");
+        assert_eq!(
+            ci.content_type,
+            const_oid::db::rfc5911::ID_SIGNED_DATA,
+            "p7s must be id-signed-data"
+        );
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_clear_signed(&pool, ACCOUNT_ID, message_id, &part1, &p7s_der).await;
+
+        let result = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok");
+
+        assert_eq!(
+            result.crypto_result.crypto_kind, "signed",
+            "clear-signed → crypto_kind=signed"
+        );
+        assert_eq!(
+            result.crypto_result.decrypt_state, "n/a",
+            "clear-signed → no decrypt step → decrypt_state=n/a"
+        );
+        assert_eq!(
+            result.crypto_result.signature_state, "valid-verified",
+            "clear-signed + own key (Personal trust) + chain OK + identity match → ValidVerified; got {:?}",
+            result.crypto_result.signature_state
+        );
+        assert!(
+            result.crypto_result.signer_fingerprint.is_some(),
+            "signer_fingerprint must be populated on ValidVerified"
+        );
+        assert_eq!(
+            result.crypto_result.signer_email.as_deref(),
+            Some(ACCOUNT_EMAIL),
+            "signer_email is the From: address"
+        );
+        // Plaintext round-trips — the part-1 MIME parses into text+html.
+        assert!(
+            result
+                .plaintext_text
+                .as_deref()
+                .unwrap_or("")
+                .contains("clear-signed plaintext body"),
+            "decrypted text must contain the original body; got {:?}",
+            result.plaintext_text
+        );
+    }
+
+    /// Clear-signed with a tampered part-1 byte (one byte flipped between
+    /// persist and open) → the detached signature MUST NOT verify
+    /// (`signature_state=invalid`). Pins the cryptographic gate: the
+    /// orchestrator hashes the EXACT part-1 bytes, not a decoded/reserialized
+    /// version (the load-bearing correctness property for Thunderbird interop).
+    #[tokio::test]
+    async fn open_crypto_message_clear_signed_tampered_part1_is_invalid() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-clear-tampered";
+
+        let own_fp = h.signer_handle.fingerprint.as_str().to_string();
+        sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+            .bind(&own_fp)
+            .execute(pool.as_ref())
+            .await
+            .expect("flag default signer");
+        let signer_row =
+            crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+                .await
+                .expect("query default signing key");
+
+        let draft = SendDraft {
+            draft_id: "clear-tamper".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr("bob@kylins.com")],
+            subject: "Tampered".into(),
+            text_body: Some("original clear-signed body".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            signer_row.as_ref(),
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign-only");
+
+        let (mut part1, p7s_der) = parse_clear_signed_blobs(&wrapped);
+
+        // Tamper: flip a byte in the part-1 body region (well past the MIME
+        // headers so it lands in the signed content, not a header). Find the
+        // blank-line + body start.
+        let blank_off = part1
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("part1 has a header/body blank");
+        let body_start = blank_off + 4;
+        // Flip a byte in the body (NOT the trailing CRLF).
+        if part1.len() > body_start + 2 {
+            part1[body_start] ^= 0x20; // flip case of a letter
+        }
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_clear_signed(&pool, ACCOUNT_ID, message_id, &part1, &p7s_der).await;
+
+        let result = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok (signature check fails soft)");
+
+        assert_eq!(
+            result.crypto_result.crypto_kind, "signed",
+            "still crypto_kind=signed even when verify fails"
+        );
+        assert_eq!(
+            result.crypto_result.signature_state, "invalid",
+            "tampered part-1 bytes → signature must NOT verify (got {:?}); \
+             this gate pins that the orchestrator hashes the EXACT persisted bytes \
+             (not a re-decoded body_text), which is load-bearing for Thunderbird interop",
+            result.crypto_result.signature_state
+        );
     }
 }

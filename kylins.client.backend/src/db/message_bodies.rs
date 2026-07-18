@@ -209,6 +209,56 @@ pub async fn get_message_ciphertext(
     Ok(row.and_then(|(b,)| b))
 }
 
+/// Persist the raw part-1 MIME entity bytes for a clear-signed
+/// `multipart/signed` message (the bytes the detached `.p7s` signature
+/// covers — the part-1 entity including its own MIME headers, blank line,
+/// body, and exactly one trailing CRLF). Plaintext is NEVER written via this
+/// path; for clear-signed mail the "plaintext" IS this byte slice, parsed
+/// in-memory at open time by the receive orchestrator (Plan 5 / G7 Task 2).
+///
+/// The row must already exist (created by [`set_message_body`]); this UPDATE
+/// only fills the `body_mime_signed_part` column. Idempotent: re-writing
+/// overwrites the prior blob.
+pub async fn set_message_signed_part(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+    signed_part: &[u8],
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE message_bodies SET body_mime_signed_part = ? \
+         WHERE account_id = ? AND message_id = ?",
+    )
+    .bind(signed_part)
+    .bind(account_id)
+    .bind(message_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read the cached raw part-1 MIME entity bytes for a clear-signed
+/// `multipart/signed` message, if any. Returns `Ok(None)` when the column is
+/// NULL (ordinary mail, opaque pkcs7-mime S/MIME, or a row that hasn't been
+/// populated by the body-fetch path) or when no row exists at all.
+pub async fn get_message_signed_part(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let row: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
+        "SELECT body_mime_signed_part FROM message_bodies \
+         WHERE account_id = ? AND message_id = ?",
+    )
+    .bind(account_id)
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.and_then(|(b,)| b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +659,85 @@ mod tests {
         // (the helper returns Ok(None) for both "row exists, NULL column" and
         // "no row" — both mean "no ciphertext to process").
         assert!(get_message_ciphertext(&pool, "acct", "msg-orphan")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    // ---------- body_mime_signed_part (Plan 5 / G7 Task 2) ----------
+    //
+    // For clear-signed `multipart/signed` mail the body is plaintext and the
+    // signature is a detached `smime.p7s` attachment. The receive orchestrator
+    // needs BOTH:
+    //   - the raw part-1 MIME entity bytes (the bytes the detached signature
+    //     covers — stored in `body_mime_signed_part`),
+    //   - the raw DER of the detached SignedData (stored in the existing
+    //     `body_mime_ciphertext` column).
+    //
+    // These tests pin the contract for the new column: round-trip writes +
+    // reads back the exact bytes; absent rows / NULL columns return Ok(None).
+
+    /// Round-trip the raw signed-part column. Proves the ALTER TABLE migration
+    /// landed and the helper pair writes + reads back the exact bytes.
+    #[tokio::test]
+    async fn set_and_get_message_signed_part_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_message(&pool, "acct", "t1", "msg-clear").await;
+        set_message_body(&pool, "acct", "msg-clear", "<p>x</p>")
+            .await
+            .unwrap();
+
+        // Realistic part-1 MIME entity bytes (text entity headers + blank +
+        // body + one trailing CRLF — exactly what a Thunderbird-style signer
+        // would sign).
+        let part1 = b"Content-Type: text/plain; charset=utf-8\r\n\r\nhello signed body\r\n";
+        set_message_signed_part(&pool, "acct", "msg-clear", part1)
+            .await
+            .unwrap();
+
+        let got = get_message_signed_part(&pool, "acct", "msg-clear")
+            .await
+            .unwrap()
+            .expect("row present");
+        assert_eq!(got, part1);
+    }
+
+    /// A message with no cached signed-part must return `Ok(None)` (not error),
+    /// so the orchestrator can treat absence as "not clear-signed".
+    #[tokio::test]
+    async fn get_message_signed_part_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_message(&pool, "acct", "t1", "msg-none").await;
+        set_message_body(&pool, "acct", "msg-none", "<p>x</p>")
+            .await
+            .unwrap();
+
+        assert!(get_message_signed_part(&pool, "acct", "msg-none")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// `set_message_signed_part` on a non-existent row silently updates zero
+    /// rows (matches the ciphertext helper's behavior — the row MUST be created
+    /// first via `set_message_body`). Documents the contract callers rely on.
+    #[tokio::test]
+    async fn set_message_signed_part_silently_drops_when_no_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+        seed_message(&pool, "acct", "t1", "msg-orphan2").await;
+        // No set_message_body call — no row exists.
+
+        set_message_signed_part(&pool, "acct", "msg-orphan2", b"part1")
+            .await
+            .unwrap();
+
+        assert!(get_message_signed_part(&pool, "acct", "msg-orphan2")
             .await
             .unwrap()
             .is_none());
