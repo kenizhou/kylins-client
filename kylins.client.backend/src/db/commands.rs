@@ -1386,18 +1386,30 @@ pub async fn crypto_generate_key_inner(
         .ok_or_else(|| "generate_key: row not found after put".into())
 }
 
-/// Read a PEM bundle (cert + PKCS#8 private key) from `path` and import it
+/// Read a PEM bundle (cert + PKCS#8 private key) **or** a `.p12`/`.pfx`
+/// (PKCS#12) bundle **or** an encrypted-PKCS#8 PEM from `path` and import it
 /// into the account's keystore, persisting to `crypto_keys`. Returns the PUBLIC
 /// row only.
+///
+/// `passphrase` is threaded through to `SmimeBackend::import_key` as a
+/// `SecretBox<String>` (zeroized on drop). It is used ONLY to decrypt the
+/// bag/PBE in-memory; it is never persisted nor logged. Pass `None` for
+/// unencrypted PEM bundles; pass `Some(pass)` for `.p12`/`.pfx` (always
+/// passphrase-protected) and encrypted-PKCS#8 PEM. Same IPC channel as the
+/// path — Tauri IPC is local same-process (no network exposure).
 pub async fn crypto_import_key_from_path_inner(
     pool: &SqlitePool,
     account_id: &str,
     path: &str,
+    passphrase: Option<String>,
 ) -> Result<CryptoKeyRow, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+    // Wrap at the IPC boundary: the incoming `String` becomes a zeroizing
+    // `SecretBox<String>` for the scope of `import_key` only.
+    let pass = passphrase.map(|p| crypto_core::SecretBox::new(Box::new(p)));
     let backend = smime_backend(pool, account_id);
     let h = backend
-        .import_key(&bytes, None)
+        .import_key(&bytes, pass)
         .await
         .map_err(|e| e.to_string())?;
     crypto_keys::get_crypto_key_public(pool, h.standard.as_str(), h.fingerprint.as_str())
@@ -1437,14 +1449,17 @@ pub async fn crypto_generate_key(
     crypto_generate_key_inner(&pool, &account_id, &email).await
 }
 
-/// Tauri wrapper for [`crypto_import_key_from_path_inner`].
+/// Tauri wrapper for [`crypto_import_key_from_path_inner`]. The optional
+/// `passphrase` (camelCased `passphrase` from the frontend) is forwarded
+/// verbatim — `None`/`undefined` deserializes to `None`.
 #[tauri::command]
 pub async fn crypto_import_key_from_path(
     pool: State<'_, SqlitePool>,
     account_id: String,
     path: String,
+    passphrase: Option<String>,
 ) -> Result<CryptoKeyRow, String> {
-    crypto_import_key_from_path_inner(&pool, &account_id, &path).await
+    crypto_import_key_from_path_inner(&pool, &account_id, &path, passphrase).await
 }
 
 /// Tauri wrapper for [`crypto_export_public_to_path_inner`].

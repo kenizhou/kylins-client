@@ -52,9 +52,26 @@ export function generateKey(accountId: string, email: string): Promise<CryptoKey
   return invoke<CryptoKeyRow>('crypto_generate_key', { accountId, email });
 }
 
-/** Import a key/cert from a local file path. Returns the resulting row. */
-export function importKeyFromPath(accountId: string, path: string): Promise<CryptoKeyRow> {
-  return invoke<CryptoKeyRow>('crypto_import_key_from_path', { accountId, path });
+/**
+ * Import a key/cert from a local file path. Returns the resulting row.
+ *
+ * `passphrase` is forwarded to the Rust `crypto_import_key_from_path`
+ * command (camelCased). Pass a string for passphrase-protected bundles
+ * (`.p12`/`.pfx`, encrypted-PKCS#8 PEM); omit it for unencrypted PEM
+ * bundles. `undefined` deserializes to Rust `None` (Tauri IPC is local
+ * same-process — the passphrase is wrapped in a zeroizing `SecretBox` at
+ * the `import_key` boundary on the Rust side, never logged nor persisted).
+ */
+export function importKeyFromPath(
+  accountId: string,
+  path: string,
+  passphrase?: string,
+): Promise<CryptoKeyRow> {
+  return invoke<CryptoKeyRow>('crypto_import_key_from_path', {
+    accountId,
+    path,
+    passphrase,
+  });
 }
 
 /** Export the public half of a key to `outPath`. */

@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from 'react';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { useAccountStore } from '@/stores/accountStore';
 import { useToastStore } from '@/stores/toastStore';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
@@ -27,6 +28,7 @@ import {
   exportPublicToPath,
   type CryptoKeyRow,
 } from '@/services/db/cryptoKeys';
+import { PassphrasePrompt } from './PassphrasePrompt';
 
 const SMIME = 'smime';
 
@@ -52,6 +54,13 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
 
   const [keys, setKeys] = useState<CryptoKeyRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Pending path awaiting a passphrase. Set when the user picks a
+  // passphrase-protected bundle — either `.p12`/`.pfx` (extension gate)
+  // or an encrypted-PKCS#8 PEM detected by content sniff. The
+  // `<PassphrasePrompt>` below renders + owns focus while this is non-null.
+  // Cleared on submit (success or cancel) — null means "no prompt open".
+  const [pendingPassphrasePath, setPendingPassphrasePath] = useState<string | null>(null);
 
   useEffect(() => {
     if (!effectiveAccountId) return;
@@ -90,15 +99,48 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     if (!effectiveAccountId) return;
     const picked = await openDialog({
       multiple: false,
-      filters: [{ name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key', 'txt'] }],
+      filters: [
+        { name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key', 'txt'] },
+        { name: 'S/MIME bundle', extensions: ['p12', 'pfx'] },
+      ],
     });
     // `open` returns `string | string[] | null` depending on options; with
     // `multiple: false` we get `string | null`, but guard for both shapes.
     if (!picked) return;
     const path = Array.isArray(picked) ? picked[0] : picked;
     if (!path) return;
+
+    // `.p12`/`.pfx` are always passphrase-protected → prompt unconditionally.
+    if (needsPassphrase(path)) {
+      setPendingPassphrasePath(path);
+      return;
+    }
+
+    // PEM branch: the backend supports importing an encrypted-PKCS#8 PEM
+    // (`-----BEGIN ENCRYPTED PRIVATE KEY-----` + `CERTIFICATE`) BUT only
+    // when a passphrase is supplied — otherwise it returns
+    // `Policy("encrypted PKCS#8 requires a passphrase")`. Sniff the picked
+    // file's content; on a positive match, open the prompt. On any read
+    // failure (binary `.crt`, permission denied, …) skip the prompt and
+    // let the backend surface a clear error if one was actually needed.
+    if (await hasEncryptedPrivateKey(path)) {
+      setPendingPassphrasePath(path);
+      return;
+    }
+    await runImport(path, undefined);
+  }
+
+  /**
+   * Drive the actual import with a (possibly absent) passphrase. Factored
+   * out of `onImport` so the `<PassphrasePrompt>` submit path shares it.
+   * Clears `pendingPassphrasePath` on completion (success OR error) so a
+   * stale state never leaves the modal "stuck open".
+   */
+  async function runImport(path: string, passphrase: string | undefined) {
+    if (!effectiveAccountId) return;
+    setPendingPassphrasePath(null);
     try {
-      await importKeyFromPath(effectiveAccountId, path);
+      await importKeyFromPath(effectiveAccountId, path, passphrase);
       pushToast('Key imported', 'success');
       await refresh();
     } catch (err) {
@@ -279,6 +321,14 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
           ))}
         </ul>
       )}
+
+      {pendingPassphrasePath !== null && (
+        <PassphrasePrompt
+          isOpen
+          onCancel={() => setPendingPassphrasePath(null)}
+          onSubmit={(pass) => void runImport(pendingPassphrasePath, pass)}
+        />
+      )}
     </PreferencesSectionCard>
   );
 }
@@ -291,5 +341,41 @@ function formatErr(err: unknown): string {
     return JSON.stringify(err);
   } catch {
     return String(err);
+  }
+}
+
+/**
+ * Whether the import flow should prompt for a passphrase based solely on
+ * the file extension. `.p12`/`.pfx` are always passphrase-protected →
+ * prompt. Other extensions (`.pem`/`.crt`/`.cer`/`.key`/`.txt`) are
+ * ambiguous — they may be plain PEM OR an encrypted-PKCS#8 PEM bundle;
+ * `hasEncryptedPrivateKey` resolves that case by sniffing the content.
+ */
+function needsPassphrase(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith('.p12') || lower.endsWith('.pfx');
+}
+
+/**
+ * Sniff whether `path` is an encrypted-PKCS#8 PEM bundle by reading the
+ * file and looking for the `ENCRYPTED PRIVATE KEY` PEM label. The backend
+ * supports importing this shape (`pkcs8::EncryptedPrivateKeyInfo::decrypt`)
+ * but ONLY when a passphrase is supplied — without one it errors with
+ * `Policy("encrypted PKCS#8 requires a passphrase")`, so the UI must
+ * prompt before calling `importKeyFromPath`.
+ *
+ * Returns `false` on any read/decode failure (binary `.crt`, permission
+ * denied, non-UTF-8, …): the caller proceeds without a prompt and lets
+ * the backend surface a real error if one was needed. Reads the whole
+ * file via `readTextFile` (the same API `TrustedCasSection` +
+ * `importTrustAnchorFromPath` already use for picked PEM paths; PEM
+ * bundles are small text files so this is a handful of ms at most).
+ */
+async function hasEncryptedPrivateKey(path: string): Promise<boolean> {
+  try {
+    const text = await readTextFile(path);
+    return text.includes('ENCRYPTED PRIVATE KEY');
+  } catch {
+    return false;
   }
 }

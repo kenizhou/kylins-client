@@ -399,7 +399,7 @@ async fn crypto_import_key_from_path_inner_round_trips_pem_bundle() {
 
     // --- Import the PEM into a FRESH account (acct-B). -----------------------
     seed_account_with(&pool, "acct-B", "bob@kylins.com").await;
-    let row_b = crypto_import_key_from_path_inner(&pool, "acct-B", pem_path.to_str().unwrap())
+    let row_b = crypto_import_key_from_path_inner(&pool, "acct-B", pem_path.to_str().unwrap(), None)
         .await
         .expect("import_key_from_path_inner");
 
@@ -417,4 +417,259 @@ async fn crypto_import_key_from_path_inner_round_trips_pem_bundle() {
         .await
         .expect("re-fetch");
     assert!(again.is_some(), "imported row must persist in crypto_keys");
+}
+
+// ---- Plan 3 Task 3 — `.p12`/`.pfx` import through the IPC inner fn ----------
+//
+// Verifies `crypto_import_key_from_path_inner` threads the `passphrase`
+// param into `SmimeBackend::import_key` and that a real `.p12` produced by
+// openssl (skip-if-absent) round-trips into a `crypto_keys` row whose
+// fingerprint matches the source cert. Mirrors `crypto-smime`'s own
+// `interop_tests::openssl_p12_imports_with_our_code` at the backend IPC
+// seam (proves the IPC layer neither drops the passphrase nor mangles the
+// bytes on the way to the backend).
+
+/// Locate openssl on `PATH` (or a couple of well-known Windows install paths)
+/// so this test can be silent-skipped when openssl isn't reachable. Mirrors
+/// `crypto-smime/src/interop_tests.rs::openssl_path` but kept local to the
+/// backend tests because the interop module is gated to the crypto-smime
+/// crate (not re-exported).
+fn openssl_path() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("OPENSSL_PATH") {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    if let Ok(out) = std::process::Command::new("openssl")
+        .arg("version")
+        .output()
+    {
+        if out.status.success() {
+            return Some(std::path::PathBuf::from("openssl"));
+        }
+    }
+    if cfg!(windows) {
+        for c in [
+            r"C:\Program Files\Git\mingw64\bin\openssl.exe",
+            r"C:\Program Files (x86)\Git\mingw64\bin\openssl.exe",
+            r"C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+        ] {
+            if std::path::Path::new(c).exists() {
+                return Some(std::path::PathBuf::from(c));
+            }
+        }
+    }
+    None
+}
+
+/// Run openssl with `args`, assert success, return the captured `Output` (so
+/// callers can inspect stdout if any). Panics on spawn failure or non-zero
+/// exit (the test fixture is malformed, not the SUT).
+fn run_openssl_assert(mut cmd: std::process::Command, label: &str) -> std::process::Output {
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("openssl {label}: spawn failed: {e}"));
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        panic!(
+            "openssl {label} failed (status={}): {}",
+            out.status,
+            stderr.trim()
+        );
+    }
+    out
+}
+
+/// `crypto_import_key_from_path_inner` with a passphrase threads the
+/// passphrase into `SmimeBackend::import_key` and a `.p12` produced by openssl
+/// round-trips into a `crypto_keys` row whose fingerprint matches the source
+/// cert (same cert → same SKI). Skips silently when openssl is unreachable.
+#[tokio::test]
+async fn crypto_import_key_from_path_inner_round_trips_p12_with_passphrase() {
+    let openssl = match openssl_path() {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "openssl not available on PATH; skipping .p12 IPC round-trip test. \
+                 See crypto-smime/src/interop_tests.rs for the manual run procedure."
+            );
+            return;
+        }
+    };
+
+    // --- Fixture: generate a key in acct-A, export cert+priv as PEM. ----------
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+    seed_account_with(&pool, "acct-P12A", "p12a@kylins.com").await;
+
+    let row_a = crypto_generate_key_inner(&pool, "acct-P12A", "p12a@kylins.com")
+        .await
+        .expect("generate_key_inner in acct-P12A");
+
+    let canonical = lookup_handle(Standard::Smime, &row_a.fingerprint);
+    let ks = Arc::new(SqliteKeyStore::new(
+        std::sync::Arc::new((*pool).clone()),
+        "acct-P12A",
+    ));
+    let stored = ks
+        .get(&canonical)
+        .await
+        .expect("keystore get")
+        .expect("stored key present");
+
+    let cert_der = stored.public_data.clone();
+    let priv_der = crypto_core::secret::expose_bytes(
+        stored
+            .private_data
+            .as_ref()
+            .expect("private material present after generate"),
+    )
+    .to_vec();
+
+    let cert_pem_path = tmp.path().join("cert.pem");
+    let key_pem_path = tmp.path().join("key.pem");
+    std::fs::write(&cert_pem_path, pem_block("CERTIFICATE", &cert_der).as_bytes())
+        .expect("write cert.pem");
+    // EC keys in PKCS#8 DER unwrap to a PEM `PRIVATE KEY` block — openssl's
+    // `pkcs12 -export -inkey` accepts PKCS#8 PEM (`PRIVATE KEY`) directly.
+    std::fs::write(&key_pem_path, pem_block("PRIVATE KEY", &priv_der).as_bytes())
+        .expect("write key.pem");
+
+    // --- Bundle cert + key into a passphrase-protected `.p12` via openssl. -----
+    let p12_path = tmp.path().join("bundle.p12");
+    let mut p12_cmd = std::process::Command::new(&openssl);
+    p12_cmd
+        .arg("pkcs12")
+        .arg("-export")
+        .arg("-inkey")
+        .arg(&key_pem_path)
+        .arg("-in")
+        .arg(&cert_pem_path)
+        .arg("-passout")
+        .arg("pass:test-secret")
+        .arg("-out")
+        .arg(&p12_path);
+    run_openssl_assert(p12_cmd, "pkcs12 -export");
+    assert!(p12_path.exists(), ".p12 file must be written");
+
+    // --- Import the .p12 into a FRESH account (acct-P12B) WITH passphrase. ---
+    seed_account_with(&pool, "acct-P12B", "p12b@kylins.com").await;
+    let row_b = crypto_import_key_from_path_inner(
+        &pool,
+        "acct-P12B",
+        p12_path.to_str().unwrap(),
+        Some("test-secret".to_string()),
+    )
+    .await
+    .expect("import_key_from_path_inner with passphrase");
+
+    assert_eq!(row_b.standard, "smime");
+    assert_eq!(
+        row_b.fingerprint, row_a.fingerprint,
+        "same cert → same SubjectKeyIdentifier fingerprint"
+    );
+    assert!(row_b.has_private, "imported p12 key must have private material");
+
+    // Re-fetch from the db confirms persistence in acct-P12B.
+    let again = get_crypto_key_public(&pool, "smime", &row_b.fingerprint)
+        .await
+        .expect("re-fetch");
+    assert!(
+        again.is_some(),
+        "imported p12 row must persist in crypto_keys"
+    );
+}
+
+/// Wrong passphrase for a `.p12` surfaces a `Policy`-style error string
+/// (mapped from `CryptoError::Policy("p12 passphrase incorrect")` by the
+/// backend). Mirrors `crypto-smime`'s
+/// `import_key_p12_wrong_passphrase_is_policy_error` at the IPC seam: proves
+/// the error propagates out of `crypto_import_key_from_path_inner` (and
+/// therefore the Tauri command) as a user-facing string rather than panicking
+/// or being silently swallowed. Skips silently when openssl is unreachable.
+#[tokio::test]
+async fn crypto_import_key_from_path_inner_wrong_passphrase_is_user_error() {
+    let openssl = match openssl_path() {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "openssl not available on PATH; skipping wrong-passphrase IPC test."
+            );
+            return;
+        }
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+    seed_account_with(&pool, "acct-WP12A", "wp12a@kylins.com").await;
+
+    let row_a = crypto_generate_key_inner(&pool, "acct-WP12A", "wp12a@kylins.com")
+        .await
+        .expect("generate_key_inner");
+
+    let canonical = lookup_handle(Standard::Smime, &row_a.fingerprint);
+    let ks = Arc::new(SqliteKeyStore::new(
+        std::sync::Arc::new((*pool).clone()),
+        "acct-WP12A",
+    ));
+    let stored = ks
+        .get(&canonical)
+        .await
+        .expect("keystore get")
+        .expect("stored key present");
+
+    let cert_pem_path = tmp.path().join("cert.pem");
+    let key_pem_path = tmp.path().join("key.pem");
+    std::fs::write(
+        &cert_pem_path,
+        pem_block("CERTIFICATE", &stored.public_data).as_bytes(),
+    )
+    .expect("write cert.pem");
+    let priv_der = crypto_core::secret::expose_bytes(
+        stored
+            .private_data
+            .as_ref()
+            .expect("private material present after generate"),
+    )
+    .to_vec();
+    std::fs::write(&key_pem_path, pem_block("PRIVATE KEY", &priv_der).as_bytes())
+        .expect("write key.pem");
+
+    let p12_path = tmp.path().join("bundle.p12");
+    let mut p12_cmd = std::process::Command::new(&openssl);
+    p12_cmd
+        .arg("pkcs12")
+        .arg("-export")
+        .arg("-inkey")
+        .arg(&key_pem_path)
+        .arg("-in")
+        .arg(&cert_pem_path)
+        .arg("-passout")
+        .arg("pass:correct-secret")
+        .arg("-out")
+        .arg(&p12_path);
+    run_openssl_assert(p12_cmd, "pkcs12 -export");
+
+    // Import with the WRONG passphrase → the IPC fn returns Err (a string
+    // rendered from `CryptoError::Policy(..)` — "p12 passphrase incorrect"),
+    // NOT a panic + NOT a Malformed "file unreadable" message.
+    seed_account_with(&pool, "acct-WP12B", "wp12b@kylins.com").await;
+    let err = crypto_import_key_from_path_inner(
+        &pool,
+        "acct-WP12B",
+        p12_path.to_str().unwrap(),
+        Some("wrong-secret".to_string()),
+    )
+    .await
+    .expect_err("wrong passphrase must surface an error, not silently succeed");
+
+    // `Policy` maps to a string containing "passphrase"; `Malformed` would
+    // surface "file unreadable"/"malformed" wording — assert the user-facing
+    // string carries the passphrase-incorrect signal.
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("passphrase"),
+        "wrong-passphrase error must mention 'passphrase' (got: {err})"
+    );
 }

@@ -490,37 +490,80 @@ impl CryptoBackend for SmimeBackend {
     async fn import_key(
         &self,
         data: &[u8],
-        _passphrase: Option<SecretBox<String>>,
+        passphrase: Option<SecretBox<String>>,
     ) -> crypto_core::Result<KeyHandleRef> {
-        let text = std::str::from_utf8(data)
-            .map_err(|e| CryptoError::Malformed(format!("import_key: input not UTF-8: {e}")))?;
-        let blocks = parse_pem_blocks(text)?;
+        // Content-sniff by content, NOT extension: PEM iff the bytes are UTF-8
+        // starting with `-----BEGIN` (a `.crt`/`.cer`/`.p12`/`.pfx`/keyless
+        // extension all route correctly). Binary PKCS#12 (DER SEQUENCE) routes
+        // to the p12 arm; everything else that isn't a PEM bundle is a malformed
+        // import (surfaced as Malformed in the PEM parse path).
+        let is_pem = std::str::from_utf8(data)
+            .map(|s| s.trim_start().starts_with("-----BEGIN"))
+            .unwrap_or(false);
 
-        // Detect encrypted PKCS#8 first so the user gets a clear NotImplemented
-        // regardless of whether a cert is also present (better UX than "no cert").
-        if blocks.iter().any(|(label, _)| label == "ENCRYPTED PRIVATE KEY") {
-            return Err(CryptoError::NotImplemented(
-                "encrypted PKCS#8 import — Plan 3".into(),
-            ));
-        }
-
-        let cert_der = blocks
-            .iter()
-            .find(|(label, _)| label == "CERTIFICATE")
-            .map(|(_, der)| der.clone())
-            .ok_or_else(|| CryptoError::Malformed("no CERTIFICATE PEM block".into()))?;
-
-        let priv_der = blocks
-            .iter()
-            .find(|(label, _)| label == "PRIVATE KEY")
-            .map(|(_, der)| der.clone())
-            .ok_or_else(|| {
-                CryptoError::Malformed("no PRIVATE KEY PEM block (expected 'PRIVATE KEY')".into())
+        if is_pem {
+            let text = std::str::from_utf8(data).map_err(|e| {
+                CryptoError::Malformed(format!("import_key: input not UTF-8: {e}"))
             })?;
+            let blocks = parse_pem_blocks(text)?;
 
-        // Parse via x509-cert (consistent with generate_key) so the fingerprint
-        // (SubjectKeyIdentifier = SHA-1 of the SPKI) matches a generated cert's,
-        // and so we can read the public-key algorithm OID.
+            let cert_der = blocks
+                .iter()
+                .find(|(label, _)| label == "CERTIFICATE")
+                .map(|(_, der)| der.clone())
+                .ok_or_else(|| CryptoError::Malformed("no CERTIFICATE PEM block".into()))?;
+
+            // Private-key arm: ENCRYPTED PRIVATE KEY takes precedence over
+            // PRIVATE KEY (a bundle shouldn't carry both, but if it does, the
+            // encrypted block is the one the user means to import).
+            let priv_der = if let Some((_, block)) = blocks
+                .iter()
+                .find(|(label, _)| label == "ENCRYPTED PRIVATE KEY")
+            {
+                decrypt_encrypted_pkcs8(block, expose_passphrase(&passphrase))?
+            } else if let Some((_, block)) =
+                blocks.iter().find(|(label, _)| label == "PRIVATE KEY")
+            {
+                block.clone()
+            } else {
+                return Err(CryptoError::Malformed(
+                    "no PRIVATE KEY PEM block (expected 'PRIVATE KEY' or 'ENCRYPTED PRIVATE KEY')"
+                        .into(),
+                ));
+            };
+
+            self.persist_imported(cert_der, priv_der).await
+        } else {
+            // PKCS#12 / PFX binary arm (Plan 3 Task 1).
+            self.import_p12(data, &passphrase).await
+        }
+    }
+
+    async fn export_public(&self, handle: &KeyHandle) -> crypto_core::Result<Vec<u8>> {
+        let stored = self
+            .keystore
+            .get(handle)
+            .await?
+            .ok_or_else(|| CryptoError::KeyNotFound(format!("export_public: {handle:?}")))?;
+        Ok(stored.public_data)
+    }
+}
+
+impl SmimeBackend {
+    /// Shared tail for `import_key`: build a `StoredKey` from the cert + private
+    /// key DER (both PEM-extracted and p12-extracted paths converge here) and
+    /// persist it via the keystore. Computes the SPKI algorithm label + the
+    /// SubjectKeyIdentifier fingerprint via the SAME x509-cert 0.3 path as
+    /// `generate_key`, so a re-imported cert produces an identical fingerprint
+    /// (and `KeyId`) to a freshly-generated one. Private material is wrapped in
+    /// a `SecretBox`; the keystore's at-rest AES-GCM layer (master key from the
+    /// OS keyring) encrypts it before it touches SQLite — the bag passphrase is
+    /// NOT persisted (it was consumed in the caller's decrypt step).
+    async fn persist_imported(
+        &self,
+        cert_der: Vec<u8>,
+        priv_der: Vec<u8>,
+    ) -> crypto_core::Result<KeyHandleRef> {
         let cert = <x509_cert::Certificate as Decode>::from_der(&cert_der)
             .map_err(|e| CryptoError::Malformed(format!("parse cert DER: {e}")))?;
         let spki_ref = cert.tbs_certificate().subject_public_key_info().owned_to_ref();
@@ -546,13 +589,113 @@ impl CryptoBackend for SmimeBackend {
         self.keystore.put(stored).await
     }
 
-    async fn export_public(&self, handle: &KeyHandle) -> crypto_core::Result<Vec<u8>> {
-        let stored = self
-            .keystore
-            .get(handle)
-            .await?
-            .ok_or_else(|| CryptoError::KeyNotFound(format!("export_public: {handle:?}")))?;
-        Ok(stored.public_data)
+    /// PKCS#12 / PFX binary import arm (Plan 3 Task 1). Parses the PFX, decrypts
+    /// the bag PBE with the user's passphrase, extracts the leaf cert + private
+    /// key as raw DER bytes, and funnels them through `persist_imported`.
+    ///
+    /// We touch ONLY `p12-keystore`'s `&[u8]`-returning surface
+    /// (`KeyStore::from_pkcs12`, `private_key_chain`, `Certificate::as_der`,
+    /// `PrivateKey::as_der`), so the crate's internal `der`/`spki`/`x509-cert`
+    /// line is irrelevant to our 0.8 build stack — no 0.7-bridge is needed
+    /// (unlike `chain.rs`'s pkix-* path, which must name the 0.2 types). The
+    /// `p12_keystore::error::Error` enum is matched by variant name with wildcard
+    /// inner payloads, so the transitive `der::Error` / `MacError` types never
+    /// need to be named from this crate.
+    async fn import_p12(
+        &self,
+        data: &[u8],
+        passphrase: &Option<SecretBox<String>>,
+    ) -> crypto_core::Result<KeyHandleRef> {
+        // p12-keystore's `from_pkcs12` takes `password: &str`. An empty
+        // passphrase is valid for unencrypted bags; `None` maps to "".
+        let pass = expose_passphrase(passphrase).unwrap_or_default();
+        let ks = p12_keystore::KeyStore::from_pkcs12(
+            data,
+            pass,
+            // Relaxed: import everything (key + cert + chain) rather than
+            // dropping "unmatched" entries under Strict. We only read the
+            // first private-key chain, so extra certs (intermediates) are
+            // ignored (carry-forward: intermediates in the .p12 chain —
+            // spec §3 Out).
+            p12_keystore::Pkcs12ImportPolicy::Relaxed,
+        )
+        .map_err(map_p12_error)?;
+
+        let (_, chain) = ks
+            .private_key_chain()
+            .ok_or_else(|| CryptoError::Malformed("p12: no private key in bag".into()))?;
+        let cert_der = chain
+            .certs()
+            .first()
+            .ok_or_else(|| CryptoError::Malformed("p12: no certificate in keychain".into()))?
+            .as_der()
+            .to_vec();
+        let priv_der = chain.key().as_der().to_vec();
+
+        self.persist_imported(cert_der, priv_der).await
+    }
+}
+
+/// Expose the passphrase `&str` from an `Option<SecretBox<String>>` for use
+/// within `import_key` only. The `SecretBox` zeroizes its heap buffer on drop
+/// at the end of `import_key`; this helper borrows it for the duration of the
+/// decrypt call (no clone, no second buffer to zeroize).
+fn expose_passphrase(pass: &Option<SecretBox<String>>) -> Option<&str> {
+    use secrecy::ExposeSecret;
+    pass.as_ref().map(|p| p.expose_secret().as_str())
+}
+
+/// Decrypt an `ENCRYPTED PRIVATE KEY` PEM block (Plan 3 Task 2 — retires the
+/// `NotImplemented("encrypted PKCS#8 import — Plan 3")` stub). The block is
+/// the DER bytes of an `EncryptedPrivateKeyInfo`; `pkcs8`'s `decrypt(password)`
+/// runs the PBES2 KDF + symmetric decrypt. Wrong passphrase → `Policy`
+/// (user-facing "passphrase incorrect"); missing/empty passphrase + encrypted
+/// block → `Policy` (an encrypted bag needs a passphrase). Parse failure of
+/// the `EncryptedPrivateKeyInfo` DER itself → `Malformed` (the file is not a
+/// well-formed encrypted PKCS#8).
+fn decrypt_encrypted_pkcs8(
+    block: &[u8],
+    pass: Option<&str>,
+) -> crypto_core::Result<Vec<u8>> {
+    use pkcs8::EncryptedPrivateKeyInfoOwned;
+    // `EncryptedPrivateKeyInfoOwned` = `EncryptedPrivateKeyInfo<Bytes>` — the
+    // concrete owned alias so `from_der` resolves without type-annotation hints
+    // (the generic `EncryptedPrivateKeyInfo<Data>` is ambiguous).
+    let info = EncryptedPrivateKeyInfoOwned::from_der(block)
+        .map_err(|e| CryptoError::Malformed(format!("parse EncryptedPrivateKeyInfo: {e}")))?;
+    // An encrypted block requires a non-empty passphrase. We treat empty string
+    // the same as None (the spec's "empty passphrase + encrypted block →
+    // Policy"); an unencrypted bag would have used a plain PRIVATE KEY block.
+    let pass = pass
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| CryptoError::Policy("encrypted PKCS#8 requires a passphrase".into()))?;
+    info.decrypt(pass)
+        .map_err(|e| CryptoError::Policy(format!("encrypted PKCS#8 decrypt failed: {e}")))
+        .map(|doc| doc.as_bytes().to_vec())
+}
+
+/// Map a `p12_keystore::error::Error` to a `CryptoError`, discriminating
+/// wrong-passphrase (PBE/MAC failure) from structurally-malformed input.
+///
+/// - `MacError` — the PFX integrity MAC failed to verify; this is the canonical
+///   wrong-passphrase signal (the MAC key is derived from the passphrase, so a
+///   wrong passphrase produces a different MAC key → verification fails).
+/// - `Pkcs5Error` / `UnpadError` — bag-content PBE decrypt produced invalid
+///   padding; this also indicates a wrong passphrase (or a corrupt bag).
+///
+/// Everything else (DER parse errors, unsupported schemes, invalid version)
+/// is a structural problem with the file → `Malformed`. The backend maps
+/// `Policy` to a "passphrase incorrect" toast and `Malformed` to a "file
+/// unreadable" toast (spec §6 decision #7).
+fn map_p12_error(e: p12_keystore::error::Error) -> CryptoError {
+    use p12_keystore::error::Error as P12Err;
+    match e {
+        P12Err::MacError(_)
+        | P12Err::Pkcs5Error(_)
+        | P12Err::UnpadError => {
+            CryptoError::Policy("p12 passphrase incorrect".into())
+        }
+        _ => CryptoError::Malformed(format!("p12 parse: {e}")),
     }
 }
 
@@ -877,15 +1020,262 @@ mod tests {
         assert_eq!(re_exported, cert_der, "re-exported cert must match the original DER");
     }
 
-    #[tokio::test]
-    async fn import_key_rejects_encrypted_pkcs8() {
-        let b = backend();
-        let pem = pem_block("ENCRYPTED PRIVATE KEY", &[1, 2, 3, 4]);
-        let err = b.import_key(pem.as_bytes(), None).await.unwrap_err();
-        assert!(
-            matches!(err, CryptoError::NotImplemented(_)),
-            "encrypted PKCS#8 must be NotImplemented, got {err:?}"
+    // ─── Plan 3: .p12/.pfx + encrypted-PKCS#8 import (TDD) ───
+    //
+    // The encrypted-PKCS#8 PEM path was previously a NotImplemented stub; the
+    // `import_key_rejects_encrypted_pkcs8` regression that asserted that stub has
+    // been retired (superseded by `import_key_encrypted_pkcs8_pem_round_trips`
+    // + `import_key_encrypted_pkcs8_wrong_passphrase_is_policy_error` below, which
+    // exercise the real decrypt path both ways).
+
+    /// Build a `.p12`/`.pfx` DER fixture in-test via `p12-keystore`'s OWN writer
+    /// API (no openssl). Wraps a generated cert + private key (PKCS#8 DER) as a
+    /// single `PrivateKeyChain` entry, encrypted under `password`. Lets the
+    /// p12 round-trip tests assert that our `import_key` extracts the same cert
+    /// + key back out regardless of the bag PBE layer.
+    fn build_p12_fixture(cert_der: &[u8], priv_der: &[u8], password: &str) -> Vec<u8> {
+        let mut ks = p12_keystore::KeyStore::new();
+        let cert = p12_keystore::Certificate::from_der(cert_der)
+            .expect("p12 fixture: cert from der");
+        let key = p12_keystore::PrivateKey::from_der(priv_der)
+            .expect("p12 fixture: priv from der");
+        // Leaf cert is the first (and only) element of the chain (p12-keystore's
+        // `PrivateKeyChain::new` docs require the entity cert be first).
+        let chain = p12_keystore::PrivateKeyChain::new("smime-identity", key, vec![cert]);
+        ks.add_entry(
+            "smime-identity",
+            p12_keystore::KeyStoreEntry::PrivateKeyChain(chain),
         );
+        ks.writer(password)
+            .encryption_algorithm(p12_keystore::EncryptionAlgorithm::PbeWithHmacSha256AndAes256)
+            .mac_algorithm(p12_keystore::MacAlgorithm::HmacSha256)
+            .write()
+            .expect("p12 fixture: write")
+    }
+
+    /// Build an encrypted-PKCS#8 PEM (`ENCRYPTED PRIVATE KEY` + `CERTIFICATE`)
+    /// bundle in-test via `pkcs8::PrivateKeyInfo::encrypt` (the `getrandom`
+    /// feature pulls OS entropy so no RNG needs to be threaded). Returns the
+    /// full PEM text so `import_key` can content-sniff it as PEM.
+    fn build_encrypted_pkcs8_pem(cert_der: &[u8], priv_der: &[u8], password: &str) -> String {
+        use pkcs8::{DecodePrivateKey, PrivateKeyInfoOwned};
+        // Parse the unencrypted PKCS#8 DER (from generate_key) into a concrete
+        // `PrivateKeyInfoOwned` (the `PrivateKeyInfo<Any, OctetString, BitString>`
+        // alias) so `.encrypt(password)` resolves without type-annotation hints.
+        let pki = PrivateKeyInfoOwned::from_pkcs8_der(priv_der)
+            .expect("enc pkcs8 fixture: parse PrivateKeyInfo");
+        let doc = pki
+            .encrypt(password)
+            .expect("enc pkcs8 fixture: encrypt");
+        let enc_der = doc.as_bytes().to_vec();
+        format!(
+            "{}\n{}\n",
+            pem_block("CERTIFICATE", cert_der),
+            pem_block("ENCRYPTED PRIVATE KEY", &enc_der),
+        )
+    }
+
+    #[tokio::test]
+    async fn import_key_p12_round_trips_cert_and_key() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "p12-import@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+
+        let pfx = build_p12_fixture(&cert_der, &priv_der, "test");
+
+        // Import into a fresh backend so the key provably came from the .p12,
+        // not memory. The passphrase is wrapped in a SecretBox exactly as the
+        // backend IPC will thread it (Plan 3 Task 3).
+        let b2 = backend();
+        let pass = SecretBox::new(Box::new("test".to_string()));
+        let imported = b2
+            .import_key(&pfx, Some(pass))
+            .await
+            .expect("import_key (p12) ok");
+        assert_eq!(imported.standard, Standard::Smime);
+        // Same SKI fingerprint as the direct cert build (persist_imported uses
+        // the same SubjectKeyIdentifier method as generate_key).
+        assert_eq!(
+            imported.fingerprint.as_str(),
+            gen.fingerprint.as_str(),
+            "p12-imported fingerprint must match the direct build"
+        );
+        let re_exported = b2.export_public(&imported.handle).await.expect("re-export");
+        assert_eq!(re_exported, cert_der, "re-exported cert must match the original DER");
+    }
+
+    #[tokio::test]
+    async fn import_key_p12_wrong_passphrase_is_policy_error() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "p12-wrong@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+
+        let pfx = build_p12_fixture(&cert_der, &priv_der, "correct-pass");
+
+        let b2 = backend();
+        let wrong_pass = SecretBox::new(Box::new("wrong-pass".to_string()));
+        let err = b2
+            .import_key(&pfx, Some(wrong_pass))
+            .await
+            .expect_err("wrong passphrase must error");
+        // MUST be Policy (user-facing "passphrase incorrect"), NOT Malformed.
+        // A structurally-valid PFX whose MAC/PBE failed is a passphrase problem,
+        // not a malformed-file problem (spec §6 decision #7).
+        assert!(
+            matches!(err, CryptoError::Policy(ref m) if m.contains("p12 passphrase incorrect")),
+            "wrong passphrase must be Policy(\"p12 passphrase incorrect\"), got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_key_encrypted_pkcs8_pem_round_trips() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "encpkcs8@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+
+        let pem = build_encrypted_pkcs8_pem(&cert_der, &priv_der, "secret");
+
+        let b2 = backend();
+        let pass = SecretBox::new(Box::new("secret".to_string()));
+        let imported = b2
+            .import_key(pem.as_bytes(), Some(pass))
+            .await
+            .expect("import_key (encrypted PKCS#8) ok");
+        assert_eq!(imported.standard, Standard::Smime);
+        assert_eq!(
+            imported.fingerprint.as_str(),
+            gen.fingerprint.as_str(),
+            "encrypted-PKCS#8-imported fingerprint must match the direct build"
+        );
+        let re_exported = b2.export_public(&imported.handle).await.expect("re-export");
+        assert_eq!(re_exported, cert_der, "re-exported cert must match the original DER");
+    }
+
+    #[tokio::test]
+    async fn import_key_encrypted_pkcs8_wrong_passphrase_is_policy_error() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "encpkcs8-wrong@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+
+        let pem = build_encrypted_pkcs8_pem(&cert_der, &priv_der, "right");
+
+        let b2 = backend();
+        let wrong_pass = SecretBox::new(Box::new("wrong".to_string()));
+        let err = b2
+            .import_key(pem.as_bytes(), Some(wrong_pass))
+            .await
+            .expect_err("wrong passphrase must error");
+        assert!(
+            matches!(err, CryptoError::Policy(_)),
+            "encrypted PKCS#8 wrong passphrase must be Policy, got {err:?}"
+        );
+    }
+
+    /// Regression guard for the refactor: the existing unencrypted-PEM path
+    /// (CERTIFICATE + PRIVATE KEY, no passphrase) must keep working after
+    /// `import_key` is restructured to content-sniff + dispatch + share a
+    /// `persist_imported` tail with the new p12 / encrypted-PKCS#8 arms.
+    #[tokio::test]
+    async fn import_key_unencrypted_pem_still_works() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "plain-pem@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+
+        let pem = format!(
+            "{}\n{}\n",
+            pem_block("CERTIFICATE", &cert_der),
+            pem_block("PRIVATE KEY", &priv_der),
+        );
+
+        let b2 = backend();
+        let imported = b2
+            .import_key(pem.as_bytes(), None)
+            .await
+            .expect("import_key (unencrypted PEM) ok");
+        assert_eq!(imported.standard, Standard::Smime);
+        assert_eq!(imported.fingerprint.as_str(), gen.fingerprint.as_str());
+        let re_exported = b2.export_public(&imported.handle).await.expect("re-export");
+        assert_eq!(re_exported, cert_der);
     }
 
     #[tokio::test]

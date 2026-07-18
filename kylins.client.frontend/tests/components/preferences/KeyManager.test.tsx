@@ -35,6 +35,14 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   save: vi.fn().mockResolvedValue(null),
 }));
 
+// Mock the Tauri fs plugin — `readTextFile` is used by `onImport` to sniff
+// whether a picked PEM file contains an `ENCRYPTED PRIVATE KEY` block.
+// Defaults to a rejected promise so any test that doesn't care about the
+// PEM path falls through to "read failed → skip prompt → runImport".
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  readTextFile: vi.fn().mockRejectedValue(new Error('not configured')),
+}));
+
 function makeKey(overrides: Partial<CryptoKeyRow> = {}): CryptoKeyRow {
   return {
     id: 'k1',
@@ -94,6 +102,10 @@ describe('KeyManagerSection', () => {
     const dialog = await import('@tauri-apps/plugin-dialog');
     vi.mocked(dialog.open).mockResolvedValue(null);
     vi.mocked(dialog.save).mockResolvedValue(null);
+    // Default the fs read to "fails" so tests that don't exercise the PEM
+    // sniff get the same behavior as a binary `.crt` (skip prompt → runImport).
+    const fs = await import('@tauri-apps/plugin-fs');
+    vi.mocked(fs.readTextFile).mockRejectedValue(new Error('not configured'));
   });
 
   it('renders empty state when account has no keys', async () => {
@@ -113,7 +125,7 @@ describe('KeyManagerSection', () => {
     expect(defaults).toHaveLength(1);
   });
 
-  it('Import button calls importKeyFromPath with the picked path', async () => {
+  it('Import button calls importKeyFromPath with the picked path (no passphrase for PEM)', async () => {
     await renderWithKeys([]);
     const dialog = await import('@tauri-apps/plugin-dialog');
     vi.mocked(dialog.open).mockResolvedValue('/fake/cert.pem');
@@ -122,7 +134,8 @@ describe('KeyManagerSection', () => {
     await screen.findByText(/no s\/mime keys yet/i);
     fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
     await waitFor(() => {
-      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/cert.pem');
+      // PEM path: no passphrase prompt, undefined forwards to Rust `None`.
+      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/cert.pem', undefined);
     });
   });
 
@@ -140,6 +153,181 @@ describe('KeyManagerSection', () => {
     });
     expect(importKeyFromPath).not.toHaveBeenCalled();
   });
+
+  it('Import .p12 opens passphrase prompt; submitting calls importKeyFromPath with the passphrase', async () => {
+    await renderWithKeys([]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue('/fake/bundle.p12');
+    const { importKeyFromPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no s\/mime keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
+
+    // The passphrase prompt modal must open (controlled by the section's
+    // pendingPassphrasePath state).
+    const passphraseInput = await screen.findByPlaceholderText(/bundle passphrase/i);
+    expect(passphraseInput).toBeInTheDocument();
+
+    // Type + submit; the importKeyFromPath wrapper must receive the passphrase.
+    fireEvent.change(passphraseInput, { target: { value: 'test-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/i }));
+
+    await waitFor(() => {
+      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/bundle.p12', 'test-secret');
+    });
+  });
+
+  it('Import .pfx opens passphrase prompt; cancelling does NOT call importKeyFromPath', async () => {
+    await renderWithKeys([]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue('/fake/bundle.pfx');
+    const { importKeyFromPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no s\/mime keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
+
+    const passphraseInput = await screen.findByPlaceholderText(/bundle passphrase/i);
+    expect(passphraseInput).toBeInTheDocument();
+
+    // Cancel — the pending path is cleared and importKeyFromPath never fires.
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => {
+      expect(importKeyFromPath).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── I1: encrypted-PKCS#8 PEM content sniff ───────────────────────────────
+  //
+  // The `.p12`/`.pfx` extension gate always promptsed. The new behavior also
+  // prompts when a picked PEM file contains an `ENCRYPTED PRIVATE KEY` block
+  // — the backend fully supports that arm but ONLY when a passphrase is
+  // supplied (otherwise it returns `Policy("encrypted PKCS#8 requires a
+  // passphrase")`). The UI sniffs the file content via `readTextFile`.
+
+  it('Import encrypted-PKCS#8 PEM opens the passphrase prompt (content sniff)', async () => {
+    await renderWithKeys([]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue('/fake/identity.pem');
+    const fs = await import('@tauri-apps/plugin-fs');
+    vi.mocked(fs.readTextFile).mockResolvedValue(
+      [
+        '-----BEGIN ENCRYPTED PRIVATE KEY-----',
+        'MIIE6TAbBgkqhkiG9w0BBQMwDgQI...',
+        '-----END ENCRYPTED PRIVATE KEY-----',
+        '-----BEGIN CERTIFICATE-----',
+        'MIIB...',
+        '-----END CERTIFICATE-----',
+      ].join('\n'),
+    );
+    const { importKeyFromPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no s\/mime keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
+
+    // The passphrase prompt must open (encrypted PEM detected by content).
+    const passphraseInput = await screen.findByPlaceholderText(/bundle passphrase/i);
+    expect(passphraseInput).toBeInTheDocument();
+    // And the import has NOT been called yet (waiting on the passphrase).
+    expect(importKeyFromPath).not.toHaveBeenCalled();
+    // The sniff read the picked file exactly once.
+    expect(fs.readTextFile).toHaveBeenCalledWith('/fake/identity.pem');
+  });
+
+  it('Import plain PEM (CERTIFICATE + unencrypted PRIVATE KEY) does NOT open the prompt', async () => {
+    await renderWithKeys([]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue('/fake/plain.pem');
+    const fs = await import('@tauri-apps/plugin-fs');
+    vi.mocked(fs.readTextFile).mockResolvedValue(
+      [
+        '-----BEGIN CERTIFICATE-----',
+        'MIIB...',
+        '-----END CERTIFICATE-----',
+        '-----BEGIN PRIVATE KEY-----',
+        'MIGH...',
+        '-----END PRIVATE KEY-----',
+      ].join('\n'),
+    );
+    const { importKeyFromPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no s\/mime keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
+
+    // Plain PEM: no prompt; import called with undefined passphrase.
+    await waitFor(() => {
+      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/plain.pem', undefined);
+    });
+    expect(screen.queryByPlaceholderText(/bundle passphrase/i)).toBeNull();
+  });
+
+  it('Import PEM falls back to no-prompt when the fs read fails (binary .crt / permission)', async () => {
+    await renderWithKeys([]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue('/fake/strange.crt');
+    const fs = await import('@tauri-apps/plugin-fs');
+    vi.mocked(fs.readTextFile).mockRejectedValue(new Error('permission denied'));
+    const { importKeyFromPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no s\/mime keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
+
+    // Read failed → skip the prompt and let the backend surface any real
+    // error. Import IS attempted with an undefined passphrase.
+    await waitFor(() => {
+      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/strange.crt', undefined);
+    });
+    expect(screen.queryByPlaceholderText(/bundle passphrase/i)).toBeNull();
+  });
+
+  // ── M1: global Enter handler must not misfire on Cancel ─────────────────
+  //
+  // Regression: `PassphrasePrompt` previously had BOTH a `<form onSubmit>`
+  // (Enter from the input submits correctly) AND a `window.addEventListener
+  // ('keydown', …)` global Enter handler. When focus was on the Cancel
+  // button, pressing Enter fired the global handler → `onSubmit(value)` →
+  // import was attempted even though the user intended to cancel. The fix
+  // removes the global Enter handler; Enter only submits when typed in the
+  // input (form onSubmit).
+
+  it('Pressing Enter while the Cancel button has focus does NOT submit (M1)', async () => {
+    await renderWithKeys([]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue('/fake/bundle.p12');
+    const { importKeyFromPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no s\/mime keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
+
+    const passphraseInput = await screen.findByPlaceholderText(/bundle passphrase/i);
+    // Type a non-empty value so the legacy global handler (if still present)
+    // would call `onSubmit(value)`.
+    fireEvent.change(passphraseInput, { target: { value: 'test-secret' } });
+
+    // Move focus to the Cancel button — the user's intent is to cancel.
+    const cancelBtn = screen.getByRole('button', { name: /cancel/i });
+    cancelBtn.focus();
+    expect(document.activeElement).toBe(cancelBtn);
+
+    // Dispatch Enter directly on `window`, where the (buggy) global listener
+    // was attached. This deterministically reproduces the bug in jsdom;
+    // `fireEvent.keyDown(cancelBtn, …)` can short-circuit inside RAC's
+    // Button before bubbling, masking the regression.
+    const evt = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true });
+    window.dispatchEvent(evt);
+
+    // Drain any queued microtasks so a would-be submit would have fired.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(importKeyFromPath).not.toHaveBeenCalled();
+  });
+
+  // Note: the "Enter in the input submits" path is exercised by the existing
+  // ".p12 opens passphrase prompt; submitting calls importKeyFromPath" test
+  // above (clicking the OK button triggers the same `<form onSubmit>` that a
+  // real-browser Enter from the input would trigger — jsdom does not simulate
+  // the native "Enter in a single-input form submits" behavior, so we rely on
+  // the click-OK test + manual verification for the submit arm).
 
   it('Generate button calls generateKey with accountId and account email', async () => {
     await renderWithKeys([]);

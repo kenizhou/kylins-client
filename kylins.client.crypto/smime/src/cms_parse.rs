@@ -524,6 +524,71 @@ const ID_MESSAGE_DIGEST: const_oid::ObjectIdentifier =
 const ID_SIGNING_TIME: const_oid::ObjectIdentifier =
     const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.5");
 
+// ─── G4-extend: full CMS signature-verify algorithm coverage ───
+//
+// Spec decision #10 (algorithm coverage): ECDSA P-256 + P-384 + RSA-PKCS1v1.5
+// + RSA-PSS. P-521 / Ed25519 are deferred (negligible in deployed S/MIME).
+// All OIDs are matched against the SignerInfo's `signatureAlgorithm` field
+// (and, for ECDSA, the SPKI curve OID). Unsupported algorithms fall through to
+// `sig_ok=false` (→ `SignatureState::Invalid`), NOT a hard `Err` — the
+// "unknown algorithm = unverified, not broken" contract is load-bearing for
+// the receive UI (a mail signed with an algorithm we don't ship yet must show
+// "Invalid signature", not a parse error).
+
+/// SHA-384 OID (2.16.840.1.101.3.4.2.2).
+const ID_SHA_384: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.2");
+
+/// SHA-512 OID (2.16.840.1.101.3.4.2.3).
+const ID_SHA_512: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.3");
+
+/// ECDSA-with-SHA-384 OID (1.2.840.10045.4.3.3) — P-384 signatures.
+const ID_ECDSA_WITH_SHA_384: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
+
+/// ECDSA-with-SHA-512 OID (1.2.840.10045.4.3.4).
+const ID_ECDSA_WITH_SHA_512: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.4");
+
+/// sha256WithRSAEncryption OID (1.2.840.113549.1.1.11) — RSA-PKCS1v1.5 + SHA-256.
+const ID_SHA256_WITH_RSA: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+
+/// sha384WithRSAEncryption OID (1.2.840.113549.1.1.12) — RSA-PKCS1v1.5 + SHA-384.
+const ID_SHA384_WITH_RSA: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.12");
+
+/// sha512WithRSAEncryption OID (1.2.840.113549.1.1.13) — RSA-PKCS1v1.5 + SHA-512.
+const ID_SHA512_WITH_RSA: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
+
+/// rsaEncryption OID (1.2.840.113549.1.1.1) — the generic RSA OID (RFC 3370
+/// §3.2 legacy form). Some producers (openssl `cms -sign`, Thunderbird/NSS)
+/// declare the signature algorithm as bare `rsaEncryption` and carry the hash
+/// in the SignerInfo's `digestAlgorithm`; the combined OIDs above carry it in
+/// the sig-alg OID itself. Treat both as RSA-PKCS1v1.5 over `digest_alg`.
+const ID_RSA_ENCRYPTION: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+
+/// id-RSASSA-PSS OID (1.2.840.113549.1.1.10) — RFC 8017 §8.1; the hash is in
+/// the `AlgorithmIdentifier.parameters` (a `RSASSA-PSS-params` SEQUENCE).
+const ID_RSASSA_PSS: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
+
+/// id-ecPublicKey OID (1.2.840.10045.2.1) — the SPKI algorithm for an ECDSA key;
+/// the curve is named by the `parameters` OID (secp256r1 / secp384r1).
+const ID_EC_PUBLIC_KEY: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+
+/// secp256r1 (P-256) curve OID (1.2.840.10045.3.1.7).
+const OID_SECP256R1: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
+
+/// secp384r1 (P-384) curve OID (1.3.132.0.34).
+const OID_SECP384R1: const_oid::ObjectIdentifier =
+    const_oid::ObjectIdentifier::new_unwrap("1.3.132.0.34");
+
 /// Verify a CMS `SignedData` signature (wrapped in `ContentInfo`).
 ///
 /// **Pre-chain check (G3):** the signature is verified against the signer
@@ -618,9 +683,22 @@ pub(crate) fn verify_signed(
     let stored_digest = find_message_digest(signed_attrs).ok_or_else(|| {
         CryptoError::Malformed("SignedData: missing messageDigest attr".into())
     })?;
-    let computed_digest = {
-        use sha2::Digest;
-        sha2::Sha256::digest(&content_bytes)
+    // messageDigest attribute = hash(covered content) under the SignerInfo's
+    // `digestAlgorithm` (RFC 5652 §11.2). SHA-256 for ECDSA-P256 / RSA-SHA256;
+    // SHA-384 for ECDSA-P384 / RSA-SHA384; SHA-512 for the RSA-SHA512 arm.
+    // Unsupported digest → cannot verify → sig_ok=false (NOT a hard error —
+    // same "unknown algorithm = unverified" contract as the sig dispatch).
+    let computed_digest = match compute_content_digest(&signer_info.digest_alg.oid, &content_bytes)
+    {
+        Some(d) => d,
+        None => {
+            return Ok(CmsSigCheck {
+                sig_ok: false,
+                signer_cert_der: Some(signer_cert_der),
+                signer_fingerprint: Some(fp),
+                signing_time_unix,
+            });
+        }
     };
     if stored_digest.as_slice() != computed_digest.as_slice() {
         // Content tampering or wrong covered content → cryptographic failure.
@@ -645,7 +723,7 @@ pub(crate) fn verify_signed(
     let signed_attrs_der = signed_attrs
         .to_der()
         .map_err(|e| cms_err("encode signed_attrs", e))?;
-    let sig_ok = verify_ecdsa_p256_signature(
+    let sig_ok = verify_signer_signature(
         &signer_cert,
         &signed_attrs_der,
         signer_info.signature.as_bytes(),
@@ -836,31 +914,119 @@ fn find_signing_time(attrs: &x509_cert::attr::Attributes) -> Option<i64> {
     Some(time.to_unix_duration().as_secs() as i64)
 }
 
-/// Verify an ECDSA-P256 signature over the DER-encoded `signed_attrs`.
+/// Dispatch the CMS `encryptedDigest` verification on the signer-info's
+/// `signatureAlgorithm` OID (+ the SPKI curve OID for ECDSA).
 ///
-/// `digest_alg` MUST be SHA-256 AND `sig_alg` MUST be ECDSA-with-SHA-256;
-/// other algorithms (RSA, RSA-PSS, ECDSA-P384) return `sig_ok=false` here.
-/// They are added in G4 (which lands the `p384` dep + RSA deps for Thunderbird
-/// interop). Do NOT add them speculatively.
-fn verify_ecdsa_p256_signature(
+/// # Algorithm scope (spec decision #10)
+/// - ECDSA P-256 + SHA-256 (`ecdsa-with-SHA256`, SPKI `secp256r1`)
+/// - ECDSA P-384 + SHA-384 (`ecdsa-with-SHA384`, SPKI `secp384r1`)
+/// - RSA-PKCS1v1.5 + SHA-{256,384,512} (`sha{256,384,512}WithRSAEncryption`)
+/// - RSA-PSS + SHA-{256,384,512} (`id-RSASSA-PSS`; hash from the PSS params)
+///
+/// Any other algorithm (P-521, Ed25519, SHA-1 PSS, …) returns `Ok(false)` —
+/// `sig_ok=false` → `SignatureState::Invalid`. This is deliberate: a message
+/// signed with an algorithm we don't ship must show "Invalid signature", not a
+/// parse error. `Err` stays reserved for malformed CMS DER.
+fn verify_signer_signature(
     cert: &Certificate,
     signed_attrs_der: &[u8],
     signature: &[u8],
     digest_alg: &AlgorithmIdentifierOwned,
     sig_alg: &AlgorithmIdentifierOwned,
 ) -> Result<bool> {
-    use p256::ecdsa::{DerSignature, VerifyingKey};
-    use spki::DecodePublicKey;
-    // `Verifier` (the trait carrying `vk.verify`) is re-exported via
-    // `ecdsa::signature` and via `p256::ecdsa::signature`.
-    use ecdsa::signature::Verifier;
+    let oid = sig_alg.oid;
+    if oid == ID_ECDSA_WITH_SHA_256
+        || oid == ID_ECDSA_WITH_SHA_384
+        || oid == ID_ECDSA_WITH_SHA_512
+    {
+        verify_ecdsa_signature(cert, signed_attrs_der, signature, digest_alg)
+    } else if oid == ID_SHA256_WITH_RSA
+        || oid == ID_SHA384_WITH_RSA
+        || oid == ID_SHA512_WITH_RSA
+        || oid == ID_RSA_ENCRYPTION
+    {
+        verify_rsa_pkcs1v15_signature(cert, signed_attrs_der, signature, digest_alg)
+    } else if oid == ID_RSASSA_PSS {
+        verify_rsa_pss_signature(cert, signed_attrs_der, signature, sig_alg)
+    } else {
+        Ok(false)
+    }
+}
 
-    // Algorithm guard: only SHA-256 + ECDSA-with-SHA-256 are in scope this task.
-    if digest_alg.oid != ID_SHA_256 || sig_alg.oid != ID_ECDSA_WITH_SHA_256 {
+/// Compute `hash(content)` under the SignerInfo's `digestAlgorithm` for the
+/// `messageDigest` attribute check (RFC 5652 §11.2). SHA-256 / SHA-384 /
+/// SHA-512 supported; anything else → `None` (caller maps to `sig_ok=false`).
+fn compute_content_digest(
+    digest_oid: &const_oid::ObjectIdentifier,
+    content: &[u8],
+) -> Option<Vec<u8>> {
+    use sha2::Digest;
+    match *digest_oid {
+        ID_SHA_256 => Some(sha2::Sha256::digest(content).to_vec()),
+        ID_SHA_384 => Some(sha2::Sha384::digest(content).to_vec()),
+        ID_SHA_512 => Some(sha2::Sha512::digest(content).to_vec()),
+        _ => None,
+    }
+}
+
+/// The ECDSA `Verifier::verify` impl on a curve's `VerifyingKey` hashes the
+/// message with the curve's default digest (P-256 → SHA-256, P-384 → SHA-384).
+/// So the caller MUST pair the curve with its matching `digest_alg`, else the
+/// signature won't verify. This is the common case in deployed S/MIME
+/// (Thunderbird/NSS pair P-256↔SHA-256, P-384↔SHA-384) and a mismatch yields
+/// the safe `sig_ok=false` verdict (no false-positive).
+fn verify_ecdsa_signature(
+    cert: &Certificate,
+    signed_attrs_der: &[u8],
+    signature: &[u8],
+    digest_alg: &AlgorithmIdentifierOwned,
+) -> Result<bool> {
+    let spki = cert.tbs_certificate().subject_public_key_info();
+    // Only id-ecPublicKey SPKIs are ECDSA keys; the curve is named by the
+    // `parameters` OID. A non-EC public-key SPKI here is a malformed signer
+    // (the sig_alg OID was ECDSA-* but the key isn't EC) → sig_ok=false.
+    if spki.algorithm.oid != ID_EC_PUBLIC_KEY {
         return Ok(false);
     }
+    let params = spki.algorithm.parameters.as_ref().ok_or_else(|| {
+        CryptoError::Malformed("ECDSA SPKI: missing curve parameters".into())
+    })?;
+    // `parameters` is an `Any` whose value is the curve OID. Re-derive its DER
+    // and parse — bulletproof across the owned `Any` vs borrowed `AnyRef` split.
+    let curve_der = params
+        .to_der()
+        .map_err(|e| cms_err("encode ECDSA curve params", e))?;
+    let curve_oid: const_oid::ObjectIdentifier =
+        <const_oid::ObjectIdentifier as der::Decode>::from_der(&curve_der)
+            .map_err(|e| cms_err("decode ECDSA curve OID", e))?;
+    if curve_oid == OID_SECP256R1 {
+        if digest_alg.oid != ID_SHA_256 {
+            return Ok(false);
+        }
+        verify_ecdsa_p256_signature_inner(cert, signed_attrs_der, signature)
+    } else if curve_oid == OID_SECP384R1 {
+        if digest_alg.oid != ID_SHA_384 {
+            return Ok(false);
+        }
+        verify_ecdsa_p384_signature_inner(cert, signed_attrs_der, signature)
+    } else {
+        // secp521r1 / other curves — P-521 deferred per spec #10.
+        Ok(false)
+    }
+}
 
-    // Recover the ECDSA verifying key from the cert's SPKI.
+/// ECDSA-P256 inner: recover the verifying key from the cert SPKI and verify
+/// the DER-encoded signature over `signed_attrs_der`. The P-256 `Verifier`
+/// hashes with SHA-256 internally (guarded by the caller).
+fn verify_ecdsa_p256_signature_inner(
+    cert: &Certificate,
+    signed_attrs_der: &[u8],
+    signature: &[u8],
+) -> Result<bool> {
+    use ecdsa::signature::Verifier;
+    use p256::ecdsa::{DerSignature, VerifyingKey};
+    use spki::DecodePublicKey;
+
     let spki_der = cert
         .tbs_certificate()
         .subject_public_key_info()
@@ -869,12 +1035,154 @@ fn verify_ecdsa_p256_signature(
     let pub_key = <p256::PublicKey as DecodePublicKey>::from_public_key_der(&spki_der)
         .map_err(|e| cms_err("decode signer P-256 public key", e))?;
     let vk = VerifyingKey::from(&pub_key);
-
-    // Parse the DER-encoded ECDSA signature and verify.
-    let sig = DerSignature::from_bytes(signature)
-        .map_err(|e| cms_err("parse ECDSA DER signature", e))?;
+    // A malformed ECDSA encryptedDigest (truncated r/s, wrong tag, …) is a
+    // signature-verification failure → `sig_ok=false`, NOT a hard error — same
+    // "unverifiable = Invalid, not a parse error" contract as the RSA arms
+    // (a structurally well-formed SignedData with a bad signature must map to
+    // `SignatureState::Invalid`, not surface as a parse error).
+    let sig = match DerSignature::from_bytes(signature) {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
     Ok(vk.verify(signed_attrs_der, &sig).is_ok())
 }
+
+/// ECDSA-P384 inner: mirrors the P-256 arm over `p384::ecdsa::VerifyingKey`.
+/// The P-384 `Verifier` hashes with SHA-384 internally (guarded by the caller).
+fn verify_ecdsa_p384_signature_inner(
+    cert: &Certificate,
+    signed_attrs_der: &[u8],
+    signature: &[u8],
+) -> Result<bool> {
+    use ecdsa::signature::Verifier;
+    use p384::ecdsa::{DerSignature, VerifyingKey};
+    use spki::DecodePublicKey;
+
+    let spki_der = cert
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .map_err(|e| cms_err("encode signer SPKI", e))?;
+    let pub_key = <p384::PublicKey as DecodePublicKey>::from_public_key_der(&spki_der)
+        .map_err(|e| cms_err("decode signer P-384 public key", e))?;
+    let vk = VerifyingKey::from(&pub_key);
+    // Malformed encryptedDigest → sig_ok=false (see P-256 inner for rationale).
+    let sig = match DerSignature::from_bytes(signature) {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+    Ok(vk.verify(signed_attrs_der, &sig).is_ok())
+}
+
+/// RSA-PKCS1v1.5 (`sha{256,384,512}WithRSAEncryption`): recover the RSA public
+/// key from the cert SPKI and verify the PKCS#1v1.5 signature over the
+/// `digest_alg` hash of `signed_attrs_der`. `rsa::pkcs1v15::VerifyingKey::<D>`
+/// hashes internally with `D`, so we dispatch `D` on `digest_alg.oid`.
+fn verify_rsa_pkcs1v15_signature(
+    cert: &Certificate,
+    signed_attrs_der: &[u8],
+    signature: &[u8],
+    digest_alg: &AlgorithmIdentifierOwned,
+) -> Result<bool> {
+    use rsa::pkcs1v15::{Signature as Pkcs1v15Signature, VerifyingKey};
+    use rsa::signature::Verifier;
+    use sha2::{Sha256, Sha384, Sha512};
+
+    let spki_der = cert
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .map_err(|e| cms_err("encode signer SPKI", e))?;
+    let pub_key = <rsa::RsaPublicKey as rsa::pkcs8::DecodePublicKey>::from_public_key_der(
+        &spki_der,
+    )
+    .map_err(|e| cms_err("decode signer RSA public key", e))?;
+
+    // Dispatch the verifying key's hash generic on the SignerInfo digest. Both
+    // `VerifyingKey::<D>` arms impl `signature::Verifier<&[u8]>` and hash the
+    // message with `D` internally.
+    macro_rules! verify_with {
+        ($d:ty) => {{
+            let vk = VerifyingKey::<$d>::new(pub_key.clone());
+            let sig = match Pkcs1v15Signature::try_from(signature) {
+                Ok(s) => s,
+                Err(_) => return Ok(false),
+            };
+            Ok(vk.verify(signed_attrs_der, &sig).is_ok())
+        }};
+    }
+    match digest_alg.oid {
+        ID_SHA_256 => verify_with!(Sha256),
+        ID_SHA_384 => verify_with!(Sha384),
+        ID_SHA_512 => verify_with!(Sha512),
+        _ => Ok(false),
+    }
+}
+
+/// RSA-PSS (`id-RSASSA-PSS`): the hash comes from the `RSASSA-PSS-params`
+/// `hashAlgorithm` (RFC 8017 §8.1), parsed from `sig_alg.parameters`. SHA-1
+/// (the RFC default) → `sig_ok=false` (do not verify a SHA-1 signature).
+fn verify_rsa_pss_signature(
+    cert: &Certificate,
+    signed_attrs_der: &[u8],
+    signature: &[u8],
+    sig_alg: &AlgorithmIdentifierOwned,
+) -> Result<bool> {
+    use rsa::pss::{Signature as PssSignature, VerifyingKey};
+    use rsa::signature::Verifier;
+    use sha2::{Sha256, Sha384, Sha512};
+
+    let spki_der = cert
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .map_err(|e| cms_err("encode signer SPKI", e))?;
+    let pub_key = <rsa::RsaPublicKey as rsa::pkcs8::DecodePublicKey>::from_public_key_der(
+        &spki_der,
+    )
+    .map_err(|e| cms_err("decode signer RSA public key", e))?;
+
+    let hash_oid = rsa_pss_hash_oid(sig_alg)?;
+    macro_rules! verify_with {
+        ($d:ty) => {{
+            let vk = VerifyingKey::<$d>::new(pub_key.clone());
+            let sig = match PssSignature::try_from(signature) {
+                Ok(s) => s,
+                Err(_) => return Ok(false),
+            };
+            Ok(vk.verify(signed_attrs_der, &sig).is_ok())
+        }};
+    }
+    match hash_oid {
+        ID_SHA_256 => verify_with!(Sha256),
+        ID_SHA_384 => verify_with!(Sha384),
+        ID_SHA_512 => verify_with!(Sha512),
+        // SHA-1 (RFC 8017 default) and any other hash → not verified.
+        _ => Ok(false),
+    }
+}
+
+/// Parse the `hashAlgorithm.oid` from an RSA-PSS `AlgorithmIdentifier.parameters`
+/// (`RSASSA-PSS-params` SEQUENCE, RFC 8017 §8.1). Mirrors `chain.rs`'s 0.7-line
+/// `rsa_pss_hash_oid` but on the 0.8 line (`pkcs1::RsaPssParams`).
+/// `Malformed` when params are absent or unparseable (broken CMS).
+fn rsa_pss_hash_oid(sig_alg: &AlgorithmIdentifierOwned) -> Result<const_oid::ObjectIdentifier> {
+    let params_any = sig_alg.parameters.as_ref().ok_or_else(|| {
+        CryptoError::Malformed("id-RSASSA-PSS AlgorithmIdentifier: missing parameters".into())
+    })?;
+    // Re-derive the raw params DER, then parse as RsaPssParams. Re-encoding via
+    // `to_der` sidesteps the owned-vs-borrowed `Any` lifetime split on the 0.8
+    // line (the params `Any` is owned; `RsaPssParams` decodes from `&[u8]`).
+    let params_der = params_any
+        .to_der()
+        .map_err(|e| cms_err("encode RSA-PSS params", e))?;
+    let pss: pkcs1::RsaPssParams<'_> = <pkcs1::RsaPssParams<'_> as der::Decode>::from_der(
+        &params_der,
+    )
+    .map_err(|e| cms_err("parse RSA-PSS params", e))?;
+    Ok(pss.hash.oid)
+}
+
 
 // ───────────────────────────────── tests ─────────────────────────────────
 
@@ -1426,5 +1734,357 @@ mod tests {
             matches!(err, CryptoError::Malformed(_)),
             "non-CMS input must be Malformed, got {err:?}"
         );
+    }
+
+    // ─── G4-extend: RSA-PKCS1v1.5 / RSA-PSS / ECDSA-P384 signature verify ───
+    //
+    // The production `build_signed_data` only emits ECDSA-P256 (our own signed
+    // mail). These tests build RSA / P-384 / PSS SignedData directly via the
+    // cms builder (mirroring `build_signed_data_with_signing_time`) so the
+    // *verify* dispatch can be exercised without openssl. The corresponding
+    // openssl interop test is `openssl_sign_rsa_verifies_with_our_code`
+    // (interop_tests.rs, un-ignored as part of this task).
+
+    /// Build a P-384 self-signed S/MIME-leaf cert + PKCS#8 key for the
+    /// P-384 signature round-trip. Mirrors `rsa_test_cert_and_key`'s
+    /// `CertificateBuilder` sequence but with a `p384::ecdsa::SigningKey`.
+    fn p384_test_cert_and_key(id: u32) -> (Vec<u8>, Vec<u8>) {
+        use p384::ecdsa::{DerSignature as P384DerSignature, SigningKey as P384SigningKey};
+        use p384::elliptic_curve::Generate as _;
+        use pkcs8::EncodePrivateKey;
+        use std::str::FromStr;
+        use std::time::Duration;
+        use x509_cert::builder::profile::BuilderProfile;
+        use x509_cert::builder::{Builder, CertificateBuilder};
+        use x509_cert::certificate::TbsCertificate;
+        use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+        use x509_cert::name::Name;
+        use x509_cert::serial_number::SerialNumber;
+        use x509_cert::time::Validity;
+        use x509_cert::SubjectPublicKeyInfo;
+
+        struct P384TestProfile {
+            subject: Name,
+        }
+        impl BuilderProfile for P384TestProfile {
+            fn get_subject(&self) -> Name {
+                self.subject.clone()
+            }
+            fn get_issuer(&self, subject: &Name) -> Name {
+                subject.clone()
+            }
+            fn build_extensions(
+                &self,
+                _spk: spki::SubjectPublicKeyInfoRef<'_>,
+                _issuer_spk: spki::SubjectPublicKeyInfoRef<'_>,
+                _tbs: &TbsCertificate,
+            ) -> x509_cert::builder::Result<Vec<x509_cert::ext::Extension>> {
+                Ok(Vec::new())
+            }
+        }
+
+        let mut rng = rand::rng();
+        let signing_key = P384SigningKey::generate_from_rng(&mut rng);
+        let pub_spki = SubjectPublicKeyInfo::from_key(signing_key.verifying_key())
+            .expect("build P-384 SPKI");
+
+        let subject = Name::from_str(&format!("CN=p384-signer-{id}")).expect("subject name");
+        let profile = P384TestProfile { subject };
+        let serial = SerialNumber::from(id);
+        let validity =
+            Validity::from_now(Duration::from_secs(365 * 24 * 60 * 60)).expect("validity");
+        let mut builder =
+            CertificateBuilder::new(profile, serial, validity, pub_spki).expect("cert builder");
+        let key_usage = KeyUsage(KeyUsages::DigitalSignature | KeyUsages::KeyEncipherment);
+        builder.add_extension(&key_usage).expect("key usage ext");
+        let cert = builder
+            .build::<_, P384DerSignature>(&signing_key)
+            .expect("build + sign P-384 cert");
+        let cert_der = cert.to_der().expect("cert DER");
+        // PKCS#8 DER of the P-384 private key (unencrypted).
+        let priv_der = signing_key
+            .to_pkcs8_der()
+            .expect("P-384 PKCS#8 DER");
+        (cert_der, priv_der.as_bytes().to_vec())
+    }
+
+    /// Build a CMS SignedData over `payload`, signed with **RSA-PKCS1v1.5 +
+    /// SHA-256** by `signer_cert_der` + `signer_priv_pkcs8_der`. Mirrors
+    /// `build_signed_data_with_signing_time` but swaps the p256 ecdsa signer
+    /// for `rsa::pkcs1v15::SigningKey::<Sha256>`.
+    fn build_rsa_pkcs1v15_signed_data(
+        payload: &[u8],
+        signer_cert_der: &[u8],
+        signer_priv_pkcs8_der: &[u8],
+    ) -> Vec<u8> {
+        use cms::builder::{SignedDataBuilder, SignerInfoBuilder};
+        use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
+        use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
+        use der::Any;
+        use pkcs8::DecodePrivateKey;
+        use rsa::pkcs1v15::SigningKey;
+        use sha2::Sha256;
+        use spki::AlgorithmIdentifierOwned;
+        use x509_cert::Certificate;
+
+        let cert = <Certificate as der::Decode>::from_der(signer_cert_der).unwrap();
+        let tbs = cert.tbs_certificate();
+        let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: tbs.issuer().clone(),
+            serial_number: tbs.serial_number().clone(),
+        });
+        let rsa_priv = rsa::RsaPrivateKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
+        let signing_key = SigningKey::<Sha256>::new(rsa_priv);
+
+        let econtent = Some(Any::new(der::Tag::OctetString, payload.to_vec()).unwrap());
+        let encap = EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent,
+        };
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: ID_SHA_256,
+            parameters: None,
+        };
+        let signer_info_builder = SignerInfoBuilder::new(
+            sid,
+            digest_algorithm.clone(),
+            &encap,
+            None,
+        )
+        .unwrap();
+        let content_info = SignedDataBuilder::new(&encap)
+            .add_digest_algorithm(digest_algorithm)
+            .unwrap()
+            .add_certificate(CertificateChoices::Certificate(cert))
+            .unwrap()
+            .add_signer_info::<SigningKey<Sha256>, rsa::pkcs1v15::Signature>(
+                signer_info_builder,
+                &signing_key,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        content_info.to_der().unwrap()
+    }
+
+    /// Build a CMS SignedData over `payload`, signed with **ECDSA-P384 +
+    /// SHA-384** by `signer_cert_der` + `signer_priv_pkcs8_der`.
+    fn build_p384_signed_data(
+        payload: &[u8],
+        signer_cert_der: &[u8],
+        signer_priv_pkcs8_der: &[u8],
+    ) -> Vec<u8> {
+        use cms::builder::{SignedDataBuilder, SignerInfoBuilder};
+        use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
+        use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
+        use der::Any;
+        use p384::ecdsa::{DerSignature as P384DerSignature, SigningKey as P384SigningKey};
+        use pkcs8::DecodePrivateKey;
+        use spki::AlgorithmIdentifierOwned;
+        use x509_cert::Certificate;
+
+        /// SHA-384 OID (2.16.840.1.101.3.4.2.2).
+        const ID_SHA_384: const_oid::ObjectIdentifier =
+            const_oid::ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.2");
+
+        let cert = <Certificate as der::Decode>::from_der(signer_cert_der).unwrap();
+        let tbs = cert.tbs_certificate();
+        let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: tbs.issuer().clone(),
+            serial_number: tbs.serial_number().clone(),
+        });
+        let secret = p384::SecretKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
+        let signing_key = P384SigningKey::from(&secret);
+
+        let econtent = Some(Any::new(der::Tag::OctetString, payload.to_vec()).unwrap());
+        let encap = EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent,
+        };
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: ID_SHA_384,
+            parameters: None,
+        };
+        let signer_info_builder = SignerInfoBuilder::new(
+            sid,
+            digest_algorithm.clone(),
+            &encap,
+            None,
+        )
+        .unwrap();
+        let content_info = SignedDataBuilder::new(&encap)
+            .add_digest_algorithm(digest_algorithm)
+            .unwrap()
+            .add_certificate(CertificateChoices::Certificate(cert))
+            .unwrap()
+            .add_signer_info::<ecdsa::SigningKey<p384::NistP384>, P384DerSignature>(
+                signer_info_builder,
+                &signing_key,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        content_info.to_der().unwrap()
+    }
+
+    /// Build a CMS SignedData over `payload`, signed with **RSA-PSS + SHA-256**
+    /// by `signer_cert_der` + `signer_priv_pkcs8_der`. RSA-PSS is randomized,
+    /// so it uses `add_signer_info_with_rng`.
+    fn build_rsa_pss_signed_data(
+        payload: &[u8],
+        signer_cert_der: &[u8],
+        signer_priv_pkcs8_der: &[u8],
+    ) -> Vec<u8> {
+        use cms::builder::{SignedDataBuilder, SignerInfoBuilder};
+        use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
+        use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
+        use der::Any;
+        use pkcs8::DecodePrivateKey;
+        use rsa::pss::SigningKey as PssSigningKey;
+        use sha2::Sha256;
+        use spki::AlgorithmIdentifierOwned;
+        use x509_cert::Certificate;
+
+        let cert = <Certificate as der::Decode>::from_der(signer_cert_der).unwrap();
+        let tbs = cert.tbs_certificate();
+        let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: tbs.issuer().clone(),
+            serial_number: tbs.serial_number().clone(),
+        });
+        let rsa_priv = rsa::RsaPrivateKey::from_pkcs8_der(signer_priv_pkcs8_der).unwrap();
+        let signing_key = PssSigningKey::<Sha256>::new(rsa_priv);
+
+        let econtent = Some(Any::new(der::Tag::OctetString, payload.to_vec()).unwrap());
+        let encap = EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent,
+        };
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: ID_SHA_256,
+            parameters: None,
+        };
+        let signer_info_builder = SignerInfoBuilder::new(
+            sid,
+            digest_algorithm.clone(),
+            &encap,
+            None,
+        )
+        .unwrap();
+        let mut rng = rand::rng();
+        let content_info = SignedDataBuilder::new(&encap)
+            .add_digest_algorithm(digest_algorithm)
+            .unwrap()
+            .add_certificate(CertificateChoices::Certificate(cert))
+            .unwrap()
+            .add_signer_info_with_rng::<PssSigningKey<Sha256>, rsa::pss::Signature, _>(
+                signer_info_builder,
+                &signing_key,
+                &mut rng,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        content_info.to_der().unwrap()
+    }
+
+    /// RSA-PKCS1v1.5 + SHA-256 SignedData built in-test → `verify_signed`
+    /// returns `sig_ok=true`. Closes the G4-extend RSA carry-forward (the
+    /// `#[ignore]`d openssl sibling is `openssl_sign_rsa_verifies_with_our_code`).
+    #[test]
+    fn verify_round_trips_rsa_pkcs1v15_signed_data() {
+        let (cert_der, priv_pkcs8) = rsa_test_cert_and_key(40);
+        let payload = b"signed by RSA-PKCS1v1.5";
+        let signed_data_der = build_rsa_pkcs1v15_signed_data(payload, &cert_der, &priv_pkcs8);
+        let check = verify_signed(&signed_data_der, None).expect("parse RSA-signed CMS");
+        assert!(
+            check.sig_ok,
+            "RSA-PKCS1v1.5 signature must verify; got check={check:?}"
+        );
+        assert!(check.signer_cert_der.is_some(), "signer cert located");
+        assert!(
+            check.signer_fingerprint.is_some(),
+            "signer fingerprint populated"
+        );
+    }
+
+    /// ECDSA-P384 + SHA-384 SignedData → `sig_ok=true` (the messageDigest
+    /// attribute is SHA-384, exercising the digest dispatch).
+    #[test]
+    fn verify_round_trips_p384_signed_data() {
+        let (cert_der, priv_pkcs8) = p384_test_cert_and_key(41);
+        let payload = b"signed by ECDSA-P384";
+        let signed_data_der = build_p384_signed_data(payload, &cert_der, &priv_pkcs8);
+        let check = verify_signed(&signed_data_der, None).expect("parse P-384-signed CMS");
+        assert!(
+            check.sig_ok,
+            "ECDSA-P384 signature must verify; got check={check:?}"
+        );
+    }
+
+    /// RSA-PSS + SHA-256 SignedData → `sig_ok=true`. The signature algorithm
+    /// is `id-RSASSA-PSS` with the hash in the PSS params; verifies the
+    /// dispatch parses the PSS params and picks `rsa::pss::VerifyingKey`.
+    #[test]
+    fn verify_round_trips_rsa_pss_signed_data() {
+        let (cert_der, priv_pkcs8) = rsa_test_cert_and_key(42);
+        let payload = b"signed by RSA-PSS";
+        let signed_data_der = build_rsa_pss_signed_data(payload, &cert_der, &priv_pkcs8);
+        let check = verify_signed(&signed_data_der, None).expect("parse RSA-PSS-signed CMS");
+        assert!(
+            check.sig_ok,
+            "RSA-PSS signature must verify; got check={check:?}"
+        );
+    }
+
+    /// An unsupported signature algorithm (id-Ed25519, 1.3.101.112) must yield
+    /// `sig_ok=false` — NOT an `Err`. The "unknown algorithm = unverified, not
+    /// broken" contract is load-bearing: the backend maps it to
+    /// `SignatureState::Invalid` (a verdict), distinct from a CMS parse failure.
+    /// Exercises the catch-all `_ => Ok(false)` arm in `verify_signer_signature`.
+    #[test]
+    fn verify_unsupported_signature_algorithm_yields_sig_ok_false() {
+        use spki::AlgorithmIdentifierOwned;
+        let (cert_der, _) = p256_test_cert_and_key(43);
+        let cert = <x509_cert::Certificate as der::Decode>::from_der(&cert_der)
+            .expect("parse signer cert");
+        let unsupported = AlgorithmIdentifierOwned {
+            oid: const_oid::ObjectIdentifier::new_unwrap("1.3.101.112"), // id-Ed25519
+            parameters: None,
+        };
+        let digest = AlgorithmIdentifierOwned {
+            oid: ID_SHA_256,
+            parameters: None,
+        };
+        let ok = verify_signer_signature(&cert, b"signed-attrs", b"sig", &digest, &unsupported)
+            .expect("unsupported algorithm must not be a hard error");
+        assert!(
+            !ok,
+            "unsupported algorithm must yield sig_ok=false, got {ok}"
+        );
+    }
+
+    /// A structurally well-formed SignedData with a **malformed** ECDSA
+    /// `encryptedDigest` (unparseable `DerSignature`) must yield `sig_ok=false`,
+    /// NOT an `Err`. The "unverifiable = Invalid, not a parse error" contract
+    /// must hold symmetrically for ECDSA and RSA (controller-review Important
+    /// finding on the G4-extend task — the ECDSA inners originally propagated
+    /// the parse failure as `Err(Malformed)` while the RSA arms returned
+    /// `Ok(false)`).
+    #[test]
+    fn verify_malformed_ecdsa_signature_yields_sig_ok_false_not_error() {
+        let (cert_der, _) = p256_test_cert_and_key(44);
+        let cert = <x509_cert::Certificate as der::Decode>::from_der(&cert_der)
+            .expect("parse P-256 cert");
+        // A single 0x00 byte cannot parse as a DER ECDSA signature.
+        let ok = verify_ecdsa_p256_signature_inner(&cert, b"signed-attrs", &[0x00])
+            .expect("malformed P-256 sig must NOT be a hard error");
+        assert!(!ok, "malformed P-256 signature must yield sig_ok=false");
+
+        let (p384_der, _) = p384_test_cert_and_key(45);
+        let p384_cert = <x509_cert::Certificate as der::Decode>::from_der(&p384_der)
+            .expect("parse P-384 cert");
+        let ok384 = verify_ecdsa_p384_signature_inner(&p384_cert, b"signed-attrs", &[0x00])
+            .expect("malformed P-384 sig must NOT be a hard error");
+        assert!(!ok384, "malformed P-384 signature must yield sig_ok=false");
     }
 }
