@@ -271,6 +271,100 @@ pub async fn set_message_snippet(
     Ok(())
 }
 
+/// Derive + persist the `is_encrypted` / `is_signed` flags from the body-fetch
+/// crypto extraction signals. Called by `sync_request_bodies` AFTER
+/// `set_message_ciphertext` / `set_message_signed_part` so the flags reflect
+/// the just-cached CMS blobs. This is the body-fetch path — the ONE path that
+/// revisits already-synced messages (delta sync never re-fetches them), so it
+/// is the runtime self-heal for messages whose headers were synced BEFORE the
+/// Phase 1b S/MIME detection code landed in the headers-sync upsert (their
+/// flags are frozen at 0). Mirrors the one-shot backfill migration
+/// `20260718000001_backfill_crypto_flags.sql`.
+///
+/// Only flips 0 → 1 (never downgrades). Mirrors onto `threads` so the
+/// message-list SecurityChips stay consistent.
+///
+/// Signal mapping (mirrors `extract_raw_ciphertext` / `extract_clear_signed_parts`
+/// in `mail/imap/client.rs`):
+///   - `has_signed_part` → clear-signed `multipart/signed` → `is_signed = 1`
+///   - `has_ciphertext && !has_signed_part` → opaque `application/pkcs7-mime`
+///     → `is_encrypted = 1` (the accurate encrypted-vs-signed distinction is
+///     parsed from the CMS OID at open time by `open_crypto_message` and
+///     written to `message_crypto_results`; this flag is only the detection
+///     hint that routes the frontend to the crypto path).
+pub async fn set_message_crypto_flags(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+    has_ciphertext: bool,
+    has_signed_part: bool,
+) -> Result<(), String> {
+    let is_encrypted = has_ciphertext && !has_signed_part;
+    let is_signed = has_signed_part;
+    if !is_encrypted && !is_signed {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await.map_err(|e| format!("begin tx: {e}"))?;
+    // messages: only flip 0 → 1 (guard avoids needless WAL churn on re-fetch of
+    // already-flagged crypto mail, e.g. re-opening an encrypted thread).
+    if is_encrypted {
+        sqlx::query(
+            "UPDATE messages SET is_encrypted = 1 \
+             WHERE account_id = ? AND id = ? AND is_encrypted = 0",
+        )
+        .bind(account_id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    if is_signed {
+        sqlx::query(
+            "UPDATE messages SET is_signed = 1 \
+             WHERE account_id = ? AND id = ? AND is_signed = 0",
+        )
+        .bind(account_id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    // Mirror onto threads (thread_id = message_id for IMAP; NULL for non-IMAP).
+    let thread_id: Option<String> =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE account_id = ? AND id = ?")
+            .bind(account_id)
+            .bind(message_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    if let Some(tid) = thread_id {
+        if is_encrypted {
+            sqlx::query(
+                "UPDATE threads SET is_encrypted = 1 \
+                 WHERE account_id = ? AND id = ? AND is_encrypted = 0",
+            )
+            .bind(account_id)
+            .bind(&tid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        if is_signed {
+            sqlx::query(
+                "UPDATE threads SET is_signed = 1 \
+                 WHERE account_id = ? AND id = ? AND is_signed = 0",
+            )
+            .bind(account_id)
+            .bind(&tid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Resolve the `thread_id` for a message — used by `request_bodies_inner` to
 /// build the `BodiesWrittenEvent` payload so the frontend can patch the right
 /// `thread.snippet` without a second query. Returns `None` when the row is
@@ -1240,6 +1334,84 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!((enc, sig), (1, 1), "EncryptedSigned must set both flags");
+    }
+
+    /// `set_message_crypto_flags` is the runtime self-heal: a message synced
+    /// BEFORE the Phase 1b detection code landed (so its headers-sync upsert
+    /// wrote `is_encrypted=0`) gets its flags corrected when the body-fetch
+    /// path caches the CMS blob. Simulate the stale row (sync as plain), then
+    /// call the helper with the body-fetch signals and assert the flags flip to
+    /// 1 on BOTH `messages` and `threads`. Also asserts the 0→1-only contract:
+    /// a second call with no crypto signals must NOT downgrade existing flags.
+    #[tokio::test]
+    async fn set_message_crypto_flags_self_heals_stale_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        seed(&pool, "acc").await;
+        // Sync the message as PLAIN (crypto_kind None) → flags (0, 0), as a
+        // pre-detection sync would have written.
+        let delta = FolderDelta {
+            added: vec![RemoteMessage {
+                uid: 41,
+                folder: "INBOX".into(),
+                message_id: Some("<stale>".into()),
+                subject: Some("Stale".into()),
+                from_address: Some("a@b".into()),
+                date: 9000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_folder_delta(&pool, "acc", "acc:INBOX", "INBOX", &delta)
+            .await
+            .unwrap();
+        let pk = "imap-acc-INBOX-41";
+
+        // Body-fetch path detects an opaque CMS blob (ciphertext, no
+        // signed_part) → is_encrypted should flip to 1.
+        set_message_crypto_flags(&pool, "acc", pk, true, false)
+            .await
+            .unwrap();
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (1, 0), "self-heal must set is_encrypted on messages");
+        let (enc_t, sig_t): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM threads WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc_t, sig_t), (1, 0), "self-heal must mirror onto threads");
+
+        // Clear-signed signal → is_signed flips to 1 (and is_encrypted stays 1;
+        // a real clear-signed message would have arrived as plain, but the
+        // 0→1-only contract means we never downgrade).
+        set_message_crypto_flags(&pool, "acc", pk, false, true)
+            .await
+            .unwrap();
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (1, 1), "is_signed self-heal must not downgrade is_encrypted");
+
+        // No crypto signals → no-op (must not touch flags, must not error).
+        set_message_crypto_flags(&pool, "acc", pk, false, false)
+            .await
+            .unwrap();
+        let (enc, sig): (i64, i64) =
+            sqlx::query_as("SELECT is_encrypted, is_signed FROM messages WHERE account_id = 'acc' AND id = ?")
+                .bind(pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((enc, sig), (1, 1), "no-signal call must be a no-op");
     }
 
     /// Re-sync via ON CONFLICT must UPDATE the flags (not leave the original

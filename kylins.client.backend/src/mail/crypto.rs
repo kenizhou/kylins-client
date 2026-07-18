@@ -41,7 +41,9 @@ use crate::db::crypto_keys::{
     list_crypto_keys_for_account, list_trust_anchor_certs, DefaultKeyRow,
 };
 use crate::db::message_bodies::{get_message_ciphertext, get_message_signed_part};
-use crate::db::message_crypto_results::{upsert_message_crypto_result, MessageCryptoResultRow};
+use crate::db::message_crypto_results::{
+    get_message_crypto_result, upsert_message_crypto_result, MessageCryptoResultRow,
+};
 use crate::db::trust_decisions::get_latest_trust_decision;
 use crate::keystore_bridge::SqliteKeyStore;
 use crate::mail::builder::{CryptoMethod, SendDraft};
@@ -277,6 +279,78 @@ pub struct OpenCryptoResult {
     pub crypto_result: MessageCryptoResultRow,
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Signature details dialog (G6 follow-up): re-parse the cached CMS blob to
+// surface signer cert + chain path for a read-only "Signature details…"
+// dialog. Pure parse + DB reads — no decrypt, no network. Only `signed`
+// (opaque `application/pkcs7-mime; smime-type=signed-data`) and clear-signed
+// `multipart/signed` are re-parseable from the persisted CMS columns; for
+// `encrypted-signed` the inner SignedData lives in decrypted in-memory-only
+// bytes (not persisted), so `signer` is None there and the dialog shows the
+// persisted verdict only.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Parsed signer leaf cert details. No DER crosses IPC — only the parsed
+/// fields the dialog renders. `fingerprint` mirrors the persisted
+/// `MessageCryptoResultRow.signer_fingerprint` (re-attached here so the dialog
+/// has one self-contained record).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignerCertDetails {
+    pub subject_cn: Option<String>,
+    pub issuer_cn: Option<String>,
+    pub serial_hex: String,
+    pub fingerprint: String,
+    pub not_before_unix: i64,
+    pub not_after_unix: i64,
+    /// Dotted OID string of the signer cert's SubjectPublicKeyInfo algorithm
+    /// (e.g. `1.2.840.10045.2.1` for ECDSA-P256). The frontend maps to a label.
+    pub public_key_algorithm_oid: String,
+    /// Dotted OID string of the CMS `SignerInfo.signatureAlgorithm` (the
+    /// algorithm used to produce the signature, e.g.
+    /// `1.2.840.10045.4.3.2` for ecdsa-with-SHA256).
+    pub signature_algorithm_oid: String,
+    pub signing_time_unix: Option<i64>,
+}
+
+/// One entry in the certification path (intermediate or anchor). Parsed CNs
+/// only; `is_anchor` flags entries from the account's imported trust-anchor set.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainPathEntry {
+    pub subject_cn: Option<String>,
+    pub issuer_cn: Option<String>,
+    pub is_anchor: bool,
+}
+
+/// Full signer + verification record for the "Signature details…" dialog.
+/// Re-derived by [`get_signer_details`] on dialog open. The persisted verdict
+/// (`signature_state` / `chain_valid` / `revocation_state` / `verified_at`)
+/// is the authoritative outcome from `open_crypto_message` open-time (which
+/// had CRLs); we deliberately do NOT re-run chain validation here (without
+/// fresh CRLs it would mis-report revocation as `unchecked`).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignerDetails {
+    pub signature_state: String,
+    pub decrypt_state: String,
+    pub crypto_kind: String,
+    /// Persisted nullable INTEGER → `Option<bool>`. `None` = unchecked.
+    pub chain_valid: Option<bool>,
+    pub revocation_state: String,
+    pub verified_at: String,
+    /// Re-resolved via [`resolve_signer_trust`] at dialog time (reflects any
+    /// trust_decision written since the message was opened).
+    pub trust_state: String,
+    /// `None` for `encrypted-signed` (no re-parseable SignedData in the DB).
+    pub signer: Option<SignerCertDetails>,
+    pub chain_path: Vec<ChainPathEntry>,
+    /// Human-readable inference from `signature_state` (UI-level; the granular
+    /// `ChainOutcome.failure_reason` is internal to `verify_with_context` and
+    /// not persisted).
+    pub failure_reason: Option<String>,
+}
+
 /// Build a per-call [`SmimeBackend`] bound to `account_id`. Mirrors the helper
 /// in `db/commands.rs:1356` — same construction pattern as `send_op`
 /// (`engine.rs:1011`). `SqliteKeyStore` is not `Clone` but its constructor is
@@ -309,7 +383,7 @@ fn smime_backend(pool: &SqlitePool, account_id: &str) -> SmimeBackend {
 /// That's harmless for anchor-set use (an extra self-signed anchor just won't
 /// match an external signer's chain); but for signer_trust detection we look
 /// directly at `has_private`, which is unambiguous.
-async fn resolve_signer_trust(
+pub(crate) async fn resolve_signer_trust(
     pool: &SqlitePool,
     account_id: &str,
     signer_fingerprint: Option<&str>,
@@ -666,6 +740,12 @@ pub async fn open_crypto_message(
     // Step 1: load ciphertext + From header + (Plan 5 / G7) signed_part.
     let ciphertext = get_message_ciphertext(pool, account_id, message_id).await?;
     let signed_part = get_message_signed_part(pool, account_id, message_id).await?;
+    log::info!(
+        "[crypto] open_crypto_message: account={account_id} msg={message_id} \
+         ciphertext_len={} signed_part_len={}",
+        ciphertext.as_ref().map(|c| c.len()).unwrap_or(0),
+        signed_part.as_ref().map(|s| s.len()).unwrap_or(0),
+    );
 
     // messages.from_address — the RFC 5322 From: used for SAN identity binding
     // + the trust_decisions peer_email lookup. NULL when the column is NULL
@@ -764,6 +844,10 @@ pub async fn open_crypto_message(
 
     let is_enveloped = ci.content_type == const_oid::db::rfc5911::ID_ENVELOPED_DATA;
     let is_signed = ci.content_type == const_oid::db::rfc5911::ID_SIGNED_DATA;
+    log::info!(
+        "[crypto] ContentInfo parsed: content_type_oid={:?} is_enveloped={is_enveloped} is_signed={is_signed}",
+        ci.content_type
+    );
 
     // Default crypto_kind from the outer blob; refined below if we recurse
     // (decrypt-then-verify → encrypted-signed).
@@ -773,6 +857,12 @@ pub async fn open_crypto_message(
             let keys = list_crypto_keys_for_account(pool, account_id, "smime")
                 .await
                 .map_err(|e| format!("list account keys: {e}"))?;
+            let priv_keys: Vec<_> = keys.iter().filter(|k| k.has_private).collect();
+            log::info!(
+                "[crypto] enveloped: {} total key(s), {} with private material; trying each",
+                keys.len(),
+                priv_keys.len()
+            );
 
             // Build the EncryptedEnvelope ONCE outside the key loop — only the
             // decryption KeyHandleRef changes per iteration.
@@ -789,7 +879,7 @@ pub async fn open_crypto_message(
             };
 
             let mut decrypted: Option<Vec<u8>> = None;
-            for key_row in keys.iter().filter(|k| k.has_private) {
+            for key_row in &priv_keys {
                 // Build the decryption KeyHandleRef. KeyId encoding matches
                 // SqliteKeyStore::encode_key_id (`standard|fingerprint`). The
                 // algorithm field is not load-bearing for decrypt (the keystore
@@ -809,16 +899,42 @@ pub async fn open_crypto_message(
                     Ok(payload) => {
                         // S/MIME collapses the MIME tree into one part.
                         if let Some(part) = payload.parts.into_iter().next() {
+                            log::info!(
+                                "[crypto] decrypt OK with key fp={} ({} bytes plaintext)",
+                                key_row.fingerprint,
+                                part.data.len()
+                            );
                             decrypted = Some(part.data);
                             break;
                         }
+                        log::warn!(
+                            "[crypto] decrypt returned Ok but no part for key fp={}",
+                            key_row.fingerprint
+                        );
                     }
-                    Err(_) => continue, // no match — try the next key
+                    Err(e) => {
+                        // Log the ACTUAL error so a genuine decrypt failure is
+                        // distinguishable from "not encrypted to this key". The
+                        // orchestrator treats both as "try the next key", but the
+                        // surface symptom (no-key) is identical either way —
+                        // without this log the root cause is invisible.
+                        log::warn!(
+                            "[crypto] decrypt FAILED for key fp={}: {} ({:?})",
+                            key_row.fingerprint,
+                            e,
+                            e
+                        );
+                        continue;
+                    }
                 }
             }
 
             let Some(inner_bytes) = decrypted else {
                 // No matching decryption key.
+                log::warn!(
+                    "[crypto] no matching key → no-key (all {} private key(s) errored or no recipient matched)",
+                    priv_keys.len()
+                );
                 let row = build_crypto_result_row(
                     account_id,
                     message_id,
@@ -992,20 +1108,28 @@ pub(crate) async fn apply_crypto(
 
     let (outer, mut entity) = split_message(mime)?;
 
-    // --- sign (clear-sign) ---
-    if draft.sign {
+    // Resolve the signing key up-front. Used by BOTH the encrypt-with-sign arm
+    // (opaque SignedData inside EnvelopedData — Thunderbird-style
+    // sign-then-encrypt) and the sign-only clear-sign arm below. `None` when
+    // not signing.
+    //
+    // CRITICAL: when BOTH sign + encrypt we must NOT clear-sign-then-encrypt.
+    // Clear-signing wraps the body in a `multipart/signed` MIME entity; the
+    // receive orchestrator (`open_crypto_message` → `is_signed_data`) only
+    // recurses into signature verification for an opaque CMS `SignedData`
+    // (`id-signed-data` OID), NOT for a `multipart/signed` MIME structure — so
+    // a clear-signed-then-encrypted message would be received as
+    // `crypto_kind='encrypted'` + `signature_state='not-signed'` (the signature
+    // silently dropped). Passing `sign_with` to `backend.encrypt` instead
+    // composes opaque SignedData inside EnvelopedData — the shape the receiver
+    // recognizes and recurses into (pinned by
+    // `open_crypto_message_decrypts_and_verifies_enveloped_then_signed`).
+    let signer: Option<KeyHandleRef> = if draft.sign {
         let signer_row = default_signing_key.ok_or(CryptoSendError::NoSigningKey)?;
-        let signer = key_handle_ref(signer_row);
-        let part1 = ensure_one_trailing_crlf(&entity.0);
-        let signed = backend
-            .sign(SignOp {
-                payload: &part1,
-                signing_key: signer,
-                detached: true,
-            })
-            .await?;
-        entity.0 = wrap_multipart_signed(&part1, &signed.signature.signature);
-    }
+        Some(key_handle_ref(signer_row))
+    } else {
+        None
+    };
 
     // --- encrypt ---
     if draft.encrypt {
@@ -1071,7 +1195,10 @@ pub(crate) async fn apply_crypto(
                 }],
                 serialization: SerializationStrategy::SingleMimeBlob,
                 recipients: &recipients,
-                sign_with: None,
+                // `sign_with` = the resolved signer when `draft.sign` → opaque
+                // SignedData inside EnvelopedData (sign-then-encrypt). `None`
+                // → encrypt-only.
+                sign_with: signer.clone(),
             })
             .await?;
         let enveloped_der = env
@@ -1087,6 +1214,22 @@ pub(crate) async fn apply_crypto(
         out.extend_from_slice(b"\r\n");
         out.extend_from_slice(&wrapped_entity);
         return Ok(out);
+    }
+
+    // --- sign-only (clear-sign) ---
+    // Reached only when `draft.sign && !draft.encrypt` (the encrypt branch
+    // above returns). Produces a `multipart/signed` MIME entity — the standard
+    // clear-signed S/MIME shape (Thunderbird-interoperable).
+    if let Some(signer) = signer {
+        let part1 = ensure_one_trailing_crlf(&entity.0);
+        let signed = backend
+            .sign(SignOp {
+                payload: &part1,
+                signing_key: signer,
+                detached: true,
+            })
+            .await?;
+        entity.0 = wrap_multipart_signed(&part1, &signed.signature.signature);
     }
 
     // sign-only: outer headers + the multipart/signed entity (its own Content-Type).
@@ -1167,6 +1310,232 @@ fn key_handle_ref(row: &DefaultKeyRow) -> KeyHandleRef {
         usage: KeyUsage::SignAndEncrypt,
         algorithm: "ECDSA-P256".into(),
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Signature details dialog — re-parse the cached CMS blob on dialog open.
+// Pure parse + DB reads; no decrypt, no network. See `SignerDetails` doc above.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Parsed cert fields surfaced by [`summarize_cert`]. Reused for the signer
+/// leaf, intermediates, and anchors so the dialog renders them uniformly.
+struct CertSummary {
+    subject_cn: Option<String>,
+    issuer_cn: Option<String>,
+    serial_hex: String,
+    not_before_unix: i64,
+    not_after_unix: i64,
+    public_key_algorithm_oid: String,
+}
+
+/// Parse a cert DER with `x509-parser` and extract the fields the dialog
+/// renders. Returns `None` on parse failure (soft — a malformed cert in the
+/// chain path is skipped, not fatal). Mirrors the `x509_parser` idiom in
+/// [`extract_crl_distribution_points`].
+fn summarize_cert(der: &[u8]) -> Option<CertSummary> {
+    let (_rem, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let subject_cn = cert
+        .subject()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .map(str::to_string);
+    let issuer_cn = cert
+        .issuer()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .map(str::to_string);
+    let serial_hex = cert
+        .raw_serial()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let not_before_unix = cert.validity().not_before.timestamp();
+    let not_after_unix = cert.validity().not_after.timestamp();
+    let public_key_algorithm_oid = cert.public_key().algorithm.algorithm.to_string();
+    Some(CertSummary {
+        subject_cn,
+        issuer_cn,
+        serial_hex,
+        not_before_unix,
+        not_after_unix,
+        public_key_algorithm_oid,
+    })
+}
+
+/// UI-level failure-reason mapping from the persisted `signature_state`. The
+/// granular `ChainOutcome.failure_reason` is internal to `verify_with_context`
+/// and not persisted; this mirrors its semantics for the dialog.
+fn failure_reason_for_state(state: &str) -> Option<String> {
+    match state {
+        "invalid" => Some("Signature did not verify — content may have been altered.".into()),
+        "mismatch" => Some("Signer identity does not match the message From header.".into()),
+        "unknown-key" => Some("Signer certificate is not in your keyring.".into()),
+        "valid-unverified" => {
+            Some("Signature valid, but the chain does not root in a trusted anchor.".into())
+        }
+        _ => None,
+    }
+}
+
+/// Re-parse the cached SignedData DER to extract `(signer_leaf_der,
+/// signature_algorithm_oid)`. Returns `None` when the blob is not valid
+/// SignedData or the signer leaf can't be located by IssuerAndSerialNumber.
+/// Mirrors the IssuerAndSerialNumber match in [`run_verify_path`] (the CRL
+/// extraction block) — factored out so the details dialog reuses the same
+/// signer-leaf resolution without re-running verify.
+fn extract_signer_leaf(signed_data_der: &[u8]) -> Option<(Vec<u8>, String)> {
+    let sci = ContentInfo::from_der(signed_data_der).ok()?;
+    let sinner = sci.content.to_der().ok()?;
+    let ssd = cms::signed_data::SignedData::from_der(&sinner).ok()?;
+    let cert_set = ssd.certificates.as_ref()?;
+    let first_signer_info = ssd.signer_infos.0.get(0)?;
+    let sig_alg_oid = first_signer_info
+        .signature_algorithm
+        .oid
+        .to_string();
+    for choice in cert_set.0.iter() {
+        if let cms::cert::CertificateChoices::Certificate(c) = choice {
+            let tbs = c.tbs_certificate();
+            let candidate_iasn = cms::cert::IssuerAndSerialNumber {
+                issuer: tbs.issuer().clone(),
+                serial_number: tbs.serial_number().clone(),
+            };
+            if let cms::signed_data::SignerIdentifier::IssuerAndSerialNumber(ref target) =
+                first_signer_info.sid
+            {
+                if &candidate_iasn == target {
+                    if let Ok(der) = c.to_der() {
+                        return Some((der, sig_alg_oid));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build the [`SignerDetails`] record for the "Signature details…" dialog.
+/// Returns `Ok(None)` when the message has no persisted `message_crypto_results`
+/// row (never opened through the crypto pipeline). For `signed` (opaque) and
+/// clear-signed messages the signer leaf + chain path are re-parsed from the
+/// cached CMS columns; for `encrypted-signed` the SignedData lives in
+/// decrypted in-memory-only bytes (not persisted), so `signer` is `None`.
+pub(crate) async fn get_signer_details(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<SignerDetails>, String> {
+    // 1. Persisted verdict (authoritative — has CRL-based revocation from
+    //    open time). None ⇒ message was never opened through the crypto path.
+    let Some(row) = get_message_crypto_result(pool, account_id, message_id).await? else {
+        return Ok(None);
+    };
+
+    // 2. Cached CMS columns + From header (for trust resolution).
+    let ciphertext = get_message_ciphertext(pool, account_id, message_id).await?;
+    let signed_part = get_message_signed_part(pool, account_id, message_id).await?;
+    let from_address: Option<String> =
+        sqlx::query_scalar("SELECT from_address FROM messages WHERE account_id = ? AND id = ?")
+            .bind(account_id)
+            .bind(message_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .flatten();
+
+    // 3. Resolve the SignedData DER we can re-parse WITHOUT decrypting.
+    //    - clear-signed (multipart/signed): the detached .p7s lives in
+    //      body_mime_ciphertext; signed_part holds the covered part-1.
+    //    - opaque signed (application/pkcs7-mime; signed-data): the CMS blob
+    //      itself is the SignedData in body_mime_ciphertext.
+    //    - enveloped / encrypted-signed: no re-parseable SignedData in the DB
+    //      (the inner SignedData for encrypted-signed lives in decrypted
+    //      in-memory-only bytes). Both shapes above resolve to `ciphertext`,
+    //      so a single OR gate suffices.
+    let signed_data_der: Option<Vec<u8>> = if signed_part.is_some() || row.crypto_kind == "signed" {
+        ciphertext.clone()
+    } else {
+        None
+    };
+
+    // 4. Re-parse for signer leaf + intermediates (best-effort; None leaves
+    //    the dialog with the persisted verdict only).
+    let signer: Option<SignerCertDetails> = signed_data_der
+        .as_deref()
+        .and_then(extract_signer_leaf)
+        .and_then(|(leaf_der, sig_alg_oid)| {
+            let s = summarize_cert(&leaf_der)?;
+            Some(SignerCertDetails {
+                subject_cn: s.subject_cn,
+                issuer_cn: s.issuer_cn,
+                serial_hex: s.serial_hex,
+                fingerprint: row.signer_fingerprint.clone().unwrap_or_default(),
+                not_before_unix: s.not_before_unix,
+                not_after_unix: s.not_after_unix,
+                public_key_algorithm_oid: s.public_key_algorithm_oid,
+                signature_algorithm_oid: sig_alg_oid,
+                // signingTime lives in the CMS signedAttrs; the extractor
+                // (`find_signing_time`) is pub(crate) in crypto_smime, not
+                // re-exported — surfaced as None for v1 (verified_at covers
+                // the verification time in the dialog's Verification section).
+                signing_time_unix: None,
+            })
+        });
+
+    // 5. Chain path: intermediates (from the SignedData cert set) + the
+    //    account's trust anchors. Both parsed with summarize_cert.
+    let mut chain_path: Vec<ChainPathEntry> = Vec::new();
+    if let Some(der) = signed_data_der.as_deref() {
+        if let Ok(intermediates) = crypto_smime::extract_intermediates(der) {
+            for int_der in intermediates {
+                if let Some(s) = summarize_cert(&int_der) {
+                    chain_path.push(ChainPathEntry {
+                        subject_cn: s.subject_cn,
+                        issuer_cn: s.issuer_cn,
+                        is_anchor: false,
+                    });
+                }
+            }
+        }
+    }
+    let anchors = list_trust_anchor_certs(pool, account_id).await?;
+    for anchor_der in anchors {
+        if let Some(s) = summarize_cert(&anchor_der) {
+            chain_path.push(ChainPathEntry {
+                subject_cn: s.subject_cn,
+                issuer_cn: s.issuer_cn,
+                is_anchor: true,
+            });
+        }
+    }
+
+    // 6. Trust state (re-resolved — reflects any trust decision since open).
+    let trust_state = resolve_signer_trust(
+        pool,
+        account_id,
+        row.signer_fingerprint.as_deref(),
+        from_address.as_deref(),
+    )
+    .await;
+    // TrustState serializes kebab-case via crypto_core; format explicitly so
+    // the wire value matches the dialog's expectations (lowercase).
+    let trust_state_str = format!("{trust_state:?}").to_lowercase();
+    let failure_reason = failure_reason_for_state(&row.signature_state);
+
+    Ok(Some(SignerDetails {
+        signature_state: row.signature_state,
+        decrypt_state: row.decrypt_state,
+        crypto_kind: row.crypto_kind,
+        chain_valid: row.chain_valid.map(|n| n != 0),
+        revocation_state: row.revocation_state,
+        verified_at: row.verified_at,
+        trust_state: trust_state_str,
+        signer,
+        chain_path,
+        failure_reason,
+    }))
 }
 
 #[cfg(test)]
@@ -1591,6 +1960,95 @@ mod tests {
         let s = std::str::from_utf8(&out).expect("output utf-8");
         assert!(s.contains("application/pkcs7-mime; smime-type=enveloped-data"));
         assert!(s.contains("Content-Transfer-Encoding: base64"));
+    }
+
+    /// Sign + encrypt (both flags): MUST produce opaque SignedData inside
+    /// EnvelopedData (sign-then-encrypt), NOT clear-signed-then-encrypted. The
+    /// receive orchestrator only recurses into signature verification for an
+    /// opaque CMS `SignedData` (`is_signed_data` checks the `id-signed-data`
+    /// OID); a `multipart/signed` MIME inner would be received as
+    /// `crypto_kind='encrypted'` + `signature_state='not-signed'` (signature
+    /// silently dropped). This round-trip pins the fix: apply_crypto → persist
+    /// → open_crypto_message → `crypto_kind='encrypted-signed'` +
+    /// `signature_state='valid-verified'`.
+    #[tokio::test]
+    async fn apply_crypto_sign_and_encrypt_produces_enveloped_then_signed() {
+        let h = make_harness(true, &["bob@kylins.com"]).await;
+        let pool = h.pool.clone();
+        let draft = SendDraft {
+            draft_id: "se1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![addr("bob@kylins.com")],
+            subject: "Signed+Encrypted".into(),
+            text_body: Some("signed and encrypted body".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        // Seed bob's cert as a trust anchor for ACCOUNT_ID so the
+        // recipient-cert validation gate passes (see encrypt-only test).
+        seed_anchor_from_account(pool.as_ref(), ACCOUNT_ID, "acct-rcpt-0").await;
+        let out = apply_crypto(
+            &h.backend,
+            h.keystore.as_ref(),
+            &mime,
+            &draft,
+            &h.account_email,
+            h.signer_row.as_ref(),
+            pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign+encrypt");
+
+        // Outer is enveloped-data (base64 single-part).
+        let s = std::str::from_utf8(&out).expect("output utf-8");
+        assert!(
+            s.contains("application/pkcs7-mime; smime-type=enveloped-data"),
+            "outer must be enveloped-data; got:\n{s}"
+        );
+
+        // Extract the enveloped CMS blob (mail_parser base64-decodes the root
+        // part body) + round-trip through open_crypto_message.
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&out)
+            .expect("output parses as MIME");
+        let root = parsed.parts.first().expect("root part");
+        let ciphertext = match &root.body {
+            mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+                d.as_ref().to_vec()
+            }
+            _ => panic!("root part must carry the enveloped CMS blob as Binary"),
+        };
+        // Outer CMS is enveloped-data.
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        let message_id = "msg-sign-and-encrypt";
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_ciphertext(&pool, ACCOUNT_ID, message_id, &ciphertext).await;
+
+        let result = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok");
+        // THE load-bearing assertion: sign+encrypt round-trips as
+        // encrypted-signed (not plain encrypted) — the inner SignedData was
+        // recognized + verified.
+        assert_eq!(
+            result.crypto_result.crypto_kind,
+            "encrypted-signed",
+            "sign+encrypt must produce encrypted-signed on receive; got {:?}",
+            result.crypto_result.crypto_kind
+        );
+        assert_eq!(
+            result.crypto_result.signature_state,
+            "valid-verified",
+            "own key (Personal trust) → ValidVerified; got {:?}",
+            result.crypto_result.signature_state
+        );
+        assert_eq!(result.crypto_result.decrypt_state, "ok");
     }
 
     /// Fail-closed: encrypting to a recipient with no cert in the keystore
@@ -2504,6 +2962,111 @@ mod tests {
             "decrypted text must contain the original body; got {:?}",
             result.plaintext_text
         );
+    }
+
+    /// `get_signer_details` returns `None` when the message has no persisted
+    /// `message_crypto_results` row (never opened through the crypto path).
+    /// Pins the prologue DB read.
+    #[tokio::test]
+    async fn get_signer_details_returns_none_when_no_crypto_result_row() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-no-row";
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        use crate::db::message_bodies::set_message_body;
+        set_message_body(&pool, ACCOUNT_ID, message_id, "").await.expect("placeholder body");
+
+        let details = get_signer_details(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("get_signer_details ok");
+        assert!(details.is_none(), "no persisted row → None");
+    }
+
+    /// `get_signer_details` re-parses the cached clear-signed p7s to surface
+    /// the signer leaf cert + chain path. Mirrors the clear-signed round-trip
+    /// (`open_crypto_message_verifies_clear_signed_multipart_signed`): build a
+    /// signed multipart/signed via `apply_crypto`, persist part1 + p7s, open
+    /// (writes the `message_crypto_results` row), then call
+    /// `get_signer_details` and assert the signer cert + chain path parsed.
+    #[tokio::test]
+    async fn get_signer_details_parses_signer_for_clear_signed() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-signer-details";
+
+        let own_fp = h.signer_handle.fingerprint.as_str().to_string();
+        sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+            .bind(&own_fp)
+            .execute(pool.as_ref())
+            .await
+            .expect("flag default signer");
+        let signer_row =
+            crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+                .await
+                .expect("query default signing key");
+
+        let draft = SendDraft {
+            draft_id: "sd1".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr("bob@kylins.com")],
+            subject: "Signer Details".into(),
+            text_body: Some("signer details body".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            signer_row.as_ref(),
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign-only");
+        let (part1, p7s_der) = parse_clear_signed_blobs(&wrapped);
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_clear_signed(&pool, ACCOUNT_ID, message_id, &part1, &p7s_der).await;
+
+        // Open first so the `message_crypto_results` row is written (signer
+        // fingerprint, signature_state, etc.).
+        let _ = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok");
+
+        let details = get_signer_details(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("get_signer_details ok")
+            .expect("details present after open");
+
+        // Persisted verdict surfaces straight through.
+        assert_eq!(details.crypto_kind, "signed");
+        assert_eq!(details.signature_state, "valid-verified");
+        // The signer leaf re-parsed from the cached p7s.
+        let signer = details
+            .signer
+            .as_ref()
+            .expect("signer leaf parsed for clear-signed");
+        assert!(signer.subject_cn.is_some(), "subject CN parsed");
+        assert!(!signer.serial_hex.is_empty(), "serial parsed");
+        assert!(!signer.fingerprint.is_empty(), "fingerprint attached");
+        assert!(!signer.public_key_algorithm_oid.is_empty(), "pubkey alg OID parsed");
+        assert!(!signer.signature_algorithm_oid.is_empty(), "sig alg OID parsed");
+        assert!(signer.not_after_unix > signer.not_before_unix, "validity window sane");
+        // The account's own key is in the anchor set (keystore_bridge quirk),
+        // so the chain path has at least one anchor entry.
+        assert!(
+            details.chain_path.iter().any(|e| e.is_anchor),
+            "chain path must include the account's trust anchor; got {:?}",
+            details.chain_path
+        );
+        // Own key → Personal trust.
+        assert_eq!(details.trust_state, "personal", "own key → Personal trust");
     }
 
     /// Clear-signed with a tampered part-1 byte (one byte flipped between

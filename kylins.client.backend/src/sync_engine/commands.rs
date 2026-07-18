@@ -212,6 +212,32 @@ pub async fn request_bodies_inner(
                                             );
                                         }
                                     }
+                                    // Correct stale `is_encrypted` / `is_signed`
+                                    // flags from the just-cached CMS blobs.
+                                    // Messages synced before the Phase 1b S/MIME
+                                    // detection code landed in the headers-sync
+                                    // upsert have these flags frozen at 0; the
+                                    // body-fetch path is the only one that
+                                    // revisits already-synced messages (delta
+                                    // sync never re-fetches them), so this is
+                                    // the runtime self-heal — mirrors the
+                                    // one-shot backfill migration
+                                    // `20260718000001_backfill_crypto_flags.sql`.
+                                    // Best-effort: a failure leaves the flags
+                                    // stale but does not break the body fetch.
+                                    if let Err(e) = messages::set_message_crypto_flags(
+                                        pool,
+                                        account_id,
+                                        mid,
+                                        fb.raw_ciphertext.is_some(),
+                                        fb.raw_signed_part.is_some(),
+                                    )
+                                    .await
+                                    {
+                                        log::warn!(
+                                            "[crypto] request_bodies: crypto flags for {mid} (uid {uid} in {folder}) failed: {e}"
+                                        );
+                                    }
                                     // Write snippet onto messages + threads.
                                     if let Err(e) = messages::set_message_snippet(
                                         pool, account_id, mid, &fb.snippet,

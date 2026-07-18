@@ -325,7 +325,7 @@ describe('threadStore.selectThread', () => {
   it('routes an encrypted message through openCryptoMessage (NOT sync_request_bodies) + surfaces crypto_result fields', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 1, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
 
@@ -358,7 +358,7 @@ describe('threadStore.selectThread', () => {
   it('hits the session decryptedCache on re-open (no second openCryptoMessage invoke) + re-attaches the crypto result', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 1, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
     // On cache-hit re-open, selectThread re-reads the persisted crypto result
@@ -395,7 +395,7 @@ describe('threadStore.selectThread', () => {
   it('still uses the plain body-fetch path (sync_request_bodies on cache miss) for non-crypto messages', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 0, is_signed: 0 }),
+      messageRow({ id: 'm1', is_encrypted: false, is_signed: false }),
     ]);
     // Cache miss → then present after the backend fetch.
     vi.mocked(getMessageBody).mockResolvedValueOnce(null).mockResolvedValueOnce({
@@ -425,7 +425,7 @@ describe('threadStore.selectThread', () => {
   it('on decrypt failure sets decryptState=failed, pushes an error toast, and does NOT crash the open flow', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 1, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockRejectedValue(new Error('no matching decryption cert'));
 
@@ -449,7 +449,7 @@ describe('threadStore.selectThread', () => {
   it('routes a signed-only (non-encrypted) message through the crypto path', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 0, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: false, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
 

@@ -191,3 +191,76 @@ export function getTrustDecision(
     fingerprint,
   });
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Signature details dialog
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mirrors Rust `SignerCertDetails` (`mail/crypto.rs`, camelCase via
+ * `#[serde(rename_all = "camelCase")]`). The parsed signer leaf cert. `null`
+ * for `encrypted-signed` messages (the inner SignedData lives in decrypted
+ * in-memory-only bytes — not re-parseable from the DB).
+ */
+export interface SignerCertDetails {
+  subjectCn: string | null;
+  issuerCn: string | null;
+  serialHex: string;
+  fingerprint: string;
+  notBeforeUnix: number;
+  notAfterUnix: number;
+  /** Dotted OID string of the SPKI algorithm (e.g. `1.2.840.10045.2.1`); the
+   *  dialog maps to a label. */
+  publicKeyAlgorithmOid: string;
+  /** Dotted OID string of the CMS SignerInfo signatureAlgorithm. */
+  signatureAlgorithmOid: string;
+  /** CMS signingTime; `null` when not extracted (v1 — see backend note). */
+  signingTimeUnix: number | null;
+}
+
+/** One entry in the certification path (intermediate or anchor). */
+export interface ChainPathEntry {
+  subjectCn: string | null;
+  issuerCn: string | null;
+  isAnchor: boolean;
+}
+
+/**
+ * Mirrors Rust `SignerDetails` (`mail/crypto.rs`, camelCase). Full signer +
+ * chain record for the "Signature details…" dialog. Re-derived by the backend
+ * `crypto_get_signer_details` command on dialog open (pure parse + DB reads).
+ */
+export interface SignerDetails {
+  /** `'not-signed' | 'valid-verified' | 'valid-unverified' | 'invalid' |
+   *  'unknown-key' | 'mismatch'`. */
+  signatureState: string;
+  /** `'ok' | 'no-key' | 'failed' | 'n/a'`. */
+  decryptState: string;
+  /** `'encrypted' | 'signed' | 'encrypted-signed'`. */
+  cryptoKind: string;
+  /** Persisted nullable INTEGER → `null` = unchecked. */
+  chainValid: boolean | null;
+  /** `'good' | 'revoked' | 'unchecked'`. */
+  revocationState: string;
+  /** Epoch-seconds string. */
+  verifiedAt: string;
+  /** `'personal' | 'verified' | 'unverified' | 'rejected' | 'undecided'`. */
+  trustState: string;
+  /** `null` for `encrypted-signed` (no re-parseable SignedData in the DB). */
+  signer: SignerCertDetails | null;
+  chainPath: ChainPathEntry[];
+  failureReason: string | null;
+}
+
+/**
+ * Fetch the full signer + chain record for the "Signature details…" dialog.
+ * Returns `null` when the message has never been opened through the crypto
+ * pipeline (no persisted `message_crypto_results` row). Pure parse + DB reads
+ * on the backend — no decrypt, no network.
+ */
+export function getSignerDetails(
+  accountId: string,
+  messageId: string,
+): Promise<SignerDetails | null> {
+  return invoke<SignerDetails | null>('crypto_get_signer_details', { accountId, messageId });
+}

@@ -1486,7 +1486,7 @@ pub async fn crypto_export_public_to_path(
 use std::sync::Arc;
 
 use crate::db::message_crypto_results::MessageCryptoResultRow;
-use crate::mail::crypto::{open_crypto_message, OpenCryptoResult};
+use crate::mail::crypto::{get_signer_details, open_crypto_message, OpenCryptoResult, SignerDetails};
 use crate::sync_engine::engine::{CryptoResultEvent, SyncEngine};
 
 /// Testable core of [`crypto_open_message`]. Takes a borrowed pool + an
@@ -1538,6 +1538,33 @@ pub async fn db_get_message_crypto_result(
 ) -> Result<Option<MessageCryptoResultRow>, String> {
     crate::db::message_crypto_results::get_message_crypto_result(&pool, &account_id, &message_id)
         .await
+}
+
+/// Testable core of [`crypto_get_signer_details`]. Mirrors
+/// `db_get_message_crypto_result`'s shape (pool + two strings, no `SyncEngine`
+/// — the dialog emits no events). Re-parses the cached CMS blob to surface the
+/// signer cert + chain path for the read-only "Signature details…" dialog.
+pub async fn crypto_get_signer_details_inner(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<SignerDetails>, String> {
+    get_signer_details(pool, account_id, message_id).await
+}
+
+/// Build the full signer + chain record for the "Signature details…" dialog.
+/// Pure parse + DB reads (no decrypt, no network). Returns `None` when the
+/// message has never been opened through the crypto pipeline. For
+/// `signed` / clear-signed messages the signer cert + chain path are
+/// re-parsed from the cached CMS columns; for `encrypted-signed` the
+/// SignedData lives in decrypted in-memory-only bytes and `signer` is `None`.
+#[tauri::command]
+pub async fn crypto_get_signer_details(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<Option<SignerDetails>, String> {
+    crypto_get_signer_details_inner(pool.inner(), &account_id, &message_id).await
 }
 
 // ---- rate-limit (Phase 3f) ----

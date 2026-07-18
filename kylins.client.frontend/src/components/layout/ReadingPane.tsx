@@ -22,6 +22,7 @@ import { ClassificationWatermark } from '../../features/classification/component
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import { CryptoBadge } from '../../features/view/CryptoBadge';
+import { SignatureDetailsDialog } from '../email/SignatureDetailsDialog';
 import { TrustDialog } from '../email/TrustDialog';
 import { IcalHelper, type ParsedEvent } from '../../services/calendar/icalHelper';
 
@@ -51,6 +52,10 @@ export function ReadingPane() {
   // it re-popping on every re-render. Reset whenever the selected message
   // changes so a fresh selection re-prompts.
   const [dismissedTrustMsgId, setDismissedTrustMsgId] = useState<string | undefined>(undefined);
+  // G6 follow-up: "Signature details…" dialog open state. Reset on message
+  // change (same prev-value block as dismissedTrustMsgId) so the dialog never
+  // leaks across selections.
+  const [showSignatureDetails, setShowSignatureDetails] = useState(false);
   // Reset per-message ephemeral state when the selected message changes. Uses
   // the prev-value render pattern (setState-during-render to correct stale
   // state) rather than setState-in-effect (the project's eslint rule
@@ -62,6 +67,7 @@ export function ReadingPane() {
     setCidMap(new Map());
     setInviteEvents([]);
     setDismissedTrustMsgId(undefined);
+    setShowSignatureDetails(false);
   }
   if (!message?.id && inviteEvents.length > 0) {
     setInviteEvents([]);
@@ -322,6 +328,10 @@ export function ReadingPane() {
           className="reading-pane-crypto-row mt-2 flex items-center gap-2 px-5 pt-4"
           data-testid="reading-pane-crypto-row"
         >
+          {/* Clickable for ANY crypto message (encrypted or signed). For
+           * signed mail the dialog shows the signer cert + chain; for
+           * encrypted-not-signed it shows the decrypt state + "not signed"
+           * (signer is null — no re-parseable SignedData in the DB). */}
           <CryptoBadge
             signatureState={message.signatureState}
             decryptState={message.decryptState}
@@ -329,6 +339,7 @@ export function ReadingPane() {
             signerEmail={message.signerEmail}
             signerFingerprint={message.signerFingerprint}
             variant="label"
+            onShowDetails={() => setShowSignatureDetails(true)}
           />
         </div>
       )}
@@ -456,6 +467,13 @@ export function ReadingPane() {
           chainInfo={pendingTrust.chainInfo}
           onResolved={handleTrustResolved}
           onCancel={handleTrustCancel}
+        />
+      )}
+      {showSignatureDetails && isCryptoMessage && activeAccountId && (
+        <SignatureDetailsDialog
+          accountId={activeAccountId}
+          messageId={message.id}
+          onClose={() => setShowSignatureDetails(false)}
         />
       )}
     </div>
