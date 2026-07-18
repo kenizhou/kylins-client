@@ -9,7 +9,7 @@ import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
-import { useAutoHideScrollbar, autoHideScrollbarClass } from '../../hooks/useAutoHideScrollbar';
+import { useAutoHideScrollbar } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
@@ -419,6 +419,7 @@ export function MessageList() {
   }, [items, isInbox, focusedTab]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollbarClass = useAutoHideScrollbar();
   // TanStack Virtual returns mutable function references that React Compiler
   // cannot safely memoize. Suppress the compiler warning here; the virtualizer
   // is used locally and its outputs are not memoized downstream.
@@ -471,7 +472,6 @@ export function MessageList() {
   const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
   const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
   const [activeDescendantId, setActiveDescendantId] = useState<string | null>(null);
-  useAutoHideScrollbar(scrollRef);
 
   // Keep the active descendant in sync with the selected thread so screen
   // readers always announce the current option when focus is on the listbox.
@@ -617,7 +617,7 @@ export function MessageList() {
         aria-label="Messages"
         aria-busy={isLoading && filteredItems.length === 0 ? true : undefined}
         aria-activedescendant={activeDescendantId ?? undefined}
-        className={`flex-1 flex flex-col overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
+        className={`flex-1 flex flex-col overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${scrollbarClass}`}
         onKeyDown={(e) => {
           if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();

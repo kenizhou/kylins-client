@@ -161,7 +161,7 @@
   background: transparent;
 }
 
-/* ---- Auto-hide scrollbar (track always reserves space, thumb only while scrolling) ---- */
+/* ---- Auto-hide scrollbar (CSS-only, no scroll listeners) ---- */
 .kylins-auto-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -177,10 +177,10 @@
   border-radius: 9999px;
   background: transparent;
 }
-.kylins-auto-scrollbar.is-scrolling {
+.kylins-auto-scrollbar:hover {
   scrollbar-color: color-mix(in srgb, var(--muted-text) 40%, transparent) transparent;
 }
-.kylins-auto-scrollbar.is-scrolling::-webkit-scrollbar-thumb {
+.kylins-auto-scrollbar:hover::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--muted-text) 40%, transparent);
 }
 
