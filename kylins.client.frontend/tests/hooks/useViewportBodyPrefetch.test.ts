@@ -27,7 +27,6 @@ vi.mock('../../src/services/db/messages', () => ({
 }));
 
 import { useViewportBodyPrefetch } from '../../src/hooks/useViewportBodyPrefetch';
-import { useAutoHideScrollbar } from '../../src/hooks/useAutoHideScrollbar';
 
 function makeItems(ids: string[]) {
   return ids.map((id) => ({ kind: 'thread' as const, thread: { id } as never }));
@@ -188,7 +187,7 @@ describe('useViewportBodyPrefetch', () => {
     });
   });
 
-  it('prefetches on scroll events when useAutoHideScrollbar shares the scroll container', async () => {
+  it('prefetches on scroll events', async () => {
     mockGetUncached.mockResolvedValue(['t1']);
 
     function ScrollContainer() {
@@ -197,7 +196,6 @@ describe('useViewportBodyPrefetch', () => {
         getVirtualItems: () => [{ index: 0 }, { index: 1 }],
         options: { getScrollElement: () => scrollRef.current },
       } as never;
-      useAutoHideScrollbar(scrollRef);
       useViewportBodyPrefetch({ virtualizer, items: makeItems(['t0', 't1']), accountId: 'a' });
       return React.createElement(
         'div',
