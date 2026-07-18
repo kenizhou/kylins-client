@@ -30,8 +30,12 @@ vi.mock('../src/services/accounts', () => ({
 vi.mock('../src/services/theme/themeManager', () => ({
   themeManager: {
     applyTheme: vi.fn(),
+    setContrast: vi.fn(),
     applySkin: vi.fn(),
     resetSkin: vi.fn(),
+    setFontSize: vi.fn(),
+    setSerifSubjects: vi.fn(),
+    setReduceMotion: vi.fn(),
   },
 }));
 vi.mock('../src/services/plugins/pluginManager', () => ({

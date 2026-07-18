@@ -2,18 +2,18 @@ import type { ColumnDef, PanelSizeMap, ViewState } from './types';
 
 export const DEFAULT_MESSAGE_LIST_COLUMNS: ColumnDef[] = [
   {
-    id: 'read',
-    label: 'Read',
-    defaultVisible: false,
-    sortable: true,
+    id: 'threadRibbon',
+    label: '',
+    defaultVisible: true,
+    sortable: false,
     resizable: false,
-    renderer: 'read',
+    renderer: 'threadRibbon',
   },
   {
     id: 'importance',
-    label: 'Importance',
+    label: 'Imp.',
     defaultVisible: false,
-    sortable: true,
+    sortable: false,
     resizable: false,
     renderer: 'importance',
   },
@@ -44,11 +44,20 @@ export const DEFAULT_MESSAGE_LIST_COLUMNS: ColumnDef[] = [
     renderer: 'subject',
   },
   {
+    id: 'snippet',
+    label: 'Snippet',
+    defaultVisible: false,
+    width: 200,
+    sortable: false,
+    resizable: true,
+    renderer: 'snippet',
+  },
+  {
     id: 'category',
     label: 'Category',
     defaultVisible: false,
     width: 120,
-    sortable: true,
+    sortable: false,
     resizable: true,
     renderer: 'category',
   },
@@ -69,6 +78,14 @@ export const DEFAULT_MESSAGE_LIST_COLUMNS: ColumnDef[] = [
     sortable: true,
     resizable: true,
     renderer: 'size',
+  },
+  {
+    id: 'attachments',
+    label: '',
+    defaultVisible: false,
+    sortable: false,
+    resizable: false,
+    renderer: 'attachments',
   },
 ];
 

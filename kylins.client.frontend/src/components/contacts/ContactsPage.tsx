@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Panel, Group, Separator } from 'react-resizable-panels';
 import { useContactStore } from '@/stores/contactStore';
 import { useAccountStore } from '@/stores/accountStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -9,9 +8,11 @@ import { ContactDetail } from '@/components/contacts/ContactDetail';
 import { GroupDetail } from '@/components/contacts/GroupDetail';
 import { ContactsCommandRibbon } from '@/components/contacts/ContactsCommandRibbon';
 import { Modal } from '@/components/ui/Modal';
+import { ResizablePaneGroup } from '@/components/layout/ResizablePaneGroup';
 import { getContacts, getContactGroups, createContact } from '@/services/db/contacts';
 import { importVCard, exportVCard } from '@/services/sync/vcard';
 import type { ContactPanelSizes } from '@/stores/contactStore';
+import type { ResizablePanelDef } from '@/components/layout/ResizablePaneGroup';
 
 const CONSTRAINTS = {
   account: { min: 12 },
@@ -173,6 +174,55 @@ export function ContactsPage() {
     writeLayout(nextLayout, contactPanelSizes, accountPaneVisible, setContactPanelSizes);
   }
 
+  const panels: ResizablePanelDef[] = [
+    {
+      id: 'contacts-accounts',
+      content: (
+        <ContactAccountPane
+          accounts={accounts}
+          selectedAccountId={selectedAccountId}
+          onSelect={setSelectedAccountId}
+        />
+      ),
+      defaultSize: layout['contacts-accounts'] ?? 20,
+      minSize: CONSTRAINTS.account.min,
+      visible: accountPaneVisible,
+      card: true,
+    },
+    {
+      id: 'contacts-list',
+      content: <ContactList />,
+      defaultSize: layout['contacts-list'] ?? 35,
+      minSize: CONSTRAINTS.list.min,
+      card: true,
+    },
+    {
+      id: 'contacts-detail',
+      content: selectedContact ? (
+        <ContactDetail
+          key={selectedContact.id}
+          contact={selectedContact}
+          groups={groups}
+          onUpdate={() => void refresh()}
+        />
+      ) : selectedGroup ? (
+        <GroupDetail
+          key={selectedGroup.id}
+          group={selectedGroup}
+          contacts={contacts}
+          onUpdate={() => void refresh()}
+        />
+      ) : (
+        <div className="flex-1 flex items-center justify-center text-[var(--muted-text)] text-sm">
+          Select a contact or group to view details.
+        </div>
+      ),
+      defaultSize: layout['contacts-detail'] ?? 45,
+      minSize: CONSTRAINTS.detail.min,
+      card: true,
+    },
+  ];
+
   return (
     <div className="flex flex-1 flex-col h-full">
       <ContactsCommandRibbon
@@ -183,68 +233,12 @@ export function ContactsPage() {
         exporting={exporting}
       />
 
-      <Group
+      <ResizablePaneGroup
         key={accountPaneVisible ? 'with-account' : 'no-account'}
         className="flex-1 w-full p-2"
-        orientation="horizontal"
+        panels={panels}
         onLayoutChanged={handleLayoutChanged}
-      >
-        {accountPaneVisible && (
-          <Panel
-            id="contacts-accounts"
-            defaultSize={layout['contacts-accounts']}
-            minSize={CONSTRAINTS.account.min}
-          >
-            <div className="h-full rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
-              <ContactAccountPane
-                accounts={accounts}
-                selectedAccountId={selectedAccountId}
-                onSelect={setSelectedAccountId}
-              />
-            </div>
-          </Panel>
-        )}
-        {accountPaneVisible && (
-          <Separator className="mx-1 w-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />
-        )}
-        <Panel
-          id="contacts-list"
-          defaultSize={layout['contacts-list']}
-          minSize={CONSTRAINTS.list.min}
-        >
-          <div className="h-full rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
-            <ContactList />
-          </div>
-        </Panel>
-        <Separator className="mx-1 w-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />
-        <Panel
-          id="contacts-detail"
-          defaultSize={layout['contacts-detail']}
-          minSize={CONSTRAINTS.detail.min}
-        >
-          <div className="h-full rounded-xl border border-[var(--border)] bg-[var(--card)] flex flex-col overflow-hidden">
-            {selectedContact ? (
-              <ContactDetail
-                key={selectedContact.id}
-                contact={selectedContact}
-                groups={groups}
-                onUpdate={() => void refresh()}
-              />
-            ) : selectedGroup ? (
-              <GroupDetail
-                key={selectedGroup.id}
-                group={selectedGroup}
-                contacts={contacts}
-                onUpdate={() => void refresh()}
-              />
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-[var(--muted-text)] text-sm">
-                Select a contact or group to view details.
-              </div>
-            )}
-          </div>
-        </Panel>
-      </Group>
+      />
 
       <Modal
         isOpen={isAddOpen}

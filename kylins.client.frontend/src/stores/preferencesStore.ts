@@ -6,12 +6,11 @@ export type PreferenceTab =
   | 'General'
   | 'Accounts'
   | 'Appearance'
+  | 'Mail'
+  | 'Calendar & Contacts'
   | 'Shortcuts'
-  | 'Mail Rules'
-  | 'Signatures'
-  | 'Templates'
-  | 'Contacts'
-  | 'Security';
+  | 'Security'
+  | 'About';
 
 interface BoolField {
   key: string;

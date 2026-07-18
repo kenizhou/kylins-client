@@ -68,7 +68,6 @@ import {
   PaintBoardIcon,
   KeyboardIcon,
   FilterIcon,
-  File01Icon,
   SignatureIcon,
   GlobeIcon,
   MailSend01Icon,
@@ -79,13 +78,13 @@ import {
   Shield01Icon,
   ShieldCheck as ShieldCheckIconData,
   LockIcon as LockIconData,
-  EyeIcon,
+  EyeIcon as EyeIconData,
   Flag01Icon,
   SquareLock02Icon,
   CircleLock02Icon,
   BiometricAccessIcon,
   FingerPrintIcon,
-  SecurityIcon,
+  SecurityIcon as SecurityIconData,
   Certificate02Icon,
   CopySlashIcon as CopySlashIconData,
 } from '@hugeicons/core-free-icons';
@@ -291,7 +290,9 @@ export const ArrowUpIcon = makeIcon(ArrowUp01Icon);
 export const ArrowDownIcon = makeIcon(ArrowDown01Icon);
 export const MinusIcon = makeIcon(MinusSignIcon);
 export const ShieldCheckIcon = makeIcon(ShieldCheckIconData);
+export const SecurityIcon = makeIcon(SecurityIconData);
 export const LockIcon = makeIcon(LockIconData);
+export const EyeIcon = makeIcon(EyeIconData);
 export const CaretDownIcon = makeIcon(ArrowDown01Icon);
 export const MaximizeIcon = makeIcon(ArrowExpand01Icon);
 export const RestoreIcon = makeIcon(ArrowShrink01Icon);
@@ -328,16 +329,32 @@ export const PreferencesAppearanceIcon = makeIcon(PaintBoardIcon);
 export const PreferencesShortcutsIcon = makeIcon(KeyboardIcon);
 export const PreferencesMailRulesIcon = makeIcon(FilterIcon);
 export const PreferencesSignaturesIcon = makeIcon(SignatureIcon);
-export const PreferencesTemplatesIcon = makeIcon(File01Icon);
 
 export const PreferencesReadingIcon = makeIcon(MailOpen01Icon);
+
+export function InfoIcon({ size = 20, ...rest }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      aria-hidden="true"
+      {...rest}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4M12 8h.01" />
+    </svg>
+  );
+}
 export const PreferencesSendingIcon = makeIcon(MailSend01Icon);
 export const PreferencesComposingIcon = makeIcon(PencilEdit01Icon);
 export const PreferencesNotificationsIcon = makeIcon(Notification03Icon);
 export const PreferencesLanguageIcon = makeIcon(GlobeIcon);
 export const PreferencesLocalDataIcon = makeIcon(Database01Icon);
 export const PreferencesSystemIcon = makeIcon(UserCircleIcon);
-export const PreferencesPrivacySecurityIcon = makeIcon(Shield01Icon);
 
 export const CLASSIFICATION_ICON_IDS = [
   'shield',
@@ -362,7 +379,7 @@ const CLASSIFICATION_ICON_MAP: Record<
 > = {
   shield: Shield01Icon,
   lock: LockIconData,
-  eye: EyeIcon,
+  eye: EyeIconData,
   flag: Flag01Icon,
   star: StarIconData,
   alert: Alert01Icon,
@@ -370,7 +387,7 @@ const CLASSIFICATION_ICON_MAP: Record<
   'circle-lock': CircleLock02Icon,
   biometric: BiometricAccessIcon,
   fingerprint: FingerPrintIcon,
-  security: SecurityIcon,
+  security: SecurityIconData,
   certificate: Certificate02Icon,
 };
 

@@ -161,7 +161,7 @@
   background: transparent;
 }
 
-/* ---- Auto-hide scrollbar (track always reserves space, thumb only while scrolling) ---- */
+/* ---- Auto-hide scrollbar (CSS-only, no scroll listeners) ---- */
 .kylins-auto-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -177,10 +177,10 @@
   border-radius: 9999px;
   background: transparent;
 }
-.kylins-auto-scrollbar.is-scrolling {
+.kylins-auto-scrollbar:hover {
   scrollbar-color: color-mix(in srgb, var(--muted-text) 40%, transparent) transparent;
 }
-.kylins-auto-scrollbar.is-scrolling::-webkit-scrollbar-thumb {
+.kylins-auto-scrollbar:hover::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--muted-text) 40%, transparent);
 }
 
@@ -352,6 +352,18 @@
 }
 .kylins-link:hover {
   color: var(--link-hover);
+}
+
+.serif-subjects .reading-pane-subject,
+.serif-subjects .message-list-subject {
+  font-family: 'Source Serif 4', Georgia, Cambria, 'Times New Roman', serif;
+}
+
+[data-reduce-motion='true'],
+[data-reduce-motion='true'] * {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
 }
 
 /* ---- Reusable badge utilities ---- */

@@ -51,19 +51,21 @@ function ToolbarButton({
   disabled,
   onClick,
   title,
+  'aria-label': ariaLabel,
 }: {
   icon: typeof BoldIcon;
   active?: boolean;
   disabled?: boolean;
   onClick: () => void;
   title: string;
+  'aria-label'?: string;
 }) {
   return (
     <ToggleButton
       isSelected={active}
       onChange={onClick}
       isDisabled={disabled}
-      aria-label={title}
+      aria-label={ariaLabel ?? title}
       className="flex h-11 w-11 items-center justify-center rounded-md transition-colors data-[selected]:bg-[var(--selected)] data-[selected]:text-[var(--selected-text)] text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Icon size={16} />
@@ -181,12 +183,14 @@ export function EditorToolbar({
         disabled={!editor.can().undo()}
         onClick={() => editor.chain().undo().run()}
         title="Undo (Ctrl+Z)"
+        aria-label="Undo"
       />
       <ToolbarButton
         icon={RedoIcon}
         disabled={!editor.can().redo()}
         onClick={() => editor.chain().redo().run()}
         title="Redo (Ctrl+Y)"
+        aria-label="Redo"
       />
 
       <ToolbarDivider />
@@ -196,42 +200,49 @@ export function EditorToolbar({
         active={editor.isActive('heading', { level: 1 })}
         onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
         title="Heading 1"
+        aria-label="Heading 1"
       />
       <ToolbarButton
         icon={H2Icon}
         active={editor.isActive('heading', { level: 2 })}
         onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
         title="Heading 2"
+        aria-label="Heading 2"
       />
       <ToolbarButton
         icon={H3Icon}
         active={editor.isActive('heading', { level: 3 })}
         onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
         title="Heading 3"
+        aria-label="Heading 3"
       />
       <ToolbarButton
         icon={BoldIcon}
         active={editor.isActive('bold')}
         onClick={() => editor.chain().focus().toggleBold().run()}
         title="Bold (Ctrl+B)"
+        aria-label="Bold"
       />
       <ToolbarButton
         icon={ItalicIcon}
         active={editor.isActive('italic')}
         onClick={() => editor.chain().focus().toggleItalic().run()}
         title="Italic (Ctrl+I)"
+        aria-label="Italic"
       />
       <ToolbarButton
         icon={UnderlineIcon}
         active={editor.isActive('underline')}
         onClick={() => editor.chain().focus().toggleUnderline().run()}
         title="Underline (Ctrl+U)"
+        aria-label="Underline"
       />
       <ToolbarButton
         icon={StrikethroughIcon}
         active={editor.isActive('strike')}
         onClick={() => editor.chain().focus().toggleStrike().run()}
         title="Strikethrough"
+        aria-label="Strikethrough"
       />
 
       <ToolbarDivider />
@@ -241,6 +252,7 @@ export function EditorToolbar({
         active={editor.isActive('highlight')}
         onClick={() => editor.chain().focus().toggleHighlight().run()}
         title="Highlight"
+        aria-label="Highlight"
       />
       <ColorButton editor={editor} />
       <FontFamilySelect editor={editor} />
@@ -252,24 +264,28 @@ export function EditorToolbar({
         active={editor.isActive('bulletList')}
         onClick={() => editor.chain().focus().toggleBulletList().run()}
         title="Bullet list"
+        aria-label="Bullet list"
       />
       <ToolbarButton
         icon={OrderedListIcon}
         active={editor.isActive('orderedList')}
         onClick={() => editor.chain().focus().toggleOrderedList().run()}
         title="Numbered list"
+        aria-label="Numbered list"
       />
       <ToolbarButton
         icon={QuoteIcon}
         active={editor.isActive('blockquote')}
         onClick={() => editor.chain().focus().toggleBlockquote().run()}
         title="Quote"
+        aria-label="Quote"
       />
       <ToolbarButton
         icon={CodeBlockIcon}
         active={editor.isActive('codeBlock')}
         onClick={() => editor.chain().focus().toggleCodeBlock().run()}
         title="Code block"
+        aria-label="Code block"
       />
 
       <ToolbarDivider />
@@ -285,6 +301,7 @@ export function EditorToolbar({
           }
         }}
         title="Insert link (Ctrl+K)"
+        aria-label="Insert link"
       />
       <input
         ref={imageInputRef}
@@ -297,6 +314,7 @@ export function EditorToolbar({
         icon={ImageIcon}
         onClick={() => imageInputRef.current?.click()}
         title="Insert image"
+        aria-label="Insert image"
       />
 
       <div className="flex-1" />

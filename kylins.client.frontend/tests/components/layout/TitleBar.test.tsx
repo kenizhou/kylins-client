@@ -1,28 +1,42 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { TitleBar } from '../../../src/components/layout/TitleBar';
-import { useUIStore } from '../../../src/stores/uiStore';
+import { TitleBar } from '@/components/layout/TitleBar';
+import { useUIStore } from '@/stores/uiStore';
 
-vi.mock('../../../src/components/ui/WindowTitleBar', () => ({
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+
+vi.mock('@/components/ui/WindowTitleBar', () => ({
   WindowControls: () => <div data-testid="window-controls" />,
 }));
 
-describe('TitleBar', () => {
+describe('TitleBar search', () => {
   beforeEach(() => {
     useUIStore.setState({
       activeMenuCategory: null,
       accountSetupOpen: false,
+      activeApp: 'mail',
     });
   });
 
-  it('renders the global search field', () => {
+  it('renders a search field with mail placeholder by default', () => {
     render(<TitleBar />);
-    expect(screen.getByLabelText(/search mail/i)).toBeInTheDocument();
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Search mail…');
+  });
+
+  it('updates placeholder for contacts app', () => {
+    useUIStore.setState({ activeApp: 'contacts' });
+    render(<TitleBar />);
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Search contacts…');
+  });
+
+  it('does not use absolute positioning for search container', () => {
+    const { container } = render(<TitleBar />);
+    const searchContainer = container.querySelector('.flex-1.flex.justify-center');
+    expect(searchContainer).toBeInTheDocument();
   });
 
   it('shows the clear button only when the search has text and clears on click', () => {
     render(<TitleBar />);
-    const input = screen.getByLabelText(/search mail/i);
+    const input = screen.getByRole('searchbox');
 
     expect(screen.queryByRole('button', { name: /clear search/i })).not.toBeInTheDocument();
 

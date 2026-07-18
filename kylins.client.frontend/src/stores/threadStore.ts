@@ -25,6 +25,11 @@ async function getThreadMessages(
   return messages ?? (await getMessagesForThread(thread.accountId, thread.id));
 }
 
+function setSelectedThread(id: string | null): string | null {
+  useViewStore.getState().setSelectedThreadIds(id ? [id] : []);
+  return id;
+}
+
 interface ThreadQuery {
   accountId: string;
   labelId: string | null;
@@ -106,7 +111,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   selectThread: async (thread) => {
-    set({ selectedThreadId: thread.id });
+    set({ selectedThreadId: setSelectedThread(thread.id) });
     try {
       const messages = await getMessagesForThread(thread.accountId, thread.id);
       const latest = messages[messages.length - 1] ?? null;
@@ -118,9 +123,12 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         // cache has (null body → reading pane shows the text fallback).
         let body = await getMessageBody(thread.accountId, latest.id);
         console.log(
-          '[select] latestId=', latest.id,
-          'accountId=', thread.accountId,
-          'body=', body ? `${body.bodyHtml?.length ?? 'null'} chars` : 'null',
+          '[select] latestId=',
+          latest.id,
+          'accountId=',
+          thread.accountId,
+          'body=',
+          body ? `${body.bodyHtml?.length ?? 'null'} chars` : 'null',
         );
         if (!body || body.bodyHtml == null) {
           console.log('[select] CACHE MISS for', latest.id, '— triggering sync_request_bodies');
@@ -218,7 +226,9 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
 
     set({
       threads: state.threads.filter((t) => t.id !== thread.id),
-      selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      selectedThreadId: setSelectedThread(
+        nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      ),
     });
 
     // If the deleted thread was being read, clear it and move the view to the
@@ -266,7 +276,9 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
 
     set({
       threads: state.threads.filter((t) => t.id !== thread.id),
-      selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      selectedThreadId: setSelectedThread(
+        nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      ),
     });
 
     if (wasSelected) {

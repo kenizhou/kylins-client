@@ -8,6 +8,19 @@ export interface PanelSizeMap {
   off: { folder: number; list: number };
 }
 
+export type ColumnRenderer =
+  | 'threadRibbon'
+  | 'from'
+  | 'subject'
+  | 'snippet'
+  | 'received'
+  | 'size'
+  | 'flag'
+  | 'category'
+  | 'read'
+  | 'importance'
+  | 'attachments';
+
 export interface ColumnDef {
   id: string;
   label: string;
@@ -15,7 +28,7 @@ export interface ColumnDef {
   width?: number;
   sortable: boolean;
   resizable: boolean;
-  renderer: 'from' | 'subject' | 'received' | 'size' | 'flag' | 'category' | 'read' | 'importance';
+  renderer: ColumnRenderer;
 }
 
 export interface ViewState {

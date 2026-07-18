@@ -1,8 +1,8 @@
-import { Panel, Group } from 'react-resizable-panels';
+import { useMemo } from 'react';
 import { useViewStore } from '../viewStore';
 import { useWindowSize } from '@/hooks/useWindowSize';
 import { FolderPaneDrawer } from '@/components/layout/FolderPaneDrawer';
-import { VDivider } from './VDivider';
+import { ResizablePaneGroup } from '@/components/layout/ResizablePaneGroup';
 
 interface CalendarLayoutProps {
   folderPane: React.ReactNode;
@@ -20,36 +20,39 @@ export function CalendarLayout({ folderPane, children }: CalendarLayoutProps) {
   const showPane = !isCompact && visible;
   const drawerOpen = isCompact && visible;
 
-  function handleLayoutChanged(layout: Record<string, number>) {
-    const next = layout['calendar-folder-pane'];
-    if (typeof next === 'number' && next >= 10 && next <= 80) {
-      setSize(next);
-    }
-  }
+  const panels = useMemo(
+    () => [
+      {
+        id: 'calendar-folder-pane',
+        content: folderPane,
+        defaultSize: size,
+        minSize: 12,
+        maxSize: 80,
+        visible: showPane,
+        card: true,
+      },
+      {
+        id: 'calendar-content',
+        content: children,
+        defaultSize: showPane ? 100 - size : 100,
+        minSize: 30,
+        card: false,
+      },
+    ],
+    [folderPane, children, size, showPane],
+  );
 
   return (
     <>
-      <Group orientation="horizontal" className="flex-1 p-2" onLayoutChanged={handleLayoutChanged}>
-        {showPane && (
-          <Panel
-            id="calendar-folder-pane"
-            defaultSize={size}
-            minSize={12}
-            className="flex flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]"
-          >
-            {folderPane}
-          </Panel>
-        )}
-        {showPane && <VDivider />}
-        <Panel
-          id="calendar-content"
-          defaultSize={showPane ? 100 - size : 100}
-          minSize={30}
-          className="flex flex-col overflow-hidden"
-        >
-          {children}
-        </Panel>
-      </Group>
+      <ResizablePaneGroup
+        orientation="horizontal"
+        className="flex-1 p-2"
+        panels={panels}
+        onLayoutChanged={(layout) => {
+          const next = layout['calendar-folder-pane'];
+          if (typeof next === 'number' && next >= 10 && next <= 80) setSize(next);
+        }}
+      />
 
       {drawerOpen && (
         <FolderPaneDrawer open={drawerOpen} onClose={() => setVisible(false)}>

@@ -13,7 +13,7 @@ import { useFolderStore } from '../../stores/folderStore';
 import type { MailFolder } from '../../services/mail/folders';
 import { getFolderIcon } from '../../utils/folderIcons';
 import { buildFolderTree, type FolderTreeNode } from '../../utils/folderTree';
-import { useAutoHideScrollbar, autoHideScrollbarClass } from '../../hooks/useAutoHideScrollbar';
+import { useAutoHideScrollbar } from '../../hooks/useAutoHideScrollbar';
 import { ContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { Modal } from '../ui/Modal';
 import {
@@ -509,8 +509,7 @@ export function FolderPane() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [collapsedInitialized, setCollapsedInitialized] = useState(false);
   const [accountsCollapsed, setAccountsCollapsed] = useState<Set<string>>(new Set());
-  const scrollRef = useRef<HTMLDivElement>(null);
-  useAutoHideScrollbar(scrollRef);
+  const scrollbarClass = useAutoHideScrollbar();
 
   const toggleAccountCollapsed = (accountId: string) => {
     setAccountsCollapsed((prev) => {
@@ -645,7 +644,7 @@ export function FolderPane() {
 
   return (
     <div className="flex h-full flex-col rounded-xl bg-surface">
-      <div ref={scrollRef} className={`flex-1 folder-pane-scroll ${autoHideScrollbarClass}`}>
+      <div className={`flex-1 folder-pane-scroll ${scrollbarClass}`}>
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-text">
             No folders yet. Add an account to get started.

@@ -100,14 +100,6 @@
   --pane-header-h: 32px;
   --row-h: 28px;
 
-  /*
-   * Title-bar search fallback. MeasuredPanelCard overwrites these once the
-   * message list is mounted; these defaults keep the search reasonably placed
-   * on initial render and when no message list is visible.
-   */
-  --message-list-left: 16rem;
-  --message-list-width: 24rem;
-
   /* Motion tokens */
   --duration-fast: 120ms;
   --duration-normal: 200ms;
@@ -128,6 +120,19 @@
 
   /* Shared typography */
   --text-overline: 700 11px / 1.2 var(--font-ui);
+
+  /* Component tokens */
+  --button-primary-bg: var(--primary);
+  --button-primary-fg: var(--primary-foreground);
+  --button-secondary-bg-hover: color-mix(in srgb, var(--primary) 10%, transparent);
+  --input-bg: var(--background);
+  --input-border: var(--border);
+  --input-focus-ring: var(--ring);
+  --list-row-hover-bg: var(--hover);
+  --list-row-selected-bg: var(--selected);
+  --ribbon-bg: var(--chrome);
+  --ribbon-group-border: var(--border);
+  --statusbar-bg: var(--chrome);
 }
 
 .dark {
@@ -209,4 +214,104 @@
   /* Chrome surface — darker than surface in both modes to preserve elevation. */
   --chrome: var(--series-100);
   --chrome-foreground: var(--foreground);
+}
+
+[data-contrast='high'],
+[data-contrast='high'].light {
+  /* High-contrast grayscale — pure black/white with evenly spaced grays. */
+  --series-50: #ffffff;
+  --series-100: #f0f0f0;
+  --series-200: #e0e0e0;
+  --series-300: #c0c0c0;
+  --series-400: #a0a0a0;
+  --series-500: #808080;
+  --series-600: #606060;
+  --series-700: #404040;
+  --series-800: #202020;
+  --series-900: #000000;
+  --series-950: #000000;
+
+  --background: #ffffff;
+  --foreground: #000000;
+  --surface: #ffffff;
+  --chrome: #f0f0f0;
+  --card: #ffffff;
+  --muted: #ffffff;
+  --muted-foreground: #000000;
+  --text: #000000;
+  --muted-text: #000000;
+  --border: #000000;
+  --input: #ffffff;
+  --border-width: 2px;
+  --ring: #0000ff;
+  --primary: #0000ff;
+  --primary-foreground: #ffffff;
+  --secondary: #ffffff;
+  --secondary-foreground: #000000;
+  --hover: #ffff00;
+  --selected: #00ffff;
+  --link: #0000ff;
+  --link-hover: #000080;
+  --destructive: #ff0000;
+  --success: #008000;
+  --warning: #ff8c00;
+  --error: #ff0000;
+}
+
+[data-contrast='high'].dark {
+  /* High-contrast grayscale — pure black/white with evenly spaced grays. */
+  --series-50: #000000;
+  --series-100: #0a0a0a;
+  --series-200: #141414;
+  --series-300: #1f1f1f;
+  --series-400: #333333;
+  --series-500: #555555;
+  --series-600: #777777;
+  --series-700: #999999;
+  --series-800: #bbbbbb;
+  --series-900: #ffffff;
+  --series-950: #ffffff;
+
+  --background: #000000;
+  --foreground: #ffffff;
+  --surface: #000000;
+  --chrome: #1a1a1a;
+  --card: #000000;
+  --muted: #000000;
+  --muted-foreground: #ffffff;
+  --text: #ffffff;
+  --muted-text: #ffffff;
+  --border: #ffffff;
+  --input: #000000;
+  --border-width: 2px;
+  --ring: #00ffff;
+  --primary: #00ffff;
+  --primary-foreground: #000000;
+  --secondary: #000000;
+  --secondary-foreground: #ffffff;
+  --hover: #ffff00;
+  --selected: #ff00ff;
+  --link: #00ffff;
+  --link-hover: #80ffff;
+  --destructive: #ff6666;
+  --success: #00ff00;
+  --warning: #ffd700;
+  --error: #ff6666;
+}
+
+[data-font-size='small'] {
+  --text-base: 13px;
+}
+
+[data-font-size='default'] {
+  --text-base: 14px;
+}
+
+[data-font-size='large'] {
+  --text-base: 16px;
+}
+
+html[data-font-size] body,
+html[data-font-size] #root {
+  font-size: var(--text-base);
 }

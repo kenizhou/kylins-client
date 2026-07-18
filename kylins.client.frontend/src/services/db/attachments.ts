@@ -84,10 +84,7 @@ export function fetchInlineImages(
  * must use `data:` URLs (not `convertFileSrc` asset URLs). For DISPLAY in the
  * reading pane, prefer `convertFileSrc(filePath)` directly — no base64.
  */
-export async function cachedImageToDataUrl(
-  filePath: string,
-  mimeType: string,
-): Promise<string> {
+export async function cachedImageToDataUrl(filePath: string, mimeType: string): Promise<string> {
   const bytes = await readFile(filePath);
   let base64: string;
   if (typeof btoa === 'function') {

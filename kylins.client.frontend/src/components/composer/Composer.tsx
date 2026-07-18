@@ -158,14 +158,13 @@ export function Composer({ windowed = false }: ComposerProps) {
   const attachmentSeededRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
-  const [ccExpanded, setCcExpanded] = useState(() => alwaysShowCcBcc || cc.length > 0);
-  const [bccExpanded, setBccExpanded] = useState(() => alwaysShowCcBcc || bcc.length > 0);
-  const [replyToExpanded, setReplyToExpanded] = useState(
-    () => alwaysShowCcBcc || replyTo.length > 0,
+  const [extraHeadersExpanded, setExtraHeadersExpanded] = useState(
+    () => alwaysShowCcBcc || cc.length > 0 || bcc.length > 0 || replyTo.length > 0,
   );
-  const showCc = ccExpanded || alwaysShowCcBcc || cc.length > 0;
-  const showBcc = bccExpanded || alwaysShowCcBcc || bcc.length > 0;
-  const showReplyTo = replyToExpanded || alwaysShowCcBcc || replyTo.length > 0;
+  const showExtraHeaders = extraHeadersExpanded || alwaysShowCcBcc;
+  const showCc = showExtraHeaders || cc.length > 0;
+  const showBcc = showExtraHeaders || bcc.length > 0;
+  const showReplyTo = showExtraHeaders || replyTo.length > 0;
   const [isDragging, setIsDragging] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
@@ -896,9 +895,9 @@ export function Composer({ windowed = false }: ComposerProps) {
   const handleAddressBlockBlur = (e: React.FocusEvent<HTMLDivElement>) => {
     if (alwaysShowCcBcc) return;
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    if (cc.length === 0) setCcExpanded(false);
-    if (bcc.length === 0) setBccExpanded(false);
-    if (replyTo.length === 0) setReplyToExpanded(false);
+    if (cc.length === 0 && bcc.length === 0 && replyTo.length === 0) {
+      setExtraHeadersExpanded(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -955,18 +954,21 @@ export function Composer({ windowed = false }: ComposerProps) {
               size="sm"
               icon={isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
               title={isFullpage ? 'Collapse' : 'Expand'}
+              aria-label={isFullpage ? 'Collapse composer' : 'Maximize composer'}
               onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
             />
             <IconButton
               size="sm"
               icon={<PopOutIcon size={14} />}
               title="Open in new window"
+              aria-label="Pop out composer"
               onClick={handlePopOutComposer}
             />
             <IconButton
               size="sm"
               icon={<CloseIcon size={14} />}
               title="Close composer"
+              aria-label="Close composer"
               onClick={handleClose}
             />
           </div>
@@ -1007,35 +1009,18 @@ export function Composer({ windowed = false }: ComposerProps) {
                   </div>
                 )}
               </div>
-              {!alwaysShowCcBcc && (
+              {!alwaysShowCcBcc && !showExtraHeaders && (
                 <div className="flex items-center gap-2 text-xs text-[var(--muted-text)]">
                   <span className="text-[var(--border)]" aria-hidden="true">
                     |
                   </span>
-                  {!showCc && (
-                    <Button
-                      onPress={() => setCcExpanded(true)}
-                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      Cc
-                    </Button>
-                  )}
-                  {!showBcc && (
-                    <Button
-                      onPress={() => setBccExpanded(true)}
-                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      Bcc
-                    </Button>
-                  )}
-                  {!showReplyTo && (
-                    <Button
-                      onPress={() => setReplyToExpanded(true)}
-                      className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      &gt;&gt;
-                    </Button>
-                  )}
+                  <Button
+                    onPress={() => setExtraHeadersExpanded(true)}
+                    className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Show Cc, Bcc and Reply-To fields"
+                  >
+                    Cc
+                  </Button>
                 </div>
               )}
             </div>

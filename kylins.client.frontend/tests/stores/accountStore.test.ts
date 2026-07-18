@@ -71,7 +71,11 @@ describe('accountStore', () => {
     const a2 = makeAccount({ id: 'a2', isDefault: false });
     useAccountStore.getState().setAccounts([a1, a2]);
     useAccountStore.getState().setDefaultAccountId('a2');
-    expect(useAccountStore.getState().accounts.every((a) => (a.id === 'a2' ? a.isDefault : !a.isDefault))).toBe(true);
+    expect(
+      useAccountStore
+        .getState()
+        .accounts.every((a) => (a.id === 'a2' ? a.isDefault : !a.isDefault)),
+    ).toBe(true);
     expect(useAccountStore.getState().defaultAccountId).toBe('a2');
   });
 });

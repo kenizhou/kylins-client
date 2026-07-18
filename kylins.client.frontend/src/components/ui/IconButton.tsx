@@ -1,14 +1,16 @@
-import { Button } from 'react-aria-components';
+import { Button, type ButtonProps } from 'react-aria-components';
 import { forwardRef, type ReactNode } from 'react';
 
-export interface IconButtonProps {
+export interface IconButtonProps extends Omit<
+  ButtonProps,
+  'children' | 'onPress' | 'onClick' | 'isDisabled'
+> {
   icon: ReactNode;
   label?: string;
   title?: string;
   size?: 'sm' | 'md';
   disabled?: boolean;
   active?: boolean;
-  className?: string;
   onClick?: () => void;
 }
 
@@ -21,7 +23,18 @@ export interface IconButtonProps {
  * Always renders a visible focus ring and clearly disabled state.
  */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { icon, label, title, size = 'sm', disabled = false, active = false, className, onClick },
+  {
+    icon,
+    label,
+    title,
+    size = 'sm',
+    disabled = false,
+    active = false,
+    className,
+    onClick,
+    'aria-label': ariaLabel,
+    ...rest
+  },
   ref,
 ) {
   const sizeClass = size === 'md' ? 'h-11 px-2 gap-1.5 min-w-11' : 'h-11 w-11';
@@ -32,11 +45,12 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       ref={ref}
       isDisabled={disabled}
       onPress={onClick}
-      aria-label={title ?? label}
+      aria-label={ariaLabel ?? title ?? label}
       data-active={active || undefined}
       className={`relative inline-flex items-center justify-center rounded text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         active ? 'bg-selected text-selected-text' : 'hover:bg-hover hover:text-foreground'
       } ${sizeClass} ${labelClass} ${className ?? ''}`}
+      {...rest}
     >
       {icon}
       {label && <span className="whitespace-nowrap text-sm text-foreground">{label}</span>}

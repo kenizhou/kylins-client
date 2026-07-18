@@ -2,24 +2,28 @@ import { useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
-import type { ColumnDef } from '../../features/view/types';
+import type { ColumnDef, MessageListDensity } from '../../features/view/types';
+import type { ClassificationLevel } from '../../features/classification/classificationTypes';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
-import { useAutoHideScrollbar, autoHideScrollbarClass } from '../../hooks/useAutoHideScrollbar';
+import { useAutoHideScrollbar } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
-import { levelStyle, isProminent } from '../../features/classification/classificationStyle';
+import { isProminent, levelStyle } from '../../features/classification/classificationStyle';
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import {
   MailIcon,
   FlagIcon,
+  WarningIcon,
+  AttachmentIcon,
   TrashIcon,
+  DeleteIcon,
   CopyIcon,
   FileTextIcon,
   ReplyIcon,
@@ -36,6 +40,7 @@ import { ContextMenu } from '../ui/ContextMenu';
 import { openComposerForThread } from '../../utils/composerActions';
 import { FolderPickerMenu } from './ribbon/FolderPickerMenu';
 import type { MailFolder } from '../../services/mail/folders/folderModel';
+import { archiveThread, trashThread } from '../../services/mail/actions';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -43,9 +48,14 @@ interface MessageRowProps {
   thread: Thread;
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
+  visibleColumns: ColumnDef[];
   onClick?: () => void;
   onDoubleClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
+}
+
+function optionId(threadId: string): string {
+  return `message-option-${threadId}`;
 }
 
 const RIBBON_COLOR: Record<MessageState, string> = {
@@ -61,114 +71,247 @@ const DENSITY_ROW_CLASSES = {
   comfortable: 'min-h-[52px] py-3',
 };
 
+interface QuickActionsProps {
+  thread: Thread;
+  visible: boolean;
+}
+
+function MessageRowQuickActions({ thread, visible }: QuickActionsProps) {
+  const markThreadRead = useThreadStore((s) => s.markThreadRead);
+  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
+
+  return (
+    <span
+      data-testid="message-quick-actions"
+      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-0.5 shadow-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        aria-label="Archive"
+        title="Archive"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void archiveThread(thread)}
+      >
+        <ArchiveIcon size={14} />
+      </button>
+      <button
+        type="button"
+        aria-label="Delete"
+        title="Delete"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void trashThread(thread)}
+      >
+        <DeleteIcon size={14} />
+      </button>
+      <button
+        type="button"
+        aria-label={thread.isStarred ? 'Unflag' : 'Flag'}
+        title={thread.isStarred ? 'Unflag' : 'Flag'}
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void toggleThreadStarred(thread)}
+      >
+        <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
+      </button>
+      <button
+        type="button"
+        aria-label={thread.isRead ? 'Mark unread' : 'Mark read'}
+        title={thread.isRead ? 'Mark unread' : 'Mark read'}
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onClick={() => void markThreadRead(thread, !thread.isRead)}
+      >
+        <MailIcon size={14} />
+      </button>
+    </span>
+  );
+}
+
+function cellWidth(col: ColumnDef): React.CSSProperties {
+  if (col.width) return { width: col.width, minWidth: col.width };
+  return { width: 'auto', minWidth: 24 };
+}
+
+function MessageRowCell({
+  col,
+  thread,
+  density,
+  level,
+}: {
+  col: ColumnDef;
+  thread: Thread;
+  density: MessageListDensity;
+  level: ClassificationLevel | undefined;
+}) {
+  const prominent = level ? isProminent(level) : false;
+  const unread = !thread.isRead;
+
+  switch (col.renderer) {
+    case 'threadRibbon':
+      return (
+        <span className="flex h-full items-stretch" style={cellWidth(col)}>
+          <span
+            className={`w-[3px] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+            style={prominent && level ? { backgroundColor: level.color } : undefined}
+          />
+        </span>
+      );
+    case 'importance':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {thread.isImportant && (
+            <span title="Important" aria-label="Important" className="text-[var(--warning)]">
+              <WarningIcon size={14} />
+            </span>
+          )}
+        </span>
+      );
+    case 'category':
+      return (
+        <span className="flex items-center" style={cellWidth(col)}>
+          {level && (
+            <ClassificationBadge level={level} size={density === 'compact' ? 'xs' : 'sm'} />
+          )}
+        </span>
+      );
+    case 'from': {
+      const sender = thread.fromName ?? thread.fromAddress ?? 'Unknown';
+      return (
+        <span className="flex min-w-0 items-center gap-2" style={cellWidth(col)}>
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--border)] text-[10px] font-bold text-[var(--muted-text)]">
+            {getInitials(sender)}
+          </span>
+          <span className={`truncate ${unread ? 'font-semibold' : ''}`}>{sender}</span>
+          <SecurityChips
+            isEncrypted={thread.isEncrypted}
+            isSigned={thread.isSigned}
+            variant="icon"
+            size={12}
+          />
+        </span>
+      );
+    }
+    case 'subject':
+      return (
+        <span className="flex min-w-0 flex-col justify-center" style={cellWidth(col)}>
+          <span className={`truncate ${unread ? 'font-semibold' : ''}`}>
+            {thread.subject ?? '(no subject)'}
+          </span>
+          {density === 'comfortable' && thread.snippet && (
+            <span className="truncate text-[12px] text-[var(--muted-text)]">{thread.snippet}</span>
+          )}
+        </span>
+      );
+    case 'snippet':
+      return (
+        <span
+          className="flex items-center truncate text-[12px] text-[var(--muted-text)]"
+          style={cellWidth(col)}
+        >
+          {thread.snippet}
+        </span>
+      );
+    case 'received':
+      return (
+        <span
+          className="flex items-center justify-end text-[11px] font-mono text-[var(--muted-text)]"
+          style={cellWidth(col)}
+        >
+          {thread.lastMessageAt != null
+            ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
+            : ''}
+        </span>
+      );
+    case 'size':
+      return (
+        <span
+          className="flex items-center justify-end text-[11px] text-[var(--muted-text)]"
+          style={cellWidth(col)}
+        >
+          —
+        </span>
+      );
+    case 'attachments':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {thread.hasAttachments && (
+            <span
+              title="Has attachments"
+              aria-label="Has attachments"
+              className="text-[var(--muted-text)]"
+            >
+              <AttachmentIcon size={14} />
+            </span>
+          )}
+        </span>
+      );
+    case 'flag':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {thread.isStarred && (
+            <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
+              <FlagIcon size={14} />
+            </span>
+          )}
+        </span>
+      );
+    case 'read':
+      return (
+        <span className="flex items-center justify-center" style={cellWidth(col)}>
+          {!thread.isRead && (
+            <span className="h-2 w-2 rounded-full bg-[var(--primary)]" aria-label="Unread" />
+          )}
+        </span>
+      );
+    default:
+      return null;
+  }
+}
+
 const MessageRow = memo(function MessageRow({
   thread,
   selected,
   density,
-  onClick,
-  onDoubleClick,
-  onContextMenu,
+  visibleColumns,
+  ...handlers
 }: MessageRowProps) {
-  const {
-    fromName,
-    fromAddress,
-    subject,
-    snippet,
-    lastMessageAt,
-    isRead,
-    isStarred,
-    isImportant,
-    classificationId,
-    isEncrypted,
-    isSigned,
-  } = thread;
-  const state: MessageState = !isRead
-    ? 'unread'
-    : isStarred
-      ? 'flagged'
-      : isImportant
-        ? 'vip'
-        : 'read';
-  const unread = state === 'unread';
   const { getLevelById } = useClassification();
-  const level = getLevelById(classificationId);
+  const level = getLevelById(thread.classificationId);
   const prominent = level ? isProminent(level) : false;
-  const style = level ? levelStyle(level) : null;
-  const preview = snippet ?? '';
-  const showPreview = density !== 'compact' && preview.length > 0;
-  const sender = fromName ?? fromAddress ?? 'Unknown';
-  const initials = getInitials(sender);
-  const time =
-    lastMessageAt != null ? formatMessageTime(new Date(lastMessageAt * 1000).toISOString()) : '';
+  const [isHovered, setIsHovered] = useState(false);
   return (
     <div
-      role="listitem"
+      id={optionId(thread.id)}
+      role="option"
       aria-selected={selected}
-      tabIndex={0}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
-      onContextMenu={onContextMenu}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onClick?.();
-        }
-      }}
-      className={`
-        flex items-stretch gap-2.5 pr-3 pl-0 cursor-pointer
-        ${DENSITY_ROW_CLASSES[density]}
-        ${selected ? 'bg-[var(--selected)]' : prominent ? '' : 'hover:bg-[var(--hover)]'}
-      `}
-      style={prominent && !selected && style ? { backgroundColor: style.tint } : undefined}
+      {...handlers}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={
+        {
+          '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
+        } as React.CSSProperties
+      }
+      className={`group relative cursor-pointer ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
     >
-      <div
-        className={`w-[var(--radius-xs)] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[state]}`}
-        style={prominent && style ? { backgroundColor: style.border } : undefined}
-      />
-      <div className="w-7 h-7 rounded-full bg-[var(--border)] grid place-items-center text-[10px] font-bold text-[var(--muted-text)] shrink-0">
-        {initials}
-      </div>
-      <div className="flex-1 min-w-0 flex flex-col gap-[2px]">
-        <div className="flex items-baseline justify-between gap-2 min-w-0">
-          <span
-            className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
+      <div className="flex items-stretch gap-1 px-1">
+        {visibleColumns.map((col) => (
+          <div
+            key={col.id}
+            className={`message-list-col-${col.id} flex min-w-0 items-center`}
+            style={cellWidth(col)}
           >
-            {level && (
-              <span className="inline-flex items-center gap-1.5 mr-1.5 align-[-2px]">
-                <ClassificationBadge level={level} size={density === 'compact' ? 'xs' : 'sm'} />
-              </span>
-            )}
-            {sender}
-          </span>
-          <span className="flex items-center gap-1.5 shrink-0">
-            <SecurityChips
-              isEncrypted={isEncrypted}
-              isSigned={isSigned}
-              variant="icon"
-              size={density === 'compact' ? 10 : 12}
-            />
-            {isStarred && (
-              <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
-                <FlagIcon size={14} />
-              </span>
-            )}
-            <span className="text-[11px] font-mono text-[var(--muted-text)]">{time}</span>
-          </span>
-        </div>
-        <span
-          className={`text-[13px] truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--text)]'}`}
-        >
-          {subject ?? '(no subject)'}
-        </span>
-        {showPreview && (
-          <span className="text-[12px] truncate text-[var(--muted-text)]">{preview}</span>
-        )}
+            <MessageRowCell col={col} thread={thread} density={density} level={level} />
+          </div>
+        ))}
       </div>
+      <MessageRowQuickActions thread={thread} visible={isHovered} />
     </div>
   );
 });
 
 type ListItem = { kind: 'group'; label: string } | { kind: 'thread'; thread: Thread };
+
+const EMPTY_FOLDERS: MailFolder[] = [];
 
 function dayBucket(ts: number): string {
   const d = new Date(ts * 1000);
@@ -205,6 +348,20 @@ export function MessageList() {
   const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
 
   const selectedFolder = useFolderStore((s) => s.selected);
+  const folders = useFolderStore((s) =>
+    selectedFolder ? (s.byAccount[selectedFolder.accountId] ?? EMPTY_FOLDERS) : EMPTY_FOLDERS,
+  );
+  const selectedRole = useMemo(
+    () => folders.find((f) => f.id === selectedFolder?.labelId)?.role ?? null,
+    [folders, selectedFolder],
+  );
+  const isInbox = selectedRole === 'inbox';
+  const [focusedTab, setFocusedTab] = useState<'focused' | 'other'>('focused');
+
+  useEffect(() => {
+    setFocusedTab('focused');
+  }, [selectedFolder?.labelId]);
+
   const threads = useThreadStore((s) => s.threads);
   const selectedThreadId = useThreadStore((s) => s.selectedThreadId);
   const isLoading = useThreadStore((s) => s.isLoading);
@@ -218,9 +375,13 @@ export function MessageList() {
   const deleteThread = useThreadStore((s) => s.deleteThread);
   const moveThread = useThreadStore((s) => s.moveThread);
 
-  const visibleColumns = visibleColumnIds
-    .map((id) => COLUMN_REGISTRY.get(id))
-    .filter((c): c is ColumnDef => c != null);
+  const visibleColumns = useMemo(
+    () =>
+      visibleColumnIds
+        .map((id) => COLUMN_REGISTRY.get(id))
+        .filter((c): c is ColumnDef => c != null),
+    [visibleColumnIds],
+  );
 
   // Load threads whenever the selected folder changes.
   useEffect(() => {
@@ -233,13 +394,38 @@ export function MessageList() {
 
   const items = useMemo(() => buildItems(threads), [threads]);
 
+  const filteredItems = useMemo(() => {
+    if (!isInbox) return items;
+    const result: ListItem[] = [];
+    let pendingGroup: ListItem | null = null;
+    for (const item of items) {
+      if (item.kind === 'group') {
+        pendingGroup = item;
+        continue;
+      }
+      const t = item.thread;
+      const focused = !t.isRead || t.isStarred || t.isImportant;
+      const matches = focusedTab === 'focused' ? focused : !focused;
+      if (matches) {
+        if (pendingGroup) {
+          result.push(pendingGroup);
+          pendingGroup = null;
+        }
+        result.push(item);
+      }
+    }
+    if (result.length === items.length) return items;
+    return result;
+  }, [items, isInbox, focusedTab]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollbarClass = useAutoHideScrollbar();
   // TanStack Virtual returns mutable function references that React Compiler
   // cannot safely memoize. Suppress the compiler warning here; the virtualizer
   // is used locally and its outputs are not memoized downstream.
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: filteredItems.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => (density === 'comfortable' ? 52 : 44),
     overscan: 12,
@@ -251,7 +437,7 @@ export function MessageList() {
   // rate-limited. See `hooks/useViewportBodyPrefetch.ts`.
   useViewportBodyPrefetch({
     virtualizer,
-    items,
+    items: filteredItems,
     accountId: selectedFolder?.accountId ?? null,
   });
 
@@ -260,12 +446,22 @@ export function MessageList() {
   // (a new array reference on every measure pass), so the effect doesn't
   // re-run on every scroll tick.
   const virtualItems = virtualizer.getVirtualItems();
-  const nearEnd = items.length > 0 && (virtualItems.at(-1)?.index ?? -1) >= items.length - 6;
+  const nearEnd =
+    filteredItems.length > 0 && (virtualItems.at(-1)?.index ?? -1) >= filteredItems.length - 6;
   useEffect(() => {
     if (nearEnd && cursor && !isLoading) {
       void loadMore();
     }
   }, [nearEnd, cursor, isLoading, loadMore]);
+
+  // If the active Focused/Other tab filter empties out the currently loaded
+  // page but the backend cursor still has more data, keep paginating so the
+  // user isn't stuck on a "No X messages" screen while pages remain.
+  useEffect(() => {
+    if (isInbox && filteredItems.length === 0 && items.length > 0 && cursor && !isLoading) {
+      void loadMore();
+    }
+  }, [isInbox, filteredItems.length, items.length, cursor, isLoading, loadMore]);
 
   const handleDoubleClick = async (thread: Thread) => {
     await selectThread(thread);
@@ -275,9 +471,20 @@ export function MessageList() {
 
   const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
   const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
-  useAutoHideScrollbar(scrollRef);
+  const [activeDescendantId, setActiveDescendantId] = useState<string | null>(null);
 
-  const showEmpty = !isLoading && items.length === 0;
+  // Keep the active descendant in sync with the selected thread so screen
+  // readers always announce the current option when focus is on the listbox.
+  useEffect(() => {
+    setActiveDescendantId(selectedThreadId ? optionId(selectedThreadId) : null);
+  }, [selectedThreadId]);
+
+  const showEmpty = !isLoading && filteredItems.length === 0;
+  const emptyMessage = isInbox
+    ? focusedTab === 'focused'
+      ? 'No focused messages.'
+      : 'No other messages.'
+    : 'No messages in this folder.';
 
   const openContextMenu = (thread: Thread, e: React.MouseEvent) => {
     e.preventDefault();
@@ -343,19 +550,26 @@ export function MessageList() {
         danger: true,
         onSelect: () => void deleteThread(menu.thread),
       },
-      { label: 'Archive', icon: ArchiveIcon, disabled: true },
+      {
+        label: 'Archive',
+        icon: ArchiveIcon,
+        onSelect: () => {
+          if (!menu.thread) return;
+          void archiveThread(menu.thread);
+        },
+      },
     ];
   }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
     <div className="message-list flex flex-col h-full bg-[var(--card)]">
       {visibleColumns.length > 0 && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
+        <div className="flex items-center gap-1 px-1 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
           {visibleColumns.map((col) => (
             <span
               key={col.id}
               className={`message-list-col-${col.id} truncate`}
-              style={{ width: col.width }}
+              style={cellWidth(col)}
             >
               {col.label}
             </span>
@@ -369,58 +583,115 @@ export function MessageList() {
         </div>
       )}
 
+      {isInbox && (
+        <div
+          role="tablist"
+          aria-label="Inbox view"
+          className="flex items-center gap-1 border-b border-[var(--border)] px-3 py-1.5"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={focusedTab === 'focused'}
+            onClick={() => setFocusedTab('focused')}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${focusedTab === 'focused' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+          >
+            Focused
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={focusedTab === 'other'}
+            onClick={() => setFocusedTab('other')}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${focusedTab === 'other' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+          >
+            Other
+          </button>
+        </div>
+      )}
+
       <div
         ref={scrollRef}
         tabIndex={0}
-        className={`flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${autoHideScrollbarClass}`}
+        role="listbox"
+        aria-label="Messages"
+        aria-busy={isLoading && filteredItems.length === 0 ? true : undefined}
+        aria-activedescendant={activeDescendantId ?? undefined}
+        className={`flex-1 flex flex-col overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${scrollbarClass}`}
         onKeyDown={(e) => {
-          if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-          e.preventDefault();
-          const direction = e.key === 'ArrowDown' ? 1 : -1;
-          const currentIndex = items.findIndex(
-            (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
-          );
-          function nextThreadIndex(start: number, dir: 1 | -1): number | null {
-            let i = start + dir;
-            while (i >= 0 && i < items.length) {
-              if (items[i]?.kind === 'thread') return i;
-              i += dir;
+          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            const direction = e.key === 'ArrowDown' ? 1 : -1;
+            const currentIndex = filteredItems.findIndex(
+              (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+            );
+            function nextThreadIndex(start: number, dir: 1 | -1): number | null {
+              let i = start + dir;
+              while (i >= 0 && i < filteredItems.length) {
+                if (filteredItems[i]?.kind === 'thread') return i;
+                i += dir;
+              }
+              return null;
             }
-            return null;
+            const nextIndex =
+              currentIndex === -1
+                ? nextThreadIndex(direction === 1 ? -1 : filteredItems.length, direction)
+                : nextThreadIndex(currentIndex, direction);
+            if (nextIndex == null) return;
+            const nextItem = filteredItems[nextIndex];
+            if (!nextItem || nextItem.kind !== 'thread') return;
+            setActiveDescendantId(optionId(nextItem.thread.id));
+            void selectThread(nextItem.thread);
+            virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+            return;
           }
-          const nextIndex =
-            currentIndex === -1
-              ? nextThreadIndex(direction === 1 ? -1 : items.length, direction)
-              : nextThreadIndex(currentIndex, direction);
-          if (nextIndex == null) return;
-          const nextItem = items[nextIndex];
-          if (!nextItem || nextItem.kind !== 'thread') return;
-          void selectThread(nextItem.thread);
-          virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
+
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            const activeThreadId = activeDescendantId?.replace(/^message-option-/, '');
+            const activeItem = activeThreadId
+              ? filteredItems.find((i) => i.kind === 'thread' && i.thread.id === activeThreadId)
+              : undefined;
+            if (activeItem?.kind === 'thread') {
+              void selectThread(activeItem.thread);
+            }
+          }
         }}
       >
-        {isLoading && items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
+        {isLoading && filteredItems.length === 0 ? (
+          <div
+            role="status"
+            className="flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]"
+          >
             <MailIcon size={24} className="opacity-50" />
             <span>Loading messages…</span>
           </div>
         ) : showEmpty ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]">
+          <div
+            role="status"
+            className="flex flex-1 flex-col items-center justify-center gap-2 px-3 py-10 text-center text-xs text-[var(--muted-text)]"
+          >
             <MailIcon size={24} className="opacity-50" />
-            <span>No messages in this folder.</span>
-            <span className="text-[10px] opacity-70">
-              Select a different folder or check back later.
-            </span>
+            <span>{emptyMessage}</span>
+            {!isInbox && (
+              <span className="text-[10px] opacity-70">
+                Select a different folder or check back later.
+              </span>
+            )}
           </div>
         ) : (
-          <div role="list" style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+          <div
+            role="presentation"
+            style={{ height: virtualizer.getTotalSize(), position: 'relative' }}
+          >
             {virtualItems.map((vi) => {
-              const item = items[vi.index];
+              const item = filteredItems[vi.index];
               if (!item) return null;
               return (
                 <div
                   key={vi.key}
                   data-index={vi.index}
+                  role="presentation"
                   ref={virtualizer.measureElement}
                   style={{
                     position: 'absolute',
@@ -431,7 +702,10 @@ export function MessageList() {
                   }}
                 >
                   {item.kind === 'group' ? (
-                    <div className="py-1.5 px-3 border-b border-[var(--border)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]">
+                    <div
+                      role="presentation"
+                      className="py-1.5 px-3 border-b border-[var(--border)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]"
+                    >
                       {item.label}
                     </div>
                   ) : (
@@ -439,7 +713,11 @@ export function MessageList() {
                       thread={item.thread}
                       selected={selectedThreadId === item.thread.id}
                       density={density}
-                      onClick={() => void selectThread(item.thread)}
+                      visibleColumns={visibleColumns}
+                      onClick={() => {
+                        setActiveDescendantId(optionId(item.thread.id));
+                        void selectThread(item.thread);
+                      }}
                       onDoubleClick={() => void handleDoubleClick(item.thread)}
                       onContextMenu={(e) => openContextMenu(item.thread, e)}
                     />

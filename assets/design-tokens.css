@@ -53,70 +53,120 @@
 /* === SEMANTIC === */
 :root {
   --color-background: #ffffff;
-  --color-foreground: #0f172a;
-  --color-muted: #f1f5f9;
-  --color-muted-foreground: #64748b;
-  --color-border: #e2e8f0;
+  --color-foreground: #18181b;
+  --color-surface: #f4f4f5;
+  --color-chrome: #e4e4e7;
+  --color-card: #ffffff;
+  --color-muted: #f4f4f5;
+  --color-muted-foreground: #71717a;
+  --color-border: #e4e4e7;
+  --color-input: #e4e4e7;
   --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
-  --color-primary-active: #1e40af;
-  --color-primary-light: #60a5fa;
-  --color-primary-lighter: #dbeafe;
-  --color-primary-dark: #1d4ed8;
-  --color-secondary: #3b82f6;
-  --color-secondary-hover: #2563eb;
-  --color-secondary-light: #93c5fd;
-  --color-secondary-dark: #2563eb;
-  --color-accent: #dc2626;
-  --color-accent-hover: #b91c1c;
-  --color-accent-light: #fca5a5;
-  --color-success: #22c55e;
-  --color-success-light: #86efac;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f4f4f5;
+  --color-secondary-foreground: #18181b;
+  --color-accent: #fafafa;
+  --color-accent-foreground: #18181b;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #10b981;
+  --color-success-foreground: #18181b;
   --color-warning: #f59e0b;
-  --color-warning-light: #fcd34d;
   --color-error: #dc2626;
-  --color-error-light: #fca5a5;
   --color-info: #3b82f6;
-  --color-info-light: #93c5fd;
+  --color-link: #2563eb;
+  --color-link-hover: #1d4ed8;
+  --color-ring: color-mix(in oklab, #2563eb, transparent 75%);
   --font-ui:
-    "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
-    system-ui, sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
-    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New",
     monospace;
 }
 
-/* === COMPONENTS === */
-:root {
-  --button-secondary-bg-hover: #2563eb1a;
+/* === HIGH CONTRAST === */
+[data-contrast='high'],
+[data-contrast='high'].light {
+  --color-background: #ffffff;
+  --color-foreground: #000000;
+  --color-surface: #ffffff;
+  --color-chrome: #f0f0f0;
+  --color-card: #ffffff;
+  --color-muted: #ffffff;
+  --color-muted-foreground: #000000;
+  --color-border: #000000;
+  --color-input: #ffffff;
+  --color-primary: #0000ff;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #ffffff;
+  --color-secondary-foreground: #000000;
+  --color-accent: #ffffff;
+  --color-accent-foreground: #000000;
+  --color-destructive: #ff0000;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #008000;
+  --color-success-foreground: #000000;
+  --color-warning: #ff8c00;
+  --color-error: #ff0000;
+  --color-info: #0000ff;
+  --color-link: #0000ff;
+  --color-link-hover: #000080;
+  --color-ring: #0000ff;
+}
+
+.dark[data-contrast='high'] {
+  --color-background: #000000;
+  --color-foreground: #ffffff;
+  --color-surface: #000000;
+  --color-chrome: #1a1a1a;
+  --color-card: #000000;
+  --color-muted: #000000;
+  --color-muted-foreground: #ffffff;
+  --color-border: #ffffff;
+  --color-input: #000000;
+  --color-primary: #00ffff;
+  --color-primary-foreground: #000000;
+  --color-secondary: #000000;
+  --color-secondary-foreground: #ffffff;
+  --color-accent: #000000;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #ff6666;
+  --color-destructive-foreground: #000000;
+  --color-success: #00ff00;
+  --color-success-foreground: #000000;
+  --color-warning: #ffd700;
+  --color-error: #ff6666;
+  --color-info: #00ffff;
+  --color-link: #00ffff;
+  --color-link-hover: #80ffff;
+  --color-ring: #00ffff;
 }
 
 /* === DARK MODE === */
 .dark {
-  --color-background: #020617;
-  --color-foreground: #f1f5f9;
-  --color-muted: #0f172a;
-  --color-muted-foreground: #94a3b8;
-  --color-border: #1e293b;
+  --color-background: #18181b;
+  --color-foreground: #f4f4f5;
+  --color-surface: #27272a;
+  --color-chrome: #18181b;
+  --color-card: #27272a;
+  --color-muted: #27272a;
+  --color-muted-foreground: #a1a1aa;
+  --color-border: #3f3f46;
+  --color-input: #3f3f46;
   --color-primary: #60a5fa;
-  --color-primary-hover: #93c5fd;
-  --color-primary-active: #bfdbfe;
-  --color-primary-light: #93c5fd;
-  --color-primary-lighter: #172554;
-  --color-primary-dark: #2563eb;
-  --color-secondary: #60a5fa;
-  --color-secondary-hover: #93c5fd;
-  --color-secondary-light: #2563eb;
-  --color-secondary-dark: #3b82f6;
-  --color-accent: #f87171;
-  --color-accent-hover: #fca5a5;
-  --color-accent-light: #b91c1c;
+  --color-primary-foreground: #09090b;
+  --color-secondary: #27272a;
+  --color-secondary-foreground: #f4f4f5;
+  --color-accent: #3f3f46;
+  --color-accent-foreground: #f4f4f5;
+  --color-destructive: #f87171;
+  --color-destructive-foreground: #fafafa;
   --color-success: #34d399;
-  --color-success-light: #059669;
+  --color-success-foreground: #fafafa;
   --color-warning: #fbbf24;
-  --color-warning-light: #b45309;
   --color-error: #f87171;
-  --color-error-light: #b91c1c;
   --color-info: #60a5fa;
-  --color-info-light: #2563eb;
+  --color-link: #60a5fa;
+  --color-link-hover: #93c5fd;
+  --color-ring: color-mix(in oklab, #60a5fa, transparent 75%);
 }

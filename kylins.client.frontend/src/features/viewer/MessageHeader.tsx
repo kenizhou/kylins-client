@@ -11,9 +11,10 @@ import {
   WarningIcon,
   MailIcon,
 } from '@/components/icons';
+import { SecurityChips } from '@/features/classification/components/SecurityChips';
 import { IconButton } from '@/components/ui/IconButton';
 import { formatFullDate } from '@/utils/formatDate';
-import { getInitials } from '@/data/demoMessages';
+import { getInitials, formatMessageTime } from '@/data/demoMessages';
 
 interface MessageHeaderProps {
   message: MailMessage;
@@ -118,6 +119,15 @@ export function MessageHeader({
         {message.subject}
       </h1>
 
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <SecurityChips
+          isEncrypted={message.isEncrypted}
+          isSigned={message.isSigned}
+          variant="label"
+          size={12}
+        />
+      </div>
+
       <div className="reading-pane-sender-row mt-3 flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-3">
           <div
@@ -175,9 +185,12 @@ export function MessageHeader({
               )}
             </button>
 
-            <div className="mt-0.5 text-xs text-[var(--muted-text)]">
-              {formatFullDate(message.date)}
-            </div>
+            <span className="group/tooltip relative mt-0.5 text-xs text-[var(--muted-text)]">
+              {formatMessageTime(message.date)}
+              <span className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-[var(--foreground)] px-2 py-1 text-[10px] text-[var(--background)] opacity-0 transition-opacity group-hover/tooltip:opacity-100">
+                {formatFullDate(message.date)}
+              </span>
+            </span>
           </div>
         </div>
 

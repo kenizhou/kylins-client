@@ -1,5 +1,5 @@
-import { CaretDown } from '@phosphor-icons/react';
-import type { ReactNode } from 'react';
+import { CaretDownIcon } from '../../icons';
+import { forwardRef, type ReactNode } from 'react';
 import { Button, Checkbox } from 'react-aria-components';
 
 export interface RibbonGroupProps {
@@ -22,36 +22,32 @@ export interface RibbonButtonProps {
   disabled?: boolean;
   title?: string;
   className?: string;
+  iconOnly?: boolean;
   onClick?: () => void;
 }
 
-export function RibbonButton({
-  children,
-  icon,
-  primary,
-  split,
-  disabled,
-  title,
-  className,
-  onClick,
-}: RibbonButtonProps) {
+export const RibbonButton = forwardRef<HTMLButtonElement, RibbonButtonProps>(function RibbonButton(
+  { children, icon, primary, split, disabled, title, className, iconOnly, onClick },
+  ref,
+) {
   return (
     <Button
+      ref={ref}
       isDisabled={disabled}
       onPress={onClick}
-      aria-label={title}
-      className={`my-auto flex h-11 min-w-11 items-center gap-1.5 rounded px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
+      aria-label={title ?? (typeof children === 'string' ? children : undefined)}
+      className={`my-auto flex h-11 items-center gap-1.5 rounded px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         primary
           ? 'bg-primary text-primary-fg hover:opacity-90 disabled:hover:opacity-40'
           : 'text-text hover:bg-hover disabled:hover:bg-transparent'
-      } ${className ?? ''}`}
+      } ${iconOnly ? 'w-11 justify-center px-0' : ''} ${className ?? ''}`}
     >
       {icon}
-      <span className="whitespace-nowrap">{children}</span>
-      {split && <CaretDown size={10} className="ml-0.5 opacity-70" />}
+      <span className={`whitespace-nowrap ${iconOnly ? 'sr-only' : ''}`}>{children}</span>
+      {split && <CaretDownIcon size={10} className="ml-0.5 opacity-70" />}
     </Button>
   );
-}
+});
 
 export interface RibbonToggleProps {
   checked: boolean;

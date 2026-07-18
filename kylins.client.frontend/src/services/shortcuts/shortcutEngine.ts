@@ -61,7 +61,11 @@ function hasModifier(combo: ParsedCombo): boolean {
   return combo.mod || combo.ctrl || combo.alt || combo.shift;
 }
 
-export function eventMatchesCombo(event: KeyboardEvent, combo: ParsedCombo, isMac: boolean): boolean {
+export function eventMatchesCombo(
+  event: KeyboardEvent,
+  combo: ParsedCombo,
+  isMac: boolean,
+): boolean {
   const key = normalizeKey(event.key);
   if (key !== combo.key) return false;
 

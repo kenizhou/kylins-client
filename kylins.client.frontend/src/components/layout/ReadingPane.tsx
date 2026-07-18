@@ -5,6 +5,7 @@ import { useViewStore } from '../../features/view/viewStore';
 import { useAccountStore } from '../../stores/accountStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useThreadStore } from '../../stores/threadStore';
+import { useUIStore } from '../../stores/uiStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
 import { fetchAttachment, fetchInlineImages, getAttachments } from '../../services/db/attachments';
@@ -30,6 +31,7 @@ export function ReadingPane() {
   const accountEmail = account?.email ?? null;
   const accountDisplayName = account?.displayName ?? null;
   const automaticallyLoadImages = usePreferencesStore((s) => s.automaticallyLoadImages);
+  const readerZoom = useUIStore((s) => s.readerZoom);
   const { getLevelById } = useClassification();
   const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
@@ -43,8 +45,8 @@ export function ReadingPane() {
   const [inviteEvents, setInviteEvents] = useState<ParsedEvent[]>([]);
   // Reset per-message ephemeral state when the selected message changes. Uses
   // the prev-value render pattern (setState-during-render to correct stale
-  // state) rather than setState-in-effect (the project's eslint rule
-  // react-hooks/set-state-in-effect rejects synchronous setState in effects).
+  // state) rather than an effect, because an effect would require disabling
+  // the react-hooks/set-state-in-effect lint rule.
   const [activeMsgId, setActiveMsgId] = useState<string | undefined>(message?.id);
   if (message?.id !== activeMsgId) {
     setActiveMsgId(message?.id);
@@ -60,7 +62,7 @@ export function ReadingPane() {
   // its inline Content-ID parts in ONE round-trip and build a cid → data: URL
   // map that EmailRenderer substitutes into the HTML (before the remote-image
   // block, so inline images render without the "Load images" toggle). The map
-  // is reset at render time above (on message change); this effect only fetches
+  // is reset during render above (on message change); this effect only fetches
   // and calls setState from the async callback (lint-allowed).
   useEffect(() => {
     const id = message?.id;
@@ -73,7 +75,7 @@ export function ReadingPane() {
     // + fetches the entire message just to check for CID parts.
     const body = message?.html;
     if (!body || !/\bcid:/i.test(body)) {
-      setCidMap(new Map());
+      queueMicrotask(() => setCidMap(new Map()));
       return;
     }
     let cancelled = false;
@@ -100,6 +102,10 @@ export function ReadingPane() {
     return () => {
       cancelled = true;
     };
+    // We intentionally depend only on the message id. The html body is read
+    // inside the effect only to decide whether to fetch; re-running when the
+    // body string changes would trigger redundant full-message downloads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message?.id, activeAccountId]);
 
   // Calendar-invite detection: parse any text/calendar attachment whose METHOD
@@ -267,16 +273,24 @@ export function ReadingPane() {
           messageId={message.id}
           bodyHtml={message.html}
         />
-        <EmailRenderer
-          html={message.html}
-          text={message.text}
-          blockImages={!automaticallyLoadImages}
-          senderAddress={message.from.address}
-          accountId={activeAccountId}
-          senderAllowlisted={false}
-          isMessageSuspicious={isSuspicious}
-          cidMap={cidMap}
-        />
+        <div
+          style={{
+            transform: `scale(${readerZoom})`,
+            transformOrigin: 'top left',
+            width: `${100 / readerZoom}%`,
+          }}
+        >
+          <EmailRenderer
+            html={message.html}
+            text={message.text}
+            blockImages={!automaticallyLoadImages}
+            senderAddress={message.from.address}
+            accountId={activeAccountId}
+            senderAllowlisted={false}
+            isMessageSuspicious={isSuspicious}
+            cidMap={cidMap}
+          />
+        </div>
       </main>
       {prominent && level && <ClassificationBanner level={level} position="bottom" />}
       <InjectedComponentSet

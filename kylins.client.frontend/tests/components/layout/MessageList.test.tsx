@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor, fireEvent, screen } from '@testing-library/react';
+import { render, waitFor, fireEvent, screen, within } from '@testing-library/react';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve([])) }));
 
@@ -9,9 +9,12 @@ import { useFolderStore } from '../../../src/stores/folderStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
 import { useComposerStore } from '../../../src/stores/composerStore';
 import { usePreferencesStore } from '../../../src/stores/preferencesStore';
+import { useViewStore } from '../../../src/features/view/viewStore';
+import { DEFAULT_VIEW_STATE } from '../../../src/features/view/defaults';
 import { getThreads, getMessagesForThread } from '../../../src/services/db/threads';
 import { getMessageBody } from '../../../src/services/db/messageBodies';
 import type { Thread, DbMessageRow } from '../../../src/services/db/threads';
+import type { MailFolder } from '../../../src/services/mail/folders/folderModel';
 import type { Account } from '../../../src/types';
 
 // Render every item (no real virtualization) so row logic is testable in jsdom.
@@ -95,6 +98,13 @@ beforeEach(() => {
   vi.mocked(getThreads).mockReset();
   vi.mocked(getMessagesForThread).mockReset();
   vi.mocked(getMessageBody).mockReset();
+  useViewStore.setState({
+    ...DEFAULT_VIEW_STATE,
+    selectedMessage: null,
+    inlineReplyMode: null,
+    isHydrated: false,
+    selectedThreadIds: [],
+  });
   useThreadStore.setState({
     threads: [],
     selectedThreadId: null,
@@ -130,6 +140,19 @@ describe('MessageList', () => {
     expect(getAllByText('Bob')).toHaveLength(2); // sender appears on each row
   });
 
+  it('renders only visible columns', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello', fromName: 'Bob', isStarred: true })],
+      nextCursor: null,
+    });
+    useViewStore.setState({ visibleColumnIds: ['from', 'subject', 'received'] });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    const { getByText, queryByLabelText } = render(<MessageList />);
+    await waitFor(() => expect(getByText('Hello')).toBeInTheDocument());
+    expect(getByText('Bob')).toBeInTheDocument();
+    expect(queryByLabelText('Flagged')).not.toBeInTheDocument();
+  });
+
   it('shows the empty state when there are no threads', async () => {
     vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
@@ -145,6 +168,7 @@ describe('MessageList', () => {
       ],
       nextCursor: null,
     });
+    useViewStore.setState({ messageListDensity: 'comfortable' });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
     const { getByText, getByLabelText, queryAllByLabelText } = render(<MessageList />);
     await waitFor(() => expect(getByText('Preview text')).toBeInTheDocument());
@@ -192,6 +216,7 @@ describe('MessageList', () => {
     ]);
     expect(items[0]).toHaveAttribute('aria-disabled', 'true'); // Copy placeholder
     expect(items[items.length - 2]).not.toHaveAttribute('aria-disabled', 'true'); // Delete
+    expect(items[items.length - 1]).not.toHaveAttribute('aria-disabled', 'true'); // Archive
   });
 
   it('marks a thread as unread from the context menu', async () => {
@@ -230,6 +255,54 @@ describe('MessageList', () => {
     fireEvent.click(item);
     expect(deleteThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
     deleteThread.mockRestore();
+  });
+
+  it('archives a thread from the context menu', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    const archiveThread = vi.spyOn(
+      await import('../../../src/services/mail/actions'),
+      'archiveThread',
+    );
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.contextMenu(screen.getByText('Hello'));
+    const item = screen.getByRole('menuitem', { name: 'Archive' });
+    fireEvent.click(item);
+    expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
+    archiveThread.mockRestore();
+  });
+
+  it('shows hover quick actions and archives on click', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello', isRead: true })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    const archiveThread = vi.spyOn(
+      await import('../../../src/services/mail/actions'),
+      'archiveThread',
+    );
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    const row = screen.getByRole('option');
+    const actions = within(row).getByTestId('message-quick-actions');
+    expect(actions.classList.contains('hidden')).toBe(true);
+    expect(actions.classList.contains('flex')).toBe(false);
+
+    fireEvent.mouseEnter(row);
+    expect(actions.classList.contains('hidden')).toBe(false);
+    expect(actions.classList.contains('flex')).toBe(true);
+
+    const archiveBtn = within(actions).getByRole('button', { name: 'Archive' });
+    fireEvent.click(archiveBtn);
+    expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
+    archiveThread.mockRestore();
   });
 
   it('toggles the star / follow-up flag from the context menu', async () => {
@@ -277,5 +350,82 @@ describe('MessageList', () => {
     await waitFor(() => expect(useComposerStore.getState().isOpen).toBe(true));
     expect(useComposerStore.getState().mode).toBe('reply');
     expect(useComposerStore.getState().threadId).toBe('t1');
+  });
+
+  it('shows Focused/Other tabs in the inbox and filters threads', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'Focused unread', isRead: false }),
+        thread({ id: 't2', subject: 'Other read', isRead: true }),
+      ],
+      nextCursor: null,
+    });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      byAccount: {
+        a1: [{ id: 'inbox', accountId: 'a1', role: 'inbox' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Focused' })).toBeInTheDocument());
+    expect(screen.getByText('Focused unread')).toBeInTheDocument();
+    expect(screen.queryByText('Other read')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
+    await waitFor(() => expect(screen.queryByText('Focused unread')).not.toBeInTheDocument());
+    expect(screen.getByText('Other read')).toBeInTheDocument();
+  });
+
+  it('does not show Focused/Other tabs outside the inbox', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello', isRead: true })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'sent' },
+      byAccount: {
+        a1: [{ id: 'sent', accountId: 'a1', role: 'sent' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+    expect(screen.queryByRole('tab', { name: 'Focused' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Other' })).not.toBeInTheDocument();
+  });
+
+  it('shows the focused/other empty state when the active tab is empty', async () => {
+    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      byAccount: {
+        a1: [{ id: 'inbox', accountId: 'a1', role: 'inbox' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Focused' })).toBeInTheDocument());
+    expect(screen.getByText('No focused messages.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
+    await waitFor(() => expect(screen.getByText('No other messages.')).toBeInTheDocument());
+  });
+
+  it('keeps loading when the active tab is empty but more pages exist', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Focused only', isRead: false })],
+      nextCursor: 'cursor-1',
+    });
+    const loadMore = vi.spyOn(useThreadStore.getState(), 'loadMore').mockResolvedValue(undefined);
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      byAccount: {
+        a1: [{ id: 'inbox', accountId: 'a1', role: 'inbox' } as MailFolder],
+      },
+    });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Focused only')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
+    await waitFor(() => expect(loadMore).toHaveBeenCalled());
+    loadMore.mockRestore();
   });
 });
