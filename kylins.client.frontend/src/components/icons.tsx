@@ -84,7 +84,7 @@ import {
   CircleLock02Icon,
   BiometricAccessIcon,
   FingerPrintIcon,
-  SecurityIcon,
+  SecurityIcon as SecurityIconData,
   Certificate02Icon,
   CopySlashIcon as CopySlashIconData,
 } from '@hugeicons/core-free-icons';
@@ -290,6 +290,7 @@ export const ArrowUpIcon = makeIcon(ArrowUp01Icon);
 export const ArrowDownIcon = makeIcon(ArrowDown01Icon);
 export const MinusIcon = makeIcon(MinusSignIcon);
 export const ShieldCheckIcon = makeIcon(ShieldCheckIconData);
+export const SecurityIcon = makeIcon(SecurityIconData);
 export const LockIcon = makeIcon(LockIconData);
 export const EyeIcon = makeIcon(EyeIconData);
 export const CaretDownIcon = makeIcon(ArrowDown01Icon);
@@ -386,7 +387,7 @@ const CLASSIFICATION_ICON_MAP: Record<
   'circle-lock': CircleLock02Icon,
   biometric: BiometricAccessIcon,
   fingerprint: FingerPrintIcon,
-  security: SecurityIcon,
+  security: SecurityIconData,
   certificate: Certificate02Icon,
 };
 

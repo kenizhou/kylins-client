@@ -9,6 +9,7 @@ export type PreferenceTab =
   | 'Mail'
   | 'Calendar & Contacts'
   | 'Shortcuts'
+  | 'Security'
   | 'About';
 
 interface BoolField {

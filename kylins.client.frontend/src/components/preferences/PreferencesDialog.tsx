@@ -5,6 +5,7 @@ import { ShortcutsPreferences } from './ShortcutsPreferences';
 import { AccountsPreferences } from './AccountsPreferences';
 import { ContactsPreferences } from './ContactsPreferences';
 import { MailPreferences } from './MailPreferences';
+import { SecurityPreferences } from './SecurityPreferences';
 import { AboutPreferences } from './AboutPreferences';
 import { Modal } from '../ui/Modal';
 import { Button } from 'react-aria-components';
@@ -14,6 +15,7 @@ import {
   PreferencesAccountsIcon,
   PreferencesAppearanceIcon,
   PreferencesShortcutsIcon,
+  SecurityIcon,
   MailIcon,
   ContactsIcon,
   InfoIcon,
@@ -26,6 +28,7 @@ const TABS: { id: PreferenceTab; icon: React.ComponentType<{ size?: number }> }[
   { id: 'Mail', icon: MailIcon },
   { id: 'Calendar & Contacts', icon: ContactsIcon },
   { id: 'Shortcuts', icon: PreferencesShortcutsIcon },
+  { id: 'Security', icon: SecurityIcon },
   { id: 'About', icon: InfoIcon },
 ];
 
@@ -36,6 +39,7 @@ const TAB_COMPONENTS: Record<PreferenceTab, React.ComponentType> = {
   Mail: MailPreferences,
   'Calendar & Contacts': ContactsPreferences,
   Shortcuts: ShortcutsPreferences,
+  Security: SecurityPreferences,
   About: AboutPreferences,
 };
 
