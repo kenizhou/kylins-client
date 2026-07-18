@@ -342,6 +342,7 @@ export function InfoIcon({ size = 20, ...rest }: IconProps) {
       fill="none"
       stroke="currentColor"
       strokeWidth={1.5}
+      aria-hidden="true"
       {...rest}
     >
       <circle cx="12" cy="12" r="10" />

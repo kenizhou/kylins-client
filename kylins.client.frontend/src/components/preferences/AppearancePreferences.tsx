@@ -53,14 +53,12 @@ export function AppearancePreferences() {
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
   const commandRibbonVisible = useViewStore((s) => s.commandRibbonVisible);
   const statusBarVisible = useViewStore((s) => s.statusBarVisible);
-  const conversationView = useViewStore((s) => s.conversationView);
 
   const setReadingPanePosition = useViewStore((s) => s.setReadingPanePosition);
   const setMessageListDensity = useViewStore((s) => s.setMessageListDensity);
   const setFolderPaneVisible = useViewStore((s) => s.setFolderPaneVisible);
   const setCommandRibbonVisible = useViewStore((s) => s.setCommandRibbonVisible);
   const setStatusBarVisible = useViewStore((s) => s.setStatusBarVisible);
-  const setConversationView = useViewStore((s) => s.setConversationView);
   const resetToDefaults = useViewStore((s) => s.resetToDefaults);
 
   const handleThemeChange = useCallback(
@@ -167,11 +165,6 @@ export function AppearancePreferences() {
                     onChange={setMessageListDensity}
                   />
                 </div>
-                <CheckboxRow
-                  label="Conversation view"
-                  checked={conversationView}
-                  onChange={setConversationView}
-                />
               </div>
             </PreferencesSectionCard>
           </>
@@ -208,7 +201,7 @@ export function AppearancePreferences() {
 
             <PreferencesSectionCard title="Reading" icon={PreferencesReadingIcon}>
               <p className="text-sm text-[var(--muted-text)]">
-                Reading preferences such as auto-image loading and header display are on the General
+                Reading preferences such as auto-image loading and header display are on the Mail
                 tab.
               </p>
             </PreferencesSectionCard>
