@@ -349,10 +349,34 @@ describe('threadStore.selectThread', () => {
     expect(selected?.signerFingerprint).toBe('sha256:ab');
     expect(selected?.revocationState).toBe('good');
     // Plaintext cached in RAM so the next open skips the crypto invoke.
+    // DA-Task 3: the cache entry also carries the decrypted inner-MIME
+    // attachment metadata + the crypto flag so the AttachmentList / inline
+    // image effect can render without a second decrypt.
     expect(useViewStore.getState().decryptedCache['m1']).toEqual({
       html: '<p>decrypted</p>',
       text: 'decrypted text',
+      attachments: [
+        {
+          part_id: '2',
+          filename: 'doc.pdf',
+          mime_type: 'application/pdf',
+          size: 1234,
+          content_id: null,
+          is_inline: false,
+        },
+      ],
+      isCrypto: true,
     });
+    // And the selectedMessage mirrors the attachments as `MailMessage.attachments`.
+    expect(useViewStore.getState().selectedMessage?.attachments).toEqual([
+      {
+        id: '2',
+        filename: 'doc.pdf',
+        mimeType: 'application/pdf',
+        size: 1234,
+        cid: undefined,
+      },
+    ]);
   });
 
   it('hits the session decryptedCache on re-open (no second openCryptoMessage invoke) + re-attaches the crypto result', async () => {

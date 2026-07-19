@@ -77,6 +77,49 @@ export function fetchInlineImages(
   return invoke<CachedInlineImage[]>('sync_fetch_inline_images', { accountId, messageId });
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// DA-Task 3: crypto (decrypted-MIME) counterparts of the two fetch wrappers
+// above. The backend re-decrypts the S/MIME envelope, walks the inner MIME,
+// and writes the requested part / CID images to the attachment cache. These
+// wrappers mirror `sync_fetch_attachment` / `sync_fetch_inline_images` 1:1
+// in return type (`CachedAttachment` / `CachedInlineImage[]`) so the UI can
+// treat them identically downstream — only the command name + args differ.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Fetch ONE attachment from a previously-encrypted message: re-decrypt → walk
+ *  the inner MIME → write the requested part to the cache → return its path.
+ *  `filename` + `contentId` match the entry in `OpenCryptoResult.attachments`
+ *  surfaced by `crypto_open_message`. Pass `null` for `contentId` when the
+ *  attachment carries no `content_id` (the common non-inline case). */
+export function fetchCryptoAttachment(
+  accountId: string,
+  messageId: string,
+  filename: string,
+  contentId: string | null,
+): Promise<CachedAttachment> {
+  return invoke<CachedAttachment>('crypto_fetch_attachment', {
+    accountId,
+    messageId,
+    filename,
+    contentId,
+  });
+}
+
+/** Fetch every inline `cid:` image from a previously-encrypted message:
+ *  re-decrypt → walk the inner MIME → write each CID part's bytes to a cache
+ *  file → return the list. The frontend builds a `cid → objectURL` map for
+ *  rendering the decrypted HTML body. Mirrors `fetchInlineImages` for the
+ *  encrypted-message path. */
+export function fetchCryptoInlineImages(
+  accountId: string,
+  messageId: string,
+): Promise<CachedInlineImage[]> {
+  return invoke<CachedInlineImage[]>('crypto_fetch_inline_images', {
+    accountId,
+    messageId,
+  });
+}
+
 /**
  * Read a cached inline image file and return a `data:` URL. Needed for the
  * FORWARD path: the composer's send pipeline (`extractInlineImages`) matches

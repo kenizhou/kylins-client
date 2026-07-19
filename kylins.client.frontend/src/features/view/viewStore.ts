@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ReadingPanePosition, MessageListDensity, ViewState, PanelSizeMap } from './types';
 import { DEFAULT_VIEW_STATE } from './defaults';
 import { isPanelSizeMap } from './viewSettings';
+import type { ImapAttachment } from '../../services/db/cryptoReceive';
 
 /**
  * Per-message crypto verification outcome fields surfaced to the UI. All
@@ -67,10 +68,24 @@ export interface MailMessage {
  * id. Held in memory ONLY — never persisted to disk or SQLite. Cleared on
  * lock/logout via `clearDecrypted` (the G6 lock hook wires this when one
  * exists; today the hook is just exposed).
+ *
+ * DA-Task 3: `attachments` + `isCrypto` carry the decrypted inner-MIME
+ * attachment metadata (snake_case `ImapAttachment`) so the AttachmentList can
+ * render chips + the ReadingPane can resolve inline `cid:` images WITHOUT a
+ * second decrypt. They are populated by the crypto branch of
+ * `threadStore.selectThread` from `OpenCryptoResult.attachments`; the plain
+ * (non-crypto) path leaves them `undefined`.
  */
 export interface DecryptedCacheEntry {
   html: string | null;
   text: string | null;
+  /** Decrypted inner-MIME attachments (snake_case wire shape). Undefined for
+   *  non-crypto messages and for the cache-hit path before first decrypt. */
+  attachments?: ImapAttachment[];
+  /** True when the cache entry was produced by `openCryptoMessage`. Drives
+   *  the crypto branches of AttachmentList (download) + ReadingPane (inline
+   *  image resolution). */
+  isCrypto?: boolean;
 }
 
 export interface ViewStore extends ViewState {
@@ -111,8 +126,18 @@ export interface ViewStore extends ViewState {
    * Cache the decrypted plaintext for a message id (called by the G6
    * open-message handler after `openCryptoMessage` returns). Replaces any
    * prior entry for the same id. The plaintext never touches disk.
+   *
+   * DA-Task 3: `attachments` + `isCrypto` are stashed alongside the plaintext
+   * so the AttachmentList / ReadingPane inline-image effect can render the
+   * decrypted inner-MIME parts without triggering a second decrypt.
    */
-  setDecrypted: (messageId: string, html: string | null, text: string | null) => void;
+  setDecrypted: (
+    messageId: string,
+    html: string | null,
+    text: string | null,
+    attachments?: ImapAttachment[],
+    isCrypto?: boolean,
+  ) => void;
   /**
    * Drop the entire session plaintext cache. Called on lock/logout to ensure
    * decrypted S/MIME bodies are not left in RAM after the user steps away.
@@ -155,9 +180,12 @@ export const useViewStore = create<ViewStore>((set) => ({
       panelSizes: { ...state.panelSizes, [readingPanePosition]: sizes },
     })),
   setHydrated: (isHydrated) => set({ isHydrated }),
-  setDecrypted: (messageId, html, text) =>
+  setDecrypted: (messageId, html, text, attachments, isCrypto) =>
     set((state) => ({
-      decryptedCache: { ...state.decryptedCache, [messageId]: { html, text } },
+      decryptedCache: {
+        ...state.decryptedCache,
+        [messageId]: { html, text, attachments, isCrypto },
+      },
     })),
   clearDecrypted: () => set({ decryptedCache: {} }),
 
