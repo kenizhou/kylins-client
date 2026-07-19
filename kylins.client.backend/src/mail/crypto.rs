@@ -1205,7 +1205,6 @@ async fn decrypt_message_with_outcome(
 ///     `run_verify_path` when the inner is itself a SignedData).
 ///   - opaque-signed: the encapsulated eContent (from `run_verify_path`).
 ///   - no-ciphertext / no-key / not-signed-inside: `Ok(None)`.
-#[allow(dead_code)] // DA-Task 1: consumed by Task 2's crypto_fetch_attachment / crypto_fetch_inline_images
 pub(crate) async fn decrypt_message_mime_bytes(
     pool: &SqlitePool,
     account_id: &str,

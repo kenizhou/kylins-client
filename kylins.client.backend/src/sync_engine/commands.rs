@@ -732,7 +732,7 @@ pub async fn sync_fetch_inline_images(
 /// **Mirror of [`sync_fetch_attachment_inner`]** but with the IMAP fetch
 /// (`resolve_imap_for_message` + `fetch_attachment_bytes`) replaced by the
 /// re-decrypt helper, and no `attachments` DB read/write.
-pub async fn crypto_fetch_attachment_inner(
+pub(crate) async fn crypto_fetch_attachment_inner(
     pool: &SqlitePool,
     cache_root: &std::path::Path,
     account_id: &str,
@@ -842,7 +842,7 @@ pub async fn crypto_fetch_attachment_inner(
 /// part's `attachment_name()`, or a derived fallback (`inline-image.{ext}`)
 /// when the part has no Content-Disposition filename (mirrors
 /// [`derive_inline_filename`]).
-pub async fn crypto_fetch_inline_images_inner(
+pub(crate) async fn crypto_fetch_inline_images_inner(
     pool: &SqlitePool,
     cache_root: &std::path::Path,
     account_id: &str,
