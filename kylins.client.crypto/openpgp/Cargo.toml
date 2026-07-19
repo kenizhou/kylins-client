@@ -1,0 +1,26 @@
+[package]
+name = "crypto-openpgp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crypto-core = { path = "../core" }
+# `sequoia-openpgp = "2"` resolves to 2.4.1 (July 2026). We use the pure-Rust
+# `crypto-rust` backend (no system nettle/botan/openssl dependency), which is
+# sufficient for a desktop mail client and keeps the build hermetic. Upstream
+# considers RustCrypto experimental and NOT constant-time, so 2.4.1 forces two
+# explicit opt-in feature flags — the build fails with a clear stderr message
+# until each is enabled (Task 1 spike finding, see spike-notes.md):
+#   - `allow-experimental-crypto`: acknowledges RustCrypto is not production-ready.
+#   - `allow-variable-time-crypto`: acknowledges timing side channels (acceptable
+#     here because signature verification runs on local user-supplied data, an
+#     interactive setting per Sequoia's guidance).
+# Do NOT drop these flags without swapping to a constant-time backend
+# (`crypto-nettle` / `crypto-botan` / `crypto-openssl`).
+sequoia-openpgp = { version = "2", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+
+[dev-dependencies]
+# add tempfile here only if a later task needs it; the spike is in-memory

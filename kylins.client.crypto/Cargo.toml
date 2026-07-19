@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "smime"]
+members = ["core", "smime", "openpgp"]
 # `vendor/cms` is a vendored path dependency (the published cms 0.3.0-pre.2
 # doesn't compile vs the current cipher/elliptic-curve line — see
 # smime/Cargo.toml). Exclude it from workspace membership so `cargo test` /
