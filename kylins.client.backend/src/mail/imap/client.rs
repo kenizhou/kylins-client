@@ -2928,8 +2928,9 @@ fn extract_fetch_attr(line: &str, key: &str) -> Option<String> {
     } else if rest.starts_with('(') {
         // parenthesized astring — RFC 8474 servers may wrap the OBJECTID value
         // in parens; take the trimmed content up to `)`.
-        let end = rest[1..].find(')')?;
-        let inner = rest[1..1 + end].trim();
+        let rest = rest.strip_prefix('(')?;
+        let end = rest.find(')')?;
+        let inner = rest[..end].trim();
         if inner.is_empty() {
             None
         } else {
@@ -3579,7 +3580,7 @@ mod tests {
     use super::{
         capabilities_from_strs, decode_part_bytes, derive_snippet, detect_special_use_from_attrs,
         ends_with_crlf_crlf,
-        extract_clear_signed_parts, extract_raw_ciphertext, extract_fetch_attr, extract_starttls_injection,
+        extract_clear_signed_parts, extract_fetch_attr, extract_starttls_injection,
         parse_imap_quoted, parse_list_line, parse_status_line, fetch_changed_flags_response_from_fetches, uid_set_raw, BASE_SYNC_FETCH_QUERY,
     };
     use crate::sync_engine::Capabilities;
