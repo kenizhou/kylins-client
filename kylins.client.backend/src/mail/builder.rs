@@ -11,7 +11,7 @@ use mail_builder::{
 };
 use serde::{Deserialize, Serialize};
 
-use crypto_core::envelope::EncryptionGranularity;
+use crypto_core::EncryptionGranularity;
 
 /// RFC5322 address — single recipient/sender. `name` is the display name.
 /// Field names are camelCase over IPC (matches the TS `AddressSpec`).

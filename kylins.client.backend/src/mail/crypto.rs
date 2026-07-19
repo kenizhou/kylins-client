@@ -1760,7 +1760,8 @@ mod tests {
 
     use crate::db::crypto_keys::get_default_signing_key;
     use crate::db::init_db;
-    use crate::mail::builder::{build_mime, AddressSpec};
+    use crate::mail::builder::{build_mime, build_mime_with_granularity, AddressSpec, AttachmentRef};
+    use crypto_core::EncryptionGranularity;
 
     // ---- existing Task 4 wrapper unit tests (unchanged) ----
 
@@ -3889,5 +3890,160 @@ mod tests {
             &anchor_fp,
         )
         .await;
+    }
+
+    /// Task 5 load-bearing round-trip: `build_mime_with_granularity(draft, B)`
+    /// → `SmimeBackend::encrypt` (SingleMimeBlob, no sign) → `SmimeBackend::decrypt`
+    /// → parse with `mail_parser` → `extract_attachments` returns all 3
+    /// attachments.
+    ///
+    /// This is the design's "receive-side zero change" correctness proof: the
+    /// merged `multipart/mixed` subtree composed by Granularity B survives a
+    /// CMS EnvelopedData encrypt/decrypt cycle and `extract_attachments` walks
+    /// the nested multipart/mixed (a container-of-containers shape that does
+    /// not appear under WholeMessage / Granularity A).
+    ///
+    /// Mirrors the harness + `SmimeBackend::encrypt`/`decrypt` patterns from
+    /// `open_crypto_message_decrypts_enveloped_then_signed` (line ~2675) and
+    /// `open_crypto_message_returns_no_key_when_no_matching_decryption_key`
+    /// (line ~2890). Does NOT touch the DB — exercises `SmimeBackend::decrypt`
+    /// directly so the composition is proven without `message_bodies` rows.
+    #[tokio::test]
+    async fn granularity_b_merged_multipart_round_trips_through_smime_encrypt_decrypt() {
+        let h = make_open_crypto_harness().await;
+
+        // 3-attachment draft mirroring builder.rs::make_three_attachment_draft
+        // (text + html + 3 binary attachments) — the fixture that exercises
+        // Granularity B's merge branch (≥2 regular attachments, no inline).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let p1 = dir.join("gb_a1.bin");
+        let p2 = dir.join("gb_a2.bin");
+        let p3 = dir.join("gb_a3.bin");
+        std::fs::write(&p1, b"AAA").unwrap();
+        std::fs::write(&p2, b"BBBB").unwrap();
+        std::fs::write(&p3, b"CCCCC").unwrap();
+        let draft = SendDraft {
+            draft_id: "t5-roundtrip".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr(ACCOUNT_EMAIL)], // encrypt-to-self
+            subject: "Granularity B round-trip".into(),
+            text_body: Some("plain body".into()),
+            html_body: Some("<p>Html body</p>".into()),
+            attachments: vec![
+                AttachmentRef {
+                    file_path: p1.to_string_lossy().into_owned(),
+                    filename: "a1.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p2.to_string_lossy().into_owned(),
+                    filename: "a2.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p3.to_string_lossy().into_owned(),
+                    filename: "a3.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        // Build with Granularity B → merged multipart/mixed subtree holding
+        // all 3 attachments as one encryption unit.
+        let mime = build_mime_with_granularity(
+            &draft,
+            EncryptionGranularity::BodyInlineAndMergedAttachments,
+        )
+        .await
+        .expect("build_mime_with_granularity(B)");
+
+        // Encrypt-to-self (SingleMimeBlob, no inner signature) — same shape
+        // `apply_crypto` uses at mail/crypto.rs:1376-1390 when `sign=false`.
+        let env = h
+            .backend
+            .encrypt(crypto_core::EncryptOp {
+                parts: &[Part {
+                    id: PartId("body".into()),
+                    kind: PartKind::Body,
+                    data: mime.clone(),
+                }],
+                serialization: SerializationStrategy::SingleMimeBlob,
+                recipients: std::slice::from_ref(&h.signer_handle),
+                sign_with: None,
+            })
+            .await
+            .expect("encrypt");
+        let ciphertext = env.parts.first().expect("one part").ciphertext.clone();
+
+        // Sanity: ciphertext parses as EnvelopedData.
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        // Decrypt directly via the backend (no DB / `open_crypto_message`).
+        let payload = h
+            .backend
+            .decrypt(crypto_core::DecryptOp {
+                envelope: &env,
+                decryption_key: h.signer_handle.clone(),
+            })
+            .await
+            .expect("decrypt");
+        let plaintext = payload
+            .parts
+            .first()
+            .expect("decrypted payload has one part")
+            .data
+            .clone();
+
+        // The recovered plaintext must be byte-identical to the pre-encrypt
+        // MIME (proving the merged subtree passed through CMS unchanged).
+        assert_eq!(
+            plaintext, mime,
+            "decrypted plaintext must equal the pre-encrypt MIME bytes"
+        );
+
+        // Parse the decrypted bytes and walk `extract_attachments` — the
+        // receive-side path. Must surface all 3 attachments (proving the
+        // nested multipart/mixed is walked, not just the top container).
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&plaintext)
+            .expect("parse decrypted MIME");
+        let attachments = extract_attachments(&parsed, 0);
+        assert_eq!(
+            attachments.len(),
+            3,
+            "extract_attachments must return all 3 attachments from the \
+             decrypted merged multipart/mixed; got {:?}",
+            attachments
+                .iter()
+                .map(|a| a.filename.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // Filename set round-trips (order-independent — multipart children
+        // preserve order but the assertion guards against accidental dedupe
+        // or merge into a single aggregate attachment).
+        let mut names: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "a1.bin".to_string(),
+                "a2.bin".to_string(),
+                "a3.bin".to_string()
+            ],
+            "attachment filenames must round-trip"
+        );
+
+        // Sizes match the fixture contents (sanity: no truncation / encoding
+        // growth leaked into the attachment metadata).
+        let mut sizes: Vec<u32> = attachments.iter().map(|a| a.size).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![3, 4, 5], "attachment sizes round-trip");
     }
 }

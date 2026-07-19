@@ -21,8 +21,9 @@ pub mod util;
 
 pub use backend::{CryptoBackend, DecryptOp, EncryptOp, KeyGenParams, SignOp, VerifyOp};
 pub use envelope::{
-    DecryptedPayload, DetachedSignature, EncryptedEnvelope, EncryptedPart, KeyPacketRef, Part,
-    PartId, PartKind, SerializationStrategy, SignatureState, SignedEnvelope, VerificationResult,
+    DecryptedPayload, DetachedSignature, EncryptedEnvelope, EncryptedPart, EncryptionGranularity,
+    KeyPacketRef, Part, PartId, PartKind, SerializationStrategy, SignatureState, SignedEnvelope,
+    VerificationResult,
 };
 pub use error::{CryptoError, Result};
 pub use handle::{KeyHandle, KeyHandleRef, KeyUsage};
