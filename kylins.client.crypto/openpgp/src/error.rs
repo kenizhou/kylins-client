@@ -1,18 +1,27 @@
 //! `sequoia_openpgp` errors -> `crypto_core::CryptoError`.
 //!
 //! Single translation seam every other module in this crate routes Sequoia
-//! results through. The framework's [`crypto_core::CryptoError::backend`]
-//! constructor preserves the original error as the typed `source` of the
-//! type-erased [`crypto_core::CryptoError::Backend`] variant, so callers can
-//! still walk the error chain when debugging — no stringification.
+//! results through. [`map_err`] wraps the Sequoia error into the framework's
+//! type-erased [`crypto_core::CryptoError::Backend`] variant via
+//! [`crypto_core::CryptoError::backend`].
+//!
+//! **Diagnostic contract (read this before relying on the chain):** the
+//! framework's `Backend(Arc<dyn Error>)` variant is declared
+//! `#[error("crypto backend error: {0}")]` *without* a `#[source]` attribute
+//! (see `kylins.client.crypto/core/src/error.rs`), so `Error::source()` returns
+//! `None` for it. The **typed source chain is NOT walkable** — code like
+//! `e.source().downcast_ref::<sequoia_openpgp::Error>()` will silently get
+//! `None`. The original error's **Display message IS preserved** (reachable via
+//! `to_string()` / `format!("{e}")`), so the human-readable diagnostic is not
+//! lost. No stringification of the message into `Malformed`.
 use crypto_core::CryptoError;
 
 /// Result alias shared by every module in this crate.
 pub type CryptoResult<T> = Result<T, CryptoError>;
 
 /// Wrap a Sequoia (or any backend-native) result into the framework's
-/// type-erased [`CryptoError::Backend`] error, preserving the original error
-/// as its `source`.
+/// type-erased [`CryptoError::Backend`] error, preserving the original error's
+/// Display behind the `Backend` variant.
 ///
 /// Works for both `Result<T, anyhow::Error>` (Sequoia's `openpgp::Result`)
 /// and `Result<T, sequoia_openpgp::Error>` because both error types satisfy
@@ -67,6 +76,11 @@ mod tests {
         // preserved, but the formal source chain is not exposed by the framework.
         // Tracked as a concern in the Task 2 report; out of scope to fix here
         // (would require touching `kylins.client.crypto/core/src/error.rs`).
+        assert!(
+            std::error::Error::source(&e).is_none(),
+            "framework CryptoError::Backend does not expose Error::source(); \
+             if this starts passing, the docs can re-claim source-chain preservation"
+        );
     }
 
     #[test]
