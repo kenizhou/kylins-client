@@ -5,11 +5,13 @@
 // to honor html_body / inline_images / attachments / extra_headers / threading.
 
 use mail_builder::{
-    headers::{address::Address, raw::Raw as RawHeader, message_id::MessageId},
+    headers::{address::Address, message_id::MessageId, raw::Raw as RawHeader},
     mime::{BodyPart, MimePart},
     MessageBuilder,
 };
 use serde::{Deserialize, Serialize};
+
+use crypto_core::envelope::EncryptionGranularity;
 
 /// RFC5322 address — single recipient/sender. `name` is the display name.
 /// Field names are camelCase over IPC (matches the TS `AddressSpec`).
@@ -121,6 +123,24 @@ fn to_address_list(addrs: &[AddressSpec]) -> Address<'_> {
 /// Errors are mapped to `String` so the caller (`engine.rs` `send_op`) can
 /// surface them as a `SourceError::Transport(...)` without a bespoke enum.
 pub async fn build_mime(draft: &SendDraft) -> Result<Vec<u8>, String> {
+    build_mime_with_granularity(draft, EncryptionGranularity::WholeMessage).await
+}
+
+/// Build an RFC5322 message from a structured draft, composing the MIME tree
+/// per the per-account `EncryptionGranularity` (§11.4.1 of the crypto arch doc).
+///
+/// Granularity A (`BodyInlineAndPerAttachment`) and `WholeMessage` produce
+/// byte-identical output to the historical single-blob `build_mime` — on the
+/// S/MIME A-form wire their per-part session-key benefit is collapsed
+/// (realized only under future SplitPerPart). Granularity B
+/// (`BodyInlineAndMergedAttachments`) composes a merged `multipart/mixed`
+/// subtree containing all regular attachments (body+inline become one unit,
+/// the merged attachment container becomes another) — but only when there are
+/// ≥2 regular attachments; with <2 the tree is unchanged.
+pub async fn build_mime_with_granularity(
+    draft: &SendDraft,
+    granularity: EncryptionGranularity,
+) -> Result<Vec<u8>, String> {
     let mut b = MessageBuilder::new();
 
     // Address headers. `.from` takes a single Address; To/Cc/Bcc take a List.
@@ -191,17 +211,34 @@ pub async fn build_mime(draft: &SendDraft) -> Result<Vec<u8>, String> {
         attach_parts.push(part);
     }
 
+    // Merge flag: Granularity B with ≥2 regular attachments. Otherwise the tree
+    // is byte-identical to today (WholeMessage / A / B-with-<2-attachments).
+    let merge = granularity == EncryptionGranularity::BodyInlineAndMergedAttachments
+        && attach_parts.len() >= 2;
+
     if inline_parts.is_empty() {
-        // No inline images → let mail-builder auto-structure text/html/attachments.
-        // text+html → multipart/alternative; +attachments → multipart/mixed on top.
-        if let Some(text) = &draft.text_body {
-            b = b.text_body(text.clone());
-        }
-        if let Some(html) = &draft.html_body {
-            b = b.html_body(html.clone());
-        }
-        for part in attach_parts {
-            b = push_attachment(b, part);
+        if merge {
+            // Auto-structuring (.text_body/.html_body/.push_attachment) can't
+            // express a nested container, so compose the tree by hand.
+            let body_unit = body_unit_no_inline(draft);
+            let merged = MimePart::new("multipart/mixed", BodyPart::Multipart(attach_parts));
+            let top = MimePart::new(
+                "multipart/mixed",
+                BodyPart::Multipart(vec![body_unit, merged]),
+            );
+            b = b.body(top);
+        } else {
+            // No inline images → let mail-builder auto-structure text/html/attachments.
+            // text+html → multipart/alternative; +attachments → multipart/mixed on top.
+            if let Some(text) = &draft.text_body {
+                b = b.text_body(text.clone());
+            }
+            if let Some(html) = &draft.html_body {
+                b = b.html_body(html.clone());
+            }
+            for part in attach_parts {
+                b = push_attachment(b, part);
+            }
         }
     } else {
         // HTML references cid: images → wrap as RFC 2387 multipart/related.
@@ -217,10 +254,12 @@ pub async fn build_mime(draft: &SendDraft) -> Result<Vec<u8>, String> {
         let related = MimePart::new("multipart/related", BodyPart::Multipart(related_children));
 
         // Compose the top-level body. If there are regular attachments, wrap in
-        // multipart/mixed (and include the text alternative if present).
+        // multipart/mixed (and include the text alternative if present). On the
+        // merge branch, the attachments are nested under a single merged
+        // multipart/mixed child rather than siblings.
         let top: MimePart<'_> = if !attach_parts.is_empty() {
             let mut mixed_children: Vec<MimePart<'_>> =
-                Vec::with_capacity(2 + attach_parts.len());
+                Vec::with_capacity(2 + if merge { 1 } else { attach_parts.len() });
             if let Some(text) = &draft.text_body {
                 let text_part = MimePart::new("text/plain", BodyPart::Text(text.clone().into()));
                 let alt = MimePart::new(
@@ -231,7 +270,14 @@ pub async fn build_mime(draft: &SendDraft) -> Result<Vec<u8>, String> {
             } else {
                 mixed_children.push(related);
             }
-            mixed_children.extend(attach_parts);
+            if merge {
+                mixed_children.push(MimePart::new(
+                    "multipart/mixed",
+                    BodyPart::Multipart(attach_parts),
+                ));
+            } else {
+                mixed_children.extend(attach_parts);
+            }
             MimePart::new("multipart/mixed", BodyPart::Multipart(mixed_children))
         } else if let Some(text) = &draft.text_body {
             // text + related → wrap in multipart/alternative so clients can pick.
@@ -251,11 +297,51 @@ pub async fn build_mime(draft: &SendDraft) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("mime build failed: {e}"))
 }
 
+/// Build the body unit when there are no inline images: text/html/alternative
+/// per what's present. Used only on the Granularity-B non-inline merge path
+/// (where we compose the multipart/mixed tree by hand instead of letting
+/// mail-builder auto-structure via `.text_body` / `.html_body`).
+fn body_unit_no_inline<'x>(draft: &SendDraft) -> MimePart<'x> {
+    let has_html = draft
+        .html_body
+        .as_deref()
+        .filter(|h| !h.is_empty())
+        .is_some();
+    let has_text = draft
+        .text_body
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .is_some();
+    match (has_text, has_html) {
+        (true, true) => {
+            let t = MimePart::new(
+                "text/plain",
+                BodyPart::Text(draft.text_body.clone().unwrap().into()),
+            );
+            let h = MimePart::new(
+                "text/html",
+                BodyPart::Text(draft.html_body.clone().unwrap().into()),
+            );
+            MimePart::new("multipart/alternative", BodyPart::Multipart(vec![t, h]))
+        }
+        (false, true) => MimePart::new(
+            "text/html",
+            BodyPart::Text(draft.html_body.clone().unwrap().into()),
+        ),
+        (true, false) => MimePart::new(
+            "text/plain",
+            BodyPart::Text(draft.text_body.clone().unwrap().into()),
+        ),
+        (false, false) => MimePart::new("text/plain", BodyPart::Text(String::new().into())),
+    }
+}
+
 /// Push a pre-built attachment `MimePart` onto the builder by extracting its
 /// content-type, filename, and body. mail-builder 0.4.4's `.attachment(...)`
 /// takes `(content_type, filename, body)` separately, so we decompose here.
 fn push_attachment<'x>(b: MessageBuilder<'x>, part: MimePart<'x>) -> MessageBuilder<'x> {
-    let content_type = extract_content_type(&part).unwrap_or_else(|| "application/octet-stream".to_string());
+    let content_type =
+        extract_content_type(&part).unwrap_or_else(|| "application/octet-stream".to_string());
     let filename = extract_filename(&part).unwrap_or_else(|| "attachment".to_string());
     let body = part.contents;
     b.attachment(content_type, filename, body)
@@ -304,7 +390,7 @@ fn strip_brackets(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mail_parser::MessageParser;
+    use mail_parser::{MessageParser, MimeHeaders};
 
     fn addr(email: &str) -> AddressSpec {
         AddressSpec {
@@ -324,9 +410,7 @@ mod tests {
             ..Default::default()
         };
         let bytes = build_mime(&draft).await.unwrap();
-        let parsed = MessageParser::default()
-            .parse(&bytes)
-            .expect("parse");
+        let parsed = MessageParser::default().parse(&bytes).expect("parse");
         assert_eq!(parsed.subject().unwrap(), "Hello");
         assert_eq!(parsed.body_text(0).unwrap(), "plain body");
         assert_eq!(
@@ -461,5 +545,178 @@ mod tests {
         let d: SendDraft = serde_json::from_str(json).unwrap();
         assert_eq!(d.crypto_method, CryptoMethod::None);
         assert!(!d.sign && !d.encrypt);
+    }
+
+    /// Shared draft with text+html and 3 real (temp-file) regular attachments,
+    /// no inline images. Used by the Granularity-B merge test and the
+    /// WholeMessage/A byte-identical regression test. Writes temp files; callers
+    /// must clean up `draft.attachments[*].file_path` when done.
+    async fn make_three_attachment_draft() -> SendDraft {
+        let dir = std::env::temp_dir();
+        let p1 = dir.join("t4_a1.bin");
+        let p2 = dir.join("t4_a2.bin");
+        let p3 = dir.join("t4_a3.bin");
+        std::fs::write(&p1, b"AAA").unwrap();
+        std::fs::write(&p2, b"BBBB").unwrap();
+        std::fs::write(&p3, b"CCCCC").unwrap();
+        SendDraft {
+            draft_id: "t4".into(),
+            from: addr("a@kylins.local"),
+            to: vec![addr("b@kylins.local")],
+            subject: "Three attachments".into(),
+            text_body: Some("plain body".into()),
+            html_body: Some("<p>Html body</p>".into()),
+            attachments: vec![
+                AttachmentRef {
+                    file_path: p1.to_string_lossy().into_owned(),
+                    filename: "a1.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p2.to_string_lossy().into_owned(),
+                    filename: "a2.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p3.to_string_lossy().into_owned(),
+                    filename: "a3.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Helper: assert the root part of `parsed` is multipart/mixed and return
+    /// its child indices. Mirrors the traversal pattern in
+    /// `mail/imap/client.rs::extract_attachments` (line ~3334) — uses
+    /// `message.parts[0]` + `part.content_type()` + `PartType::Multipart`.
+    fn root_mixed_children(parsed: &mail_parser::Message) -> Vec<usize> {
+        use mail_parser::PartType;
+        let root = parsed.parts.first().expect("parsed message has no parts");
+        let ct = root.content_type().expect("root content-type");
+        assert_eq!(ct.ctype(), "multipart", "root ctype");
+        assert_eq!(ct.subtype(), Some("mixed"), "root subtype");
+        match &root.body {
+            PartType::Multipart(children) => children.clone(),
+            _ => panic!("root part is not multipart"),
+        }
+    }
+
+    /// Structural signature of a parsed MIME tree: a string like
+    /// `mixed[alt[text/html]leaf[application/octet-stream]leaf[...]]`.
+    /// Used to compare two trees for shape+content-type equality without
+    /// comparing bytes (mail_builder 0.4.4 emits a random Message-ID and
+    /// multipart boundary per call, so byte-equality across two `build_mime`
+    /// invocations is impossible even for identical structure).
+    fn structural_signature(parsed: &mail_parser::Message) -> String {
+        use mail_parser::PartType;
+        fn walk(parts: &[mail_parser::MessagePart], idx: usize) -> String {
+            let part = match parts.get(idx) {
+                Some(p) => p,
+                None => return "?".to_string(),
+            };
+            let ct_str = part
+                .content_type()
+                .map(|ct| format!("{}/{}", ct.ctype(), ct.subtype().unwrap_or("")))
+                .unwrap_or_else(|| "?".to_string());
+            match &part.body {
+                PartType::Multipart(children) => {
+                    let inner: String = children
+                        .iter()
+                        .map(|&c| walk(parts, c))
+                        .collect::<Vec<_>>()
+                        .join("");
+                    format!("{ct_str}[{inner}]")
+                }
+                _ => format!("leaf[{ct_str}]"),
+            }
+        }
+        walk(&parsed.parts, 0)
+    }
+
+    #[tokio::test]
+    async fn build_mime_granularity_b_merges_attachments() {
+        let draft = make_three_attachment_draft().await;
+        let bytes = build_mime_with_granularity(
+            &draft,
+            EncryptionGranularity::BodyInlineAndMergedAttachments,
+        )
+        .await
+        .unwrap();
+        let parsed = MessageParser::default().parse(&bytes).expect("parse");
+
+        // Root: multipart/mixed with exactly 2 children (body unit + merged container).
+        let root_children = root_mixed_children(&parsed);
+        assert_eq!(
+            root_children.len(),
+            2,
+            "top mixed should have 2 children (body + merged container)"
+        );
+
+        // Second child: multipart/mixed holding all 3 attachments.
+        use mail_parser::PartType;
+        let merged_idx = root_children[1];
+        let merged = &parsed.parts[merged_idx];
+        let merged_ct = merged.content_type().expect("merged content-type");
+        assert_eq!(merged_ct.ctype(), "multipart");
+        assert_eq!(merged_ct.subtype(), Some("mixed"));
+        let merged_children = match &merged.body {
+            PartType::Multipart(c) => c.clone(),
+            _ => panic!("merged container is not multipart"),
+        };
+        assert_eq!(
+            merged_children.len(),
+            3,
+            "merged container should hold 3 attachments"
+        );
+
+        // mail_parser's `attachments` index list should also report all 3.
+        assert_eq!(parsed.attachments.len(), 3);
+
+        for att in &draft.attachments {
+            std::fs::remove_file(&att.file_path).ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn build_mime_whole_and_a_produce_identical_structure() {
+        let draft = make_three_attachment_draft().await;
+        let whole = build_mime_with_granularity(&draft, EncryptionGranularity::WholeMessage)
+            .await
+            .unwrap();
+        let a =
+            build_mime_with_granularity(&draft, EncryptionGranularity::BodyInlineAndPerAttachment)
+                .await
+                .unwrap();
+
+        let parsed_whole = MessageParser::default().parse(&whole).expect("parse whole");
+        let parsed_a = MessageParser::default().parse(&a).expect("parse a");
+
+        // Structural signature ignores random Message-ID / multipart boundary
+        // strings (which mail_builder regenerates each call) and compares only
+        // the tree shape + per-part content-types. WholeMessage and
+        // Granularity A must produce the same structure: top multipart/mixed
+        // with 4 children (alt(text,html) + 3 sibling attachments), no merged
+        // container.
+        assert_eq!(
+            structural_signature(&parsed_whole),
+            structural_signature(&parsed_a),
+            "WholeMessage and BodyInlineAndPerAttachment must produce structurally identical MIME"
+        );
+
+        // Both must have 4 top-mixed children (body unit + 3 sibling attachments).
+        assert_eq!(root_mixed_children(&parsed_whole).len(), 4);
+        assert_eq!(root_mixed_children(&parsed_a).len(), 4);
+        // Both must report 3 attachments via mail_parser.
+        assert_eq!(parsed_whole.attachments.len(), 3);
+        assert_eq!(parsed_a.attachments.len(), 3);
+
+        for att in &draft.attachments {
+            std::fs::remove_file(&att.file_path).ok();
+        }
     }
 }
