@@ -257,6 +257,9 @@ pub struct AccountUpdates {
     /// EAS auth strategy — see [`Account::auth_type`]. Phase 3b Task 3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
+    /// Per-account encryption granularity — see [`Account::crypto_granularity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_granularity: Option<String>,
 }
 
 /// Map a raw row to an [`Account`], decrypting the four secret fields.
@@ -628,6 +631,7 @@ pub async fn update(pool: &SqlitePool, id: &str, updates: AccountUpdates) -> Res
     push_str!("eas_policy_key", updates.eas_policy_key);
     push_str!("eas_user_agent", updates.eas_user_agent);
     push_str!("auth_type", updates.auth_type);
+    push_str!("crypto_granularity", updates.crypto_granularity);
 
     // Always stamp updated_at.
     sets.push("updated_at = ?".to_string());
@@ -1106,5 +1110,75 @@ mod tests {
         // None fields should be skipped.
         assert!(!obj.contains_key("refreshToken"));
         assert!(!obj.contains_key("imapPassword"));
+    }
+
+    #[tokio::test]
+    async fn update_sets_crypto_granularity_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, email, created_at) VALUES ('acct-gran-upd', 'g@x', '0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let updates = crate::db::accounts::AccountUpdates {
+            crypto_granularity: Some("body_inline_merged_attachments".into()),
+            ..Default::default()
+        };
+        crate::db::accounts::update(&pool, "acct-gran-upd", updates)
+            .await
+            .unwrap();
+
+        let g = crate::db::accounts::get_crypto_granularity(&pool, "acct-gran-upd")
+            .await
+            .unwrap();
+        assert_eq!(g.as_deref(), Some("body_inline_merged_attachments"));
+    }
+
+    #[tokio::test]
+    async fn update_crypto_granularity_none_is_dont_touch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, email, created_at) VALUES ('acct-gran-nt', 'g@x', '0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // set B first
+        crate::db::accounts::update(
+            &pool,
+            "acct-gran-nt",
+            crate::db::accounts::AccountUpdates {
+                crypto_granularity: Some("body_inline_merged_attachments".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // update a DIFFERENT field with crypto_granularity: None — must NOT clear B.
+        crate::db::accounts::update(
+            &pool,
+            "acct-gran-nt",
+            crate::db::accounts::AccountUpdates {
+                account_label: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let g = crate::db::accounts::get_crypto_granularity(&pool, "acct-gran-nt")
+            .await
+            .unwrap();
+        assert_eq!(
+            g.as_deref(),
+            Some("body_inline_merged_attachments"),
+            "crypto_granularity: None must be don't-touch, not clear"
+        );
     }
 }
