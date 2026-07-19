@@ -56,6 +56,48 @@ pub enum SerializationStrategy {
     SingleMimeBlob,
 }
 
+/// Encryption granularity — how parts are grouped into encryption units
+/// (session-key granularity). Orthogonal to `SerializationStrategy` (wire
+/// layout). See docs/security/crypto-architecture-design.md §11.4.1.
+///
+/// Under S/MIME A-form (SingleMimeBlob), only `BodyInlineAndMergedAttachments`
+/// has a now-implementable effect (merged multipart/mixed subtree in the
+/// composed plaintext). The per-part session-key benefit of A/B is realized
+/// only under SplitPerPart (future, E2EE-internal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptionGranularity {
+    /// Standard: whole MIME tree as one encryption unit (one session key).
+    /// Current behavior.
+    WholeMessage,
+    /// Granularity A: body+inline images as one unit; each regular attachment
+    /// its own unit. (Per-part benefit is SplitPerPart-only; collapses to
+    /// WholeMessage on the S/MIME wire today.)
+    BodyInlineAndPerAttachment,
+    /// Granularity B: body+inline images as one unit; all regular attachments
+    /// merged into a single multipart/mixed entity as one unit.
+    BodyInlineAndMergedAttachments,
+}
+
+impl EncryptionGranularity {
+    /// Parse the DB column value. NULL / unknown / "whole_message" → WholeMessage.
+    pub fn from_db_str(s: Option<&str>) -> Self {
+        match s {
+            Some("body_inline_per_attachment") => Self::BodyInlineAndPerAttachment,
+            Some("body_inline_merged_attachments") => Self::BodyInlineAndMergedAttachments,
+            _ => Self::WholeMessage,
+        }
+    }
+
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Self::WholeMessage => "whole_message",
+            Self::BodyInlineAndPerAttachment => "body_inline_per_attachment",
+            Self::BodyInlineAndMergedAttachments => "body_inline_merged_attachments",
+        }
+    }
+}
+
 /// One per-recipient key-wrap packet (opaque wire bytes).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyPacketRef {
@@ -198,5 +240,29 @@ mod tests {
             !json.contains("revocation_reason"),
             "None revocation_reason is skipped"
         );
+    }
+}
+
+#[cfg(test)]
+mod granularity_tests {
+    use super::EncryptionGranularity as G;
+
+    #[test]
+    fn from_db_str_round_trip() {
+        for v in [
+            G::WholeMessage,
+            G::BodyInlineAndPerAttachment,
+            G::BodyInlineAndMergedAttachments,
+        ] {
+            assert_eq!(G::from_db_str(Some(v.as_db_str())), v);
+        }
+    }
+
+    #[test]
+    fn from_db_str_defaults_to_whole_message() {
+        assert_eq!(G::from_db_str(None), G::WholeMessage);
+        assert_eq!(G::from_db_str(Some("")), G::WholeMessage);
+        assert_eq!(G::from_db_str(Some("garbage")), G::WholeMessage);
+        assert_eq!(G::from_db_str(Some("whole_message")), G::WholeMessage);
     }
 }
