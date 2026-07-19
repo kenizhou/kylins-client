@@ -549,10 +549,11 @@ mod tests {
 
     /// Shared draft with text+html and 3 real (temp-file) regular attachments,
     /// no inline images. Used by the Granularity-B merge test and the
-    /// WholeMessage/A byte-identical regression test. Writes temp files; callers
-    /// must clean up `draft.attachments[*].file_path` when done.
-    async fn make_three_attachment_draft() -> SendDraft {
-        let dir = std::env::temp_dir();
+    /// WholeMessage/A byte-identical regression test. Writes temp files into
+    /// `dir` — callers must own a `tempfile::TempDir` for the test lifetime so
+    /// concurrent tests don't race on shared fixed paths (drop = auto-cleanup,
+    /// no manual `remove_file`/`remove_dir_all` needed).
+    async fn make_three_attachment_draft(dir: &std::path::Path) -> SendDraft {
         let p1 = dir.join("t4_a1.bin");
         let p2 = dir.join("t4_a2.bin");
         let p3 = dir.join("t4_a3.bin");
@@ -640,7 +641,10 @@ mod tests {
 
     #[tokio::test]
     async fn build_mime_granularity_b_merges_attachments() {
-        let draft = make_three_attachment_draft().await;
+        // Each test owns its own TempDir so concurrent `cargo test` runs don't
+        // race on fixed temp paths (drop = auto-cleanup, no manual remove_file).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let draft = make_three_attachment_draft(tmp.path()).await;
         let bytes = build_mime_with_granularity(
             &draft,
             EncryptionGranularity::BodyInlineAndMergedAttachments,
@@ -676,15 +680,12 @@ mod tests {
 
         // mail_parser's `attachments` index list should also report all 3.
         assert_eq!(parsed.attachments.len(), 3);
-
-        for att in &draft.attachments {
-            std::fs::remove_file(&att.file_path).ok();
-        }
     }
 
     #[tokio::test]
     async fn build_mime_whole_and_a_produce_identical_structure() {
-        let draft = make_three_attachment_draft().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let draft = make_three_attachment_draft(tmp.path()).await;
         let whole = build_mime_with_granularity(&draft, EncryptionGranularity::WholeMessage)
             .await
             .unwrap();
@@ -714,9 +715,206 @@ mod tests {
         // Both must report 3 attachments via mail_parser.
         assert_eq!(parsed_whole.attachments.len(), 3);
         assert_eq!(parsed_a.attachments.len(), 3);
+    }
 
-        for att in &draft.attachments {
-            std::fs::remove_file(&att.file_path).ok();
+    /// Granularity B with inline images AND ≥2 regular attachments must merge
+    /// only the regular attachments into the merged `multipart/mixed` container;
+    /// inline images stay inside the body unit (`multipart/related`). This
+    /// exercises the inline-merge branch (`builder.rs:273-280`) that the existing
+    /// `build_mime_granularity_b_merges_attachments` test (no inline images)
+    /// does not cover.
+    #[tokio::test]
+    async fn build_mime_granularity_b_inline_merges_attachments() {
+        use mail_parser::PartType;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let inline_path = dir.join("inline.png");
+        let a1_path = dir.join("a1.bin");
+        let a2_path = dir.join("a2.bin");
+        std::fs::write(&inline_path, [1u8, 2, 3, 4]).unwrap();
+        std::fs::write(&a1_path, b"AAA").unwrap();
+        std::fs::write(&a2_path, b"BBBB").unwrap();
+
+        let draft = SendDraft {
+            draft_id: "t4inline".into(),
+            from: addr("a@kylins.local"),
+            to: vec![addr("b@kylins.local")],
+            subject: "B inline merge".into(),
+            text_body: Some("plain body".into()),
+            html_body: Some("<p>Html <img src=\"cid:logo@kylins.mail\"/></p>".into()),
+            inline_images: vec![AttachmentRef {
+                file_path: inline_path.to_string_lossy().into_owned(),
+                filename: "logo.png".into(),
+                mime_type: "image/png".into(),
+                cid: Some("logo@kylins.mail".into()),
+            }],
+            attachments: vec![
+                AttachmentRef {
+                    file_path: a1_path.to_string_lossy().into_owned(),
+                    filename: "a1.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: a2_path.to_string_lossy().into_owned(),
+                    filename: "a2.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let bytes = build_mime_with_granularity(
+            &draft,
+            EncryptionGranularity::BodyInlineAndMergedAttachments,
+        )
+        .await
+        .unwrap();
+        let parsed = MessageParser::default().parse(&bytes).expect("parse");
+
+        // Root: multipart/mixed with 2 children (body unit + merged container).
+        let root_children = root_mixed_children(&parsed);
+        assert_eq!(
+            root_children.len(),
+            2,
+            "top mixed should have 2 children (body unit + merged container)"
+        );
+
+        // Body unit = multipart/alternative(text, multipart/related(html, inline)).
+        let body_idx = root_children[0];
+        let body_part = &parsed.parts[body_idx];
+        let body_ct = body_part.content_type().expect("body content-type");
+        assert_eq!(body_ct.ctype(), "multipart");
+        assert_eq!(body_ct.subtype(), Some("alternative"));
+        let body_children = match &body_part.body {
+            PartType::Multipart(c) => c.clone(),
+            _ => panic!("body unit is not multipart"),
+        };
+        assert_eq!(body_children.len(), 2, "alt should have text + related");
+
+        // Second child of body unit = multipart/related containing html + inline image.
+        let related_idx = body_children[1];
+        let related = &parsed.parts[related_idx];
+        let related_ct = related.content_type().expect("related content-type");
+        assert_eq!(related_ct.ctype(), "multipart");
+        assert_eq!(related_ct.subtype(), Some("related"));
+        let related_children = match &related.body {
+            PartType::Multipart(c) => c.clone(),
+            _ => panic!("related is not multipart"),
+        };
+        // html_part + 1 inline image
+        assert_eq!(related_children.len(), 2);
+
+        // (a) Inline image must live INSIDE the body unit's related subtree,
+        //     NOT inside the merged attachment container. Verify Content-ID.
+        let inline_idx = related_children[1];
+        let inline_part = &parsed.parts[inline_idx];
+        let cid = inline_part
+            .content_id()
+            .expect("inline image should carry Content-ID");
+        assert!(cid.contains("logo@kylins.mail"), "cid mismatch: {cid}");
+
+        // (b) Merged container = 2nd top-level child, multipart/mixed, holding
+        //     all regular attachments (and only those).
+        let merged_idx = root_children[1];
+        let merged = &parsed.parts[merged_idx];
+        let merged_ct = merged.content_type().expect("merged content-type");
+        assert_eq!(merged_ct.ctype(), "multipart");
+        assert_eq!(merged_ct.subtype(), Some("mixed"));
+        let merged_children = match &merged.body {
+            PartType::Multipart(c) => c.clone(),
+            _ => panic!("merged container is not multipart"),
+        };
+        assert_eq!(
+            merged_children.len(),
+            2,
+            "merged container should hold 2 regular attachments"
+        );
+        // No child of the merged container may carry a Content-ID — that would
+        // mean an inline image leaked out of the body unit.
+        for &child_idx in &merged_children {
+            let p = &parsed.parts[child_idx];
+            assert!(
+                p.content_id().is_none(),
+                "merged-container child has Content-ID — inline image leaked into merged container"
+            );
         }
+
+        // (c) `parsed.attachments` must account for inline + regular attachments
+        //     correctly. mail_parser's `attachments` index includes both
+        //     `Content-Disposition: attachment` parts (regular) AND inline parts
+        //     that carry a Content-ID. 1 inline + 2 regular == 3.
+        assert_eq!(
+            parsed.attachments.len(),
+            3,
+            "parsed.attachments should list inline + regular attachments (got {:?})",
+            parsed.attachments
+        );
+    }
+
+    /// Granularity B with fewer than 2 regular attachments is a no-op: the tree
+    /// matches WholeMessage/A (no merged container). Locks the
+    /// `attach_parts.len() >= 2` guardrail in `build_mime_with_granularity`.
+    #[tokio::test]
+    async fn build_mime_granularity_b_with_one_attachment_is_noop() {
+        use mail_parser::PartType;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let a1_path = dir.join("only_one.bin");
+        std::fs::write(&a1_path, b"AAA").unwrap();
+
+        let draft = SendDraft {
+            draft_id: "t4noop".into(),
+            from: addr("a@kylins.local"),
+            to: vec![addr("b@kylins.local")],
+            subject: "B noop".into(),
+            text_body: Some("plain body".into()),
+            html_body: Some("<p>Html body</p>".into()),
+            attachments: vec![AttachmentRef {
+                file_path: a1_path.to_string_lossy().into_owned(),
+                filename: "only.bin".into(),
+                mime_type: "application/octet-stream".into(),
+                cid: None,
+            }],
+            ..Default::default()
+        };
+
+        let bytes = build_mime_with_granularity(
+            &draft,
+            EncryptionGranularity::BodyInlineAndMergedAttachments,
+        )
+        .await
+        .unwrap();
+        let parsed = MessageParser::default().parse(&bytes).expect("parse");
+
+        // Top-level multipart/mixed has body + 1 sibling attachment = 2 children,
+        // NOT a merged container (the merge guard requires ≥2 attachments).
+        let root_children = root_mixed_children(&parsed);
+        assert_eq!(
+            root_children.len(),
+            2,
+            "B with 1 attachment should NOT merge — top mixed has body + 1 sibling"
+        );
+
+        // The sibling must be a leaf attachment, not a nested multipart/mixed.
+        let sibling_idx = root_children[1];
+        let sibling = &parsed.parts[sibling_idx];
+        let sibling_ct = sibling.content_type().expect("sibling content-type");
+        assert_eq!(
+            sibling_ct.ctype(),
+            "application",
+            "sibling should be a leaf attachment, not a merged container (ctype = {:?})",
+            sibling_ct.ctype()
+        );
+        assert_eq!(sibling_ct.subtype(), Some("octet-stream"));
+        assert!(matches!(
+            sibling.body,
+            PartType::Binary(_) | PartType::Text(_)
+        ));
+
+        assert_eq!(parsed.attachments.len(), 1);
     }
 }
