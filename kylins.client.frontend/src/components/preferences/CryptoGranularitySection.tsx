@@ -46,7 +46,7 @@ export function CryptoGranularitySection() {
     const picked = accounts.find((a) => a.id === pickedAccountId);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setGranularity(picked?.cryptoGranularity ?? DEFAULT_GRANULARITY);
-     
+
     setError(null);
   }, [pickedAccountId, accounts]);
 

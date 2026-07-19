@@ -81,12 +81,21 @@ describe('CryptoGranularitySection', () => {
     const { updateAccount } = await import('@/services/accounts');
     const spy = vi.mocked(updateAccount);
     spy.mockClear();
+    // Spy on the Zustand store's `updateAccountInPlace` to assert the component
+    // mirrors the persisted update into the local store as well. The store is
+    // real (seeded via `setState` in `beforeEach`); `getState()` returns the
+    // current merged state object, on which `vi.spyOn` swaps the action for a
+    // spy wrapping the original. The component reads the action via its
+    // selector at render time, so it picks up the spied reference.
+    const spy2 = vi.spyOn(useAccountStore.getState(), 'updateAccountInPlace');
     render(<CryptoGranularitySection />);
     const select = screen.getByLabelText(/encryption granularity/i) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: 'whole_message' } });
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith('a1', { cryptoGranularity: 'whole_message' });
+      expect(spy2).toHaveBeenCalledWith('a1', { cryptoGranularity: 'whole_message' });
     });
+    spy2.mockRestore();
   });
 
   it('shows the empty-state hint when no accounts exist', () => {
