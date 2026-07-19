@@ -106,6 +106,9 @@ pub struct Account {
     /// Mirrors the `eas_policy_key` Option<String> pattern. NULL = Basic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
+    /// Per-account encryption granularity (§11.4.1). NULL = app default (WholeMessage).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_granularity: Option<String>,
 }
 
 /// Input for [`create`]. Mirrors the TypeScript `CreateAccountInput`
@@ -309,6 +312,7 @@ fn row_to_account(row: &SqliteRow) -> Result<Account, String> {
         eas_policy_key: row.try_get("eas_policy_key").ok().flatten(),
         eas_user_agent: row.try_get("eas_user_agent").ok().flatten(),
         auth_type: row.try_get("auth_type").ok().flatten(),
+        crypto_granularity: row.try_get("crypto_granularity").ok().flatten(),
     })
 }
 
@@ -404,6 +408,27 @@ pub async fn get_by_email(pool: &SqlitePool, email: &str) -> Result<Option<Accou
             }))
         }
     }
+}
+
+/// Load only `crypto_granularity` for an account. Mirrors `get_default_signing_key`
+/// (db/crypto_keys.rs). NULL (or missing row) → None → caller falls back to WholeMessage.
+///
+/// Note: `.flatten()` forces the scalar type to `Option<String>` so that a row with
+/// a NULL column decodes to `None` (via the `Option<T>` Decode path that checks
+/// `is_null`). Without it, the inferred scalar type would be `String`, and sqlx-sqlite
+/// 0.8 decodes NULL TEXT as `Some("")` (see `sqlx-sqlite/src/value.rs:text()` — empty
+/// blob is treated as NULL and returned as `""`, not propagated as `None`).
+pub async fn get_crypto_granularity(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar("SELECT crypto_granularity FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+    )
 }
 
 /// Insert a new account. Encrypts the four secret fields, auto-sets
@@ -1010,6 +1035,40 @@ mod tests {
 
         // delete_by_email on a non-existent row is a no-op.
         delete_by_email(&pool, "missing@x.com").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_crypto_granularity_returns_none_for_fresh_account() {
+        // Fresh accounts have NULL crypto_granularity (Task 2 migration);
+        // the loader must return None so callers fall back to WholeMessage.
+        // Also covers the sqlx-sqlite NULL→"" quirk (see loader doc-comment).
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, email, created_at) VALUES ('acct-gran', 'g@x', '0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Sanity: the column is NULL in SQLite (rules out a stray DEFAULT empty-string).
+        let (is_null,): (i64,) = sqlx::query_as(
+            "SELECT CASE WHEN crypto_granularity IS NULL THEN 1 ELSE 0 END FROM accounts WHERE id = 'acct-gran'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(is_null, 1, "column must be NULL in SQLite; got {is_null}");
+        // The row_to_account path must also see None (verifies the field mapping).
+        let acct = super::get_by_id(&pool, "acct-gran").await.unwrap().unwrap();
+        assert_eq!(
+            acct.crypto_granularity, None,
+            "row_to_account must map NULL to None"
+        );
+        // And the scalar loader (the actual loader under test).
+        let g = super::get_crypto_granularity(&pool, "acct-gran")
+            .await
+            .unwrap();
+        assert_eq!(g, None, "fresh account has NULL crypto_granularity");
     }
 
     #[tokio::test]
