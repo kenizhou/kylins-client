@@ -4165,4 +4165,254 @@ mod tests {
             bytes.iter().map(|b| *b as char).collect::<String>()
         );
     }
+
+    // ─── DA-Task 2: crypto_fetch_attachment / crypto_fetch_inline_images ───
+    //
+    // These round-trip tests exercise the Task 2 backend Tauri command inner
+    // functions, which live in `sync_engine::commands` but are `pub(crate)` so
+    // they can be reached from this test module. The fixture shape mirrors
+    // `granularity_b_merged_multipart_round_trips_through_smime_encrypt_decrypt`
+    // (line ~3939) + the Task 1 helper test above: build a draft with binary
+    // attachments (and, for the inline test, a `cid:`-tagged image), encrypt-
+    // to-self via `apply_crypto`, persist the ciphertext, then call the inner
+    // fn under test and assert the cached file contents equal the original
+    // attachment bytes.
+    //
+    // The inner fns take a `cache_root: &Path` (NOT `Arc<SyncEngine>`) so they
+    // are unit-testable without building a SyncEngine; the `#[tauri::command]`
+    // wrappers in `sync_engine::commands.rs` resolve `cache_root` from
+    // `engine.data_dir.join("attachment-cache")` at IPC boundary.
+
+    /// Encrypt-only round-trip with 3 binary attachments: calling
+    /// `crypto_fetch_attachment_inner(..., "a1.bin", None)` after persisting
+    /// the ciphertext MUST return a `CachedAttachment` whose file exists and
+    /// whose bytes equal `b"AAA"` (the original a1.bin content). Proves the
+    /// re-decrypt + MIME walk + cache-write path recovers the right part.
+    #[tokio::test]
+    async fn crypto_fetch_attachment_returns_bytes() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-da-task2-attachment";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let p1 = dir.join("da2_a1.bin");
+        let p2 = dir.join("da2_a2.bin");
+        let p3 = dir.join("da2_a3.bin");
+        std::fs::write(&p1, b"AAA").unwrap();
+        std::fs::write(&p2, b"BBBB").unwrap();
+        std::fs::write(&p3, b"CCCCC").unwrap();
+        let draft = SendDraft {
+            draft_id: "da-t2-att".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr(ACCOUNT_EMAIL)], // encrypt-to-self
+            subject: "DA Task 2 attachment fetch".into(),
+            text_body: Some("plain body".into()),
+            attachments: vec![
+                AttachmentRef {
+                    file_path: p1.to_string_lossy().into_owned(),
+                    filename: "a1.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p2.to_string_lossy().into_owned(),
+                    filename: "a2.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p3.to_string_lossy().into_owned(),
+                    filename: "a3.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+            ],
+            crypto_method: CryptoMethod::Smime,
+            encrypt: true,
+            ..Default::default()
+        };
+
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            None,
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto encrypt");
+
+        // Extract the enveloped CMS blob from the wrapped MIME (same shape as
+        // the Task 1 helper test): mail_parser parses the wrapper; the CMS is
+        // the body of the single leaf part.
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&wrapped)
+            .expect("parse wrapped");
+        let ciphertext = parsed
+            .body_html(0)
+            .or_else(|| parsed.body_text(0))
+            .map(|s| s.as_bytes().to_vec())
+            .or_else(|| {
+                parsed
+                    .attachments
+                    .iter()
+                    .filter_map(|&i| parsed.parts.get(i))
+                    .next()
+                    .and_then(|p| match &p.body {
+                        mail_parser::PartType::Binary(d)
+                        | mail_parser::PartType::InlineBinary(d) => Some(d.as_ref().to_vec()),
+                        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+                        _ => None,
+                    })
+            })
+            .expect("extract ciphertext bytes");
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_ciphertext(&pool, ACCOUNT_ID, message_id, &ciphertext).await;
+
+        // Cache root under a temp dir (mirrors engine.data_dir/attachment-cache).
+        let cache_tmp = tempfile::tempdir().expect("cache tempdir");
+        let cache_root = cache_tmp.path().join("attachment-cache");
+
+        let cached = crate::sync_engine::commands::crypto_fetch_attachment_inner(
+            &pool,
+            &cache_root,
+            ACCOUNT_ID,
+            message_id,
+            "a1.bin",
+            None,
+        )
+        .await
+        .expect("crypto_fetch_attachment_inner ok");
+
+        assert_eq!(cached.filename, "a1.bin");
+        assert!(cached.size > 0);
+        let file_path = std::path::Path::new(&cached.file_path);
+        assert!(
+            file_path.exists(),
+            "cache file must exist at {}",
+            cached.file_path
+        );
+        let bytes = std::fs::read(file_path).expect("read cached file");
+        assert_eq!(bytes, b"AAA", "cached bytes must equal the original a1.bin");
+    }
+
+    /// Encrypt-only round-trip with one inline `cid:` image: calling
+    /// `crypto_fetch_inline_images_inner` MUST return exactly one
+    /// `CachedInlineImage` whose `content_id` matches the draft's cid and whose
+    /// cached file bytes equal the original image content. Proves the inline
+    /// CID extraction path works end-to-end through the re-decrypt + parse.
+    #[tokio::test]
+    async fn crypto_fetch_inline_images_returns_cid_parts() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-da-task2-inline";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let inline_path = dir.join("da2_inline.png");
+        std::fs::write(&inline_path, b"\x89PNG\r\n\x1a\nfake-png-bytes").unwrap();
+        let cid_value = "inline-image-001@kylins.local";
+        let draft = SendDraft {
+            draft_id: "da-t2-inline".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr(ACCOUNT_EMAIL)], // encrypt-to-self
+            subject: "DA Task 2 inline image fetch".into(),
+            html_body: Some(format!(
+                "<p>Body with inline image <img src=\"cid:{cid_value}\"/></p>"
+            )),
+            text_body: Some("plain body".into()),
+            inline_images: vec![AttachmentRef {
+                file_path: inline_path.to_string_lossy().into_owned(),
+                filename: "inline.png".into(),
+                mime_type: "image/png".into(),
+                cid: Some(cid_value.to_string()),
+            }],
+            crypto_method: CryptoMethod::Smime,
+            encrypt: true,
+            ..Default::default()
+        };
+
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            None,
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto encrypt");
+
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&wrapped)
+            .expect("parse wrapped");
+        let ciphertext = parsed
+            .body_html(0)
+            .or_else(|| parsed.body_text(0))
+            .map(|s| s.as_bytes().to_vec())
+            .or_else(|| {
+                parsed
+                    .attachments
+                    .iter()
+                    .filter_map(|&i| parsed.parts.get(i))
+                    .next()
+                    .and_then(|p| match &p.body {
+                        mail_parser::PartType::Binary(d)
+                        | mail_parser::PartType::InlineBinary(d) => Some(d.as_ref().to_vec()),
+                        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+                        _ => None,
+                    })
+            })
+            .expect("extract ciphertext bytes");
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_ciphertext(&pool, ACCOUNT_ID, message_id, &ciphertext).await;
+
+        let cache_tmp = tempfile::tempdir().expect("cache tempdir");
+        let cache_root = cache_tmp.path().join("attachment-cache");
+
+        let images = crate::sync_engine::commands::crypto_fetch_inline_images_inner(
+            &pool,
+            &cache_root,
+            ACCOUNT_ID,
+            message_id,
+        )
+        .await
+        .expect("crypto_fetch_inline_images_inner ok");
+
+        assert_eq!(
+            images.len(),
+            1,
+            "exactly one inline cid: image must be extracted; got {images:?}"
+        );
+        let img = &images[0];
+        assert_eq!(img.content_id, cid_value, "content_id must round-trip");
+        assert_eq!(img.mime_type, "image/png", "mime_type must round-trip");
+        assert!(img.size > 0);
+        let file_path = std::path::Path::new(&img.file_path);
+        assert!(
+            file_path.exists(),
+            "cache file must exist at {}",
+            img.file_path
+        );
+        let bytes = std::fs::read(file_path).expect("read cached inline file");
+        assert_eq!(
+            bytes,
+            b"\x89PNG\r\n\x1a\nfake-png-bytes".as_slice(),
+            "cached inline bytes must equal the original image"
+        );
+    }
 }

@@ -60,8 +60,19 @@ pub async fn sync_request_bodies(
     account_id: String,
     message_ids: Vec<String>,
 ) -> Result<(), String> {
-    log::info!("[sync] sync_request_bodies called: account={}, ids=[{}] ({})", account_id, message_ids.join(","), message_ids.len());
-    request_bodies_inner(engine.inner().clone(), pool.inner(), &account_id, &message_ids).await
+    log::info!(
+        "[sync] sync_request_bodies called: account={}, ids=[{}] ({})",
+        account_id,
+        message_ids.join(","),
+        message_ids.len()
+    );
+    request_bodies_inner(
+        engine.inner().clone(),
+        pool.inner(),
+        &account_id,
+        &message_ids,
+    )
+    .await
 }
 
 /// Testable core of [`sync_request_bodies`]. Takes a borrowed pool + an
@@ -86,14 +97,17 @@ pub async fn request_bodies_inner(
     for mid in message_ids {
         match messages::get_folder_uid_for_message(pool, account_id, mid).await {
             Ok(Some((folder, uid))) => {
-                by_folder.entry(folder).or_default().push((mid.clone(), uid));
+                by_folder
+                    .entry(folder)
+                    .or_default()
+                    .push((mid.clone(), uid));
             }
-            Ok(None) => log::warn!(
-                "[sync] request_bodies: no imap_folder/uid for message {mid}; skipping"
-            ),
-            Err(e) => log::warn!(
-                "[sync] request_bodies: lookup failed for message {mid}: {e}; skipping"
-            ),
+            Ok(None) => {
+                log::warn!("[sync] request_bodies: no imap_folder/uid for message {mid}; skipping")
+            }
+            Err(e) => {
+                log::warn!("[sync] request_bodies: lookup failed for message {mid}: {e}; skipping")
+            }
         }
     }
     if by_folder.is_empty() {
@@ -435,7 +449,10 @@ pub async fn sync_fetch_attachment_inner(
             if path.exists() && cache::path_is_within_cache(path, &cache_root) {
                 return Ok(cache::CachedAttachment {
                     file_path: local_path.clone(),
-                    filename: meta.filename.clone().unwrap_or_else(|| "attachment".to_string()),
+                    filename: meta
+                        .filename
+                        .clone()
+                        .unwrap_or_else(|| "attachment".to_string()),
                     mime_type: meta
                         .mime_type
                         .clone()
@@ -480,7 +497,9 @@ pub async fn sync_fetch_attachment_inner(
 
     // 5. Record local_path + cache_size so the next call is a cache hit.
     let path_str = file_path.to_string_lossy().into_owned();
-    if let Err(e) = attachments::set_cached_path(pool, &attachment_id, &path_str, written as i64).await {
+    if let Err(e) =
+        attachments::set_cached_path(pool, &attachment_id, &path_str, written as i64).await
+    {
         log::warn!("[attachment-cache] failed to record local_path for {attachment_id}: {e} — file cached but will be re-fetched next time");
     }
 
@@ -504,8 +523,14 @@ pub async fn sync_fetch_attachment(
     message_id: String,
     part_id: String,
 ) -> Result<crate::attachment_cache::CachedAttachment, String> {
-    sync_fetch_attachment_inner(engine.inner().clone(), pool.inner(), &account_id, &message_id, &part_id)
-        .await
+    sync_fetch_attachment_inner(
+        engine.inner().clone(),
+        pool.inner(),
+        &account_id,
+        &message_id,
+        &part_id,
+    )
+    .await
 }
 
 /// Testable core of [`sync_fetch_inline_images`]. Cache-check → fetch-on-miss
@@ -574,12 +599,13 @@ pub async fn sync_fetch_inline_images_inner(
     //    all CID parts with their decoded bytes (no base64).
     let (folder, uid, config) =
         resolve_imap_for_message(&engine, pool, account_id, message_id).await?;
-    let fetched =
-        crate::mail::imap::client::fetch_inline_cid_parts(&config, &folder, uid).await?;
+    let fetched = crate::mail::imap::client::fetch_inline_cid_parts(&config, &folder, uid).await?;
 
     // Build content_id → db_part lookup for cache-path construction + DB update.
-    let db_by_cid: HashMap<&str, &attachments::InlineCidPartRow> =
-        db_parts.iter().map(|p| (p.content_id.as_str(), p)).collect();
+    let db_by_cid: HashMap<&str, &attachments::InlineCidPartRow> = db_parts
+        .iter()
+        .map(|p| (p.content_id.as_str(), p))
+        .collect();
 
     let mut out: Vec<cache::CachedInlineImage> = Vec::with_capacity(fetched.len());
     for f in fetched {
@@ -623,9 +649,7 @@ pub async fn sync_fetch_inline_images_inner(
             if let Err(e) =
                 attachments::set_cached_path(pool, &attachment_id, &path_str, written as i64).await
             {
-                log::warn!(
-                    "[inline-cache] failed to record local_path for {attachment_id}: {e}"
-                );
+                log::warn!("[inline-cache] failed to record local_path for {attachment_id}: {e}");
             }
         }
 
@@ -669,8 +693,284 @@ pub async fn sync_fetch_inline_images(
     account_id: String,
     message_id: String,
 ) -> Result<Vec<crate::attachment_cache::CachedInlineImage>, String> {
-    sync_fetch_inline_images_inner(engine.inner().clone(), pool.inner(), &account_id, &message_id)
-        .await
+    sync_fetch_inline_images_inner(
+        engine.inner().clone(),
+        pool.inner(),
+        &account_id,
+        &message_id,
+    )
+    .await
+}
+
+/// Testable core of [`crypto_fetch_attachment`]. Re-decrypts an encrypted
+/// message (enveloped / opaque-signed / clear-signed) via
+/// [`crate::mail::crypto::decrypt_message_mime_bytes`], parses the recovered
+/// plaintext MIME, walks `parsed.parts` to find the leaf part whose
+/// `attachment_name()` equals `filename` (and, when `content_id` is supplied,
+/// whose `content_id()` matches — for disambiguating inline-attachment parts
+/// that share a filename), writes the decoded part bytes to a cache file, and
+/// returns the [`CachedAttachment`] path. No base64 crosses IPC.
+///
+/// **Cache ID:** `{account_id}_{message_id}_crypto_{sanitize(filename)}` — the
+/// `_crypto_` segment distinguishes these paths from the plain-IMAP
+/// `sync_fetch_attachment` cache files (`{account_id}_{message_id}_{part_id}`)
+/// so the two paths never collide even if the same message was cached via
+/// both the IMAP-side and crypto-side fetchers.
+///
+/// **No `attachments` row is read or written.** The plain
+/// `sync_fetch_attachment_inner` resolves part metadata from the
+/// `attachments` table (`attachments::get_attachment_meta`) and updates
+/// `local_path` post-fetch. The crypto path skips that entirely: a decrypted
+/// S/MIME message's parts are not pre-registered in `attachments` (the
+/// receive-side `open_crypto_message` orchestrator surfaces their metadata
+/// via `OpenCryptoResult.attachments`, not via `attachments` rows), so the
+/// cache ID is synthesized from `(account_id, message_id, filename)` and the
+/// cache file is overwritten on every call. Acceptable for now: ciphertext is
+/// local, decryption is cheap, and the design's Out-of-Scope covers a future
+/// persistence layer that records `local_path` for crypto-cached parts.
+///
+/// **Mirror of [`sync_fetch_attachment_inner`]** but with the IMAP fetch
+/// (`resolve_imap_for_message` + `fetch_attachment_bytes`) replaced by the
+/// re-decrypt helper, and no `attachments` DB read/write.
+pub async fn crypto_fetch_attachment_inner(
+    pool: &SqlitePool,
+    cache_root: &std::path::Path,
+    account_id: &str,
+    message_id: &str,
+    filename: &str,
+    content_id: Option<&str>,
+) -> Result<crate::attachment_cache::CachedAttachment, String> {
+    use crate::attachment_cache as cache;
+    use mail_parser::{MimeHeaders, PartType};
+
+    // 1. Re-decrypt the message to recover plaintext MIME bytes. Returns
+    //    `None` for non-crypto messages or when no decryption key is available
+    //    — surface as an Err so the frontend can fall back to the plain
+    //    `sync_fetch_attachment` path.
+    let plaintext = crate::mail::crypto::decrypt_message_mime_bytes(pool, account_id, message_id)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "message {account_id}/{message_id} has no decryptable ciphertext \
+                 (not encrypted, or no decryption key)"
+            )
+        })?;
+
+    // 2. Parse the recovered MIME + walk parts. Find the leaf part whose
+    //    filename + (optional) content_id match the caller's request.
+    let parsed = mail_parser::MessageParser::default()
+        .parse(&plaintext)
+        .ok_or_else(|| "decrypted MIME did not parse".to_string())?;
+
+    for part in parsed.parts.iter() {
+        // Skip multipart containers — they have no body bytes.
+        if matches!(part.body, PartType::Multipart(_)) {
+            continue;
+        }
+        let part_filename = part.attachment_name().unwrap_or("");
+        if part_filename != filename {
+            continue;
+        }
+        // When a content_id is supplied (inline disambiguation), require it
+        // to match the part's Content-ID (after trimming RFC 2392 `<>`).
+        if let Some(cid_want) = content_id {
+            let cid_have = part
+                .content_id()
+                .map(|s| s.trim_matches(['<', '>']).to_string());
+            if cid_have.as_deref() != Some(cid_want) {
+                continue;
+            }
+        }
+
+        let mime_type = part
+            .content_type()
+            .map(|ct| {
+                let ctype = ct.ctype();
+                let subtype = ct.subtype().unwrap_or("octet-stream");
+                format!("{ctype}/{subtype}")
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        // Extract the part's decoded bytes. mail_parser handles base64 /
+        // quoted-printable decoding; the caller writes them to a cache file
+        // (no base64 over IPC). Mirrors `decode_part_bytes`
+        // (mail/imap/client.rs:2283-2300) + `fetch_inline_cid_parts`
+        // (mail/imap/client.rs:2344-2352).
+        let data = match &part.body {
+            PartType::Binary(d) | PartType::InlineBinary(d) => d.as_ref().to_vec(),
+            PartType::Text(t) => t.as_bytes().to_vec(),
+            PartType::Html(h) => h.as_bytes().to_vec(),
+            PartType::Message(m) => m.raw_message.as_ref().to_vec(),
+            PartType::Multipart(_) => continue,
+        };
+
+        // 3. Compute the cache path + write the file. The `_crypto_` segment
+        //    in the attachment_id avoids collision with the plain-IMAP cache
+        //    (which uses `{account_id}_{message_id}_{part_id}`).
+        let attachment_id = crypto_attachment_id(account_id, message_id, filename);
+        let file_path =
+            cache::cache_file_path(cache_root, account_id, message_id, &attachment_id, filename);
+        let written = cache::write_cache_file(&file_path, &data)?;
+        let path_str = file_path.to_string_lossy().into_owned();
+
+        return Ok(cache::CachedAttachment {
+            file_path: path_str,
+            filename: filename.to_string(),
+            mime_type,
+            size: written as i64,
+        });
+    }
+
+    Err(format!(
+        "attachment '{filename}' (cid={content_id:?}) not found in decrypted MIME \
+         for {account_id}/{message_id}"
+    ))
+}
+
+/// Testable core of [`crypto_fetch_inline_images`]. Re-decrypts an encrypted
+/// message via [`crate::mail::crypto::decrypt_message_mime_bytes`], parses the
+/// recovered plaintext MIME, walks `parsed.parts`, and for every leaf part
+/// carrying a `Content-ID` (the parts referenced by `cid:` in an HTML body)
+/// extracts its decoded bytes, writes them to a cache file, and collects a
+/// [`CachedInlineImage`] per cid. Mirrors [`sync_fetch_inline_images_inner`]'s
+/// miss path but with the IMAP `fetch_inline_cid_parts` call replaced by the
+/// re-decrypt helper + in-process MIME walk.
+///
+/// **No `attachments` row is read or written** (same rationale as
+/// [`crypto_fetch_attachment_inner`]); the cache ID is synthesized from
+/// `(account_id, message_id, filename)`. The filename for a CID part is the
+/// part's `attachment_name()`, or a derived fallback (`inline-image.{ext}`)
+/// when the part has no Content-Disposition filename (mirrors
+/// [`derive_inline_filename`]).
+pub async fn crypto_fetch_inline_images_inner(
+    pool: &SqlitePool,
+    cache_root: &std::path::Path,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Vec<crate::attachment_cache::CachedInlineImage>, String> {
+    use crate::attachment_cache as cache;
+    use mail_parser::{MimeHeaders, PartType};
+
+    let plaintext = crate::mail::crypto::decrypt_message_mime_bytes(pool, account_id, message_id)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "message {account_id}/{message_id} has no decryptable ciphertext \
+                 (not encrypted, or no decryption key)"
+            )
+        })?;
+
+    let parsed = mail_parser::MessageParser::default()
+        .parse(&plaintext)
+        .ok_or_else(|| "decrypted MIME did not parse".to_string())?;
+
+    let mut out: Vec<cache::CachedInlineImage> = Vec::new();
+    for part in parsed.parts.iter() {
+        if matches!(part.body, PartType::Multipart(_)) {
+            continue;
+        }
+        let content_id = match part.content_id() {
+            Some(s) => s.trim_matches(['<', '>']).to_string(),
+            None => continue,
+        };
+
+        let mime_type = part
+            .content_type()
+            .map(|ct| {
+                let ctype = ct.ctype();
+                let subtype = ct.subtype().unwrap_or("octet-stream");
+                format!("{ctype}/{subtype}")
+            })
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        let data = match &part.body {
+            PartType::Binary(d) | PartType::InlineBinary(d) => d.as_ref().to_vec(),
+            PartType::Text(t) => t.as_bytes().to_vec(),
+            PartType::Html(h) => h.as_bytes().to_vec(),
+            PartType::Message(m) => m.raw_message.as_ref().to_vec(),
+            PartType::Multipart(_) => continue,
+        };
+
+        let filename = part
+            .attachment_name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| derive_inline_filename(&mime_type));
+        let attachment_id = crypto_attachment_id(account_id, message_id, &filename);
+        let file_path = cache::cache_file_path(
+            cache_root,
+            account_id,
+            message_id,
+            &attachment_id,
+            &filename,
+        );
+        let written = cache::write_cache_file(&file_path, &data)?;
+        let path_str = file_path.to_string_lossy().into_owned();
+
+        out.push(cache::CachedInlineImage {
+            content_id,
+            file_path: path_str,
+            mime_type,
+            size: written,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Build the per-attachment cache ID used by the crypto fetch path. Format:
+/// `{account_id}_{message_id}_crypto_{sanitize(filename)}`. The `_crypto_`
+/// segment distinguishes crypto-decrypted cache files from plain-IMAP cache
+/// files (`{account_id}_{message_id}_{part_id}` — see
+/// [`sync_fetch_attachment_inner`]) so the two paths never collide.
+fn crypto_attachment_id(account_id: &str, message_id: &str, filename: &str) -> String {
+    format!(
+        "{account_id}_{message_id}_crypto_{}",
+        crate::commands::sanitize_attachment_filename(filename)
+    )
+}
+
+/// Fetch a single attachment (by filename, optional content_id) from a
+/// previously-encrypted message: re-decrypt, walk the plaintext MIME, write
+/// the part bytes to a cache file, return the path. The frontend invokes
+/// this for attachments listed in `OpenCryptoResult.attachments` — the
+/// receive-side orchestrator surfaces their metadata but not their bytes.
+/// First call fetches + caches; subsequent calls overwrite the same cache
+/// path (no `attachments.local_path` recorded — out-of-scope for now).
+#[tauri::command]
+pub async fn crypto_fetch_attachment(
+    engine: State<'_, Arc<SyncEngine>>,
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+    filename: String,
+    content_id: Option<String>,
+) -> Result<crate::attachment_cache::CachedAttachment, String> {
+    let cache_root = engine.data_dir.join("attachment-cache");
+    crypto_fetch_attachment_inner(
+        pool.inner(),
+        &cache_root,
+        &account_id,
+        &message_id,
+        &filename,
+        content_id.as_deref(),
+    )
+    .await
+}
+
+/// Fetch every inline `cid:` image from a previously-encrypted message:
+/// re-decrypt, walk the plaintext MIME, write each CID part's bytes to a cache
+/// file, return the list. The frontend builds a `cid → convertFileSrc(path)`
+/// map for rendering the decrypted HTML body. Mirrors `sync_fetch_inline_images`
+/// for the encrypted-message path.
+#[tauri::command]
+pub async fn crypto_fetch_inline_images(
+    engine: State<'_, Arc<SyncEngine>>,
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<Vec<crate::attachment_cache::CachedInlineImage>, String> {
+    let cache_root = engine.data_dir.join("attachment-cache");
+    crypto_fetch_inline_images_inner(pool.inner(), &cache_root, &account_id, &message_id).await
 }
 
 /// Apply a mail mutation optimistically (local DB), then enqueue one
@@ -737,9 +1037,7 @@ pub async fn apply_mutation_inner(
             let dir = crate::attachment_cache::message_cache_dir(&cache_root, &account_id, mid);
             if let Err(e) = std::fs::remove_dir_all(&dir) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    log::warn!(
-                        "[attachment-cache] failed to clean up cache dir for {mid}: {e}"
-                    );
+                    log::warn!("[attachment-cache] failed to clean up cache dir for {mid}: {e}");
                 }
             }
         }
@@ -768,9 +1066,7 @@ pub async fn apply_mutation_inner(
         "[send] nudging worker account_id={account_id} op_type={op_type} (ReplayNow → run_replay_round ONLY)"
     );
     engine.sync_replay_now(account_id.clone()).await;
-    log::info!(
-        "[send] apply_mutation_inner EXIT account_id={account_id} op_type={op_type}"
-    );
+    log::info!("[send] apply_mutation_inner EXIT account_id={account_id} op_type={op_type}");
     Ok(())
 }
 
@@ -1026,11 +1322,8 @@ mod tests {
         let pool = init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct").await;
         seed_thread_with_message(&pool, "acct", "thr", "INBOX", 5).await;
-        let engine = SyncEngine::with_data_dir(
-            pool.clone(),
-            Arc::new(NullSink),
-            tmp.path().to_path_buf(),
-        );
+        let engine =
+            SyncEngine::with_data_dir(pool.clone(), Arc::new(NullSink), tmp.path().to_path_buf());
 
         let mid = msg_id("acct", "INBOX", 5);
         // Seed the per-message cache dir exactly as `sync_fetch_attachment`
@@ -1071,11 +1364,10 @@ mod tests {
         // Message row is gone too (cascade-delete contract from the original
         // delete test — we re-assert here so a regression in either the FS
         // cleanup OR the DB delete surfaces in this test).
-        let (mn,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (mn,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(mn, 0);
     }
 
@@ -1089,11 +1381,8 @@ mod tests {
         let pool = init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct").await;
         seed_thread_with_message(&pool, "acct", "thr", "INBOX", 7).await;
-        let engine = SyncEngine::with_data_dir(
-            pool.clone(),
-            Arc::new(NullSink),
-            tmp.path().to_path_buf(),
-        );
+        let engine =
+            SyncEngine::with_data_dir(pool.clone(), Arc::new(NullSink), tmp.path().to_path_buf());
         // Note: NO cache dir created under tmp/attachment-cache — the cleanup
         // will hit NotFound and must swallow it silently.
 
@@ -1109,11 +1398,10 @@ mod tests {
 
         // Message row gone — proves the mutation committed despite the
         // NotFound from the cleanup attempt.
-        let (mn,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (mn,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE account_id='acct'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(mn, 0);
     }
 
@@ -1125,10 +1413,7 @@ mod tests {
     async fn request_bodies_inner_empty_input_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
-        let engine = SyncEngine::new(
-            pool.clone(),
-            std::sync::Arc::new(NullSink),
-        );
+        let engine = SyncEngine::new(pool.clone(), std::sync::Arc::new(NullSink));
         // Note: no account seeded — the empty-input early return must fire
         // before `source_for_account` is ever called.
         request_bodies_inner(engine, &pool, "acct", &[])
@@ -1145,10 +1430,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct").await;
-        let engine = SyncEngine::new(
-            pool.clone(),
-            std::sync::Arc::new(NullSink),
-        );
+        let engine = SyncEngine::new(pool.clone(), std::sync::Arc::new(NullSink));
 
         request_bodies_inner(
             engine,
@@ -1248,13 +1530,7 @@ mod tests {
         .await
         .unwrap();
 
-        let _ = request_bodies_inner(
-            engine,
-            &pool,
-            "acct",
-            &["imap-acct-INBOX-1".into()],
-        )
-        .await;
+        let _ = request_bodies_inner(engine, &pool, "acct", &["imap-acct-INBOX-1".into()]).await;
 
         assert!(
             sink.bodies.lock().unwrap().is_empty(),
