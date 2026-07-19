@@ -371,17 +371,11 @@ fn openssl_sign_ecdsa_p256_verifies_with_our_code() {
 }
 
 /// RSA: openssl signs with an RSA key (PKCS#1v1.5 over SHA-256) → our
-/// `verify_signed` is called. **KNOWN GAP — `#[ignore]` until closed.**
-///
-/// Our `cms_parse::verify_ecdsa_p256_signature` (the only signature-verify
-/// arm in `verify_signed` today) explicitly returns `sig_ok=false` for any
-/// algorithm other than ECDSA-with-SHA-256. RSA / RSA-PSS / ECDSA-P384 are
-/// a documented carry-forward to G4 (which lands the `p384` dep + RSA deps
-/// for Thunderbird interop). When RSA CMS signature verify lands, un-ignore
-/// this test.
+/// `verify_signed` confirms `sig_ok`. Un-ignored as part of the G4-extend
+/// task (RSA-PKCS1v1.5 + RSA-PSS + ECDSA-P384 CMS sig verify); the in-test
+/// unit round-trips (`cms_parse::tests::verify_round_trips_rsa_*`) cover the
+/// no-openssl case. Skips silently when openssl is not on PATH.
 #[test]
-#[ignore = "RSA CMS signature verify is a documented carry-forward to G4; \
-            verify_signed only supports ECDSA-P256 today (sig_ok=false for RSA)"]
 fn openssl_sign_rsa_verifies_with_our_code() {
     let _td = TempDir::new("openssl-sign-rsa");
     let mut cmd = openssl_cmd_or_skip!();
@@ -416,8 +410,8 @@ fn openssl_sign_rsa_verifies_with_our_code() {
         .expect("our verify_signed parses openssl RSA-signed CMS");
     assert!(
         check.sig_ok,
-        "RSA CMS sig verify is the G4 carry-forward; this assertion documents \
-         the expected post-fix behavior. signer_fp={:?}",
+        "openssl RSA-PKCS1v1.5-signed CMS must verify with our code \
+         (G4-extend: RSA sig verify landed). signer_fp={:?}",
         check.signer_fingerprint
     );
 }

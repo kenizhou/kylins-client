@@ -14,10 +14,11 @@
 
 import { useEffect, useState } from 'react';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { useAccountStore } from '@/stores/accountStore';
 import { useToastStore } from '@/stores/toastStore';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
-import { ShieldCheckIcon, TrashIcon, DownloadIcon, UploadIcon } from '../icons';
+import { ShieldCheckIcon, TrashIcon, DownloadIcon, UploadIcon, LockIcon } from '../icons';
 import {
   listCryptoKeysForAccount,
   generateKey,
@@ -25,8 +26,10 @@ import {
   setDefaultSigningKey,
   deleteCryptoKey,
   exportPublicToPath,
+  exportP12ToPath,
   type CryptoKeyRow,
 } from '@/services/db/cryptoKeys';
+import { PassphrasePrompt } from './PassphrasePrompt';
 
 const SMIME = 'smime';
 
@@ -52,6 +55,19 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
 
   const [keys, setKeys] = useState<CryptoKeyRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Pending path awaiting a passphrase. Set when the user picks a
+  // passphrase-protected bundle — either `.p12`/`.pfx` (extension gate)
+  // or an encrypted-PKCS#8 PEM detected by content sniff. The
+  // `<PassphrasePrompt>` below renders + owns focus while this is non-null.
+  // Cleared on submit (success or cancel) — null means "no prompt open".
+  const [pendingPassphrasePath, setPendingPassphrasePath] = useState<string | null>(null);
+
+  // Pending row awaiting an EXPORT passphrase (Plan 3b .p12 export). Set
+  // when the user clicks "Export .p12" on a row with `hasPrivate`; the
+  // confirm-mode `<PassphrasePrompt>` below renders while this is non-null.
+  // Cleared on submit (success or cancel) — null means "no export prompt".
+  const [pendingExportP12Row, setPendingExportP12Row] = useState<CryptoKeyRow | null>(null);
 
   useEffect(() => {
     if (!effectiveAccountId) return;
@@ -90,15 +106,48 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     if (!effectiveAccountId) return;
     const picked = await openDialog({
       multiple: false,
-      filters: [{ name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key', 'txt'] }],
+      filters: [
+        { name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key', 'txt'] },
+        { name: 'S/MIME bundle', extensions: ['p12', 'pfx'] },
+      ],
     });
     // `open` returns `string | string[] | null` depending on options; with
     // `multiple: false` we get `string | null`, but guard for both shapes.
     if (!picked) return;
     const path = Array.isArray(picked) ? picked[0] : picked;
     if (!path) return;
+
+    // `.p12`/`.pfx` are always passphrase-protected → prompt unconditionally.
+    if (needsPassphrase(path)) {
+      setPendingPassphrasePath(path);
+      return;
+    }
+
+    // PEM branch: the backend supports importing an encrypted-PKCS#8 PEM
+    // (`-----BEGIN ENCRYPTED PRIVATE KEY-----` + `CERTIFICATE`) BUT only
+    // when a passphrase is supplied — otherwise it returns
+    // `Policy("encrypted PKCS#8 requires a passphrase")`. Sniff the picked
+    // file's content; on a positive match, open the prompt. On any read
+    // failure (binary `.crt`, permission denied, …) skip the prompt and
+    // let the backend surface a clear error if one was actually needed.
+    if (await hasEncryptedPrivateKey(path)) {
+      setPendingPassphrasePath(path);
+      return;
+    }
+    await runImport(path, undefined);
+  }
+
+  /**
+   * Drive the actual import with a (possibly absent) passphrase. Factored
+   * out of `onImport` so the `<PassphrasePrompt>` submit path shares it.
+   * Clears `pendingPassphrasePath` on completion (success OR error) so a
+   * stale state never leaves the modal "stuck open".
+   */
+  async function runImport(path: string, passphrase: string | undefined) {
+    if (!effectiveAccountId) return;
+    setPendingPassphrasePath(null);
     try {
-      await importKeyFromPath(effectiveAccountId, path);
+      await importKeyFromPath(effectiveAccountId, path, passphrase);
       pushToast('Key imported', 'success');
       await refresh();
     } catch (err) {
@@ -156,6 +205,47 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     try {
       await exportPublicToPath(effectiveAccountId, SMIME, fingerprint, outPath);
       pushToast('Certificate exported', 'success');
+    } catch (err) {
+      pushToast(`Export failed: ${formatErr(err)}`, 'error');
+    }
+  }
+
+  /**
+   * Open the confirm-passphrase prompt for `.p12` export (Plan 3b). The
+   * prompt is rendered via the controlled `<PassphrasePrompt>` at the
+   * bottom of this section (mirroring the import flow's pattern) — it
+   * unmounts cleanly with the section, and React Aria's focus-trap +
+   * `ariaHideOutside` observers are scoped to the open modal.
+   *
+   * The actual save-dialog + `exportP12ToPath` call live in
+   * `runExportP12` so the submit handler shares the cleanup-on-finish
+   * path.
+   */
+  function onExportP12(row: CryptoKeyRow) {
+    if (!effectiveAccountId) return;
+    setPendingExportP12Row(row);
+  }
+
+  /**
+   * Drive the .p12 export with the user-confirmed passphrase. Factored
+   * out of the prompt's onSubmit so the state-clear happens in one place
+   * (success OR error). Mirrors `runImport`'s shape.
+   */
+  async function runExportP12(row: CryptoKeyRow, passphrase: string) {
+    if (!effectiveAccountId) return;
+    setPendingExportP12Row(null);
+    // Default filename derived from the row's email so multi-identity
+    // accounts produce distinguishable files. Fall back to a generic name
+    // when the row has no email (CA-root rows, malformed rows, etc.).
+    const safeEmail = (row.email ?? 'identity').replace(/[^A-Za-z0-9._@-]/g, '_');
+    const outPath = await saveDialog({
+      defaultPath: `smime-${safeEmail}.p12`,
+      filters: [{ name: 'PKCS#12 bundle', extensions: ['p12', 'pfx'] }],
+    });
+    if (!outPath) return;
+    try {
+      await exportP12ToPath(effectiveAccountId, SMIME, row.fingerprint, passphrase, outPath);
+      pushToast('Identity exported', 'success');
     } catch (err) {
       pushToast(`Export failed: ${formatErr(err)}`, 'error');
     }
@@ -267,6 +357,18 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
                 </button>
                 <button
                   type="button"
+                  onClick={() => void onExportP12(k)}
+                  disabled={!k.hasPrivate}
+                  className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                  title={
+                    k.hasPrivate ? 'Export .p12 (cert + private key)' : 'No private key to export'
+                  }
+                  aria-label="Export .p12"
+                >
+                  <LockIcon size={14} />
+                </button>
+                <button
+                  type="button"
                   onClick={() => void onDelete(k.fingerprint)}
                   className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors"
                   title="Delete"
@@ -278,6 +380,23 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
             </li>
           ))}
         </ul>
+      )}
+
+      {pendingPassphrasePath !== null && (
+        <PassphrasePrompt
+          isOpen
+          onCancel={() => setPendingPassphrasePath(null)}
+          onSubmit={(pass) => void runImport(pendingPassphrasePath, pass)}
+        />
+      )}
+
+      {pendingExportP12Row !== null && (
+        <PassphrasePrompt
+          isOpen
+          confirm
+          onCancel={() => setPendingExportP12Row(null)}
+          onSubmit={(pass) => void runExportP12(pendingExportP12Row, pass)}
+        />
       )}
     </PreferencesSectionCard>
   );
@@ -291,5 +410,41 @@ function formatErr(err: unknown): string {
     return JSON.stringify(err);
   } catch {
     return String(err);
+  }
+}
+
+/**
+ * Whether the import flow should prompt for a passphrase based solely on
+ * the file extension. `.p12`/`.pfx` are always passphrase-protected →
+ * prompt. Other extensions (`.pem`/`.crt`/`.cer`/`.key`/`.txt`) are
+ * ambiguous — they may be plain PEM OR an encrypted-PKCS#8 PEM bundle;
+ * `hasEncryptedPrivateKey` resolves that case by sniffing the content.
+ */
+function needsPassphrase(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith('.p12') || lower.endsWith('.pfx');
+}
+
+/**
+ * Sniff whether `path` is an encrypted-PKCS#8 PEM bundle by reading the
+ * file and looking for the `ENCRYPTED PRIVATE KEY` PEM label. The backend
+ * supports importing this shape (`pkcs8::EncryptedPrivateKeyInfo::decrypt`)
+ * but ONLY when a passphrase is supplied — without one it errors with
+ * `Policy("encrypted PKCS#8 requires a passphrase")`, so the UI must
+ * prompt before calling `importKeyFromPath`.
+ *
+ * Returns `false` on any read/decode failure (binary `.crt`, permission
+ * denied, non-UTF-8, …): the caller proceeds without a prompt and lets
+ * the backend surface a real error if one was needed. Reads the whole
+ * file via `readTextFile` (the same API `TrustedCasSection` +
+ * `importTrustAnchorFromPath` already use for picked PEM paths; PEM
+ * bundles are small text files so this is a handful of ms at most).
+ */
+async function hasEncryptedPrivateKey(path: string): Promise<boolean> {
+  try {
+    const text = await readTextFile(path);
+    return text.includes('ENCRYPTED PRIVATE KEY');
+  } catch {
+    return false;
   }
 }

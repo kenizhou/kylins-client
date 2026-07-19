@@ -335,8 +335,7 @@ impl ImapSessionManager {
     ) -> Option<crate::mail::imap::client::SessionSetup> {
         let map = self.accounts.lock().await;
         map.get(account_id)
-            .map(|h| h.setup.lock().unwrap().clone())
-            .flatten()
+            .and_then(|h| h.setup.lock().unwrap().clone())
     }
 
     /// Start IDLE on `folder`. Returns a receiver the engine drains for push
@@ -619,6 +618,8 @@ fn spawn_actor(account_id: String, config: ImapConfig, mut cmd_rx: mpsc::Receive
 }
 
 /// Handle one actor message. Returns `true` if the actor should exit (Shutdown).
+// actor state-passing seam — each arg is a distinct piece of mutable actor state; bundling into a struct would mean create-then-immediately-destructure.
+#[allow(clippy::too_many_arguments)]
 async fn handle_msg(
     msg: ActorMsg,
     session: &mut Option<Session<ImapStream>>,
@@ -657,6 +658,8 @@ async fn handle_msg(
 /// Run one command against the session with lazy-connect, SELECT-if-differs,
 /// and reconnect-retry-once on transient errors. The session is left in a
 /// usable state (or `None` if a reconnect is needed next time).
+// private internal fn, single call site (handle_msg) — actor state-passing seam; a param-object would add a type for marginal gain.
+#[allow(clippy::too_many_arguments)]
 async fn run_command(
     account_id: &str,
     config: &ImapConfig,

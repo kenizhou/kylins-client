@@ -126,7 +126,13 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         // re-opening doesn't re-decrypt. NEVER written to disk. On decrypt
         // failure we set `decryptState: 'failed'` + push a toast so ReadingPane
         // (T4) shows the decrypt-failure panel; we do NOT crash the open flow.
-        const isCrypto = latest.is_encrypted === 1 || latest.is_signed === 1;
+        // Rust `MessageRow.is_encrypted`/`is_signed` are `bool` → JSON
+        // `true`/`false` (NOT 0/1 ints — the read path was cut over from
+        // plugin-sql to Rust db commands). Coerce truthily; `=== 1` would
+        // silently never match a boolean, gating the crypto path off for EVERY
+        // encrypted message (regression that left the smime.p7m envelope
+        // rendering as a plain attachment instead of decrypting).
+        const isCrypto = !!latest.is_encrypted || !!latest.is_signed;
         if (isCrypto) {
           const cached = useViewStore.getState().decryptedCache[latest.id];
           let mail: MailMessage;
@@ -139,6 +145,18 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
             // first open. Without this the badge vanishes on every re-open.
             mail = mapMessageToMailMessage(latest, cached.html);
             mail.text = cached.text;
+            // DA-Task 3: re-hydrate decrypted inner-MIME attachments so the
+            // AttachmentList + ReadingPane inline-image effect keep working
+            // on re-open without a second decrypt.
+            if (cached.attachments) {
+              mail.attachments = cached.attachments.map((a) => ({
+                id: a.part_id,
+                filename: a.filename,
+                mimeType: a.mime_type,
+                size: a.size,
+                cid: a.content_id ?? undefined,
+              }));
+            }
             const cr = await getMessageCryptoResult(thread.accountId, latest.id);
             if (cr) {
               mail.signatureState = cr.signatureState as MailMessage['signatureState'];
@@ -152,11 +170,32 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
               const result = await openCryptoMessage(thread.accountId, latest.id);
               // Cache the plaintext BEFORE mapping so a re-open in the same
               // session hits the cache even if setSelectedMessage throws below.
+              // DA-Task 3: stash the decrypted inner-MIME attachments + the
+              // crypto flag so the AttachmentList / ReadingPane inline-image
+              // effect can render decrypted parts without re-decrypting.
               useViewStore
                 .getState()
-                .setDecrypted(latest.id, result.plaintextHtml, result.plaintextText);
+                .setDecrypted(
+                  latest.id,
+                  result.plaintextHtml,
+                  result.plaintextText,
+                  result.attachments,
+                  true,
+                );
               mail = mapMessageToMailMessage(latest, result.plaintextHtml);
               mail.text = result.plaintextText;
+              // Surface decrypted attachment metadata on the MailMessage for
+              // any consumer that reads `message.attachments` directly (the
+              // AttachmentList also takes them via the `decryptedAttachments`
+              // prop from the cache entry — both paths stay in sync because
+              // they originate from the same `OpenCryptoResult.attachments`).
+              mail.attachments = result.attachments.map((a) => ({
+                id: a.part_id,
+                filename: a.filename,
+                mimeType: a.mime_type,
+                size: a.size,
+                cid: a.content_id ?? undefined,
+              }));
               const cr = result.cryptoResult;
               // Layer the persisted verification outcome onto the MailMessage.
               // Casts narrow the backend's `string` fields to the MailMessage

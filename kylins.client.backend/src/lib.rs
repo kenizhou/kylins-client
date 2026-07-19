@@ -13,7 +13,7 @@ use tauri_plugin_autostart::MacosLauncher;
 // constantly, so history looks like it was overwritten. KeepAll preserves the
 // rotated file as `{name}_{timestamp}.log; the 10 MB cap stops mid-session
 // rotation under normal use. Targets: LogDir (OS log dir) + Stdout (dev console).
-use tauri_plugin_log::{Target, TargetKind, RotationStrategy, TimezoneStrategy};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
 pub mod attachment_cache;
 pub mod commands;
@@ -254,9 +254,14 @@ pub fn run() {
             db::commands::crypto_generate_key,
             db::commands::crypto_import_key_from_path,
             db::commands::crypto_export_public_to_path,
+            // Plan 3b — S/MIME `.p12`/`.pfx` identity export (cert + private +
+            // intermediates, passphrase-protected). The export mirror of
+            // `crypto_import_key_from_path`.
+            db::commands::crypto_export_p12_to_path,
             // Plan 3 / G5 Task 4 — S/MIME receive orchestrator commands.
             db::commands::crypto_open_message,
             db::commands::db_get_message_crypto_result,
+            db::commands::crypto_get_signer_details,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,
@@ -265,6 +270,12 @@ pub fn run() {
             sync_engine::commands::sync_fetch_inline_images,
             sync_engine::commands::sync_apply_mutation,
             sync_engine::commands::reconcile_attachment_cache,
+            // DA-Task 2 — decrypted-attachment fetchers. Re-decrypt an
+            // encrypted message + write attachment / inline-cid part bytes to
+            // cache files. Consumed by Task 3's frontend for rendering
+            // encrypted-message attachments + inline images.
+            sync_engine::commands::crypto_fetch_attachment,
+            sync_engine::commands::crypto_fetch_inline_images,
         ])
         .setup(|app| {
             {

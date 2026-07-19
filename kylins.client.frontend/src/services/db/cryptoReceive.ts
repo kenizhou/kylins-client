@@ -51,10 +51,29 @@ export interface MessageCryptoResult {
   signerEmail?: string | null;
   /** `1` / `0` / `null` (unchecked) — SQLite INTEGER column. */
   chainValid?: number | null;
-  /** `'good' | 'revoked' | 'unchecked'`. */
+  /** `'good' | 'revoked' | 'unchecked' | 'stale'`. `'stale'` distinguishes a
+   *  CRL that covered the cert but was unusable (expired past nextUpdate /
+   *  bad sig / out-of-scope / parse error) from `'unchecked'`'s "no CRL
+   *  covered the cert at all" (2026-07-18 CRL-revocation-detail spec). */
   revocationState: string;
   /** Epoch-seconds string (SQLite `strftime('%s','now')` output). */
   verifiedAt: string;
+  /** Granular cert-chain failure reason (2026-07-18 spec) surfaced from
+   *  `ChainOutcome.failure_reason` via `VerificationResult.failure_reason`.
+   *  `null` for pre-migration rows, the UnknownKey / sig-fail early-return
+   *  arms, and all success states. Optional on the wire because the Rust side
+   *  uses `#[serde(skip_serializing_if = "Option::is_none")]` (None → absent
+   *  key, not `null`). */
+  failureReason?: string | null;
+  /** Structured RFC 5280 §5.3.1 CRLReason name (e.g. `'KeyCompromise'`,
+   *  `'Superseded'`) when `revocationState === 'revoked'` AND the CRL entry
+   *  carried a reasonCode extension (2026-07-18 CRL-revocation-detail spec).
+   *  `null` for every other outcome (success, identity mismatch,
+   *  non-revocation chain failures, the early-return arms, pre-migration
+   *  rows). A revoked cert whose CRL entry omitted the reasonCode extension
+   *  surfaces `'Unspecified'` here. Optional on the wire because the Rust
+   *  side uses `#[serde(skip_serializing_if = "Option::is_none")]`. */
+  revocationReason?: string | null;
 }
 
 /**
@@ -190,4 +209,92 @@ export function getTrustDecision(
     standard,
     fingerprint,
   });
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Signature details dialog
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mirrors Rust `SignerCertDetails` (`mail/crypto.rs`, camelCase via
+ * `#[serde(rename_all = "camelCase")]`). The parsed signer leaf cert. `null`
+ * for `encrypted-signed` messages (the inner SignedData lives in decrypted
+ * in-memory-only bytes — not re-parseable from the DB).
+ */
+export interface SignerCertDetails {
+  subjectCn: string | null;
+  issuerCn: string | null;
+  serialHex: string;
+  fingerprint: string;
+  notBeforeUnix: number;
+  notAfterUnix: number;
+  /** Dotted OID string of the SPKI algorithm (e.g. `1.2.840.10045.2.1`); the
+   *  dialog maps to a label. */
+  publicKeyAlgorithmOid: string;
+  /** Dotted OID string of the CMS SignerInfo signatureAlgorithm. */
+  signatureAlgorithmOid: string;
+  /** CMS signingTime; `null` when not extracted (v1 — see backend note). */
+  signingTimeUnix: number | null;
+}
+
+/** One entry in the certification path (intermediate or anchor). */
+export interface ChainPathEntry {
+  subjectCn: string | null;
+  issuerCn: string | null;
+  isAnchor: boolean;
+}
+
+/**
+ * Mirrors Rust `SignerDetails` (`mail/crypto.rs`, camelCase). Full signer +
+ * chain record for the "Signature details…" dialog. Re-derived by the backend
+ * `crypto_get_signer_details` command on dialog open (pure parse + DB reads).
+ */
+export interface SignerDetails {
+  /** `'not-signed' | 'valid-verified' | 'valid-unverified' | 'invalid' |
+   *  'unknown-key' | 'mismatch'`. */
+  signatureState: string;
+  /** `'ok' | 'no-key' | 'failed' | 'n/a'`. */
+  decryptState: string;
+  /** `'encrypted' | 'signed' | 'encrypted-signed'`. */
+  cryptoKind: string;
+  /** Persisted nullable INTEGER → `null` = unchecked. */
+  chainValid: boolean | null;
+  /** `'good' | 'revoked' | 'unchecked' | 'stale'`. `'stale'` distinguishes a
+   *  CRL that covered the cert but was unusable from `'unchecked'`'s "no CRL
+   *  covered the cert at all" (2026-07-18 CRL-revocation-detail spec). */
+  revocationState: string;
+  /** Epoch-seconds string. */
+  verifiedAt: string;
+  /** `'personal' | 'verified' | 'unverified' | 'rejected' | 'undecided'`. */
+  trustState: string;
+  /** `null` for `encrypted-signed` (no re-parseable SignedData in the DB). */
+  signer: SignerCertDetails | null;
+  chainPath: ChainPathEntry[];
+  /** Granular cert-chain failure reason (2026-07-18 spec). The backend's
+   *  `get_signer_details` prefers the persisted `message_crypto_results.failure_reason`
+   *  (surfaced from `VerificationResult.failure_reason` by `verify_with_context`)
+   *  and falls back to the coarse `failure_reason_for_state` fixed map when the
+   *  column is `null` (pre-migration rows, the UnknownKey / sig-fail early-return
+   *  arms, and all success states). Rendered verbatim by the dialog. */
+  failureReason: string | null;
+  /** Structured RFC 5280 §5.3.1 CRLReason name (e.g. `'KeyCompromise'`)
+   *  when `revocationState === 'revoked'` and the CRL entry carried a
+   *  reasonCode extension (2026-07-18 CRL-revocation-detail spec). `null`
+   *  for every other outcome — the dialog omits the "Reason: …" line when
+   *  null (no fixed-map fallback; revocation_reason is structured data, not
+   *  free-form text). */
+  revocationReason: string | null;
+}
+
+/**
+ * Fetch the full signer + chain record for the "Signature details…" dialog.
+ * Returns `null` when the message has never been opened through the crypto
+ * pipeline (no persisted `message_crypto_results` row). Pure parse + DB reads
+ * on the backend — no decrypt, no network.
+ */
+export function getSignerDetails(
+  accountId: string,
+  messageId: string,
+): Promise<SignerDetails | null> {
+  return invoke<SignerDetails | null>('crypto_get_signer_details', { accountId, messageId });
 }

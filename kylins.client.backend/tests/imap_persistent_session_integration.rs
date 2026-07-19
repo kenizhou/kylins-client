@@ -13,11 +13,15 @@
 // This test proves it structurally — without parsing backend logs — by reading
 // the manager's internal state after a multi-op round:
 //   1. `accounts` map holds exactly ONE entry for the account (one Handle).
-//   2. That Handle's `session` slot is `Some` (still alive — NOT dropped +
-//      re-dialed between ops). Pre-Task-4 each op dropped its session on
-//      return, so this slot would have been transient.
-//   3. The SAME `Arc<Handle>` is handed out across ops (`Arc::ptr_eq`), proving
+//   2. The SAME `Arc<Handle>` is handed out across ops (`Arc::ptr_eq`), proving
 //      reuse rather than per-call construction.
+//
+// NOTE: pre-actor (pre-Task-4) this test also asserted the Handle's `session`
+// slot stayed `Some` across ops. Under the Task-4 actor refactor the IMAP
+// `Session` moved INTO the per-account actor task (a local `let mut session`),
+// so one-actor-per-account structurally guarantees one persistent session and
+// the session is no longer inspectable from the `Handle`. That old assertion is
+// obsolete; (1) + (2) above are the now-valid structural proof.
 //
 // Ignored by default — needs a real IMAP server. Reuses the
 // `KYLINS_IMAP_*` env-var harness from `imap_smtp_integration.rs`.
@@ -107,14 +111,17 @@ fn remote_folder(path: &str) -> RemoteFolder {
 /// per op.
 ///
 /// What this catches:
-/// - If a future refactor re-introduces per-call `imap_client::connect()` inside
-///   `ImapSource` (bypassing `manager.execute`), the `accounts` map would still
-///   hold one Handle, BUT the `session` slot would be `None` after each op
-///   dropped its connection — assertion (2) fails.
 /// - If a refactor accidentally keyed the map by op+folder (instead of by
 ///   account), the map would grow beyond one entry — assertion (1) fails.
 /// - If `handle_for` returned a fresh `Arc` per call (instead of cloning the
-///   stored one), `Arc::ptr_eq` would be false — assertion (3) fails.
+///   stored one), `Arc::ptr_eq` would be false — assertion (2) fails.
+///
+/// NOTE: pre-actor this test also caught per-call reconnect regressions by
+/// inspecting the Handle's `session` slot. Under the Task-4 actor refactor the
+/// `Session` is owned by the per-account actor task (not the `Handle`), so that
+/// proof is now structural (one actor = one persistent session) rather than
+/// inspectable here. Regression-catch coverage for in-actor session lifecycle
+/// lives in the lib's `session_manager` unit tests.
 ///
 /// What this does NOT catch (out of scope for a unit-testable proof):
 /// - The raw-fetch fallback's per-batch reconnect on quirk servers (the
@@ -220,21 +227,7 @@ async fn one_persistent_session_per_account_across_multiple_ops() {
         .clone();
     drop(map);
 
-    // (2) The stored Handle's session slot is STILL Some — proving the session
-    //     was reused across both ops, NOT dropped + re-dialed. (Pre-Task-4 each
-    //     op dropped its own session, so there would be no shared slot to
-    //     inspect; this assertion is structurally impossible to express against
-    //     the old code, which is itself the proof.)
-    {
-        let session_guard = stored.session.lock().await;
-        assert!(
-            session_guard.is_some(),
-            "session slot must be Some after two ops (persistent session reused); \
-             got None — a per-op connect/drop regression has been re-introduced"
-        );
-    }
-
-    // (3) Pointer equality: the SAME Arc<Handle> was handed out across both ops.
+    // (2) Pointer equality: the SAME Arc<Handle> was handed out across both ops.
     //     `handle_for` must clone the stored Arc, not construct a fresh one.
     assert!(
         std::sync::Arc::ptr_eq(&handle_after_op1, &handle_after_op2),
@@ -246,17 +239,23 @@ async fn one_persistent_session_per_account_across_multiple_ops() {
     );
 
     println!(
-        "[persistent-session] PASS: 1 Handle, session slot Some, Arc reused across list_folders + sync_folder"
+        "[persistent-session] PASS: 1 Handle, Arc reused across list_folders + sync_folder"
     );
 
-    // Clean shutdown so the keepalive task doesn't outlive the test (and best-
-    // effort LOGOUT the live session). This also exercises `shutdown()` against
-    // a real session — the only place that path can run end-to-end.
+    // Clean shutdown so the per-account actor task doesn't outlive the test.
+    // Under the Task-4 actor model `shutdown()` drains the accounts map, sends
+    // `ActorMsg::Shutdown`, and aborts the actor task (which in turn drops the
+    // actor-owned `Session`). The session is no longer inspectable from the
+    // `Handle`, so we observe shutdown's effect via the map drain instead of a
+    // session-slot check. This also exercises `shutdown()` end-to-end against a
+    // live connection — the only place that path can run.
     manager.shutdown().await;
-    let session_after_shutdown = stored.session.lock().await;
+    let map_after = manager.accounts.lock().await;
     assert!(
-        session_after_shutdown.is_none(),
-        "shutdown() must take() the session (leave None); got Some"
+        map_after.is_empty(),
+        "shutdown() must drain the accounts map; got {} entry/entries",
+        map_after.len()
     );
-    println!("[persistent-session] shutdown() took the session (None) + aborted keepalive");
+    drop(map_after);
+    println!("[persistent-session] shutdown() drained the accounts map + aborted the actor");
 }

@@ -12,6 +12,7 @@ import {
   generateKey,
   importKeyFromPath,
   exportPublicToPath,
+  exportP12ToPath,
   deleteCryptoKey,
   setDefaultSigningKey,
   type CryptoKeyRow,
@@ -53,17 +54,33 @@ describe('cryptoKeys service wrappers', () => {
     });
   });
 
-  it('importKeyFromPath invokes crypto_import_key_from_path', async () => {
+  it('importKeyFromPath invokes crypto_import_key_from_path with passphrase when supplied', async () => {
     vi.mocked(invoke).mockResolvedValue({
       id: 'x',
       standard: 'smime',
       fingerprint: 'fp',
       hasPrivate: true,
     });
-    await importKeyFromPath('acct', '/path/to/key.p12');
+    await importKeyFromPath('acct', '/path/to/key.p12', 'secret');
     expect(invoke).toHaveBeenCalledWith('crypto_import_key_from_path', {
       accountId: 'acct',
       path: '/path/to/key.p12',
+      passphrase: 'secret',
+    });
+  });
+
+  it('importKeyFromPath forwards passphrase as undefined when omitted (Rust None)', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      id: 'x',
+      standard: 'smime',
+      fingerprint: 'fp',
+      hasPrivate: true,
+    });
+    await importKeyFromPath('acct', '/path/to/key.pem');
+    expect(invoke).toHaveBeenCalledWith('crypto_import_key_from_path', {
+      accountId: 'acct',
+      path: '/path/to/key.pem',
+      passphrase: undefined,
     });
   });
 
@@ -75,6 +92,18 @@ describe('cryptoKeys service wrappers', () => {
       standard: 'smime',
       fingerprint: 'fp',
       outPath: '/out/pub.pem',
+    });
+  });
+
+  it('exportP12ToPath invokes crypto_export_p12_to_path with passphrase + outPath', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await exportP12ToPath('acct', 'smime', 'fp', 'secret-pw', '/out/identity.p12');
+    expect(invoke).toHaveBeenCalledWith('crypto_export_p12_to_path', {
+      accountId: 'acct',
+      standard: 'smime',
+      fingerprint: 'fp',
+      passphrase: 'secret-pw',
+      outPath: '/out/identity.p12',
     });
   });
 

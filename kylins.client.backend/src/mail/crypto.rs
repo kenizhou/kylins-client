@@ -29,19 +29,21 @@ use base64::Engine;
 
 use cms::content_info::ContentInfo;
 use crypto_core::{
-    CryptoBackend, DecryptOp, EncryptedEnvelope, EncryptedPart, EncryptOp, Fingerprint, KeyHandle,
-    KeyHandleRef, KeyId, KeyStore, KeyUsage, Part, PartId, PartKind, SerializationStrategy,
-    SignatureState, SignOp, SignedEnvelope, Standard, TrustState,
+    CryptoBackend, DecryptOp, EncryptOp, EncryptedEnvelope, EncryptedPart, Fingerprint, KeyHandle,
+    KeyHandleRef, KeyId, KeyStore, KeyUsage, Part, PartId, PartKind, SerializationStrategy, SignOp,
+    SignatureState, SignedEnvelope, Standard, TrustState,
 };
 use crypto_smime::SmimeBackend;
 use der::{Decode, Encode};
 use sqlx::SqlitePool;
 
 use crate::db::crypto_keys::{
-    list_crypto_keys_for_account, list_trust_anchor_certs, DefaultKeyRow,
+    list_crypto_keys_for_account, list_intermediate_certs, list_trust_anchor_certs, DefaultKeyRow,
 };
 use crate::db::message_bodies::{get_message_ciphertext, get_message_signed_part};
-use crate::db::message_crypto_results::{upsert_message_crypto_result, MessageCryptoResultRow};
+use crate::db::message_crypto_results::{
+    get_message_crypto_result, upsert_message_crypto_result, MessageCryptoResultRow,
+};
 use crate::db::trust_decisions::get_latest_trust_decision;
 use crate::keystore_bridge::SqliteKeyStore;
 use crate::mail::builder::{CryptoMethod, SendDraft};
@@ -113,9 +115,7 @@ impl From<crypto_core::CryptoError> for CryptoSendError {
 /// (multipart `boundary` attributes push the line past 76 cols) onto a
 /// following `\r\n\t`-prefixed line; without this rule the continuation would
 /// be mis-classified as an outer header and leak out of the signed entity.
-pub(crate) fn split_message(
-    full: &[u8],
-) -> Result<(MessageHeaders, EntityBytes), CryptoSendError> {
+pub(crate) fn split_message(full: &[u8]) -> Result<(MessageHeaders, EntityBytes), CryptoSendError> {
     let s =
         std::str::from_utf8(full).map_err(|e| CryptoSendError::Mime(format!("not utf-8: {e}")))?;
     let blank = s
@@ -277,6 +277,88 @@ pub struct OpenCryptoResult {
     pub crypto_result: MessageCryptoResultRow,
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Signature details dialog (G6 follow-up): re-parse the cached CMS blob to
+// surface signer cert + chain path for a read-only "Signature details…"
+// dialog. Pure parse + DB reads — no decrypt, no network. Only `signed`
+// (opaque `application/pkcs7-mime; smime-type=signed-data`) and clear-signed
+// `multipart/signed` are re-parseable from the persisted CMS columns; for
+// `encrypted-signed` the inner SignedData lives in decrypted in-memory-only
+// bytes (not persisted), so `signer` is None there and the dialog shows the
+// persisted verdict only.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Parsed signer leaf cert details. No DER crosses IPC — only the parsed
+/// fields the dialog renders. `fingerprint` mirrors the persisted
+/// `MessageCryptoResultRow.signer_fingerprint` (re-attached here so the dialog
+/// has one self-contained record).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignerCertDetails {
+    pub subject_cn: Option<String>,
+    pub issuer_cn: Option<String>,
+    pub serial_hex: String,
+    pub fingerprint: String,
+    pub not_before_unix: i64,
+    pub not_after_unix: i64,
+    /// Dotted OID string of the signer cert's SubjectPublicKeyInfo algorithm
+    /// (e.g. `1.2.840.10045.2.1` for ECDSA-P256). The frontend maps to a label.
+    pub public_key_algorithm_oid: String,
+    /// Dotted OID string of the CMS `SignerInfo.signatureAlgorithm` (the
+    /// algorithm used to produce the signature, e.g.
+    /// `1.2.840.10045.4.3.2` for ecdsa-with-SHA256).
+    pub signature_algorithm_oid: String,
+    pub signing_time_unix: Option<i64>,
+}
+
+/// One entry in the certification path (intermediate or anchor). Parsed CNs
+/// only; `is_anchor` flags entries from the account's imported trust-anchor set.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainPathEntry {
+    pub subject_cn: Option<String>,
+    pub issuer_cn: Option<String>,
+    pub is_anchor: bool,
+}
+
+/// Full signer + verification record for the "Signature details…" dialog.
+/// Re-derived by [`get_signer_details`] on dialog open. The persisted verdict
+/// (`signature_state` / `chain_valid` / `revocation_state` / `verified_at`)
+/// is the authoritative outcome from `open_crypto_message` open-time (which
+/// had CRLs); we deliberately do NOT re-run chain validation here (without
+/// fresh CRLs it would mis-report revocation as `unchecked`).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignerDetails {
+    pub signature_state: String,
+    pub decrypt_state: String,
+    pub crypto_kind: String,
+    /// Persisted nullable INTEGER → `Option<bool>`. `None` = unchecked.
+    pub chain_valid: Option<bool>,
+    pub revocation_state: String,
+    pub verified_at: String,
+    /// Re-resolved via [`resolve_signer_trust`] at dialog time (reflects any
+    /// trust_decision written since the message was opened).
+    pub trust_state: String,
+    /// `None` for `encrypted-signed` (no re-parseable SignedData in the DB).
+    pub signer: Option<SignerCertDetails>,
+    pub chain_path: Vec<ChainPathEntry>,
+    /// Persisted granular `ChainOutcome.failure_reason` (surfaced via
+    /// `VerificationResult.failure_reason` → `message_crypto_results.failure_reason`).
+    /// Falls back to the coarse `failure_reason_for_state` fixed map when the
+    /// persisted column is NULL (pre-migration rows, the UnknownKey / sig-fail
+    /// early-return arms, and all success states).
+    pub failure_reason: Option<String>,
+    /// Structured RFC 5280 §5.3.1 CRLReason name (e.g. `"KeyCompromise"`)
+    /// when `revocation_state = 'revoked'` and the CRL entry carried a
+    /// reasonCode extension. `None` for every other outcome. Surfaced from
+    /// `VerificationResult.revocation_reason` →
+    /// `message_crypto_results.revocation_reason` (2026-07-18 CRL-revocation-
+    /// detail spec decision #4). Rendered as a distinct "Reason: <name>" line
+    /// by the dialog (NOT buried inside `failure_reason`).
+    pub revocation_reason: Option<String>,
+}
+
 /// Build a per-call [`SmimeBackend`] bound to `account_id`. Mirrors the helper
 /// in `db/commands.rs:1356` — same construction pattern as `send_op`
 /// (`engine.rs:1011`). `SqliteKeyStore` is not `Clone` but its constructor is
@@ -309,7 +391,7 @@ fn smime_backend(pool: &SqlitePool, account_id: &str) -> SmimeBackend {
 /// That's harmless for anchor-set use (an extra self-signed anchor just won't
 /// match an external signer's chain); but for signer_trust detection we look
 /// directly at `has_private`, which is unambiguous.
-async fn resolve_signer_trust(
+pub(crate) async fn resolve_signer_trust(
     pool: &SqlitePool,
     account_id: &str,
     signer_fingerprint: Option<&str>,
@@ -404,9 +486,15 @@ async fn resolve_crls(
 
 /// Build the row for `message_crypto_results` from the decrypt + signature
 /// verdicts. `chain_valid` + `revocation_state` are inferred coarsely from the
-/// `SignatureState` (the granular `ChainOutcome` is internal to
-/// `verify_with_context` and not re-exposed): Valid* + Mismatch → chain valid;
-/// Invalid → chain invalid; UnknownKey / NotSigned → unchecked (NULL chain).
+/// `SignatureState`; `failure_reason` is the granular reason surfaced from
+/// `ChainOutcome.failure_reason` via `VerificationResult.failure_reason` by
+/// `SmimeBackend::verify_with_context` (None on the early-return arms and on
+/// success states); `revocation_reason` is the structured RFC 5280 CRLReason
+/// name from `ChainOutcome.revocation_reason` via
+/// `VerificationResult.revocation_reason` (Some(<name>) only on a revoked-cert
+/// hard-fail; None for every other outcome). The orchestrator threads them in
+/// here.
+#[allow(clippy::too_many_arguments)] // row-builder; bundling adds ceremony without clarity
 fn build_crypto_result_row(
     account_id: &str,
     message_id: &str,
@@ -415,6 +503,8 @@ fn build_crypto_result_row(
     signature_state: SignatureState,
     signer_fingerprint: Option<String>,
     signer_email: Option<String>,
+    failure_reason: Option<String>,
+    revocation_reason: Option<String>,
 ) -> MessageCryptoResultRow {
     let sig_str = match signature_state {
         SignatureState::NotSigned => "not-signed",
@@ -424,9 +514,14 @@ fn build_crypto_result_row(
         SignatureState::UnknownKey => "unknown-key",
         SignatureState::Mismatch => "mismatch",
     };
-    // Coarse chain/revocation inference from the SignatureState. A fine-grained
-    // ChainOutcome surfacing (e.g. distinguishing revoked vs. unchecked on
-    // Invalid) is a G6 carry-forward.
+    // Coarse chain/revocation inference from the SignatureState. The granular
+    // ChainOutcome.failure_reason + .revocation_reason are threaded through
+    // their own columns (2026-07-18 specs); the coarse `revocation_state`
+    // remains an inference from the SignatureState. When a revoked-cert
+    // outcome reaches this builder, the caller (run_verify_path →
+    // finish_open_crypto) supplies the granular `revocation_reason` too; the
+    // coarse state is "unchecked" because the Invalid SignatureState does not
+    // distinguish revocation vs. other chain failures.
     let (chain_valid, revocation_state) = match signature_state {
         SignatureState::ValidVerified
         | SignatureState::ValidUnverified
@@ -448,6 +543,8 @@ fn build_crypto_result_row(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
             .unwrap_or_else(|_| "0".to_string()),
+        failure_reason,
+        revocation_reason,
     }
 }
 
@@ -459,7 +556,10 @@ fn extract_signed_data_econtent(signed_data_der: &[u8]) -> Option<Vec<u8>> {
     let ci = ContentInfo::from_der(signed_data_der).ok()?;
     let inner = ci.content.to_der().ok()?;
     let sd = cms::signed_data::SignedData::from_der(&inner).ok()?;
-    sd.encap_content_info.econtent.as_ref().map(|any| any.value().to_vec())
+    sd.encap_content_info
+        .econtent
+        .as_ref()
+        .map(|any| any.value().to_vec())
 }
 
 /// Detect whether a CMS blob is id-signed-data (`application/pkcs7-mime;
@@ -470,6 +570,49 @@ fn is_signed_data(der: &[u8]) -> bool {
         return false;
     };
     ci.content_type == const_oid::db::rfc5911::ID_SIGNED_DATA
+}
+
+/// Merge two intermediate-cert sets, deduping by fingerprint. The
+/// [`run_verify_path`] receiver concatenates the SignedData-embedded
+/// intermediates (the sender's intent) with the receiver's stored
+/// `crypto_keys.key_type='intermediate'` rows (the `.p12`-imported CA cache)
+/// so a chain needing a stored intermediate validates. Without dedup a cert
+/// present in both sets would be passed twice — harmless for path validation,
+/// but wasteful and would distort the CRL fetch list.
+///
+/// Dedup key: SHA-1-of-SPKI hex via [`crypto_smime::fingerprint_of_cert_der`]
+/// — the SAME computation `persist_imported` / `generate_key` use for the
+/// leaf's `Fingerprint` and `upsert_intermediate_cert` uses for the
+/// `(account_id, standard, fingerprint)` UNIQUE key. A cert whose fingerprint
+/// cannot be computed is logged + skipped (the soft-fail discipline).
+///
+/// Order is preserved: SignedData intermediates first, then stored
+/// intermediates not already present.
+fn merge_intermediates_by_fingerprint(
+    signed_data_intermediates: Vec<Vec<u8>>,
+    stored_intermediates: Vec<Vec<u8>>,
+) -> Vec<Vec<u8>> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut merged: Vec<Vec<u8>> =
+        Vec::with_capacity(signed_data_intermediates.len() + stored_intermediates.len());
+    for der in signed_data_intermediates
+        .iter()
+        .chain(stored_intermediates.iter())
+    {
+        let fp = match crypto_smime::fingerprint_of_cert_der(der) {
+            Ok(fp) => fp,
+            Err(e) => {
+                log::warn!(
+                    "[crypto] intermediate fingerprint compute failed during merge; skipping: {e}"
+                );
+                continue;
+            }
+        };
+        if seen.insert(fp) {
+            merged.push(der.clone());
+        }
+    }
+    merged
 }
 
 /// Run the verify path on a SignedData DER blob. Returns the plaintext MIME
@@ -498,10 +641,38 @@ async fn run_verify_path(
     signed_data_der: &[u8],
     from_email: Option<&str>,
     covered_content: Option<&[u8]>,
-) -> Result<(Option<Vec<u8>>, SignatureState, Option<String>, Option<String>), String> {
+) -> Result<VerifyOutcome, String> {
     // Intermediates from the SignedData certificates set (excludes the signer leaf).
-    let intermediates = crypto_smime::extract_intermediates(signed_data_der)
+    let signed_data_intermediates = crypto_smime::extract_intermediates(signed_data_der)
         .map_err(|e| format!("extract_intermediates: {e}"))?;
+
+    // Stored intermediates: every `crypto_keys` row this account has with
+    // `key_type='intermediate'` (persisted from a `.p12` bag's non-leaf chain
+    // certs on import — see `upsert_intermediate_cert`). Soft-fail on DB
+    // error: a query failure must NOT block message open; we proceed with
+    // the SignedData intermediates only.
+    let stored_intermediates = match list_intermediate_certs(pool, account_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[crypto] list_intermediate_certs failed for account {account_id}; \
+                 proceeding with SignedData intermediates only: {e}"
+            );
+            Vec::new()
+        }
+    };
+
+    // Merge the two intermediate sets, deduping by fingerprint (SHA-1-of-SPKI
+    // hex via `crypto_smime::fingerprint_of_cert_der` — the SAME computation
+    // the leaf's `persist_imported` uses, so a cert present in both sets is
+    // passed to `verify_with_context` exactly once). The merge is order-
+    // preserving: SignedData intermediates first (the sender's intent), then
+    // stored intermediates not already present (the receiver's CA cache).
+    // Errors computing a fingerprint are logged + the cert is skipped (one bad
+    // cert must not break the chain — the soft-fail discipline established by
+    // `list_intermediate_certs`'s hex-decode skip).
+    let intermediates =
+        merge_intermediates_by_fingerprint(signed_data_intermediates, stored_intermediates);
 
     // Trust anchors (user-imported CA roots for this account).
     let anchors = list_trust_anchor_certs(pool, account_id).await?;
@@ -578,7 +749,10 @@ async fn run_verify_path(
                                     issuer: tbs.issuer().clone(),
                                     serial_number: tbs.serial_number().clone(),
                                 };
-                                if let cms::signed_data::SignerIdentifier::IssuerAndSerialNumber(ref target) = first_signer_info.sid {
+                                if let cms::signed_data::SignerIdentifier::IssuerAndSerialNumber(
+                                    ref target,
+                                ) = first_signer_info.sid
+                                {
                                     if &candidate_iasn == target {
                                         if let Ok(der) = c.to_der() {
                                             crl_cert_ders.insert(0, der);
@@ -623,12 +797,50 @@ async fn run_verify_path(
         .as_ref()
         .map(|s| s.fingerprint.as_str().to_string())
         .or(signer_fp);
-    Ok((
+    Ok(VerifyOutcome {
         plaintext,
-        result.state,
-        final_signer_fp,
-        signer_email_for_trust,
-    ))
+        signature_state: result.state,
+        signer_fp: final_signer_fp,
+        signer_email: signer_email_for_trust,
+        // Granular ChainOutcome.failure_reason (2026-07-18 granular-chain-outcome
+        // spec) — surfaced via `VerificationResult.failure_reason` by
+        // `verify_with_context`. None on the early-return arms (UnknownKey,
+        // sig-fail Invalid) and on success states; the real reason on chain
+        // failures + Mismatch.
+        failure_reason: result.failure_reason,
+        // Structured RFC 5280 CRLReason (2026-07-18 CRL-revocation-detail spec)
+        // — surfaced via `VerificationResult.revocation_reason` by
+        // `verify_with_context`. Some(<name>) only on a revoked-cert hard-fail;
+        // None for every other outcome.
+        revocation_reason: result.revocation_reason,
+    })
+}
+
+/// Outcome of [`run_verify_path`]: the values the orchestrator needs from a
+/// verify-path run. Introduced (2026-07-18 CRL-revocation-detail spec) to
+/// replace the prior 5-tuple return — adding `revocation_reason` would have
+/// pushed the tuple to a 6-tuple smell (flagged by the controller), and the
+/// struct shape is the documented future-ideal. Field names mirror the
+/// `build_crypto_result_row` / `finish_open_crypto` args so the threading
+/// reads cleanly at the call sites.
+struct VerifyOutcome {
+    /// Plaintext MIME bytes (SignedData eContent for encapsulated; the
+    /// externally-supplied covered content for detached).
+    plaintext: Option<Vec<u8>>,
+    /// Final resolved signature state (Invalid / Mismatch / ValidVerified /
+    /// ValidUnverified / UnknownKey).
+    signature_state: SignatureState,
+    /// Signer cert fingerprint, when one was located.
+    signer_fp: Option<String>,
+    /// Signer email (the From header), for trust-decision lookup + UI display.
+    signer_email: Option<String>,
+    /// Granular `ChainOutcome.failure_reason` surfaced via
+    /// `VerificationResult.failure_reason`.
+    failure_reason: Option<String>,
+    /// Structured RFC 5280 CRLReason name surfaced via
+    /// `VerificationResult.revocation_reason`. `Some(<name>)` only when the
+    /// verification hard-failed because the CRL listed the cert as revoked.
+    revocation_reason: Option<String>,
 }
 
 /// Open a crypto-marked message: decrypt + (if signed) verify it. Returns the
@@ -658,28 +870,86 @@ async fn run_verify_path(
 /// Plaintext is MEMORY-ONLY — it is never written back to SQLite by this
 /// function. Only the `message_crypto_results` row (the verification outcome)
 /// is persisted.
-pub async fn open_crypto_message(
+/// Outcome of dispatching over a crypto-marked message: the decrypted
+/// plaintext MIME bytes (when recoverable) + the
+/// `(crypto_kind, decrypt_state, signature_state, signer_*, failure_reason,
+/// revocation_reason)` tuple each branch produces. Pure computation — no
+/// `message_crypto_results` upsert, no `OpenCryptoResult` construction.
+///
+/// Produced by [`decrypt_message_with_outcome`] and consumed by two callers:
+///   - [`open_crypto_message`] persists the tuple via [`finish_open_crypto`]
+///     and returns an `OpenCryptoResult`.
+///   - [`decrypt_message_mime_bytes`] extracts just `plaintext_mime` for
+///     Task 2's `crypto_fetch_attachment` / `crypto_fetch_inline_images`
+///     commands, which re-decrypt to extract attachment bytes without
+///     re-running the orchestrator's persist + IPC-result shaping.
+///
+/// The early-return `no-ciphertext` and `no-key` cases are folded into this
+/// outcome as `decrypt_state="failed"` / `"no-key"` with `plaintext_mime=None`
+/// — `finish_open_crypto` then upserts the same row the inline paths used to
+/// upsert directly, so the persisted `MessageCryptoResultRow` is unchanged.
+struct CryptoOutcome {
+    plaintext_mime: Option<Vec<u8>>,
+    crypto_kind: &'static str,
+    decrypt_state: &'static str,
+    signature_state: SignatureState,
+    signer_fp: Option<String>,
+    signer_email: Option<String>,
+    failure_reason: Option<String>,
+    revocation_reason: Option<String>,
+}
+
+/// Dispatch over a crypto-marked message: fetch ciphertext + signed_part +
+/// From header, build the per-call [`SmimeBackend`] + reqwest client, and
+/// branch on clear-signed / enveloped / opaque-signed / no-ciphertext /
+/// no-key. Returns the [`CryptoOutcome`] (plaintext bytes + the tuple each
+/// branch produces).
+///
+/// This is the pure-decrypt helper extracted (behavior-preserving) from
+/// `open_crypto_message`'s `:878-1176` dispatch arm. It does NOT upsert
+/// `message_crypto_results` and does NOT build an `OpenCryptoResult` — both
+/// are the caller's job (`finish_open_crypto` for the orchestrator; a thin
+/// `.plaintext_mime` projection for `decrypt_message_mime_bytes`).
+///
+/// Branch order (must match the pre-refactor orchestrator):
+/// 1. clear-signed (`multipart/signed`): both `signed_part` AND `ciphertext`
+///    present → detached verify, plaintext = part-1 bytes.
+/// 2. no-ciphertext: `ciphertext=None` (regardless of `signed_part`) →
+///    outcome `("encrypted", "failed", NotSigned, …)` with no plaintext.
+/// 3. enveloped-data: decrypt via the backend key loop; on no matching key,
+///    outcome `("encrypted", "no-key", NotSigned, …)`. On decrypt OK, recurse
+///    into `run_verify_path` when the inner is itself a SignedData
+///    (sign-then-encrypt) → `("encrypted-signed", "ok", <state>, …)`;
+///    otherwise plaintext MIME → `("encrypted", "ok", NotSigned, …)`.
+/// 4. opaque signed-data: `run_verify_path` → `("signed", "n/a", <state>, …)`.
+/// 5. otherwise: hard `Err` (unsupported CMS content type).
+async fn decrypt_message_with_outcome(
     pool: &SqlitePool,
     account_id: &str,
     message_id: &str,
-) -> Result<OpenCryptoResult, String> {
+) -> Result<CryptoOutcome, String> {
     // Step 1: load ciphertext + From header + (Plan 5 / G7) signed_part.
     let ciphertext = get_message_ciphertext(pool, account_id, message_id).await?;
     let signed_part = get_message_signed_part(pool, account_id, message_id).await?;
+    log::info!(
+        "[crypto] decrypt_message_with_outcome: account={account_id} msg={message_id} \
+         ciphertext_len={} signed_part_len={}",
+        ciphertext.as_ref().map(|c| c.len()).unwrap_or(0),
+        signed_part.as_ref().map(|s| s.len()).unwrap_or(0),
+    );
 
     // messages.from_address — the RFC 5322 From: used for SAN identity binding
     // + the trust_decisions peer_email lookup. NULL when the column is NULL
     // (partially-migrated rows); verify_with_context treats None as "skip
     // identity binding".
-    let from_address: Option<String> = sqlx::query_scalar(
-        "SELECT from_address FROM messages WHERE account_id = ? AND id = ?",
-    )
-    .bind(account_id)
-    .bind(message_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?
-    .flatten();
+    let from_address: Option<String> =
+        sqlx::query_scalar("SELECT from_address FROM messages WHERE account_id = ? AND id = ?")
+            .bind(account_id)
+            .bind(message_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .flatten();
 
     // G4 landmine #1: build the reqwest::Client ONCE with a 30s timeout so a
     // hung CRL server cannot block the orchestrator indefinitely.
@@ -701,11 +971,9 @@ pub async fn open_crypto_message(
     // plaintext (clear-signed mail's body IS already plaintext — no decrypt
     // step). Falls through to the existing pkcs7-mime path when `signed_part`
     // is None.
-    if let (Some(part1_bytes), Some(p7s_der)) =
-        (signed_part.as_deref(), ciphertext.as_deref())
-    {
+    if let (Some(part1_bytes), Some(p7s_der)) = (signed_part.as_deref(), ciphertext.as_deref()) {
         let covered = part1_bytes.to_vec();
-        let (plaintext, sig_state, sfp, semail) = run_verify_path(
+        let outcome = run_verify_path(
             &backend,
             pool,
             &client,
@@ -717,182 +985,264 @@ pub async fn open_crypto_message(
         .await?;
         // `plaintext` is `covered` itself (detached: no eContent) — but use
         // the value returned by run_verify_path for clarity.
-        let plaintext_mime = plaintext.or(Some(covered));
-        return finish_open_crypto(
-            pool,
-            account_id,
-            message_id,
+        let plaintext_mime = outcome.plaintext.or(Some(covered));
+        return Ok(CryptoOutcome {
             plaintext_mime,
-            "signed",
-            "n/a",
-            sig_state,
-            sfp,
-            semail,
-        )
-        .await;
+            crypto_kind: "signed",
+            decrypt_state: "n/a",
+            signature_state: outcome.signature_state,
+            signer_fp: outcome.signer_fp,
+            signer_email: outcome.signer_email,
+            failure_reason: outcome.failure_reason,
+            revocation_reason: outcome.revocation_reason,
+        });
     }
 
     // Existing opaque pkcs7-mime path.
     let ciphertext = match ciphertext {
         Some(c) => c,
         None => {
-            // No ciphertext AND no signed_part → record a Failed outcome +
-            // return it (so callers can show a meaningful error rather than a
-            // hard Err).
-            let row = build_crypto_result_row(
-                account_id,
-                message_id,
-                "encrypted",
-                "failed",
-                SignatureState::NotSigned,
-                None,
-                None,
-            );
-            upsert_message_crypto_result(pool, &row).await?;
-            return Ok(OpenCryptoResult {
-                plaintext_html: None,
-                plaintext_text: None,
-                attachments: Vec::new(),
-                crypto_result: row,
+            // No ciphertext AND no signed_part → fold into a Failed outcome
+            // (no plaintext). `finish_open_crypto` upserts the same row the
+            // inline path used to upsert directly — behavior preserved.
+            return Ok(CryptoOutcome {
+                plaintext_mime: None,
+                crypto_kind: "encrypted",
+                decrypt_state: "failed",
+                signature_state: SignatureState::NotSigned,
+                signer_fp: None,
+                signer_email: None,
+                failure_reason: None,
+                revocation_reason: None,
             });
         }
     };
 
     // Step 2: parse the CMS blob to dispatch on its content type.
-    let ci = ContentInfo::from_der(&ciphertext)
-        .map_err(|e| format!("parse ContentInfo: {e}"))?;
+    let ci = ContentInfo::from_der(&ciphertext).map_err(|e| format!("parse ContentInfo: {e}"))?;
 
     let is_enveloped = ci.content_type == const_oid::db::rfc5911::ID_ENVELOPED_DATA;
     let is_signed = ci.content_type == const_oid::db::rfc5911::ID_SIGNED_DATA;
+    log::info!(
+        "[crypto] ContentInfo parsed: content_type_oid={:?} is_enveloped={is_enveloped} is_signed={is_signed}",
+        ci.content_type
+    );
 
-    // Default crypto_kind from the outer blob; refined below if we recurse
-    // (decrypt-then-verify → encrypted-signed).
-    let (plaintext_mime, crypto_kind, decrypt_state, signature_state, signer_fp, signer_email) =
-        if is_enveloped {
-            // Step 3: decrypt path.
-            let keys = list_crypto_keys_for_account(pool, account_id, "smime")
-                .await
-                .map_err(|e| format!("list account keys: {e}"))?;
+    if is_enveloped {
+        // Step 3: decrypt path.
+        let keys = list_crypto_keys_for_account(pool, account_id, "smime")
+            .await
+            .map_err(|e| format!("list account keys: {e}"))?;
+        let priv_keys: Vec<_> = keys.iter().filter(|k| k.has_private).collect();
+        log::info!(
+            "[crypto] enveloped: {} total key(s), {} with private material; trying each",
+            keys.len(),
+            priv_keys.len()
+        );
 
-            // Build the EncryptedEnvelope ONCE outside the key loop — only the
-            // decryption KeyHandleRef changes per iteration.
-            let env = EncryptedEnvelope {
+        // Build the EncryptedEnvelope ONCE outside the key loop — only the
+        // decryption KeyHandleRef changes per iteration.
+        let env = EncryptedEnvelope {
+            standard: Standard::Smime,
+            serialization: SerializationStrategy::SingleMimeBlob,
+            parts: vec![EncryptedPart {
+                id: PartId("body".into()),
+                kind: PartKind::Body,
+                ciphertext: ciphertext.clone(),
+                signature: None,
+            }],
+            recipients: Vec::new(),
+        };
+
+        let mut decrypted: Option<Vec<u8>> = None;
+        for key_row in &priv_keys {
+            // Build the decryption KeyHandleRef. KeyId encoding matches
+            // SqliteKeyStore::encode_key_id (`standard|fingerprint`). The
+            // algorithm field is not load-bearing for decrypt (the keystore
+            // resolves the real algorithm via policy_json on get()).
+            let decryption_key = KeyHandleRef {
+                handle: KeyHandle::Software(KeyId(format!("smime|{}", key_row.fingerprint))),
                 standard: Standard::Smime,
-                serialization: SerializationStrategy::SingleMimeBlob,
-                parts: vec![EncryptedPart {
-                    id: PartId("body".into()),
-                    kind: PartKind::Body,
-                    ciphertext: ciphertext.clone(),
-                    signature: None,
-                }],
-                recipients: Vec::new(),
+                fingerprint: Fingerprint::new(&key_row.fingerprint),
+                usage: KeyUsage::SignAndEncrypt,
+                algorithm: "ECDSA-P256".into(),
             };
-
-            let mut decrypted: Option<Vec<u8>> = None;
-            for key_row in keys.iter().filter(|k| k.has_private) {
-                // Build the decryption KeyHandleRef. KeyId encoding matches
-                // SqliteKeyStore::encode_key_id (`standard|fingerprint`). The
-                // algorithm field is not load-bearing for decrypt (the keystore
-                // resolves the real algorithm via policy_json on get()).
-                let decryption_key = KeyHandleRef {
-                    handle: KeyHandle::Software(KeyId(format!("smime|{}", key_row.fingerprint))),
-                    standard: Standard::Smime,
-                    fingerprint: Fingerprint::new(&key_row.fingerprint),
-                    usage: KeyUsage::SignAndEncrypt,
-                    algorithm: "ECDSA-P256".into(),
-                };
-                let op = DecryptOp {
-                    envelope: &env,
-                    decryption_key,
-                };
-                match backend.decrypt(op).await {
-                    Ok(payload) => {
-                        // S/MIME collapses the MIME tree into one part.
-                        if let Some(part) = payload.parts.into_iter().next() {
-                            decrypted = Some(part.data);
-                            break;
-                        }
+            let op = DecryptOp {
+                envelope: &env,
+                decryption_key,
+            };
+            match backend.decrypt(op).await {
+                Ok(payload) => {
+                    // S/MIME collapses the MIME tree into one part.
+                    if let Some(part) = payload.parts.into_iter().next() {
+                        log::info!(
+                            "[crypto] decrypt OK with key fp={} ({} bytes plaintext)",
+                            key_row.fingerprint,
+                            part.data.len()
+                        );
+                        decrypted = Some(part.data);
+                        break;
                     }
-                    Err(_) => continue, // no match — try the next key
+                    log::warn!(
+                        "[crypto] decrypt returned Ok but no part for key fp={}",
+                        key_row.fingerprint
+                    );
+                }
+                Err(e) => {
+                    // Log the ACTUAL error so a genuine decrypt failure is
+                    // distinguishable from "not encrypted to this key". The
+                    // orchestrator treats both as "try the next key", but the
+                    // surface symptom (no-key) is identical either way —
+                    // without this log the root cause is invisible.
+                    log::warn!(
+                        "[crypto] decrypt FAILED for key fp={}: {} ({:?})",
+                        key_row.fingerprint,
+                        e,
+                        e
+                    );
+                    continue;
                 }
             }
+        }
 
-            let Some(inner_bytes) = decrypted else {
-                // No matching decryption key.
-                let row = build_crypto_result_row(
-                    account_id,
-                    message_id,
-                    "encrypted",
-                    "no-key",
-                    SignatureState::NotSigned,
-                    None,
-                    None,
-                );
-                upsert_message_crypto_result(pool, &row).await?;
-                return Ok(OpenCryptoResult {
-                    plaintext_html: None,
-                    plaintext_text: None,
-                    attachments: Vec::new(),
-                    crypto_result: row,
-                });
-            };
+        let Some(inner_bytes) = decrypted else {
+            // No matching decryption key → fold into a no-key outcome (no
+            // plaintext). `finish_open_crypto` upserts the same row the inline
+            // path used to upsert directly — behavior preserved.
+            log::warn!(
+                "[crypto] no matching key → no-key (all {} private key(s) errored or no recipient matched)",
+                priv_keys.len()
+            );
+            return Ok(CryptoOutcome {
+                plaintext_mime: None,
+                crypto_kind: "encrypted",
+                decrypt_state: "no-key",
+                signature_state: SignatureState::NotSigned,
+                signer_fp: None,
+                signer_email: None,
+                failure_reason: None,
+                revocation_reason: None,
+            });
+        };
 
-            // Step 3c: if the inner is itself a SignedData (sign-then-encrypt
-            // send-side composition), recurse into the verify path.
-            if is_signed_data(&inner_bytes) {
-                let (plaintext, sig_state, sfp, semail) = run_verify_path(
-                    &backend,
-                    pool,
-                    &client,
-                    account_id,
-                    &inner_bytes,
-                    from_address.as_deref(),
-                    None, // encapsulated (eContent inside the SignedData)
-                )
-                .await?;
-                (
-                    plaintext,
-                    "encrypted-signed",
-                    "ok",
-                    sig_state,
-                    sfp,
-                    semail,
-                )
-            } else {
-                // Plaintext MIME — no inner signature.
-                (Some(inner_bytes), "encrypted", "ok", SignatureState::NotSigned, None, None)
-            }
-        } else if is_signed {
-            // Step 4: opaque-signed verify path (no decryption).
-            let (plaintext, sig_state, sfp, semail) = run_verify_path(
+        // Step 3c: if the inner is itself a SignedData (sign-then-encrypt
+        // send-side composition), recurse into the verify path.
+        if is_signed_data(&inner_bytes) {
+            let outcome = run_verify_path(
                 &backend,
                 pool,
                 &client,
                 account_id,
-                &ciphertext,
+                &inner_bytes,
                 from_address.as_deref(),
                 None, // encapsulated (eContent inside the SignedData)
             )
             .await?;
-            (plaintext, "signed", "n/a", sig_state, sfp, semail)
+            Ok(CryptoOutcome {
+                plaintext_mime: outcome.plaintext,
+                crypto_kind: "encrypted-signed",
+                decrypt_state: "ok",
+                signature_state: outcome.signature_state,
+                signer_fp: outcome.signer_fp,
+                signer_email: outcome.signer_email,
+                failure_reason: outcome.failure_reason,
+                revocation_reason: outcome.revocation_reason,
+            })
         } else {
-            return Err(format!(
-                "open_crypto_message: unsupported CMS content type OID: {}",
-                ci.content_type
-            ));
-        };
+            // Plaintext MIME — no inner signature.
+            Ok(CryptoOutcome {
+                plaintext_mime: Some(inner_bytes),
+                crypto_kind: "encrypted",
+                decrypt_state: "ok",
+                signature_state: SignatureState::NotSigned,
+                signer_fp: None,
+                signer_email: None,
+                failure_reason: None,
+                revocation_reason: None,
+            })
+        }
+    } else if is_signed {
+        // Step 4: opaque-signed verify path (no decryption).
+        let outcome = run_verify_path(
+            &backend,
+            pool,
+            &client,
+            account_id,
+            &ciphertext,
+            from_address.as_deref(),
+            None, // encapsulated (eContent inside the SignedData)
+        )
+        .await?;
+        Ok(CryptoOutcome {
+            plaintext_mime: outcome.plaintext,
+            crypto_kind: "signed",
+            decrypt_state: "n/a",
+            signature_state: outcome.signature_state,
+            signer_fp: outcome.signer_fp,
+            signer_email: outcome.signer_email,
+            failure_reason: outcome.failure_reason,
+            revocation_reason: outcome.revocation_reason,
+        })
+    } else {
+        Err(format!(
+            "decrypt_message_with_outcome: unsupported CMS content type OID: {}",
+            ci.content_type
+        ))
+    }
+}
 
-    // Step 5-7: parse plaintext → upsert → return.
+/// Re-decrypt an already-persisted crypto message to recover the plaintext
+/// MIME bytes (without running the orchestrator's persist + IPC-result
+/// shaping). Consumed by Task 2's `crypto_fetch_attachment` /
+/// `crypto_fetch_inline_images` commands, which extract attachment bytes the
+/// receive-side `open_crypto_message` orchestrator does not retain in memory.
+///
+/// Branch behavior matches [`open_crypto_message`] — the same dispatch
+/// (clear-signed / enveloped / opaque-signed / no-ciphertext / no-key) runs
+/// — but only the plaintext bytes are returned:
+///   - clear-signed: the part-1 MIME entity bytes.
+///   - enveloped + decrypt OK: the recovered inner MIME (possibly from
+///     `run_verify_path` when the inner is itself a SignedData).
+///   - opaque-signed: the encapsulated eContent (from `run_verify_path`).
+///   - no-ciphertext / no-key / not-signed-inside: `Ok(None)`.
+pub(crate) async fn decrypt_message_mime_bytes(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    Ok(decrypt_message_with_outcome(pool, account_id, message_id)
+        .await?
+        .plaintext_mime)
+}
+
+pub async fn open_crypto_message(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<OpenCryptoResult, String> {
+    // Delegate the full decrypt + dispatch arm to the pure helper; project
+    // the outcome tuple into `finish_open_crypto` (which parses plaintext →
+    // upserts `message_crypto_results` → returns `OpenCryptoResult`). The
+    // `no-ciphertext` and `no-key` branches now round-trip through
+    // `finish_open_crypto` with `plaintext=None` — same row, same upsert,
+    // same return shape as the pre-refactor inline early-returns.
+    let outcome = decrypt_message_with_outcome(pool, account_id, message_id).await?;
     finish_open_crypto(
         pool,
         account_id,
         message_id,
-        plaintext_mime,
-        crypto_kind,
-        decrypt_state,
-        signature_state,
-        signer_fp,
-        signer_email,
+        outcome.plaintext_mime,
+        outcome.crypto_kind,
+        outcome.decrypt_state,
+        outcome.signature_state,
+        outcome.signer_fp,
+        outcome.signer_email,
+        // Granular ChainOutcome.failure_reason threaded from run_verify_path.
+        // None for the not-signed / encrypt-only branch (no verify path ran).
+        outcome.failure_reason,
+        // Structured RFC 5280 CRLReason threaded from run_verify_path.
+        // None for every non-revoked outcome.
+        outcome.revocation_reason,
     )
     .await
 }
@@ -913,6 +1263,8 @@ async fn finish_open_crypto(
     signature_state: SignatureState,
     signer_fp: Option<String>,
     signer_email: Option<String>,
+    failure_reason: Option<String>,
+    revocation_reason: Option<String>,
 ) -> Result<OpenCryptoResult, String> {
     // Parse the plaintext MIME → html/text/attachments.
     let (plaintext_html, plaintext_text, attachments) = match plaintext_mime.as_deref() {
@@ -929,6 +1281,8 @@ async fn finish_open_crypto(
         signature_state,
         signer_fp,
         signer_email,
+        failure_reason,
+        revocation_reason,
     );
     upsert_message_crypto_result(pool, &row).await?;
 
@@ -945,7 +1299,9 @@ async fn finish_open_crypto(
 /// Mirrors the body-text/html extraction in `mail::imap::client::parse_message`
 /// (`body_text(0)` + `body_html(0)`) + the attachment metadata extraction in
 /// `extract_attachments` (reused via the pub(crate) alias).
-fn parse_plaintext_mime(mime_bytes: &[u8]) -> (Option<String>, Option<String>, Vec<ImapAttachment>) {
+fn parse_plaintext_mime(
+    mime_bytes: &[u8],
+) -> (Option<String>, Option<String>, Vec<ImapAttachment>) {
     let parsed = match mail_parser::MessageParser::default().parse(mime_bytes) {
         Some(p) => p,
         None => return (None, None, Vec::new()),
@@ -992,20 +1348,28 @@ pub(crate) async fn apply_crypto(
 
     let (outer, mut entity) = split_message(mime)?;
 
-    // --- sign (clear-sign) ---
-    if draft.sign {
+    // Resolve the signing key up-front. Used by BOTH the encrypt-with-sign arm
+    // (opaque SignedData inside EnvelopedData — Thunderbird-style
+    // sign-then-encrypt) and the sign-only clear-sign arm below. `None` when
+    // not signing.
+    //
+    // CRITICAL: when BOTH sign + encrypt we must NOT clear-sign-then-encrypt.
+    // Clear-signing wraps the body in a `multipart/signed` MIME entity; the
+    // receive orchestrator (`open_crypto_message` → `is_signed_data`) only
+    // recurses into signature verification for an opaque CMS `SignedData`
+    // (`id-signed-data` OID), NOT for a `multipart/signed` MIME structure — so
+    // a clear-signed-then-encrypted message would be received as
+    // `crypto_kind='encrypted'` + `signature_state='not-signed'` (the signature
+    // silently dropped). Passing `sign_with` to `backend.encrypt` instead
+    // composes opaque SignedData inside EnvelopedData — the shape the receiver
+    // recognizes and recurses into (pinned by
+    // `open_crypto_message_decrypts_and_verifies_enveloped_then_signed`).
+    let signer: Option<KeyHandleRef> = if draft.sign {
         let signer_row = default_signing_key.ok_or(CryptoSendError::NoSigningKey)?;
-        let signer = key_handle_ref(signer_row);
-        let part1 = ensure_one_trailing_crlf(&entity.0);
-        let signed = backend
-            .sign(SignOp {
-                payload: &part1,
-                signing_key: signer,
-                detached: true,
-            })
-            .await?;
-        entity.0 = wrap_multipart_signed(&part1, &signed.signature.signature);
-    }
+        Some(key_handle_ref(signer_row))
+    } else {
+        None
+    };
 
     // --- encrypt ---
     if draft.encrypt {
@@ -1071,7 +1435,10 @@ pub(crate) async fn apply_crypto(
                 }],
                 serialization: SerializationStrategy::SingleMimeBlob,
                 recipients: &recipients,
-                sign_with: None,
+                // `sign_with` = the resolved signer when `draft.sign` → opaque
+                // SignedData inside EnvelopedData (sign-then-encrypt). `None`
+                // → encrypt-only.
+                sign_with: signer.clone(),
             })
             .await?;
         let enveloped_der = env
@@ -1087,6 +1454,22 @@ pub(crate) async fn apply_crypto(
         out.extend_from_slice(b"\r\n");
         out.extend_from_slice(&wrapped_entity);
         return Ok(out);
+    }
+
+    // --- sign-only (clear-sign) ---
+    // Reached only when `draft.sign && !draft.encrypt` (the encrypt branch
+    // above returns). Produces a `multipart/signed` MIME entity — the standard
+    // clear-signed S/MIME shape (Thunderbird-interoperable).
+    if let Some(signer) = signer {
+        let part1 = ensure_one_trailing_crlf(&entity.0);
+        let signed = backend
+            .sign(SignOp {
+                payload: &part1,
+                signing_key: signer,
+                detached: true,
+            })
+            .await?;
+        entity.0 = wrap_multipart_signed(&part1, &signed.signature.signature);
     }
 
     // sign-only: outer headers + the multipart/signed entity (its own Content-Type).
@@ -1169,6 +1552,249 @@ fn key_handle_ref(row: &DefaultKeyRow) -> KeyHandleRef {
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Signature details dialog — re-parse the cached CMS blob on dialog open.
+// Pure parse + DB reads; no decrypt, no network. See `SignerDetails` doc above.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Parsed cert fields surfaced by [`summarize_cert`]. Reused for the signer
+/// leaf, intermediates, and anchors so the dialog renders them uniformly.
+struct CertSummary {
+    subject_cn: Option<String>,
+    issuer_cn: Option<String>,
+    serial_hex: String,
+    not_before_unix: i64,
+    not_after_unix: i64,
+    public_key_algorithm_oid: String,
+}
+
+/// Parse a cert DER with `x509-parser` and extract the fields the dialog
+/// renders. Returns `None` on parse failure (soft — a malformed cert in the
+/// chain path is skipped, not fatal). Mirrors the `x509_parser` idiom in
+/// [`extract_crl_distribution_points`].
+fn summarize_cert(der: &[u8]) -> Option<CertSummary> {
+    let (_rem, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let subject_cn = cert
+        .subject()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .map(str::to_string);
+    let issuer_cn = cert
+        .issuer()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .map(str::to_string);
+    let serial_hex = cert
+        .raw_serial()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let not_before_unix = cert.validity().not_before.timestamp();
+    let not_after_unix = cert.validity().not_after.timestamp();
+    let public_key_algorithm_oid = cert.public_key().algorithm.algorithm.to_string();
+    Some(CertSummary {
+        subject_cn,
+        issuer_cn,
+        serial_hex,
+        not_before_unix,
+        not_after_unix,
+        public_key_algorithm_oid,
+    })
+}
+
+/// UI-level failure-reason fallback for the persisted `signature_state`. Used
+/// by [`get_signer_details`] ONLY when the persisted
+/// `message_crypto_results.failure_reason` column is NULL (pre-migration rows,
+/// the UnknownKey / sig-fail early-return arms where `verify_with_context`
+/// short-circuits before chain validation, and all success states). The real
+/// `ChainOutcome.failure_reason` is otherwise surfaced verbatim from the row.
+fn failure_reason_for_state(state: &str) -> Option<String> {
+    match state {
+        "invalid" => Some("Signature did not verify — content may have been altered.".into()),
+        "mismatch" => Some("Signer identity does not match the message From header.".into()),
+        "unknown-key" => Some("Signer certificate is not in your keyring.".into()),
+        "valid-unverified" => {
+            Some("Signature valid, but the chain does not root in a trusted anchor.".into())
+        }
+        _ => None,
+    }
+}
+
+/// Re-parse the cached SignedData DER to extract `(signer_leaf_der,
+/// signature_algorithm_oid)`. Returns `None` when the blob is not valid
+/// SignedData or the signer leaf can't be located by IssuerAndSerialNumber.
+/// Mirrors the IssuerAndSerialNumber match in [`run_verify_path`] (the CRL
+/// extraction block) — factored out so the details dialog reuses the same
+/// signer-leaf resolution without re-running verify.
+fn extract_signer_leaf(signed_data_der: &[u8]) -> Option<(Vec<u8>, String)> {
+    let sci = ContentInfo::from_der(signed_data_der).ok()?;
+    let sinner = sci.content.to_der().ok()?;
+    let ssd = cms::signed_data::SignedData::from_der(&sinner).ok()?;
+    let cert_set = ssd.certificates.as_ref()?;
+    let first_signer_info = ssd.signer_infos.0.get(0)?;
+    let sig_alg_oid = first_signer_info.signature_algorithm.oid.to_string();
+    for choice in cert_set.0.iter() {
+        if let cms::cert::CertificateChoices::Certificate(c) = choice {
+            let tbs = c.tbs_certificate();
+            let candidate_iasn = cms::cert::IssuerAndSerialNumber {
+                issuer: tbs.issuer().clone(),
+                serial_number: tbs.serial_number().clone(),
+            };
+            if let cms::signed_data::SignerIdentifier::IssuerAndSerialNumber(ref target) =
+                first_signer_info.sid
+            {
+                if &candidate_iasn == target {
+                    if let Ok(der) = c.to_der() {
+                        return Some((der, sig_alg_oid));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build the [`SignerDetails`] record for the "Signature details…" dialog.
+/// Returns `Ok(None)` when the message has no persisted `message_crypto_results`
+/// row (never opened through the crypto pipeline). For `signed` (opaque) and
+/// clear-signed messages the signer leaf + chain path are re-parsed from the
+/// cached CMS columns; for `encrypted-signed` the SignedData lives in
+/// decrypted in-memory-only bytes (not persisted), so `signer` is `None`.
+pub(crate) async fn get_signer_details(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<SignerDetails>, String> {
+    // 1. Persisted verdict (authoritative — has CRL-based revocation from
+    //    open time). None ⇒ message was never opened through the crypto path.
+    let Some(row) = get_message_crypto_result(pool, account_id, message_id).await? else {
+        return Ok(None);
+    };
+
+    // 2. Cached CMS columns + From header (for trust resolution).
+    let ciphertext = get_message_ciphertext(pool, account_id, message_id).await?;
+    let signed_part = get_message_signed_part(pool, account_id, message_id).await?;
+    let from_address: Option<String> =
+        sqlx::query_scalar("SELECT from_address FROM messages WHERE account_id = ? AND id = ?")
+            .bind(account_id)
+            .bind(message_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .flatten();
+
+    // 3. Resolve the SignedData DER we can re-parse WITHOUT decrypting.
+    //    - clear-signed (multipart/signed): the detached .p7s lives in
+    //      body_mime_ciphertext; signed_part holds the covered part-1.
+    //    - opaque signed (application/pkcs7-mime; signed-data): the CMS blob
+    //      itself is the SignedData in body_mime_ciphertext.
+    //    - enveloped / encrypted-signed: no re-parseable SignedData in the DB
+    //      (the inner SignedData for encrypted-signed lives in decrypted
+    //      in-memory-only bytes). Both shapes above resolve to `ciphertext`,
+    //      so a single OR gate suffices.
+    let signed_data_der: Option<Vec<u8>> = if signed_part.is_some() || row.crypto_kind == "signed" {
+        ciphertext.clone()
+    } else {
+        None
+    };
+
+    // 4. Re-parse for signer leaf + intermediates (best-effort; None leaves
+    //    the dialog with the persisted verdict only).
+    let signer: Option<SignerCertDetails> = signed_data_der
+        .as_deref()
+        .and_then(extract_signer_leaf)
+        .and_then(|(leaf_der, sig_alg_oid)| {
+            let s = summarize_cert(&leaf_der)?;
+            Some(SignerCertDetails {
+                subject_cn: s.subject_cn,
+                issuer_cn: s.issuer_cn,
+                serial_hex: s.serial_hex,
+                fingerprint: row.signer_fingerprint.clone().unwrap_or_default(),
+                not_before_unix: s.not_before_unix,
+                not_after_unix: s.not_after_unix,
+                public_key_algorithm_oid: s.public_key_algorithm_oid,
+                signature_algorithm_oid: sig_alg_oid,
+                // signingTime lives in the CMS signedAttrs; the extractor
+                // (`find_signing_time`) is pub(crate) in crypto_smime, not
+                // re-exported — surfaced as None for v1 (verified_at covers
+                // the verification time in the dialog's Verification section).
+                signing_time_unix: None,
+            })
+        });
+
+    // 5. Chain path: intermediates (from the SignedData cert set) + the
+    //    account's trust anchors. Both parsed with summarize_cert.
+    let mut chain_path: Vec<ChainPathEntry> = Vec::new();
+    if let Some(der) = signed_data_der.as_deref() {
+        if let Ok(intermediates) = crypto_smime::extract_intermediates(der) {
+            for int_der in intermediates {
+                if let Some(s) = summarize_cert(&int_der) {
+                    chain_path.push(ChainPathEntry {
+                        subject_cn: s.subject_cn,
+                        issuer_cn: s.issuer_cn,
+                        is_anchor: false,
+                    });
+                }
+            }
+        }
+    }
+    let anchors = list_trust_anchor_certs(pool, account_id).await?;
+    for anchor_der in anchors {
+        if let Some(s) = summarize_cert(&anchor_der) {
+            chain_path.push(ChainPathEntry {
+                subject_cn: s.subject_cn,
+                issuer_cn: s.issuer_cn,
+                is_anchor: true,
+            });
+        }
+    }
+
+    // 6. Trust state (re-resolved — reflects any trust decision since open).
+    let trust_state = resolve_signer_trust(
+        pool,
+        account_id,
+        row.signer_fingerprint.as_deref(),
+        from_address.as_deref(),
+    )
+    .await;
+    // TrustState serializes kebab-case via crypto_core; format explicitly so
+    // the wire value matches the dialog's expectations (lowercase).
+    let trust_state_str = format!("{trust_state:?}").to_lowercase();
+    // Granular ChainOutcome.failure_reason (2026-07-18 spec): prefer the
+    // persisted real reason (surfaced from `VerificationResult.failure_reason`
+    // by `verify_with_context`); fall back to the coarse `failure_reason_for_state`
+    // fixed map when the column is NULL (pre-migration rows, the
+    // UnknownKey/sig-fail early-return arms, and all success states). This
+    // belt-and-suspenders fallback preserves the dialog's existing banner for
+    // rows that never had a real reason persisted.
+    let failure_reason = row
+        .failure_reason
+        .clone()
+        .or_else(|| failure_reason_for_state(&row.signature_state));
+
+    Ok(Some(SignerDetails {
+        signature_state: row.signature_state,
+        decrypt_state: row.decrypt_state,
+        crypto_kind: row.crypto_kind,
+        chain_valid: row.chain_valid.map(|n| n != 0),
+        revocation_state: row.revocation_state,
+        verified_at: row.verified_at,
+        trust_state: trust_state_str,
+        signer,
+        chain_path,
+        failure_reason,
+        // Structured RFC 5280 CRLReason (2026-07-18 CRL-revocation-detail
+        // spec). Pass through verbatim — None for every non-revoked outcome;
+        // Some(<name>) only when the cert was revoked AND the CRL entry
+        // carried a reasonCode extension. No fixed-map fallback (unlike
+        // failure_reason): the dialog renders the "Reason: …" line only when
+        // this field is non-null.
+        revocation_reason: row.revocation_reason,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,7 +1810,10 @@ mod tests {
 
     use crate::db::crypto_keys::get_default_signing_key;
     use crate::db::init_db;
-    use crate::mail::builder::{build_mime, AddressSpec};
+    use crate::mail::builder::{
+        build_mime, build_mime_with_granularity, AddressSpec, AttachmentRef,
+    };
+    use crypto_core::EncryptionGranularity;
 
     // ---- existing Task 4 wrapper unit tests (unchanged) ----
 
@@ -1244,7 +1873,9 @@ mod tests {
         let after_first_bound = s.split_once(boundary_line).unwrap().1;
         let (part1_region, _rest) = after_first_bound.split_once(boundary_line).unwrap();
         // part1_region starts with a leading \n (from "--bound\r\n"); trim it.
-        let part1_in_mime = part1_region.trim_start_matches('\r').trim_start_matches('\n');
+        let part1_in_mime = part1_region
+            .trim_start_matches('\r')
+            .trim_start_matches('\n');
         assert_eq!(part1_in_mime.as_bytes(), &part1[..]);
     }
 
@@ -1298,10 +1929,7 @@ mod tests {
         _tmp: TempDir,
     }
 
-    async fn make_harness(
-        flag_default_signer: bool,
-        extra_recipient_emails: &[&str],
-    ) -> Harness {
+    async fn make_harness(flag_default_signer: bool, extra_recipient_emails: &[&str]) -> Harness {
         let tmp = tempfile::tempdir().expect("tempdir");
         let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
         seed_account(&pool, ACCOUNT_ID, ACCOUNT_EMAIL).await;
@@ -1414,20 +2042,13 @@ mod tests {
         let closing_marker = format!("--{SIGNED_BOUNDARY}--");
         let p1_start = s.find(&first_marker).expect("first boundary") + first_marker.len();
         // The second occurrence of the boundary marker terminates part 1.
-        let p2 = s[p1_start..]
-            .find(&first_marker)
-            .expect("second boundary")
-            + p1_start;
+        let p2 = s[p1_start..].find(&first_marker).expect("second boundary") + p1_start;
         let part1 = out[p1_start..p2].to_vec();
 
         // Part 2 begins right after the second marker; it has its own header
         // block + blank line + base64 body, ending at the closing marker.
         let p2_body_start = p2 + first_marker.len();
-        let blank = s[p2_body_start..]
-            .find("\r\n\r\n")
-            .expect("part2 blank")
-            + 4
-            + p2_body_start;
+        let blank = s[p2_body_start..].find("\r\n\r\n").expect("part2 blank") + 4 + p2_body_start;
         let p2_end = s[blank..]
             .find(&format!("\r\n{closing_marker}"))
             .expect("closing marker")
@@ -1452,17 +2073,14 @@ mod tests {
         use cms::signed_data::SignedData;
         use der::Decode;
 
-        let ci: ContentInfo = <ContentInfo as Decode>::from_der(p7s_der).expect("parse ContentInfo");
+        let ci: ContentInfo =
+            <ContentInfo as Decode>::from_der(p7s_der).expect("parse ContentInfo");
         assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_SIGNED_DATA);
         let sd: SignedData = <SignedData as Decode>::from_der(
             ci.content.to_der().expect("re-encode content").as_slice(),
         )
         .expect("parse SignedData");
-        let signer = sd
-            .signer_infos
-            .0
-            .get(0)
-            .expect("exactly one signer info");
+        let signer = sd.signer_infos.0.get(0).expect("exactly one signer info");
         let attrs = signer.signed_attrs.as_ref().expect("signed attrs present");
         let md = attrs
             .iter()
@@ -1507,9 +2125,10 @@ mod tests {
         let mime_str = std::str::from_utf8(&mime).expect("mime utf-8");
         let ct_line = mime_str
             .lines()
-            .find(|l| l
-                .to_ascii_lowercase()
-                .starts_with("content-type: multipart/alternative"))
+            .find(|l| {
+                l.to_ascii_lowercase()
+                    .starts_with("content-type: multipart/alternative")
+            })
             .expect("multipart/alternative Content-Type present");
         let boundary_line = mime_str
             .lines()
@@ -1591,6 +2210,93 @@ mod tests {
         let s = std::str::from_utf8(&out).expect("output utf-8");
         assert!(s.contains("application/pkcs7-mime; smime-type=enveloped-data"));
         assert!(s.contains("Content-Transfer-Encoding: base64"));
+    }
+
+    /// Sign + encrypt (both flags): MUST produce opaque SignedData inside
+    /// EnvelopedData (sign-then-encrypt), NOT clear-signed-then-encrypted. The
+    /// receive orchestrator only recurses into signature verification for an
+    /// opaque CMS `SignedData` (`is_signed_data` checks the `id-signed-data`
+    /// OID); a `multipart/signed` MIME inner would be received as
+    /// `crypto_kind='encrypted'` + `signature_state='not-signed'` (signature
+    /// silently dropped). This round-trip pins the fix: apply_crypto → persist
+    /// → open_crypto_message → `crypto_kind='encrypted-signed'` +
+    /// `signature_state='valid-verified'`.
+    #[tokio::test]
+    async fn apply_crypto_sign_and_encrypt_produces_enveloped_then_signed() {
+        let h = make_harness(true, &["bob@kylins.com"]).await;
+        let pool = h.pool.clone();
+        let draft = SendDraft {
+            draft_id: "se1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![addr("bob@kylins.com")],
+            subject: "Signed+Encrypted".into(),
+            text_body: Some("signed and encrypted body".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        // Seed bob's cert as a trust anchor for ACCOUNT_ID so the
+        // recipient-cert validation gate passes (see encrypt-only test).
+        seed_anchor_from_account(pool.as_ref(), ACCOUNT_ID, "acct-rcpt-0").await;
+        let out = apply_crypto(
+            &h.backend,
+            h.keystore.as_ref(),
+            &mime,
+            &draft,
+            &h.account_email,
+            h.signer_row.as_ref(),
+            pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign+encrypt");
+
+        // Outer is enveloped-data (base64 single-part).
+        let s = std::str::from_utf8(&out).expect("output utf-8");
+        assert!(
+            s.contains("application/pkcs7-mime; smime-type=enveloped-data"),
+            "outer must be enveloped-data; got:\n{s}"
+        );
+
+        // Extract the enveloped CMS blob (mail_parser base64-decodes the root
+        // part body) + round-trip through open_crypto_message.
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&out)
+            .expect("output parses as MIME");
+        let root = parsed.parts.first().expect("root part");
+        let ciphertext = match &root.body {
+            mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+                d.as_ref().to_vec()
+            }
+            _ => panic!("root part must carry the enveloped CMS blob as Binary"),
+        };
+        // Outer CMS is enveloped-data.
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        let message_id = "msg-sign-and-encrypt";
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_ciphertext(&pool, ACCOUNT_ID, message_id, &ciphertext).await;
+
+        let result = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok");
+        // THE load-bearing assertion: sign+encrypt round-trips as
+        // encrypted-signed (not plain encrypted) — the inner SignedData was
+        // recognized + verified.
+        assert_eq!(
+            result.crypto_result.crypto_kind, "encrypted-signed",
+            "sign+encrypt must produce encrypted-signed on receive; got {:?}",
+            result.crypto_result.crypto_kind
+        );
+        assert_eq!(
+            result.crypto_result.signature_state, "valid-verified",
+            "own key (Personal trust) → ValidVerified; got {:?}",
+            result.crypto_result.signature_state
+        );
+        assert_eq!(result.crypto_result.decrypt_state, "ok");
     }
 
     /// Fail-closed: encrypting to a recipient with no cert in the keystore
@@ -1789,7 +2495,10 @@ mod tests {
             })
             .await
             .expect("generate_key");
-        let cert_der = backend.export_public(&h.handle).await.expect("export_public");
+        let cert_der = backend
+            .export_public(&h.handle)
+            .await
+            .expect("export_public");
         (cert_der, tmp)
     }
 
@@ -1990,7 +2699,9 @@ mod tests {
         ciphertext: &[u8],
     ) {
         use crate::db::message_bodies::{set_message_body, set_message_ciphertext};
-        set_message_body(pool, account_id, message_id, "").await.expect("placeholder body");
+        set_message_body(pool, account_id, message_id, "")
+            .await
+            .expect("placeholder body");
         set_message_ciphertext(pool, account_id, message_id, ciphertext)
             .await
             .expect("persist ciphertext");
@@ -2015,7 +2726,8 @@ mod tests {
 
         // Encrypt-with-sign: enveloped-data whose content IS an opaque
         // SignedData (sign-then-encrypt). signer = recipient = own key.
-        let plaintext_mime = b"Content-Type: text/plain; charset=utf-8\r\n\r\nhello signed+encrypted\r\n";
+        let plaintext_mime =
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\nhello signed+encrypted\r\n";
         let env = h
             .backend
             .encrypt(crypto_core::EncryptOp {
@@ -2045,8 +2757,7 @@ mod tests {
 
         assert_eq!(result.crypto_result.decrypt_state, "ok");
         assert_eq!(
-            result.crypto_result.signature_state,
-            "valid-verified",
+            result.crypto_result.signature_state, "valid-verified",
             "own key (Personal trust) + chain OK + identity match → ValidVerified; got {:?}",
             result.crypto_result.signature_state
         );
@@ -2122,9 +2833,8 @@ mod tests {
                     .filter_map(|&i| parsed.parts.get(i))
                     .next()
                     .and_then(|p| match &p.body {
-                        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
-                            Some(d.as_ref().to_vec())
-                        }
+                        mail_parser::PartType::Binary(d)
+                        | mail_parser::PartType::InlineBinary(d) => Some(d.as_ref().to_vec()),
                         mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
                         _ => None,
                     })
@@ -2144,8 +2854,7 @@ mod tests {
         assert_eq!(result.crypto_result.decrypt_state, "ok");
         assert_eq!(result.crypto_result.crypto_kind, "encrypted");
         assert_eq!(
-            result.crypto_result.signature_state,
-            "not-signed",
+            result.crypto_result.signature_state, "not-signed",
             "encrypt-only → no inner signature → not-signed"
         );
         assert!(
@@ -2171,7 +2880,8 @@ mod tests {
         // Build an opaque SignedData via backend.sign (detached=false →
         // encapsulated content). This is the `application/pkcs7-mime;
         // smime-type=signed-data` form.
-        let plaintext_mime = b"Content-Type: text/plain; charset=utf-8\r\n\r\nopaque-signed body\r\n";
+        let plaintext_mime =
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\nopaque-signed body\r\n";
         let signed = h
             .backend
             .sign(crypto_core::SignOp {
@@ -2195,14 +2905,12 @@ mod tests {
             .expect("open_crypto_message ok");
 
         assert_eq!(
-            result.crypto_result.decrypt_state,
-            "n/a",
+            result.crypto_result.decrypt_state, "n/a",
             "no encryption → decrypt_state=n/a"
         );
         assert_eq!(result.crypto_result.crypto_kind, "signed");
         assert_eq!(
-            result.crypto_result.signature_state,
-            "valid-verified",
+            result.crypto_result.signature_state, "valid-verified",
             "own key (Personal trust) + chain OK → ValidVerified; got {:?}",
             result.crypto_result.signature_state
         );
@@ -2272,8 +2980,7 @@ mod tests {
             .expect("open_crypto_message returns Ok with decrypt_state=no-key");
 
         assert_eq!(
-            result.crypto_result.decrypt_state,
-            "no-key",
+            result.crypto_result.decrypt_state, "no-key",
             "no matching decryption key in the account's keystore → no-key"
         );
         assert!(
@@ -2382,9 +3089,13 @@ mod tests {
         part1: &[u8],
         p7s_der: &[u8],
     ) {
-        use crate::db::message_bodies::{set_message_body, set_message_ciphertext, set_message_signed_part};
+        use crate::db::message_bodies::{
+            set_message_body, set_message_ciphertext, set_message_signed_part,
+        };
         // Row must exist before the UPDATEs.
-        set_message_body(pool, account_id, message_id, "").await.expect("placeholder body");
+        set_message_body(pool, account_id, message_id, "")
+            .await
+            .expect("placeholder body");
         set_message_ciphertext(pool, account_id, message_id, p7s_der)
             .await
             .expect("persist p7s ciphertext");
@@ -2412,10 +3123,9 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row =
-            crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-                .await
-                .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+            .await
+            .expect("query default signing key");
 
         // Build a clear-signed multipart/signed via apply_crypto (sign-only).
         let draft = SendDraft {
@@ -2506,6 +3216,499 @@ mod tests {
         );
     }
 
+    /// `get_signer_details` returns `None` when the message has no persisted
+    /// `message_crypto_results` row (never opened through the crypto path).
+    /// Pins the prologue DB read.
+    #[tokio::test]
+    async fn get_signer_details_returns_none_when_no_crypto_result_row() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-no-row";
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        use crate::db::message_bodies::set_message_body;
+        set_message_body(&pool, ACCOUNT_ID, message_id, "")
+            .await
+            .expect("placeholder body");
+
+        let details = get_signer_details(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("get_signer_details ok");
+        assert!(details.is_none(), "no persisted row → None");
+    }
+
+    /// `get_signer_details` re-parses the cached clear-signed p7s to surface
+    /// the signer leaf cert + chain path. Mirrors the clear-signed round-trip
+    /// (`open_crypto_message_verifies_clear_signed_multipart_signed`): build a
+    /// signed multipart/signed via `apply_crypto`, persist part1 + p7s, open
+    /// (writes the `message_crypto_results` row), then call
+    /// `get_signer_details` and assert the signer cert + chain path parsed.
+    #[tokio::test]
+    async fn get_signer_details_parses_signer_for_clear_signed() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-signer-details";
+
+        let own_fp = h.signer_handle.fingerprint.as_str().to_string();
+        sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+            .bind(&own_fp)
+            .execute(pool.as_ref())
+            .await
+            .expect("flag default signer");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+            .await
+            .expect("query default signing key");
+
+        let draft = SendDraft {
+            draft_id: "sd1".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr("bob@kylins.com")],
+            subject: "Signer Details".into(),
+            text_body: Some("signer details body".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            signer_row.as_ref(),
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign-only");
+        let (part1, p7s_der) = parse_clear_signed_blobs(&wrapped);
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_clear_signed(&pool, ACCOUNT_ID, message_id, &part1, &p7s_der).await;
+
+        // Open first so the `message_crypto_results` row is written (signer
+        // fingerprint, signature_state, etc.).
+        let _ = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok");
+
+        let details = get_signer_details(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("get_signer_details ok")
+            .expect("details present after open");
+
+        // Persisted verdict surfaces straight through.
+        assert_eq!(details.crypto_kind, "signed");
+        assert_eq!(details.signature_state, "valid-verified");
+        // The signer leaf re-parsed from the cached p7s.
+        let signer = details
+            .signer
+            .as_ref()
+            .expect("signer leaf parsed for clear-signed");
+        assert!(signer.subject_cn.is_some(), "subject CN parsed");
+        assert!(!signer.serial_hex.is_empty(), "serial parsed");
+        assert!(!signer.fingerprint.is_empty(), "fingerprint attached");
+        assert!(
+            !signer.public_key_algorithm_oid.is_empty(),
+            "pubkey alg OID parsed"
+        );
+        assert!(
+            !signer.signature_algorithm_oid.is_empty(),
+            "sig alg OID parsed"
+        );
+        assert!(
+            signer.not_after_unix > signer.not_before_unix,
+            "validity window sane"
+        );
+        // The account's own key is in the anchor set (keystore_bridge quirk),
+        // so the chain path has at least one anchor entry.
+        assert!(
+            details.chain_path.iter().any(|e| e.is_anchor),
+            "chain path must include the account's trust anchor; got {:?}",
+            details.chain_path
+        );
+        // Own key → Personal trust.
+        assert_eq!(details.trust_state, "personal", "own key → Personal trust");
+    }
+
+    // ─── Granular ChainOutcome persistence + retrieval (2026-07-18 spec) ───
+    //
+    // The granular `failure_reason` surfaced by `SmimeBackend::verify_with_context`
+    // (now threaded through `VerificationResult.failure_reason`) MUST reach the
+    // persisted `message_crypto_results.failure_reason` column, and
+    // `get_signer_details` MUST return it (falling back to the fixed
+    // `failure_reason_for_state` map when NULL — the dialog's null-fallback).
+
+    /// `build_crypto_result_row` (called via `finish_open_crypto`) persists the
+    /// real `VerificationResult.failure_reason` for a failing verification — NOT
+    /// NULL, NOT the coarse fixed-map string. Driven via a real
+    /// `open_crypto_message` call so the entire threading path
+    /// (`run_verify_path` → `finish_open_crypto` → `build_crypto_result_row` →
+    /// `upsert_message_crypto_result`) is exercised.
+    ///
+    /// Scenario: clear-signed mail signed by the account's own key (SAN =
+    /// ACCOUNT_EMAIL), but the seeded `messages.from_address` is a DIFFERENT
+    /// address. The orchestrator's identity binding (From↔SAN) fails →
+    /// `signature_state=mismatch` + a granular reason containing
+    /// "identity mismatch". Without end-to-end threading, the row's
+    /// `failure_reason` would be NULL and the dialog would fall back to the
+    /// generic "Signer identity does not match…" fixed-map string.
+    #[tokio::test]
+    async fn build_crypto_result_row_persists_failure_reason() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-fr-persist";
+
+        let own_fp = h.signer_handle.fingerprint.as_str().to_string();
+        sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+            .bind(&own_fp)
+            .execute(pool.as_ref())
+            .await
+            .expect("flag default signer");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+            .await
+            .expect("query default signing key");
+
+        // Sign with ACCOUNT_EMAIL (the own-key SAN).
+        let draft = SendDraft {
+            draft_id: "fr-persist".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr("bob@kylins.com")],
+            subject: "FailureReason Persist".into(),
+            text_body: Some("clear-signed body for fr persistence".into()),
+            crypto_method: CryptoMethod::Smime,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            signer_row.as_ref(),
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto sign-only");
+        let (part1, p7s_der) = parse_clear_signed_blobs(&wrapped);
+
+        // Seed the message with a From address that does NOT match the signer's
+        // SAN (ACCOUNT_EMAIL). The identity binding fails → Mismatch +
+        // failure_reason = "identity mismatch: …".
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, "imposter@kylins.com").await;
+        persist_clear_signed(&pool, ACCOUNT_ID, message_id, &part1, &p7s_der).await;
+
+        let result = open_crypto_message(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("open_crypto_message ok");
+
+        assert_eq!(
+            result.crypto_result.signature_state, "mismatch",
+            "From↔SAN mismatch → Mismatch; got {:?}",
+            result.crypto_result.signature_state
+        );
+        // The persisted failure_reason is the granular reason (NOT NULL, NOT
+        // the fixed-map string). Drives the dialog's real-reason banner.
+        let persisted = result.crypto_result.failure_reason.as_ref().expect(
+            "failure_reason column must be non-NULL for a Mismatch (the real reason was threaded through)",
+        );
+        assert!(
+            persisted.to_lowercase().contains("identity mismatch"),
+            "persisted failure_reason must carry the granular 'identity mismatch' detail; got {persisted:?}"
+        );
+
+        // Re-read from the DB to confirm the column actually holds the value
+        // (not just the in-memory OpenCryptoResult.crypto_result echo).
+        let row = crate::db::message_crypto_results::get_message_crypto_result(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            message_id,
+        )
+        .await
+        .expect("get_message_crypto_result ok")
+        .expect("row present");
+        assert_eq!(
+            row.failure_reason.as_deref(),
+            result.crypto_result.failure_reason.as_deref(),
+            "DB row failure_reason must mirror OpenCryptoResult.crypto_result.failure_reason"
+        );
+    }
+
+    /// `get_signer_details` surfaces the persisted `failure_reason` straight
+    /// through when the column is non-NULL (real reason wins over the
+    /// fixed-map fallback). A NULL row → the dialog's null-fallback path
+    /// (`failure_reason_for_state`) kicks in, returning the coarse map string.
+    ///
+    /// Two arms:
+    ///   (a) row.failure_reason = Some("custom reason") → details.failure_reason
+    ///       == Some("custom reason") (verbatim — no fixed-map fallback).
+    ///   (b) row.failure_reason = None (pre-migration rows + early-return arms)
+    ///       → details.failure_reason == failure_reason_for_state(signature_state)
+    ///       (the coarse map — no regression for rows without a real reason).
+    #[tokio::test]
+    async fn get_signer_details_returns_persisted_failure_reason() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+
+        // ── (a) Real reason persisted → surfaces verbatim ──────────────────
+        let msg_with_reason = "msg-details-with-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_with_reason, ACCOUNT_EMAIL).await;
+        // Minimal row shape: invalid signature_state + a non-NULL failure_reason
+        // value the dialog must render verbatim. The get_signer_details query
+        // reads the row as-is — no transformation.
+        let row_with = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_with_reason.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: Some("fp1".into()),
+            signer_email: Some(ACCOUNT_EMAIL.into()),
+            chain_valid: Some(0),
+            revocation_state: "unchecked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: Some("certificate revoked (KeyCompromise)".into()),
+            revocation_reason: None,
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(pool.as_ref(), &row_with)
+            .await
+            .expect("seed row with failure_reason");
+
+        let details_with = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_with_reason)
+            .await
+            .expect("get_signer_details ok (a)")
+            .expect("details present (a)");
+        assert_eq!(
+            details_with.failure_reason.as_deref(),
+            Some("certificate revoked (KeyCompromise)"),
+            "(a) real failure_reason must surface verbatim, NOT the fixed-map string"
+        );
+
+        // ── (b) NULL failure_reason → fall back to the fixed-map ───────────
+        let msg_null = "msg-details-null-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_null, ACCOUNT_EMAIL).await;
+        let row_null = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_null.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: None,
+            signer_email: None,
+            chain_valid: Some(0),
+            revocation_state: "unchecked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: None,
+            revocation_reason: None,
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(pool.as_ref(), &row_null)
+            .await
+            .expect("seed row with NULL failure_reason");
+
+        let details_null = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_null)
+            .await
+            .expect("get_signer_details ok (b)")
+            .expect("details present (b)");
+        // NULL → fallback to the fixed-map string for `invalid`.
+        assert_eq!(
+            details_null.failure_reason.as_deref(),
+            failure_reason_for_state("invalid").as_deref(),
+            "(b) NULL failure_reason must fall back to the fixed-map string for the state"
+        );
+        assert_ne!(
+            details_null.failure_reason, details_with.failure_reason,
+            "(b) fallback must produce a different value than the real reason in (a)"
+        );
+    }
+
+    // ─── CRL Revocation Detail persistence + retrieval (2026-07-18 spec) ───
+    //
+    // The structured RFC 5280 CRLReason surfaced by `SmimeBackend::verify_with_context`
+    // (now threaded through `VerificationResult.revocation_reason`) MUST reach
+    // the persisted `message_crypto_results.revocation_reason` column, and
+    // `get_signer_details` MUST return it. The crypto-smime test
+    // `verify_with_context_surfaces_revocation_reason` already pins the source
+    // of the value at the crypto layer; these two backend tests pin the
+    // persistence + retrieval round-trip.
+
+    /// `build_crypto_result_row` persists the `revocation_reason` arg into the
+    /// new `message_crypto_results.revocation_reason` column (not dropped).
+    /// The row builder is the load-bearing boundary between
+    /// `verify_with_context`'s `VerificationResult.revocation_reason` and the
+    /// persisted column — a regression here would silently lose the structured
+    /// reason. Driven via a direct call to `build_crypto_result_row` + a real
+    /// `upsert_message_crypto_result` + `get_message_crypto_result` round-trip
+    /// so the column actually exists and the value survives the SQL boundary.
+    #[tokio::test]
+    async fn build_crypto_result_row_persists_revocation_reason() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+        seed_account(&pool, ACCOUNT_ID, ACCOUNT_EMAIL).await;
+        // Seed the FK thread + message the row's PK requires.
+        seed_message_with_from(&pool, ACCOUNT_ID, "msg-rev-reason", ACCOUNT_EMAIL).await;
+
+        // Build the row with a revoked-cert outcome: signature_state=Invalid,
+        // revocation_reason=Some("KeyCompromise"). The row builder threads
+        // this through to the new column.
+        let row = build_crypto_result_row(
+            ACCOUNT_ID,
+            "msg-rev-reason",
+            "signed",
+            "n/a",
+            SignatureState::Invalid,
+            Some("fp-rev".into()),
+            Some(ACCOUNT_EMAIL.into()),
+            // failure_reason still threaded in parallel (unchanged).
+            Some("certificate 0x123 revoked (KeyCompromise)".into()),
+            // The structured RFC 5280 CRLReason name — the new field.
+            Some("KeyCompromise".into()),
+        );
+        upsert_message_crypto_result(pool.as_ref(), &row)
+            .await
+            .expect("upsert row with revocation_reason");
+
+        // Read back from the DB to confirm the column actually holds the value
+        // (not just the in-memory row echo).
+        let persisted = crate::db::message_crypto_results::get_message_crypto_result(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            "msg-rev-reason",
+        )
+        .await
+        .expect("get_message_crypto_result ok")
+        .expect("row present");
+        assert_eq!(
+            persisted.revocation_reason.as_deref(),
+            Some("KeyCompromise"),
+            "revocation_reason column must carry the structured CRLReason name verbatim"
+        );
+        // failure_reason is still threaded in parallel — both columns coexist.
+        assert!(
+            persisted
+                .failure_reason
+                .as_ref()
+                .map(|r| r.to_lowercase().contains("revoke"))
+                .unwrap_or(false),
+            "failure_reason column should still carry the verbose revocation summary; got {:?}",
+            persisted.failure_reason
+        );
+
+        // Also exercise the NULL arm: a non-revoked outcome (e.g. Mismatch)
+        // threads revocation_reason=None through to the column. NULL is the
+        // canonical "no reason" value — the dialog omits the "Reason: …" line.
+        let row_null = build_crypto_result_row(
+            ACCOUNT_ID,
+            "msg-rev-reason-null",
+            "signed",
+            "n/a",
+            SignatureState::Mismatch,
+            Some("fp-mismatch".into()),
+            Some(ACCOUNT_EMAIL.into()),
+            Some("identity mismatch: ...".into()),
+            // Non-revoked outcome → no revocation reason to surface.
+            None,
+        );
+        seed_message_with_from(&pool, ACCOUNT_ID, "msg-rev-reason-null", ACCOUNT_EMAIL).await;
+        upsert_message_crypto_result(pool.as_ref(), &row_null)
+            .await
+            .expect("upsert row with NULL revocation_reason");
+        let persisted_null = crate::db::message_crypto_results::get_message_crypto_result(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            "msg-rev-reason-null",
+        )
+        .await
+        .expect("get_message_crypto_result ok (null)")
+        .expect("row present (null)");
+        assert!(
+            persisted_null.revocation_reason.is_none(),
+            "non-revoked outcome must persist NULL revocation_reason; got {:?}",
+            persisted_null.revocation_reason
+        );
+    }
+
+    /// `get_signer_details` surfaces the persisted `revocation_reason` column
+    /// straight through when non-NULL. The dialog renders it as a distinct
+    /// "Reason: <name>" line (independent of the failure_reason banner).
+    /// NULL row → the dialog's null-fallback path omits the reason line
+    /// (no fixed-map fallback for revocation_reason — it's structured data,
+    /// not free-form text).
+    #[tokio::test]
+    async fn get_signer_details_returns_revocation_reason() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+
+        // ── (a) Real reason persisted → surfaces verbatim ──────────────────
+        let msg_with_reason = "msg-details-with-rev-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_with_reason, ACCOUNT_EMAIL).await;
+        let row_with = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_with_reason.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: Some("fp1".into()),
+            signer_email: Some(ACCOUNT_EMAIL.into()),
+            chain_valid: Some(0),
+            revocation_state: "revoked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: Some("certificate revoked (KeyCompromise)".into()),
+            revocation_reason: Some("KeyCompromise".into()),
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(pool.as_ref(), &row_with)
+            .await
+            .expect("seed row with revocation_reason");
+
+        let details_with = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_with_reason)
+            .await
+            .expect("get_signer_details ok (a)")
+            .expect("details present (a)");
+        assert_eq!(
+            details_with.revocation_reason.as_deref(),
+            Some("KeyCompromise"),
+            "(a) real revocation_reason must surface verbatim through get_signer_details"
+        );
+
+        // ── (b) NULL revocation_reason → surfaces as None ──────────────────
+        let msg_null = "msg-details-null-rev-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_null, ACCOUNT_EMAIL).await;
+        let row_null = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_null.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: None,
+            signer_email: None,
+            chain_valid: Some(0),
+            revocation_state: "unchecked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: None,
+            revocation_reason: None,
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(pool.as_ref(), &row_null)
+            .await
+            .expect("seed row with NULL revocation_reason");
+
+        let details_null = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_null)
+            .await
+            .expect("get_signer_details ok (b)")
+            .expect("details present (b)");
+        // NULL surfaces as None — no fixed-map fallback for revocation_reason
+        // (unlike failure_reason). The dialog omits the "Reason: …" line.
+        assert!(
+            details_null.revocation_reason.is_none(),
+            "(b) NULL revocation_reason must surface as None (no fixed-map fallback)"
+        );
+        assert_ne!(
+            details_null.revocation_reason, details_with.revocation_reason,
+            "(b) NULL must differ from the real reason in (a)"
+        );
+    }
+
     /// Clear-signed with a tampered part-1 byte (one byte flipped between
     /// persist and open) → the detached signature MUST NOT verify
     /// (`signature_state=invalid`). Pins the cryptographic gate: the
@@ -2523,10 +3726,9 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row =
-            crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-                .await
-                .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+            .await
+            .expect("query default signing key");
 
         let draft = SendDraft {
             draft_id: "clear-tamper".into(),
@@ -2584,6 +3786,632 @@ mod tests {
              this gate pins that the orchestrator hashes the EXACT persisted bytes \
              (not a re-decoded body_text), which is load-bearing for Thunderbird interop",
             result.crypto_result.signature_state
+        );
+    }
+
+    // ─── Persist + Use .p12 Chain Intermediates (2026-07-18 spec) ───
+    //
+    // Drives `run_verify_path` directly (the private async fn the orchestrator
+    // calls) so we can assert the merge of SignedData + stored intermediates
+    // without going through the full `open_crypto_message` pipeline. The
+    // fixture builds a real CA → leaf chain (CA self-signed, leaf signed by CA),
+    // embeds ONLY the leaf in the SignedData cert set, and persists the CA as
+    // a `key_type='intermediate'` row. Without the merge, the chain cannot
+    // link leaf → CA → anchor and validation fails; with the merge it succeeds.
+
+    /// `run_verify_path` merges stored intermediates: a SignedData whose chain
+    /// NEEDS an intermediate NOT in its cert set BUT stored as
+    /// `key_type='intermediate'` validates (previously failed). The negative
+    /// case (no stored intermediate) is also asserted to confirm no trust
+    /// weakening (the intermediate alone, with no anchor, must NOT validate).
+    #[tokio::test]
+    async fn run_verify_path_uses_stored_intermediates() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+        seed_account(&pool, ACCOUNT_ID, ACCOUNT_EMAIL).await;
+
+        // 3-cert chain fixture: root (self-signed CA) → intermediate (signed
+        // by root, CA:TRUE) → leaf (signed by intermediate, S/MIME leaf).
+        // The root is the trust anchor; the intermediate is the cert we'll
+        // persist as `key_type='intermediate'`; the leaf is the signer in the
+        // SignedData. The SignedData embeds ONLY the leaf — the chain cannot
+        // link leaf → root without the stored intermediate.
+        let root = crypto_smime::testing::build_self_signed_ca("Test Chain Root");
+        let intermediate =
+            crypto_smime::testing::build_intermediate_signed_by("Test Chain Intermediate", &root);
+        let leaf =
+            crypto_smime::testing::build_leaf_signed_by("stored-inter@kylins.com", &intermediate);
+
+        // Register the ROOT as the trust anchor (`key_type='cert'`).
+        let anchor_fp =
+            crypto_smime::fingerprint_of_cert_der(&root.cert_der).expect("root fingerprint");
+        let anchor_row = crate::db::crypto_keys::CryptoKeyRecord {
+            row: crate::db::crypto_keys::CryptoKeyRow {
+                id: String::new(),
+                account_id: ACCOUNT_ID.into(),
+                standard: "smime".into(),
+                key_type: "cert".into(),
+                email: None,
+                fingerprint: anchor_fp.clone(),
+                origin: "imported".into(),
+                ..Default::default()
+            },
+            public_data: hex::encode(&root.cert_der),
+            private_data: None,
+            policy_json: None,
+        };
+        crate::db::crypto_keys::upsert_crypto_key(&pool, &anchor_row)
+            .await
+            .expect("seed root as anchor");
+
+        // Build a SignedData signed by the leaf, with ONLY the leaf in the
+        // cert set (no intermediate embedded).
+        let signed_data_der = crypto_smime::testing::build_signed_data_with_certs(
+            b"stored-intermediate payload",
+            &leaf.cert_der,
+            &leaf.priv_pkcs8_der,
+            &[],
+        );
+
+        let ks = Arc::new(SqliteKeyStore::new(pool.clone(), ACCOUNT_ID));
+        let backend = SmimeBackend::new(ks, CryptoPolicy::default_baseline());
+
+        // Negative case: with NO stored intermediate, the chain cannot link
+        // leaf → root (no intermediate cert in either the SignedData or the
+        // DB). Must NOT reach ValidVerified / ValidUnverified. This is the
+        // no-trust-weakening guard (the leaf alone, with no path to the
+        // anchor, must NOT validate).
+        let neg = run_verify_path(
+            &backend,
+            &pool,
+            &reqwest::Client::new(),
+            ACCOUNT_ID,
+            &signed_data_der,
+            Some("stored-inter@kylins.com"),
+            None,
+        )
+        .await
+        .expect("run_verify_path (negative) ok");
+        assert!(
+            !matches!(
+                neg.signature_state,
+                SignatureState::ValidVerified | SignatureState::ValidUnverified
+            ),
+            "without the stored intermediate, the chain MUST NOT validate (got {:?}); \
+             this is the no-trust-weakening guard",
+            neg.signature_state
+        );
+
+        // Persist the INTERMEDIATE as `key_type='intermediate'` — the merge
+        // source. (Root stays as the anchor; intermediate stays out of the
+        // anchor set.)
+        crate::db::crypto_keys::upsert_intermediate_cert(&pool, ACCOUNT_ID, &intermediate.cert_der)
+            .await
+            .expect("seed intermediate as `key_type='intermediate'`");
+
+        // Positive case: the merge adds the stored intermediate to the
+        // intermediates list → the validator builds
+        // leaf → intermediate(stored) → root(anchor), chain validates.
+        let pos = run_verify_path(
+            &backend,
+            &pool,
+            &reqwest::Client::new(),
+            ACCOUNT_ID,
+            &signed_data_der,
+            Some("stored-inter@kylins.com"),
+            None,
+        )
+        .await
+        .expect("run_verify_path (positive) ok");
+        assert!(
+            matches!(
+                pos.signature_state,
+                SignatureState::ValidUnverified | SignatureState::ValidVerified
+            ),
+            "with the stored intermediate, the chain MUST validate (got {:?}); \
+             previously failed without the stored intermediate",
+            pos.signature_state
+        );
+
+        // Cleanup (temp dir reclaims, but explicit for hygiene).
+        let _ =
+            crate::db::crypto_keys::delete_crypto_key(&pool, ACCOUNT_ID, "smime", &anchor_fp).await;
+    }
+
+    /// Task 5 load-bearing round-trip: `build_mime_with_granularity(draft, B)`
+    /// → `SmimeBackend::encrypt` (SingleMimeBlob, no sign) → `SmimeBackend::decrypt`
+    /// → parse with `mail_parser` → `extract_attachments` returns all 3
+    /// attachments.
+    ///
+    /// This is the design's "receive-side zero change" correctness proof: the
+    /// merged `multipart/mixed` subtree composed by Granularity B survives a
+    /// CMS EnvelopedData encrypt/decrypt cycle and `extract_attachments` walks
+    /// the nested multipart/mixed (a container-of-containers shape that does
+    /// not appear under WholeMessage / Granularity A).
+    ///
+    /// Mirrors the harness + `SmimeBackend::encrypt`/`decrypt` patterns from
+    /// `open_crypto_message_decrypts_enveloped_then_signed` (line ~2675) and
+    /// `open_crypto_message_returns_no_key_when_no_matching_decryption_key`
+    /// (line ~2890). Does NOT touch the DB — exercises `SmimeBackend::decrypt`
+    /// directly so the composition is proven without `message_bodies` rows.
+    #[tokio::test]
+    async fn granularity_b_merged_multipart_round_trips_through_smime_encrypt_decrypt() {
+        let h = make_open_crypto_harness().await;
+
+        // 3-attachment draft mirroring builder.rs::make_three_attachment_draft
+        // (text + html + 3 binary attachments) — the fixture that exercises
+        // Granularity B's merge branch (≥2 regular attachments, no inline).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let p1 = dir.join("gb_a1.bin");
+        let p2 = dir.join("gb_a2.bin");
+        let p3 = dir.join("gb_a3.bin");
+        std::fs::write(&p1, b"AAA").unwrap();
+        std::fs::write(&p2, b"BBBB").unwrap();
+        std::fs::write(&p3, b"CCCCC").unwrap();
+        let draft = SendDraft {
+            draft_id: "t5-roundtrip".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr(ACCOUNT_EMAIL)], // encrypt-to-self
+            subject: "Granularity B round-trip".into(),
+            text_body: Some("plain body".into()),
+            html_body: Some("<p>Html body</p>".into()),
+            attachments: vec![
+                AttachmentRef {
+                    file_path: p1.to_string_lossy().into_owned(),
+                    filename: "a1.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p2.to_string_lossy().into_owned(),
+                    filename: "a2.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p3.to_string_lossy().into_owned(),
+                    filename: "a3.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        // Build with Granularity B → merged multipart/mixed subtree holding
+        // all 3 attachments as one encryption unit.
+        let mime = build_mime_with_granularity(
+            &draft,
+            EncryptionGranularity::BodyInlineAndMergedAttachments,
+        )
+        .await
+        .expect("build_mime_with_granularity(B)");
+
+        // Encrypt-to-self (SingleMimeBlob, no inner signature) — same shape
+        // `apply_crypto` uses at mail/crypto.rs:1376-1390 when `sign=false`.
+        let env = h
+            .backend
+            .encrypt(crypto_core::EncryptOp {
+                parts: &[Part {
+                    id: PartId("body".into()),
+                    kind: PartKind::Body,
+                    data: mime.clone(),
+                }],
+                serialization: SerializationStrategy::SingleMimeBlob,
+                recipients: std::slice::from_ref(&h.signer_handle),
+                sign_with: None,
+            })
+            .await
+            .expect("encrypt");
+        let ciphertext = env.parts.first().expect("one part").ciphertext.clone();
+
+        // Sanity: ciphertext parses as EnvelopedData.
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        // Decrypt directly via the backend (no DB / `open_crypto_message`).
+        let payload = h
+            .backend
+            .decrypt(crypto_core::DecryptOp {
+                envelope: &env,
+                decryption_key: h.signer_handle.clone(),
+            })
+            .await
+            .expect("decrypt");
+        let plaintext = payload
+            .parts
+            .first()
+            .expect("decrypted payload has one part")
+            .data
+            .clone();
+
+        // The recovered plaintext must be byte-identical to the pre-encrypt
+        // MIME (proving the merged subtree passed through CMS unchanged).
+        assert_eq!(
+            plaintext, mime,
+            "decrypted plaintext must equal the pre-encrypt MIME bytes"
+        );
+
+        // Parse the decrypted bytes and walk `extract_attachments` — the
+        // receive-side path. Must surface all 3 attachments (proving the
+        // nested multipart/mixed is walked, not just the top container).
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&plaintext)
+            .expect("parse decrypted MIME");
+        let attachments = extract_attachments(&parsed, 0);
+        assert_eq!(
+            attachments.len(),
+            3,
+            "extract_attachments must return all 3 attachments from the \
+             decrypted merged multipart/mixed; got {:?}",
+            attachments
+                .iter()
+                .map(|a| a.filename.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // Filename set round-trips (order-independent — multipart children
+        // preserve order but the assertion guards against accidental dedupe
+        // or merge into a single aggregate attachment).
+        let mut names: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "a1.bin".to_string(),
+                "a2.bin".to_string(),
+                "a3.bin".to_string()
+            ],
+            "attachment filenames must round-trip"
+        );
+
+        // Sizes match the fixture contents (sanity: no truncation / encoding
+        // growth leaked into the attachment metadata).
+        let mut sizes: Vec<u32> = attachments.iter().map(|a| a.size).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![3, 4, 5], "attachment sizes round-trip");
+    }
+
+    /// DA-Task 1: `decrypt_message_mime_bytes` on an encrypt-only enveloped
+    /// message returns `Some(bytes)` that parse as MIME and contain the original
+    /// plaintext body. Reuses the `open_crypto_message_decrypts_encrypt_only_no_signature`
+    /// fixture shape (line ~2745): encrypt-to-self via `apply_crypto`, persist
+    /// the ciphertext, then call the new helper (NOT `open_crypto_message`) and
+    /// assert only that plaintext bytes are recoverable + parse as MIME.
+    ///
+    /// This is the load-bearing assertion for Task 2's `crypto_fetch_attachment`
+    /// / `crypto_fetch_inline_images` commands: they re-decrypt via this helper
+    /// to extract attachment bytes the receive-side `open_crypto_message`
+    /// orchestrator does not retain.
+    #[tokio::test]
+    async fn decrypt_message_mime_bytes_returns_plaintext_for_enveloped_encrypt_only() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-da-task1-bytes";
+
+        // Encrypt-only (no inner signature) via `apply_crypto` — identical
+        // fixture shape to `open_crypto_message_decrypts_encrypt_only_no_signature`.
+        let draft = SendDraft {
+            draft_id: "da-t1".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr(ACCOUNT_EMAIL)],
+            subject: "DA Task 1 helper".into(),
+            text_body: Some("plain encrypted body for helper".into()),
+            crypto_method: CryptoMethod::Smime,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            None,
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto encrypt");
+
+        // Extract the CMS DER from the wrapped MIME (same path as the
+        // encrypt-only test above).
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&wrapped)
+            .expect("parse wrapped");
+        let ciphertext = parsed
+            .body_html(0)
+            .or_else(|| parsed.body_text(0))
+            .map(|s| s.as_bytes().to_vec())
+            .or_else(|| {
+                parsed
+                    .attachments
+                    .iter()
+                    .filter_map(|&i| parsed.parts.get(i))
+                    .next()
+                    .and_then(|p| match &p.body {
+                        mail_parser::PartType::Binary(d)
+                        | mail_parser::PartType::InlineBinary(d) => Some(d.as_ref().to_vec()),
+                        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+                        _ => None,
+                    })
+            })
+            .expect("extract ciphertext bytes");
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_ciphertext(&pool, ACCOUNT_ID, message_id, &ciphertext).await;
+
+        // Call the helper under test (NOT the orchestrator).
+        let bytes = decrypt_message_mime_bytes(&pool, ACCOUNT_ID, message_id)
+            .await
+            .expect("decrypt_message_mime_bytes ok");
+        let bytes = bytes.expect("enveloped encrypt-only must yield Some(plaintext)");
+
+        // The recovered bytes must parse as MIME and contain the original body.
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&bytes)
+            .expect("decrypted bytes parse as MIME");
+        assert!(
+            parsed
+                .body_text(0)
+                .map(|s| s.contains("plain encrypted body for helper"))
+                .unwrap_or(false),
+            "decrypted MIME text must contain the original body; got {:?}",
+            bytes.iter().map(|b| *b as char).collect::<String>()
+        );
+    }
+
+    // ─── DA-Task 2: crypto_fetch_attachment / crypto_fetch_inline_images ───
+    //
+    // These round-trip tests exercise the Task 2 backend Tauri command inner
+    // functions, which live in `sync_engine::commands` but are `pub(crate)` so
+    // they can be reached from this test module. The fixture shape mirrors
+    // `granularity_b_merged_multipart_round_trips_through_smime_encrypt_decrypt`
+    // (line ~3939) + the Task 1 helper test above: build a draft with binary
+    // attachments (and, for the inline test, a `cid:`-tagged image), encrypt-
+    // to-self via `apply_crypto`, persist the ciphertext, then call the inner
+    // fn under test and assert the cached file contents equal the original
+    // attachment bytes.
+    //
+    // The inner fns take a `cache_root: &Path` (NOT `Arc<SyncEngine>`) so they
+    // are unit-testable without building a SyncEngine; the `#[tauri::command]`
+    // wrappers in `sync_engine::commands.rs` resolve `cache_root` from
+    // `engine.data_dir.join("attachment-cache")` at IPC boundary.
+
+    /// Encrypt-only round-trip with 3 binary attachments: calling
+    /// `crypto_fetch_attachment_inner(..., "a1.bin", None)` after persisting
+    /// the ciphertext MUST return a `CachedAttachment` whose file exists and
+    /// whose bytes equal `b"AAA"` (the original a1.bin content). Proves the
+    /// re-decrypt + MIME walk + cache-write path recovers the right part.
+    #[tokio::test]
+    async fn crypto_fetch_attachment_returns_bytes() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-da-task2-attachment";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let p1 = dir.join("da2_a1.bin");
+        let p2 = dir.join("da2_a2.bin");
+        let p3 = dir.join("da2_a3.bin");
+        std::fs::write(&p1, b"AAA").unwrap();
+        std::fs::write(&p2, b"BBBB").unwrap();
+        std::fs::write(&p3, b"CCCCC").unwrap();
+        let draft = SendDraft {
+            draft_id: "da-t2-att".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr(ACCOUNT_EMAIL)], // encrypt-to-self
+            subject: "DA Task 2 attachment fetch".into(),
+            text_body: Some("plain body".into()),
+            attachments: vec![
+                AttachmentRef {
+                    file_path: p1.to_string_lossy().into_owned(),
+                    filename: "a1.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p2.to_string_lossy().into_owned(),
+                    filename: "a2.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+                AttachmentRef {
+                    file_path: p3.to_string_lossy().into_owned(),
+                    filename: "a3.bin".into(),
+                    mime_type: "application/octet-stream".into(),
+                    cid: None,
+                },
+            ],
+            crypto_method: CryptoMethod::Smime,
+            encrypt: true,
+            ..Default::default()
+        };
+
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            None,
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto encrypt");
+
+        // Extract the enveloped CMS blob from the wrapped MIME (same shape as
+        // the Task 1 helper test): mail_parser parses the wrapper; the CMS is
+        // the body of the single leaf part.
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&wrapped)
+            .expect("parse wrapped");
+        let ciphertext = parsed
+            .body_html(0)
+            .or_else(|| parsed.body_text(0))
+            .map(|s| s.as_bytes().to_vec())
+            .or_else(|| {
+                parsed
+                    .attachments
+                    .iter()
+                    .filter_map(|&i| parsed.parts.get(i))
+                    .next()
+                    .and_then(|p| match &p.body {
+                        mail_parser::PartType::Binary(d)
+                        | mail_parser::PartType::InlineBinary(d) => Some(d.as_ref().to_vec()),
+                        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+                        _ => None,
+                    })
+            })
+            .expect("extract ciphertext bytes");
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_ciphertext(&pool, ACCOUNT_ID, message_id, &ciphertext).await;
+
+        // Cache root under a temp dir (mirrors engine.data_dir/attachment-cache).
+        let cache_tmp = tempfile::tempdir().expect("cache tempdir");
+        let cache_root = cache_tmp.path().join("attachment-cache");
+
+        let cached = crate::sync_engine::commands::crypto_fetch_attachment_inner(
+            &pool,
+            &cache_root,
+            ACCOUNT_ID,
+            message_id,
+            "a1.bin",
+            None,
+        )
+        .await
+        .expect("crypto_fetch_attachment_inner ok");
+
+        assert_eq!(cached.filename, "a1.bin");
+        assert!(cached.size > 0);
+        let file_path = std::path::Path::new(&cached.file_path);
+        assert!(
+            file_path.exists(),
+            "cache file must exist at {}",
+            cached.file_path
+        );
+        let bytes = std::fs::read(file_path).expect("read cached file");
+        assert_eq!(bytes, b"AAA", "cached bytes must equal the original a1.bin");
+    }
+
+    /// Encrypt-only round-trip with one inline `cid:` image: calling
+    /// `crypto_fetch_inline_images_inner` MUST return exactly one
+    /// `CachedInlineImage` whose `content_id` matches the draft's cid and whose
+    /// cached file bytes equal the original image content. Proves the inline
+    /// CID extraction path works end-to-end through the re-decrypt + parse.
+    #[tokio::test]
+    async fn crypto_fetch_inline_images_returns_cid_parts() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+        let message_id = "msg-da-task2-inline";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let inline_path = dir.join("da2_inline.png");
+        std::fs::write(&inline_path, b"\x89PNG\r\n\x1a\nfake-png-bytes").unwrap();
+        let cid_value = "inline-image-001@kylins.local";
+        let draft = SendDraft {
+            draft_id: "da-t2-inline".into(),
+            from: addr(ACCOUNT_EMAIL),
+            to: vec![addr(ACCOUNT_EMAIL)], // encrypt-to-self
+            subject: "DA Task 2 inline image fetch".into(),
+            html_body: Some(format!(
+                "<p>Body with inline image <img src=\"cid:{cid_value}\"/></p>"
+            )),
+            text_body: Some("plain body".into()),
+            inline_images: vec![AttachmentRef {
+                file_path: inline_path.to_string_lossy().into_owned(),
+                filename: "inline.png".into(),
+                mime_type: "image/png".into(),
+                cid: Some(cid_value.to_string()),
+            }],
+            crypto_method: CryptoMethod::Smime,
+            encrypt: true,
+            ..Default::default()
+        };
+
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let wrapped = apply_crypto(
+            &h.backend,
+            &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            ACCOUNT_EMAIL,
+            None,
+            &pool,
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto encrypt");
+
+        let parsed = mail_parser::MessageParser::default()
+            .parse(&wrapped)
+            .expect("parse wrapped");
+        let ciphertext = parsed
+            .body_html(0)
+            .or_else(|| parsed.body_text(0))
+            .map(|s| s.as_bytes().to_vec())
+            .or_else(|| {
+                parsed
+                    .attachments
+                    .iter()
+                    .filter_map(|&i| parsed.parts.get(i))
+                    .next()
+                    .and_then(|p| match &p.body {
+                        mail_parser::PartType::Binary(d)
+                        | mail_parser::PartType::InlineBinary(d) => Some(d.as_ref().to_vec()),
+                        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+                        _ => None,
+                    })
+            })
+            .expect("extract ciphertext bytes");
+        let ci = ContentInfo::from_der(&ciphertext).expect("parse ContentInfo");
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_ENVELOPED_DATA);
+
+        seed_message_with_from(&pool, ACCOUNT_ID, message_id, ACCOUNT_EMAIL).await;
+        persist_ciphertext(&pool, ACCOUNT_ID, message_id, &ciphertext).await;
+
+        let cache_tmp = tempfile::tempdir().expect("cache tempdir");
+        let cache_root = cache_tmp.path().join("attachment-cache");
+
+        let images = crate::sync_engine::commands::crypto_fetch_inline_images_inner(
+            &pool,
+            &cache_root,
+            ACCOUNT_ID,
+            message_id,
+        )
+        .await
+        .expect("crypto_fetch_inline_images_inner ok");
+
+        assert_eq!(
+            images.len(),
+            1,
+            "exactly one inline cid: image must be extracted; got {images:?}"
+        );
+        let img = &images[0];
+        assert_eq!(img.content_id, cid_value, "content_id must round-trip");
+        assert_eq!(img.mime_type, "image/png", "mime_type must round-trip");
+        assert!(img.size > 0);
+        let file_path = std::path::Path::new(&img.file_path);
+        assert!(
+            file_path.exists(),
+            "cache file must exist at {}",
+            img.file_path
+        );
+        let bytes = std::fs::read(file_path).expect("read cached inline file");
+        assert_eq!(
+            bytes,
+            b"\x89PNG\r\n\x1a\nfake-png-bytes".as_slice(),
+            "cached inline bytes must equal the original image"
         );
     }
 }

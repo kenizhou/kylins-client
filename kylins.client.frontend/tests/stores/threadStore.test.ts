@@ -325,7 +325,7 @@ describe('threadStore.selectThread', () => {
   it('routes an encrypted message through openCryptoMessage (NOT sync_request_bodies) + surfaces crypto_result fields', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 1, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
 
@@ -349,16 +349,40 @@ describe('threadStore.selectThread', () => {
     expect(selected?.signerFingerprint).toBe('sha256:ab');
     expect(selected?.revocationState).toBe('good');
     // Plaintext cached in RAM so the next open skips the crypto invoke.
+    // DA-Task 3: the cache entry also carries the decrypted inner-MIME
+    // attachment metadata + the crypto flag so the AttachmentList / inline
+    // image effect can render without a second decrypt.
     expect(useViewStore.getState().decryptedCache['m1']).toEqual({
       html: '<p>decrypted</p>',
       text: 'decrypted text',
+      attachments: [
+        {
+          part_id: '2',
+          filename: 'doc.pdf',
+          mime_type: 'application/pdf',
+          size: 1234,
+          content_id: null,
+          is_inline: false,
+        },
+      ],
+      isCrypto: true,
     });
+    // And the selectedMessage mirrors the attachments as `MailMessage.attachments`.
+    expect(useViewStore.getState().selectedMessage?.attachments).toEqual([
+      {
+        id: '2',
+        filename: 'doc.pdf',
+        mimeType: 'application/pdf',
+        size: 1234,
+        cid: undefined,
+      },
+    ]);
   });
 
   it('hits the session decryptedCache on re-open (no second openCryptoMessage invoke) + re-attaches the crypto result', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 1, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
     // On cache-hit re-open, selectThread re-reads the persisted crypto result
@@ -395,7 +419,7 @@ describe('threadStore.selectThread', () => {
   it('still uses the plain body-fetch path (sync_request_bodies on cache miss) for non-crypto messages', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 0, is_signed: 0 }),
+      messageRow({ id: 'm1', is_encrypted: false, is_signed: false }),
     ]);
     // Cache miss → then present after the backend fetch.
     vi.mocked(getMessageBody).mockResolvedValueOnce(null).mockResolvedValueOnce({
@@ -425,7 +449,7 @@ describe('threadStore.selectThread', () => {
   it('on decrypt failure sets decryptState=failed, pushes an error toast, and does NOT crash the open flow', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 1, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockRejectedValue(new Error('no matching decryption cert'));
 
@@ -449,7 +473,7 @@ describe('threadStore.selectThread', () => {
   it('routes a signed-only (non-encrypted) message through the crypto path', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
-      messageRow({ id: 'm1', is_encrypted: 0, is_signed: 1 }),
+      messageRow({ id: 'm1', is_encrypted: false, is_signed: true }),
     ]);
     vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
 

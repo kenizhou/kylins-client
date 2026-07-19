@@ -183,3 +183,30 @@ pub(crate) fn to_hex_lower(bytes: &[u8]) -> String {
     }
     out
 }
+
+/// RFC 5280 method-1 SubjectKeyIdentifier = SHA-1 of the SPKI DER, hex-lower.
+/// The SAME computation `build_self_signed_smime_cert` uses to derive a cert's
+/// `Fingerprint`, factored out so:
+///
+/// - `persist_imported` (leaf) and `import_p12_with_chain` (intermediates)
+///   compute identical fingerprints for the same cert (re-import dedup).
+/// - the backend receive path (`run_verify_path`) can dedup the union of
+///   SignedData intermediates + stored intermediates by the same key.
+/// - the backend persistence layer (`upsert_intermediate_cert`) computes the
+///   `(account_id, standard, fingerprint)` UNIQUE key with the same algorithm
+///   `SqliteKeyStore::put` derives for the leaf, so an intermediate that later
+///   appears in a `.p12` bag overwrites the same row (not a duplicate).
+///
+/// Returns `Err(Malformed)` if `cert_der` is not a parseable X.509 DER cert or
+/// the SPKI lacks a `SubjectKeyIdentifier` extension derivation.
+pub fn fingerprint_of_cert_der(cert_der: &[u8]) -> CcResult<String> {
+    let cert = <x509_cert::Certificate as der::Decode>::from_der(cert_der)
+        .map_err(|e| CryptoError::Malformed(format!("parse cert DER: {e}")))?;
+    let spki_ref = cert
+        .tbs_certificate()
+        .subject_public_key_info()
+        .owned_to_ref();
+    let ski = SubjectKeyIdentifier::try_from(spki_ref)
+        .map_err(|e| CryptoError::Malformed(format!("compute SKI: {e}")))?;
+    Ok(to_hex_lower(ski.0.as_bytes()))
+}

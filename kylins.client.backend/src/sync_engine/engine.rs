@@ -918,12 +918,40 @@ async fn send_op(
     );
 
     // Build MIME once — reused for both send and Sent-append (no rebuild).
-    let mime = match crate::mail::builder::build_mime(draft).await {
+    //
+    // Granularity resolution (Plan 5 Task 5): only when `draft.encrypt` — the
+    // granularity is an *encryption* granularity (how parts are grouped into
+    // session-key units); for sign-only or plaintext sends it collapses to
+    // `WholeMessage` (the historical single-blob behavior). The account's
+    // `crypto_granularity` column is read via `get_crypto_granularity` (Task 3)
+    // and parsed with `EncryptionGranularity::from_db_str` (NULL / unknown →
+    // WholeMessage, fail-open to the historical default).
+    let granularity = if draft.encrypt {
+        match crate::db::accounts::get_crypto_granularity(&engine.pool, account_id).await {
+            Ok(Some(s)) => crypto_core::EncryptionGranularity::from_db_str(Some(s.as_str())),
+            Ok(None) => crypto_core::EncryptionGranularity::WholeMessage,
+            Err(e) => {
+                let msg = format!("get_crypto_granularity: {e}");
+                log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
+                engine.sink.emit_send_result(SendResultEvent {
+                    account_id: account_id.into(),
+                    draft_id: draft.draft_id.clone(),
+                    success: false,
+                    error: Some(msg.clone()),
+                });
+                return Err(crate::sync_engine::SourceError::Other(msg));
+            }
+        }
+    } else {
+        crypto_core::EncryptionGranularity::WholeMessage
+    };
+    let mime = match crate::mail::builder::build_mime_with_granularity(draft, granularity).await {
         Ok(bytes) => {
             log::info!(
-                "[send] build_mime OK draft_id={} {} bytes",
+                "[send] build_mime OK draft_id={} {} bytes granularity={:?}",
                 draft.draft_id,
-                bytes.len()
+                bytes.len(),
+                granularity
             );
             bytes
         }

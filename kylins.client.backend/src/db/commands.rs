@@ -1386,20 +1386,51 @@ pub async fn crypto_generate_key_inner(
         .ok_or_else(|| "generate_key: row not found after put".into())
 }
 
-/// Read a PEM bundle (cert + PKCS#8 private key) from `path` and import it
+/// Read a PEM bundle (cert + PKCS#8 private key) **or** a `.p12`/`.pfx`
+/// (PKCS#12) bundle **or** an encrypted-PKCS#8 PEM from `path` and import it
 /// into the account's keystore, persisting to `crypto_keys`. Returns the PUBLIC
 /// row only.
+///
+/// `passphrase` is threaded through to `SmimeBackend::import_key` as a
+/// `SecretBox<String>` (zeroized on drop). It is used ONLY to decrypt the
+/// bag/PBE in-memory; it is never persisted nor logged. Pass `None` for
+/// unencrypted PEM bundles; pass `Some(pass)` for `.p12`/`.pfx` (always
+/// passphrase-protected) and encrypted-PKCS#8 PEM. Same IPC channel as the
+/// path — Tauri IPC is local same-process (no network exposure).
 pub async fn crypto_import_key_from_path_inner(
     pool: &SqlitePool,
     account_id: &str,
     path: &str,
+    passphrase: Option<String>,
 ) -> Result<CryptoKeyRow, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+    // Wrap at the IPC boundary: the incoming `String` becomes a zeroizing
+    // `SecretBox<String>` for the scope of `import_key` only.
+    let pass = passphrase.map(|p| crypto_core::SecretBox::new(Box::new(p)));
     let backend = smime_backend(pool, account_id);
-    let h = backend
-        .import_key(&bytes, None)
+    // Use `import_key_with_chain` (NOT the trait `import_key`) so the `.p12`
+    // arm's intermediate CA cert DERs are returned to the backend for direct
+    // INSERT with `key_type='intermediate'`. Persisting them through the
+    // trait `import_key` would drop them on the floor; persisting through
+    // `SqliteKeyStore::put` would hardcode `key_type='cert'` (the known quirk)
+    // and pollute the trust-anchor candidate set — a trust overreach.
+    let (h, intermediate_ders) = backend
+        .import_key_with_chain(&bytes, pass)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Persist each returned intermediate via a direct INSERT. Failures here
+    // are logged + skipped (one bad intermediate must not fail the leaf
+    // import — the spec's "skip JUST that cert" failure mode); the leaf is
+    // already persisted by `import_key_with_chain`'s internal `persist_imported`.
+    for inter_der in &intermediate_ders {
+        if let Err(e) = crypto_keys::upsert_intermediate_cert(pool, account_id, inter_der).await {
+            log::warn!(
+                "[crypto] failed to persist .p12 intermediate for account {account_id}: {e}"
+            );
+        }
+    }
+
     crypto_keys::get_crypto_key_public(pool, h.standard.as_str(), h.fingerprint.as_str())
         .await?
         .ok_or_else(|| "import_key: row not found after put".into())
@@ -1437,14 +1468,17 @@ pub async fn crypto_generate_key(
     crypto_generate_key_inner(&pool, &account_id, &email).await
 }
 
-/// Tauri wrapper for [`crypto_import_key_from_path_inner`].
+/// Tauri wrapper for [`crypto_import_key_from_path_inner`]. The optional
+/// `passphrase` (camelCased `passphrase` from the frontend) is forwarded
+/// verbatim — `None`/`undefined` deserializes to `None`.
 #[tauri::command]
 pub async fn crypto_import_key_from_path(
     pool: State<'_, SqlitePool>,
     account_id: String,
     path: String,
+    passphrase: Option<String>,
 ) -> Result<CryptoKeyRow, String> {
-    crypto_import_key_from_path_inner(&pool, &account_id, &path).await
+    crypto_import_key_from_path_inner(&pool, &account_id, &path, passphrase).await
 }
 
 /// Tauri wrapper for [`crypto_export_public_to_path_inner`].
@@ -1457,6 +1491,87 @@ pub async fn crypto_export_public_to_path(
     out_path: String,
 ) -> Result<(), String> {
     crypto_export_public_to_path_inner(&pool, &account_id, &standard, &fingerprint, &out_path).await
+}
+
+/// Export an S/MIME identity (cert + private key + the account's stored
+/// intermediates) as a passphrase-protected `.p12`/`.pfx` to `out_path`. The
+/// export mirror of [`crypto_import_key_from_path_inner`] (Plan 3b).
+///
+/// `passphrase` is wrapped as a `SecretBox<String>` at the IPC boundary for the
+/// scope of `export_p12` only (zeroized on drop, never logged). The
+/// intermediates are resolved from `crypto_keys` rows with
+/// `key_type='intermediate'` (the rows Plan 3's `.p12` import persists) — the
+/// recipient gets a self-contained bundle that validates without re-fetching
+/// the chain. The written file is passphrase-encrypted via
+/// `PbeWithHmacSha256AndAes256` + `HmacSha256` MAC (modern strong algorithms);
+/// plaintext private bytes never hit disk unencrypted.
+///
+/// Errors:
+/// - `Policy("p12 export requires a non-empty passphrase")` — `None` or empty.
+/// - `Policy("export_p12: key has no private material")` — cert-only row.
+/// - `KeyNotFound` — `(standard, fingerprint)` does not resolve.
+/// - File-write error — surfaced as `write {out_path}: {e}`.
+pub async fn crypto_export_p12_to_path_inner(
+    pool: &SqlitePool,
+    account_id: &str,
+    standard: &str,
+    fingerprint: &str,
+    passphrase: Option<String>,
+    out_path: &str,
+) -> Result<(), String> {
+    // Wrap at the IPC boundary: the incoming `String` becomes a zeroizing
+    // `SecretBox<String>` for the scope of `export_p12` only (mirrors the
+    // import side's `crypto_import_key_from_path_inner`).
+    let pass = passphrase.map(|p| crypto_core::SecretBox::new(Box::new(p)));
+    let backend = smime_backend(pool, account_id);
+    // The KeyId encoding matches `SqliteKeyStore::encode_key_id` so the
+    // backend's `export_p12` → `keystore.get` resolves the row (mirrors
+    // `crypto_export_public_to_path_inner`).
+    let handle = KeyHandle::Software(KeyId(format!("{standard}|{fingerprint}")));
+    // Bundle the account's stored intermediates so the recipient can validate
+    // without re-fetching the chain. Failures to list are non-fatal — we'd
+    // rather produce a leaf-only PFX than no PFX (the user can re-export
+    // after fixing the DB row).
+    let intermediates = crypto_keys::list_intermediate_certs(pool, account_id)
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!(
+                "[crypto] export_p12: listing intermediates for {account_id} failed: {e}; exporting leaf-only"
+            );
+            Vec::new()
+        });
+    let pfx = backend
+        .export_p12(&handle, &intermediates, pass)
+        .await
+        .map_err(|e| e.to_string())?;
+    std::fs::write(out_path, &pfx).map_err(|e| format!("write {out_path}: {e}"))?;
+    Ok(())
+}
+
+/// Tauri wrapper for [`crypto_export_p12_to_path_inner`]. The optional
+/// `passphrase` is REQUIRED non-empty on the Rust side (an empty string or
+/// `null`/`undefined` deserializes to `None`/`Some("")`, both refused with
+/// `Policy`). The frontend confirm-passphrase prompt guards against a typo
+/// BEFORE this call — the user backs up their identity with the chosen
+/// passphrase.
+#[tauri::command]
+pub async fn crypto_export_p12_to_path(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    standard: String,
+    fingerprint: String,
+    passphrase: Option<String>,
+    out_path: String,
+) -> Result<(), String> {
+    crypto_export_p12_to_path_inner(
+        &pool,
+        &account_id,
+        &standard,
+        &fingerprint,
+        passphrase,
+        &out_path,
+    )
+    .await
 }
 
 // ---- S/MIME receive orchestrator commands (Plan 3 / G5 Task 4) ----
@@ -1486,7 +1601,7 @@ pub async fn crypto_export_public_to_path(
 use std::sync::Arc;
 
 use crate::db::message_crypto_results::MessageCryptoResultRow;
-use crate::mail::crypto::{open_crypto_message, OpenCryptoResult};
+use crate::mail::crypto::{get_signer_details, open_crypto_message, OpenCryptoResult, SignerDetails};
 use crate::sync_engine::engine::{CryptoResultEvent, SyncEngine};
 
 /// Testable core of [`crypto_open_message`]. Takes a borrowed pool + an
@@ -1538,6 +1653,33 @@ pub async fn db_get_message_crypto_result(
 ) -> Result<Option<MessageCryptoResultRow>, String> {
     crate::db::message_crypto_results::get_message_crypto_result(&pool, &account_id, &message_id)
         .await
+}
+
+/// Testable core of [`crypto_get_signer_details`]. Mirrors
+/// `db_get_message_crypto_result`'s shape (pool + two strings, no `SyncEngine`
+/// — the dialog emits no events). Re-parses the cached CMS blob to surface the
+/// signer cert + chain path for the read-only "Signature details…" dialog.
+pub async fn crypto_get_signer_details_inner(
+    pool: &SqlitePool,
+    account_id: &str,
+    message_id: &str,
+) -> Result<Option<SignerDetails>, String> {
+    get_signer_details(pool, account_id, message_id).await
+}
+
+/// Build the full signer + chain record for the "Signature details…" dialog.
+/// Pure parse + DB reads (no decrypt, no network). Returns `None` when the
+/// message has never been opened through the crypto pipeline. For
+/// `signed` / clear-signed messages the signer cert + chain path are
+/// re-parsed from the cached CMS columns; for `encrypted-signed` the
+/// SignedData lives in decrypted in-memory-only bytes and `signer` is `None`.
+#[tauri::command]
+pub async fn crypto_get_signer_details(
+    pool: State<'_, SqlitePool>,
+    account_id: String,
+    message_id: String,
+) -> Result<Option<SignerDetails>, String> {
+    crypto_get_signer_details_inner(pool.inner(), &account_id, &message_id).await
 }
 
 // ---- rate-limit (Phase 3f) ----

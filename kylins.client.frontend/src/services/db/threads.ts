@@ -67,8 +67,11 @@ export interface DbMessageRow {
   message_id_header?: string | null;
   in_reply_to_header?: string | null;
   classification_id: string | null;
-  is_encrypted: number;
-  is_signed: number;
+  /** Rust `MessageRow.is_encrypted` is `bool` → JSON `true`/`false`. The read
+   *  path was cut over from plugin-sql (0/1 ints) to Rust db commands (bools);
+   *  consume as a boolean, never `=== 1` (strict compare against a bool fails). */
+  is_encrypted: boolean;
+  is_signed: boolean;
   /** IMAP UID (snake_case from Rust MessageRow). Null for non-IMAP sources. */
   imap_uid?: number | null;
   /** IMAP folder path the message lives in (e.g. "INBOX"). Null for non-IMAP. */
@@ -150,7 +153,7 @@ export function mapMessageToMailMessage(
     threadId: msg.thread_id,
     messageId: msg.message_id_header ?? undefined,
     classificationId: msg.classification_id ?? null,
-    isEncrypted: msg.is_encrypted === 1,
-    isSigned: msg.is_signed === 1,
+    isEncrypted: !!msg.is_encrypted,
+    isSigned: !!msg.is_signed,
   };
 }

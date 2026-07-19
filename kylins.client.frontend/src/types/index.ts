@@ -75,6 +75,10 @@ export interface Account {
   easDeviceId?: string;
   easPolicyKey?: string;
   easUserAgent?: string;
+  // S/MIME encryption granularity (Task 2): controls how the body + inline
+  // attachments are packaged when signing/encrypting. Stored as a string so
+  // unknown/future values don't break the row. See CryptoGranularitySection.
+  cryptoGranularity?: string;
 }
 
 export interface DbAccountRow {

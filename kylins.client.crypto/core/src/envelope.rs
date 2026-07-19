@@ -56,6 +56,48 @@ pub enum SerializationStrategy {
     SingleMimeBlob,
 }
 
+/// Encryption granularity — how parts are grouped into encryption units
+/// (session-key granularity). Orthogonal to `SerializationStrategy` (wire
+/// layout). See docs/security/crypto-architecture-design.md §11.4.1.
+///
+/// Under S/MIME A-form (SingleMimeBlob), only `BodyInlineAndMergedAttachments`
+/// has a now-implementable effect (merged multipart/mixed subtree in the
+/// composed plaintext). The per-part session-key benefit of A/B is realized
+/// only under SplitPerPart (future, E2EE-internal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptionGranularity {
+    /// Standard: whole MIME tree as one encryption unit (one session key).
+    /// Current behavior.
+    WholeMessage,
+    /// Granularity A: body+inline images as one unit; each regular attachment
+    /// its own unit. (Per-part benefit is SplitPerPart-only; collapses to
+    /// WholeMessage on the S/MIME wire today.)
+    BodyInlineAndPerAttachment,
+    /// Granularity B: body+inline images as one unit; all regular attachments
+    /// merged into a single multipart/mixed entity as one unit.
+    BodyInlineAndMergedAttachments,
+}
+
+impl EncryptionGranularity {
+    /// Parse the DB column value. NULL / unknown / "whole_message" → WholeMessage.
+    pub fn from_db_str(s: Option<&str>) -> Self {
+        match s {
+            Some("body_inline_per_attachment") => Self::BodyInlineAndPerAttachment,
+            Some("body_inline_merged_attachments") => Self::BodyInlineAndMergedAttachments,
+            _ => Self::WholeMessage,
+        }
+    }
+
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Self::WholeMessage => "whole_message",
+            Self::BodyInlineAndPerAttachment => "body_inline_per_attachment",
+            Self::BodyInlineAndMergedAttachments => "body_inline_merged_attachments",
+        }
+    }
+}
+
 /// One per-recipient key-wrap packet (opaque wire bytes).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyPacketRef {
@@ -108,6 +150,36 @@ pub struct VerificationResult {
     /// The signer key, when one was identified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<KeyHandleRef>,
+    /// Granular cert-chain failure reason surfaced from `ChainOutcome.failure_reason`
+    /// by the smime backend's `verify_with_context`. `None` on success states
+    /// (`ValidVerified` / `ValidUnverified`), on the `UnknownKey` + sig-fail
+    /// `Invalid` early-return arms (where chain validation never runs), and on
+    /// the trait `verify` impl (pre-chain — no chain outcome yet).
+    ///
+    /// Surfaced end-to-end (2026-07-18 granular-chain-outcome spec): populated
+    /// by `SmimeBackend::verify_with_context` from `ChainOutcome.failure_reason`
+    /// → persisted in `message_crypto_results.failure_reason` → returned by
+    /// `get_signer_details` → rendered by the `SignatureDetailsDialog`.
+    /// Diagnostic text from the crypto layer (pkix path errors, CRL reason
+    /// names, identity-mismatch format) — NOT attacker-controlled, rendered as
+    /// plain text by the dialog (no HTML).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    /// Structured RFC 5280 §5.3.1 CRLReason name surfaced from
+    /// `ChainOutcome.revocation_reason` by the smime backend's
+    /// `verify_with_context`. `Some(<reason>)` only when the verification
+    /// hard-failed because the CRL listed the cert as revoked (the
+    /// stringified `CrlReason` variant, e.g. `"KeyCompromise"`). `None` for
+    /// every other outcome (success, identity mismatch, non-revocation chain
+    /// failures, the early-return arms). Surfaced end-to-end (2026-07-18
+    /// CRL-revocation-detail spec decision #3): populated by
+    /// `SmimeBackend::verify_with_context` from `ChainOutcome.revocation_reason`
+    /// → persisted in `message_crypto_results.revocation_reason` → returned by
+    /// `get_signer_details` → rendered as a distinct "Reason: <name>" line by
+    /// the `SignatureDetailsDialog` (instead of burying it inside
+    /// `failure_reason`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -155,8 +227,42 @@ mod tests {
         let v = VerificationResult {
             state: SignatureState::NotSigned,
             signer: None,
+            failure_reason: None,
+            revocation_reason: None,
         };
         let json = serde_json::to_string(&v).unwrap();
         assert!(!json.contains("signer"), "None signer is skipped");
+        assert!(
+            !json.contains("failure_reason"),
+            "None failure_reason is skipped"
+        );
+        assert!(
+            !json.contains("revocation_reason"),
+            "None revocation_reason is skipped"
+        );
+    }
+}
+
+#[cfg(test)]
+mod granularity_tests {
+    use super::EncryptionGranularity as G;
+
+    #[test]
+    fn from_db_str_round_trip() {
+        for v in [
+            G::WholeMessage,
+            G::BodyInlineAndPerAttachment,
+            G::BodyInlineAndMergedAttachments,
+        ] {
+            assert_eq!(G::from_db_str(Some(v.as_db_str())), v);
+        }
+    }
+
+    #[test]
+    fn from_db_str_defaults_to_whole_message() {
+        assert_eq!(G::from_db_str(None), G::WholeMessage);
+        assert_eq!(G::from_db_str(Some("")), G::WholeMessage);
+        assert_eq!(G::from_db_str(Some("garbage")), G::WholeMessage);
+        assert_eq!(G::from_db_str(Some("whole_message")), G::WholeMessage);
     }
 }

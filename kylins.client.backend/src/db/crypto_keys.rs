@@ -330,6 +330,118 @@ pub async fn list_trust_anchor_certs(
     Ok(out)
 }
 
+/// Return the raw DER bytes of every stored S/MIME **intermediate** CA cert
+/// for this account (`crypto_keys` rows with `standard='smime'` AND
+/// `key_type='intermediate'`). These feed
+/// [`crate::mail::crypto::run_verify_path`]'s merged `intermediate_ders`
+/// argument alongside the SignedData-embedded intermediates so a chain that
+/// needs a stored intermediate validates without the sender having to embed
+/// it in every SignedData.
+///
+/// Intermediates are persisted by [`upsert_intermediate_cert`] on `.p12`
+/// import (the bag's non-leaf chain certs). They are deliberately kept OUT of
+/// the trust-anchor candidate set (`key_type='intermediate'` ≠ `'cert'`); an
+/// intermediate as an anchor would let any cert it signs validate as trusted
+/// — a trust overreach (the G4 corporate-PKI landmine the receive path
+/// already documents).
+///
+/// Mirrors [`list_trust_anchor_certs`] exactly, swapping the `key_type`
+/// filter. Returns an empty Vec (not an error) when the account has no stored
+/// intermediates (the common case — only `.p12` imports with a chain write
+/// them). Rows that fail to hex-decode are skipped with a `log::warn!`.
+pub async fn list_intermediate_certs(
+    pool: &SqlitePool,
+    account_id: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT public_data FROM crypto_keys
+         WHERE account_id = ? AND standard = 'smime' AND key_type = 'intermediate'",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (hex_str,) in rows {
+        match hex::decode(&hex_str) {
+            Ok(der) => out.push(der),
+            Err(e) => log::warn!("[crypto] intermediate public_data hex decode failed: {e}"),
+        }
+    }
+    Ok(out)
+}
+
+/// Persist an S/MIME intermediate CA cert (DER) for `account_id` with
+/// `key_type='intermediate'` — a direct INSERT that bypasses
+/// [`crate::keystore_bridge::SqliteKeyStore::put`]. The keystore bridge
+/// hardcodes `key_type='cert'` for every key (a known quirk) which would
+/// land the intermediate in [`list_trust_anchor_certs`]'s candidate-anchor
+/// set — a trust overreach (an intermediate is NOT a trust anchor; any cert
+/// it signs would otherwise validate as "trusted"). Direct INSERT keeps it
+/// scoped to [`list_intermediate_certs`] only.
+///
+/// # Fields
+///
+/// - `key_type='intermediate'` — the load-bearing distinction from anchors.
+/// - `public_data` = hex(cert_der) — same encoding `keystore_bridge::put`
+///   uses for the leaf's cert DER so [`list_intermediate_certs`] hex-decodes
+///   symmetrically.
+/// - `private_data_enc = NULL` — intermediates are public certs; no private
+///   material exists.
+/// - `fingerprint` = SHA-1-of-SPKI hex via
+///   [`crypto_smime::fingerprint_of_cert_der`] — IDENTICAL to the computation
+///   `persist_imported` (leaf) uses, so the `(account_id, standard,
+///   fingerprint)` UNIQUE constraint dedups a re-import of the same `.p12`
+///   to a single row (`ON CONFLICT DO UPDATE` updates the cert DER + leaves
+///   the rest alone).
+/// - `is_default_sign = 0`, `is_default_encrypt = 0` — intermediates never
+///   participate in send-side selection.
+/// - `origin = 'p12-intermediate'` — distinguishes from `'generated'` /
+///   `'imported'` rows in admin queries.
+///
+/// Returns `Ok(())` on success; `Err(String)` on a DB or cert-parse failure.
+/// Re-import of the same cert is idempotent (UNIQUE conflict updates the row).
+pub async fn upsert_intermediate_cert(
+    pool: &SqlitePool,
+    account_id: &str,
+    cert_der: &[u8],
+) -> Result<(), String> {
+    // Compute the fingerprint the SAME way `persist_imported` / `generate_key`
+    // do (SHA-1-of-SPKI hex via the shared crypto-smime helper) so the
+    // (account_id, standard, fingerprint) UNIQUE constraint dedups correctly.
+    let fingerprint = crypto_smime::fingerprint_of_cert_der(cert_der)
+        .map_err(|e| format!("upsert_intermediate_cert: compute fingerprint: {e}"))?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let public_hex = hex::encode(cert_der);
+
+    sqlx::query(
+        "INSERT INTO crypto_keys (
+            id, account_id, standard, key_type, email, fingerprint, public_data,
+            private_data_enc, token_serial, token_key_id, origin,
+            is_default_sign, is_default_encrypt, created_at, expires_at, policy_json
+        ) VALUES (
+            ?, ?, 'smime', 'intermediate', NULL, ?, ?,
+            NULL, NULL, NULL, 'p12-intermediate',
+            0, 0, strftime('%s','now'), NULL, NULL
+        )
+        ON CONFLICT(account_id, standard, fingerprint) DO UPDATE SET
+            key_type = excluded.key_type,
+            public_data = excluded.public_data,
+            origin = excluded.origin,
+            is_default_sign = excluded.is_default_sign,
+            is_default_encrypt = excluded.is_default_encrypt",
+    )
+    .bind(&id)
+    .bind(account_id)
+    .bind(&fingerprint)
+    .bind(&public_hex)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Minimal view of a default signing key — the bits `send_op`/`apply_crypto`
 /// need to build a `KeyHandleRef` and resolve the cert+key via
 /// [`get_crypto_key_full`]. Carries no private material.
@@ -865,5 +977,186 @@ mod tests {
             .await
             .expect("query ok on empty scope");
         assert!(anchors.is_empty(), "no trust anchors -> empty Vec");
+    }
+
+    // ─── Task 2 (intermediates spec, 2026-07-18): list_intermediate_certs ───
+    //
+    // Mirrors `list_trust_anchor_certs`'s test shape but asserts the
+    // `key_type='intermediate'` filter excludes both `key_type='cert'` rows
+    // (anchors + leaf identities) AND other accounts' intermediates
+    // (cross-account isolation).
+
+    /// Returns the DER bytes of every `key_type='intermediate'` row for the
+    /// account; excludes trust anchors (`key_type='cert'`) and other accounts'
+    /// intermediates.
+    #[tokio::test]
+    async fn list_intermediate_certs_returns_only_intermediate_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct").await;
+
+        // This account's intermediate — must be returned.
+        let inter_der = vec![0x30u8, 0x82, 0x01, 0xAA, 0x11];
+        seed_trust_anchor_blob(
+            &pool,
+            "k_inter",
+            "acct",
+            "fp_inter",
+            "intermediate",
+            &inter_der,
+        )
+        .await;
+
+        // Same account's CA-root trust anchor (`key_type='cert'`) — must NOT
+        // appear in the intermediate list.
+        let ca_root_der = vec![0x30u8, 0x82, 0x02, 0xBB, 0x22, 0x33];
+        seed_trust_anchor_blob(&pool, "k_ca", "acct", "fp_ca", "cert", &ca_root_der).await;
+
+        // Same account's personal signing key (`key_type='private'`) — must NOT
+        // appear either.
+        let signing_der = vec![0xDEu8, 0xAD, 0xBE, 0xEF];
+        seed_trust_anchor_blob(
+            &pool,
+            "k_priv",
+            "acct",
+            "fp_priv",
+            "private",
+            &signing_der,
+        )
+        .await;
+
+        // A SECOND account's intermediate — must NOT be returned (cross-account
+        // isolation).
+        seed_account(&pool, "acct2").await;
+        let other_inter_der = vec![0xFFu8, 0xEE, 0xDD, 0xCC];
+        seed_trust_anchor_blob(
+            &pool,
+            "k_inter_other",
+            "acct2",
+            "fp_inter_other",
+            "intermediate",
+            &other_inter_der,
+        )
+        .await;
+
+        let inters = list_intermediate_certs(&pool, "acct")
+            .await
+            .expect("query ok");
+        assert_eq!(
+            inters.len(),
+            1,
+            "only this account's `key_type='intermediate'` row must be returned"
+        );
+        assert!(
+            inters.contains(&inter_der),
+            "the account's intermediate DER must be present; got {inters:?}"
+        );
+        assert!(
+            !inters.contains(&ca_root_der),
+            "trust anchor (`key_type='cert'`) must NOT be returned as an intermediate"
+        );
+        assert!(
+            !inters.contains(&other_inter_der),
+            "another account's intermediate must NOT be returned"
+        );
+    }
+
+    /// An account with no intermediates returns an empty Vec (not an error).
+    #[tokio::test]
+    async fn list_intermediate_certs_empty_when_no_intermediates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct_no_inter").await;
+        // Seed a trust anchor — must NOT bleed into the intermediate list.
+        seed_trust_anchor_blob(
+            &pool,
+            "k_ca_only",
+            "acct_no_inter",
+            "fp_ca_only",
+            "cert",
+            &[0xAAu8, 0xBB],
+        )
+        .await;
+
+        let inters = list_intermediate_certs(&pool, "acct_no_inter")
+            .await
+            .expect("query ok on intermediate-empty scope");
+        assert!(inters.is_empty(), "no intermediates -> empty Vec");
+    }
+
+    /// `upsert_intermediate_cert` writes a row with `key_type='intermediate'`
+    /// (NOT `'cert'` — the load-bearing security guarantee: an intermediate
+    /// must NOT join the trust-anchor candidate set). Re-import is idempotent
+    /// (no duplicate rows). Persisted via direct INSERT, bypassing
+    /// `SqliteKeyStore::put` (which hardcodes `'cert'`).
+    #[tokio::test]
+    async fn upsert_intermediate_cert_writes_intermediate_key_type_and_dedups() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "acct-up").await;
+
+        // Build a real self-signed CA cert (the shape an intermediate from a
+        // `.p12` bag would have) via crypto-smime's `testing` helper. This
+        // produces a DIFFERENT fingerprint from any leaf `generate_key` would
+        // emit (so the UNIQUE constraint conflict path is NOT exercised by
+        // accident — we want to test the clean INSERT path here, then the
+        // idempotent re-INSERT path explicitly below).
+        let ca = crypto_smime::testing::build_self_signed_ca("Test Intermediate CA");
+        let inter_der = ca.cert_der.clone();
+
+        upsert_intermediate_cert(&pool, "acct-up", &inter_der)
+            .await
+            .expect("upsert ok");
+
+        // Verify the row shape: key_type='intermediate', no private blob,
+        // origin='p12-intermediate', is_default_sign=0.
+        let row: (String, Option<String>, String, i64, i64) = sqlx::query_as(
+            "SELECT key_type, private_data_enc, origin, is_default_sign, is_default_encrypt
+             FROM crypto_keys
+             WHERE account_id = ? AND standard = 'smime' AND key_type = 'intermediate'",
+        )
+        .bind("acct-up")
+        .fetch_one(&pool)
+        .await
+        .expect("fetch intermediate row");
+        assert_eq!(row.0, "intermediate", "key_type MUST be 'intermediate'");
+        assert!(
+            row.1.is_none(),
+            "private_data_enc MUST be NULL for an intermediate"
+        );
+        assert_eq!(row.2, "p12-intermediate");
+        assert_eq!(row.3, 0, "is_default_sign must be 0");
+        assert_eq!(row.4, 0, "is_default_encrypt must be 0");
+
+        // The intermediate did NOT pollute the trust-anchor set.
+        let anchors = list_trust_anchor_certs(&pool, "acct-up")
+            .await
+            .expect("anchors");
+        assert!(
+            !anchors.contains(&inter_der),
+            "intermediate must NOT appear in list_trust_anchor_certs (would be a trust overreach)"
+        );
+        // And it DID land in the intermediate list.
+        let inters = list_intermediate_certs(&pool, "acct-up")
+            .await
+            .expect("intermediates");
+        assert!(
+            inters.contains(&inter_der),
+            "intermediate must appear in list_intermediate_certs"
+        );
+
+        // Re-import is idempotent — exactly ONE intermediate row exists.
+        upsert_intermediate_cert(&pool, "acct-up", &inter_der)
+            .await
+            .expect("upsert (re-import) ok");
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM crypto_keys
+             WHERE account_id = ? AND standard = 'smime' AND key_type = 'intermediate'",
+        )
+        .bind("acct-up")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(count, 1, "re-import must dedup (UNIQUE conflict), got {count}");
     }
 }

@@ -8,7 +8,12 @@ import { useThreadStore } from '../../stores/threadStore';
 import { useUIStore } from '../../stores/uiStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
-import { fetchAttachment, fetchInlineImages, getAttachments } from '../../services/db/attachments';
+import {
+  fetchAttachment,
+  fetchInlineImages,
+  fetchCryptoInlineImages,
+  getAttachments,
+} from '../../services/db/attachments';
 import { upsertContact } from '../../services/db/contacts';
 import { InlineReply } from '../email/InlineReply';
 import { MessageHeader } from '../../features/viewer/MessageHeader';
@@ -22,11 +27,19 @@ import { ClassificationWatermark } from '../../features/classification/component
 import { ClassificationBadge } from '../../features/classification/components/ClassificationBadge';
 import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import { CryptoBadge } from '../../features/view/CryptoBadge';
+import { SignatureDetailsDialog } from '../email/SignatureDetailsDialog';
 import { TrustDialog } from '../email/TrustDialog';
 import { IcalHelper, type ParsedEvent } from '../../services/calendar/icalHelper';
 
 export function ReadingPane() {
   const message = useViewStore((s) => s.selectedMessage);
+  // DA-Task 3: subscribe to the decrypted-cache entry for the selected
+  // message so AttachmentList + the inline-image effect re-render when the
+  // cache is populated (after selectThread) or evicted (after a trust
+  // decision — handleTrustResolved wipes this entry then re-opens).
+  const decryptedEntry = useViewStore((s) =>
+    s.selectedMessage ? s.decryptedCache[s.selectedMessage.id] : undefined,
+  );
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const account = activeAccountId ? (accounts.find((a) => a.id === activeAccountId) ?? null) : null;
@@ -51,6 +64,10 @@ export function ReadingPane() {
   // it re-popping on every re-render. Reset whenever the selected message
   // changes so a fresh selection re-prompts.
   const [dismissedTrustMsgId, setDismissedTrustMsgId] = useState<string | undefined>(undefined);
+  // G6 follow-up: "Signature details…" dialog open state. Reset on message
+  // change (same prev-value block as dismissedTrustMsgId) so the dialog never
+  // leaks across selections.
+  const [showSignatureDetails, setShowSignatureDetails] = useState(false);
   // Reset per-message ephemeral state when the selected message changes. Uses
   // the prev-value render pattern (setState-during-render to correct stale
   // state) rather than setState-in-effect (the project's eslint rule
@@ -62,6 +79,7 @@ export function ReadingPane() {
     setCidMap(new Map());
     setInviteEvents([]);
     setDismissedTrustMsgId(undefined);
+    setShowSignatureDetails(false);
   }
   if (!message?.id && inviteEvents.length > 0) {
     setInviteEvents([]);
@@ -162,6 +180,12 @@ export function ReadingPane() {
   // block, so inline images render without the "Load images" toggle). The map
   // is reset at render time above (on message change); this effect only fetches
   // and calls setState from the async callback (lint-allowed).
+  //
+  // DA-Task 3: when the selected message was decrypted from an S/MIME envelope,
+  // the inline images live in the INNER MIME — `sync_fetch_inline_images` would
+  // fetch the outer envelope (one IMAP part) and find no CID parts. Route to
+  // `crypto_fetch_inline_images` instead, which re-decrypts + walks the inner
+  // MIME. The Blob/objectURL loop below is unchanged.
   useEffect(() => {
     const id = message?.id;
     const acct = activeAccountId;
@@ -184,8 +208,18 @@ export function ReadingPane() {
         cancelled = true;
       };
     }
+    // DA-Task 3: pick the right fetcher. The session cache entry is the
+    // source of truth for "was this message opened through the crypto
+    // pipeline" — `message.isEncrypted` only tells us the message KIND, not
+    // whether we have a decrypted plaintext cached. Falling back to
+    // `!!message.isEncrypted` covers the first-open path (cache not yet
+    // populated when this effect fires for a freshly-decrypted message —
+    // selectThread writes the cache BEFORE setSelectedMessage, but defense
+    // in depth).
+    const isCrypto = decryptedEntry?.isCrypto ?? !!message?.isEncrypted;
     let cancelled = false;
-    fetchInlineImages(acct, id)
+    const fetcher = isCrypto ? fetchCryptoInlineImages : fetchInlineImages;
+    fetcher(acct, id)
       .then(async (parts) => {
         if (cancelled) return;
         const m = new Map<string, string>();
@@ -208,7 +242,7 @@ export function ReadingPane() {
     return () => {
       cancelled = true;
     };
-  }, [message?.id, message?.html, activeAccountId]);
+  }, [message?.id, message?.html, activeAccountId, message?.isEncrypted, decryptedEntry?.isCrypto]);
 
   // Calendar-invite detection: parse any text/calendar attachment whose METHOD
   // is REQUEST and render an RSVP card above the message body.
@@ -322,6 +356,10 @@ export function ReadingPane() {
           className="reading-pane-crypto-row mt-2 flex items-center gap-2 px-5 pt-4"
           data-testid="reading-pane-crypto-row"
         >
+          {/* Clickable for ANY crypto message (encrypted or signed). For
+           * signed mail the dialog shows the signer cert + chain; for
+           * encrypted-not-signed it shows the decrypt state + "not signed"
+           * (signer is null — no re-parseable SignedData in the DB). */}
           <CryptoBadge
             signatureState={message.signatureState}
             decryptState={message.decryptState}
@@ -329,6 +367,7 @@ export function ReadingPane() {
             signerEmail={message.signerEmail}
             signerFingerprint={message.signerFingerprint}
             variant="label"
+            onShowDetails={() => setShowSignatureDetails(true)}
           />
         </div>
       )}
@@ -417,6 +456,8 @@ export function ReadingPane() {
               accountId={activeAccountId}
               messageId={message.id}
               bodyHtml={message.html}
+              decryptedAttachments={decryptedEntry?.attachments}
+              isCrypto={decryptedEntry?.isCrypto ?? !!message.isEncrypted}
             />
             <div
               style={{
@@ -456,6 +497,13 @@ export function ReadingPane() {
           chainInfo={pendingTrust.chainInfo}
           onResolved={handleTrustResolved}
           onCancel={handleTrustCancel}
+        />
+      )}
+      {showSignatureDetails && isCryptoMessage && activeAccountId && (
+        <SignatureDetailsDialog
+          accountId={activeAccountId}
+          messageId={message.id}
+          onClose={() => setShowSignatureDetails(false)}
         />
       )}
     </div>

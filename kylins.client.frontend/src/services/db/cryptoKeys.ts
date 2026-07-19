@@ -52,9 +52,26 @@ export function generateKey(accountId: string, email: string): Promise<CryptoKey
   return invoke<CryptoKeyRow>('crypto_generate_key', { accountId, email });
 }
 
-/** Import a key/cert from a local file path. Returns the resulting row. */
-export function importKeyFromPath(accountId: string, path: string): Promise<CryptoKeyRow> {
-  return invoke<CryptoKeyRow>('crypto_import_key_from_path', { accountId, path });
+/**
+ * Import a key/cert from a local file path. Returns the resulting row.
+ *
+ * `passphrase` is forwarded to the Rust `crypto_import_key_from_path`
+ * command (camelCased). Pass a string for passphrase-protected bundles
+ * (`.p12`/`.pfx`, encrypted-PKCS#8 PEM); omit it for unencrypted PEM
+ * bundles. `undefined` deserializes to Rust `None` (Tauri IPC is local
+ * same-process — the passphrase is wrapped in a zeroizing `SecretBox` at
+ * the `import_key` boundary on the Rust side, never logged nor persisted).
+ */
+export function importKeyFromPath(
+  accountId: string,
+  path: string,
+  passphrase?: string,
+): Promise<CryptoKeyRow> {
+  return invoke<CryptoKeyRow>('crypto_import_key_from_path', {
+    accountId,
+    path,
+    passphrase,
+  });
 }
 
 /** Export the public half of a key to `outPath`. */
@@ -68,6 +85,37 @@ export function exportPublicToPath(
     accountId,
     standard,
     fingerprint,
+    outPath,
+  });
+}
+
+/**
+ * Export an S/MIME identity (cert + private key + the account's stored
+ * intermediates) as a passphrase-protected `.p12`/`.pfx` to `outPath`. The
+ * export mirror of [`importKeyFromPath`] (Plan 3b).
+ *
+ * `passphrase` is REQUIRED non-empty on the Rust side (an empty string or
+ * `undefined` is refused with `Policy("p12 export requires a non-empty
+ * passphrase")`). Wrap it in a confirm-passphrase prompt at the call site
+ * (the standard "create a password that protects a key" UX) — the user's
+ * chosen passphrase encrypts the PFX before it touches disk. The passphrase
+ * is forwarded to the Rust `crypto_export_p12_to_path` command (camelCased)
+ * and wrapped in a zeroizing `SecretBox` at the IPC boundary on the Rust side
+ * (never logged nor persisted beyond the written file, which is itself
+ * passphrase-encrypted).
+ */
+export function exportP12ToPath(
+  accountId: string,
+  standard: string,
+  fingerprint: string,
+  passphrase: string,
+  outPath: string,
+): Promise<void> {
+  return invoke<void>('crypto_export_p12_to_path', {
+    accountId,
+    standard,
+    fingerprint,
+    passphrase,
     outPath,
   });
 }

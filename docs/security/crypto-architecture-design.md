@@ -656,7 +656,7 @@ Layer 0: OS Keyring — Master Secret (256-bit，已存在)
 Layer 1: Account Master Key — HKDF(master_secret, account_id)
 Layer 2: Crypto Identity Key — S/MIME cert、PGP key、SM2 key
 Layer 2.5: Object Key — 每联系人/日历一把（ContactKey/CalendarKey；邮件可复用 body session key 作为 object key），私钥被 Layer 2 identity key 加密；其下包裹各 part/card session key（见 §11.5）
-Layer 3: Part Session Key — 每个 part（body + 每个 attachment）独立随机生成；密文与接收方无关，仅 key wrapping 按接收方（见 §11.4）
+Layer 3: Part Session Key — 每个 part（body + 每个 attachment）独立随机生成；密文与接收方无关，仅 key wrapping 按接收方（见 §11.4）。**part 数由 `EncryptionGranularity` 决定**：WholeMessage→1；BodyInlineAndPerAttachment→1(body+inline)+N(附件)；BodyInlineAndMergedAttachments→1(body+inline)+1(merged)（见 §11.4.1）
 ```
 
 ### 10.2 数据表扩展
@@ -695,6 +695,7 @@ CREATE TABLE trust_decisions (
 
 ALTER TABLE accounts ADD COLUMN crypto_method TEXT DEFAULT 'none';
 ALTER TABLE accounts ADD COLUMN crypto_policy_json TEXT;
+ALTER TABLE accounts ADD COLUMN crypto_granularity TEXT DEFAULT 'whole_message'; -- whole_message | body_inline_per_attachment | body_inline_merged_attachments（见 §11.4.1）
 ALTER TABLE contacts ADD COLUMN pinned_keys_json TEXT; -- [{backend, fingerprint, armored}]
 ```
 
@@ -724,6 +725,8 @@ base64url encode → sync_apply_mutation { type: "send" }
 SMTP / EAS
 ```
 
+**粒度解析（发送侧）。** `apply_crypto` 之前新增 composition 步骤：从 `account.crypto_granularity` 读取粒度，把 `SendDraft{htmlBody, textBody, inlineImages[], attachments[]}` 组装为 `Vec<Part>`——inline images **始终折进 body unit**（`multipart/related{HTML + inline image parts}`）；粒度 `BodyInlineAndPerAttachment` 下常规附件各自一 part；粒度 `BodyInlineAndMergedAttachments` 下常规附件打包成单个 `multipart/mixed` 实体作为一 part；`WholeMessage` 下整棵 MIME 一 part。随后按 `SerializationStrategy` 喂后端（见 §11.4.1）。`SendDraft` 本身不变，粒度不进 IPC payload。
+
 ### 11.2 接收路径
 
 ```text
@@ -739,6 +742,8 @@ DOMPurify → sandboxed iframe 渲染
     ↓
 LockIcon + 签名状态
 ```
+
+**粒度解析（接收侧）。** `SingleMimeBlob` 路径（S/MIME / PGP-MIME 互操作）不变：解一个 blob → `parse_plaintext_mime` 抽取 body+附件；`extract_attachments` 已能遍历 `multipart/mixed` 子树，故粒度 B 的合并单元**天然可解、零改动**。`SplitPerPart` 路径（未来 E2EE-内部）：先解 body unit 懒渲染（inline images 随 body 一并就绪），附件按需独立解密——per-part 懒加载（§11.4 能力 1）。
 
 ### 11.3 检测规则
 
@@ -807,6 +812,60 @@ pub trait CryptoProvider { /* ... */
 - **S/MIME 是天然单 blob**：CMS `EnvelopedData` 包裹整棵 MIME 树，part 集合退化为单 part。故"分片"作用于 **OpenPGP/E2EE 路径**；S/MIME 路径 part 数恒为 1，但走同一套 `encrypt_parts` 接口，不另开代码路径。
 - **存储/数据库**：`crypto_keys`（§10.2）存身份密钥；邮件密文与 key wrap 不落本地明文。附件密文可作为独立对象缓存/分发，与正文解耦生命周期。
 - **影响范围**：§3.1 `crypto/mime/` 输出从"单 blob"改为"part 集合"；§4 `Encryptor`/`Decryptor` 增加 part 维度与流式 `DataSource`；§10.1 密钥层级 Layer 3 由"每封邮件一把 session key"改为"每 part 一把"；§14 Phase 2 OpenPGP 需包含分片序列化与 PGP/MIME 单 blob 回落两条出包路径。
+
+#### 11.4.1 加密粒度（EncryptionGranularity）：自定义分片粒度，对上层屏蔽后端差异
+
+**需求。** 除"标准方式"（整封邮件一把 key、一个密文 blob）外，所有加密方式（S/MIME、OpenPGP、国密）须**内在支持**两类中间粒度，且对上层屏蔽复杂性与差异：
+
+- **粒度 A — `BodyInlineAndPerAttachment`**：body part（body + inline images）折为**一个**加密单元；每个常规附件各自一个加密单元（1+N 个单元）。
+- **粒度 B — `BodyInlineAndMergedAttachments`**：body part（body + inline images）折为一个加密单元；所有常规附件**合并为单个 `multipart/mixed` 实体**作为一个加密单元（2 个单元）。
+
+**与 `SerializationStrategy` 正交。** 粒度管"part 如何分组为加密单元（session-key 粒度）"，序列化管"单元如何在 wire 上排布"。二者组合由后端按映射表实现，上层只设粒度。
+
+```rust
+// crypto/types.rs（设计示意，代码尚未落地；现有 Part/PartKind/SerializationStrategy 见 core/envelope.rs）
+pub enum EncryptionGranularity {
+    /// 标准：整棵 MIME 树作为一个加密单元（一把 session key）。对应现状 apply_crypto 单 Body part + SingleMimeBlob。
+    WholeMessage,
+    /// 粒度 A：body+inline images 折为一个加密单元；每个常规附件各自一个加密单元。
+    BodyInlineAndPerAttachment,
+    /// 粒度 B：body+inline images 折为一个加密单元；所有常规附件合并为单个 multipart/mixed 实体作为一个加密单元。
+    BodyInlineAndMergedAttachments,
+}
+
+fn encrypt_parts(&self, parts: &[Part],
+                 granularity: EncryptionGranularity,
+                 serialization: SerializationStrategy,
+                 recipients: &[Recipient])
+    -> Result<EncryptedEnvelope, CryptoError>;
+```
+
+**Part 模型语义澄清。**
+
+- `PartKind::Body` 的 `data` 语义 = "**body 单元**"：存在 inline images 时为 `multipart/related{HTML + inline image parts}`，无 inline 时为纯 body。Inline images 在 **composition 层**折进 body unit，**不**作为独立 crypto part。
+- `PartKind::Attachment{content_id: None}` = 常规附件（无 `cid:`）。
+- 粒度 B 的合并单元：composition 层把所有常规附件打包成**单个 `multipart/mixed` 实体**，作为**一个** `Part`（新 variant `PartKind::MergedAttachments` 或 `Attachment` 带 `merged: true` 标记）。
+
+**Inline images 归属：与 Proton 的有意分歧。** Proton（`clients/project/mail/rust/`）把 inline image 建模为 `AttachmentDisposition::Inline` + `Content-ID` 的 attachment（`mail-package-builder/src/types.rs:43-47`），且分两条路径：ProtonMail 路径下 inline image 是**独立密文 + 独立 session key**（与常规附件同走 `Attachment::encrypt`，`mail-common/src/actions/draft/attachment_upload.rs:408`）；PgpMime 路径下 inline + 常规附件**全部折进 body MIME blob、一把 body session key**（`mail-package-builder/src/packages.rs:197-250` + 注释 `:329-331`）。Kylins 的粒度 A 是 Proton 没有的**第三种**：body+inline 折成一个单元（inline 不独立），常规附件各自独立。**理由**：HTML 的 `cid:` 引用必须有 inline image 才能渲染，故 body 单元须自包含；常规附件是独立下载物，可独立加解密/转发。MIME 仍"先建后加密"（与 Proton `crypto-inbox-mime/src/write.rs:1-22` 一致），但 composition 层只把 inline 折进 body、常规附件保持独立（粒度 A）或合并为一个 `multipart/mixed`（粒度 B）。
+
+**粒度 × 序列化 × 后端 映射矩阵。**
+
+| 后端 / 路径 | 序列化（wire） | 粒度→wire 表现 | session key 数 | 上层可感知收益 |
+|---|---|---|---|---|
+| S/MIME（A 形态公网 SMTP） | **强制 `SingleMimeBlob`**（§11.6 硬规则1；`SmimeBackend::encrypt` 现 reject `SplitPerPart`，`smime/src/lib.rs:289-296`） | A/B/Whole 均坍缩为**一个 `EnvelopedData`**；粒度仅影响 plaintext 组成（B→body 实体内含一个 merged `multipart/mixed` 子树） | 1 | 仅 composition 层（B 的合并附件 UX）；**无 per-part 懒解密/per-part 转发** |
+| OpenPGP PGP/MIME（A 形态公网 SMTP） | **强制 `SingleMimeBlob`**（RFC 3156） | 同上，整棵 MIME 一个加密 blob | 1 | 同 S/MIME |
+| OpenPGP E2EE-内部 / 未来 Kylins↔Kylins | **`SplitPerPart`** | A→body+inline 一 part + 每常规附件一 part；B→body+inline 一 part + merged `multipart/mixed` 一 part | A: 1+N；B: 2 | per-part 懒解密、per-part 转发重包 key、爆破半径隔离（§11.4 能力 1/2/4） |
+
+**A 形态公网下的收益边界（诚实声明）。** S/MIME 与 PGP/MIME 在公网 SMTP 上序列化恒为 `SingleMimeBlob`，CMS `EnvelopedData`/PGP-MIME 整 blob 只有**一把 content-encryption key**，故粒度 A/B 的"per-part session key"收益在公网 wire 上**不被接收方感知**——接收方仍拿到一个 blob。粒度在 A 形态下仅以两种形式体现：
+
+1. **composition（当下可用）**：粒度 B 让明文 MIME 里附件以一个 merged `multipart/mixed` 子树存在（接收方解一个 blob 后看到一个合并附件，而非 N 个独立附件）——真实可互操作的 UX 差异，接收侧 `extract_attachments` 零改动。
+2. **future-facing**：当 `SplitPerPart` 序列化落地（E2EE-内部 / B 形态自有后端），同一粒度枚举立即获得 per-part 懒解密/转发/隔离收益，**无需改上层 API**。
+
+**选择器（仅账户/全局）。** `accounts.crypto_granularity` 列（§10.2）+ settings KV `crypto.granularity`（§12.3），账户级覆盖优先于全局。`SendDraft` **不带粒度字段**；`send_op`/`apply_crypto` 从 account 配置解析。A 形态默认 `whole_message`（互操作安全）。
+
+**与密钥层级对齐。** §10.1 Layer 3 的 part 数由粒度决定：WholeMessage→1；A→1(body+inline)+N(附件)；B→1(body+inline)+1(merged)。
+
+**影响范围（本节）。** §10.1 Layer 3 part 计数与粒度挂钩；§10.2 accounts 表加 `crypto_granularity` 列；§11.1/§11.2 收发路径加 composition/解析步骤；§11.6 硬规则1 补注粒度坍缩；§12.3 加 `crypto.granularity`；§14 Phase 2 标注映射双路径；§15.2 追加粒度 checklist。本文档为设计示意，**不引入代码改动**；现有 `core/envelope.rs` 的 `Part`/`PartKind`/`SerializationStrategy`/`EncryptedEnvelope` 保持不变，`EncryptionGranularity` 待后续 SDD 落地。
 
 ### 11.5 统一对象模型：把"分片 + 分级保护"推广到所有 item 类型
 
@@ -879,7 +938,7 @@ fn seal_part(p: &impl CryptoProvider, part: &Part, object_key: &ObjectKey)
 
 硬规则：
 
-1. 出站永远 `SingleMimeBlob`（§11.4）；按收件方能力选 PGP/MIME 或 S/MIME。
+1. 出站永远 `SingleMimeBlob`（§11.4）；按收件方能力选 PGP/MIME 或 S/MIME。**粒度 `EncryptionGranularity` 在公网 SMTP 上坍缩为单 blob**——接收方仍得一个 EnvelopedData/PGP-MIME blob（一把 content key），粒度 A/B 的 per-part session-key 收益在 wire 上不被接收方感知，仅 composition 差异（粒度 B 的 merged `multipart/mixed` 子树）对外可见；per-part 收益待 `SplitPerPart`/E2EE-内部落地（§11.4.1）。
 2. **加密主题按形态 + 按域可配**：PGP/MIME 默认启用（外层占位符）；S/MIME 默认关闭（头部保护支持零散）；可对 gov/企业域强制关闭。
 3. 加密邮件**不被服务器索引**——搜索只剩元数据；用本地加密搜索索引弥补（`encrypted-search`，§14 Phase 4）。
 4. 网关/DLP 可能剥离加密附件——维护**每域降级策略**（可加密 / 仅签名 / 必须明文），发前探测或用户确认。
@@ -991,6 +1050,7 @@ export async function verifyEmail(accountId: string, signedPath: string, detache
 ```typescript
 crypto_method: 'crypto.method',                    // 'none' | 'smime' | 'openpgp' | 'sm'
 crypto_policy: 'crypto.policy',                    // JSON
+crypto_granularity: 'crypto.granularity',          // 'whole_message' | 'body_inline_per_attachment' | 'body_inline_merged_attachments'（见 §11.4.1）
 crypto_smime_pkcs11_lib: 'crypto.smime.pkcs11_lib',
 crypto_smime_default_sign_cert: 'crypto.smime.default_sign_cert',
 crypto_smime_default_encrypt_cert: 'crypto.smime.default_encrypt_cert',
@@ -1053,6 +1113,7 @@ crypto_openpgp_keyring: 'crypto.openpgp.keyring',
 3. `crypto/openpgp/trust.rs`：pinning / TOFU。
 4. RFC 3156 PGP/MIME 包装。
 5. Composer/ReadingPane 状态显示。
+6. 实现"粒度×序列化"映射双路径：公网 PGP/MIME = `SingleMimeBlob`（粒度 A/B 坍缩为单 blob）；E2EE-内部 = `SplitPerPart`（粒度 A/B 完整表达，body+inline 一 part + per-attachment 或 merged 一 part）。S/MIME Phase 1 已是 `SingleMimeBlob`，粒度 B 的 merged `multipart/mixed` composition 可先行落地，不待 `SplitPerPart`。
 
 ### Phase 3 — 国密 SM2/SM3/SM4
 
@@ -1100,6 +1161,11 @@ crypto_openpgp_keyring: 'crypto.openpgp.keyring',
 - [ ] 每个字段分级保护：服务器必须可读（联系人邮箱/固定公钥、日历 attendee）⇒ 仅签名（Signed）；私密字段 ⇒ 签+加（EncryptedAndSigned）；不"全加密/全明文"一刀切（见 §11.5）。
 - [ ] 加密邮件的主题写入加密 MIME 内层/消息级加密字段，外层头置占位符；列表与索引只用解密后的内存值（见 §11.5）。
 - [ ] A 形态出站一律 `SingleMimeBlob`（PGP/MIME 或 S/MIME）；`SplitPerPart` 不上公网 SMTP（见 §11.6）。
+- [ ] `EncryptionGranularity` 与 `SerializationStrategy` 正交；上层只设粒度，后端按 (后端,粒度,序列化) 映射表实现，屏蔽 smime/pgp/sm 差异（见 §11.4.1）。
+- [ ] Inline images 一律折进 body unit（`multipart/related`），不作为独立 crypto part；body 单元须自包含可渲染（与 Proton ProtonMail 路径有意分歧，见 §11.4.1）。
+- [ ] 粒度 B 合并单元 = 单个 `multipart/mixed` 实体加密为一个 part；解密后由 `mail_parser` 走子树抽取还原各附件。
+- [ ] A 形态公网 SMTP：粒度 A/B 不产生 per-part wire 收益（SingleMimeBlob 一把 key）；仅 composition 差异（B 的 merged 子树）对外可见；per-part 收益待 `SplitPerPart`/E2EE-内部落地。
+- [ ] 粒度选择器仅账户/全局（`account.crypto_granularity` / `crypto.granularity`）；A 形态默认 `whole_message` 保证互操作；`SendDraft` 不带粒度字段。
 - [ ] 加密主题按形态+按域开关：PGP/MIME 默认开、S/MIME 默认关；维护每域降级策略（可加密/仅签名/明文）（见 §11.6）。
 - [ ] 联系人/日历/任务当前明文 + TLS 同步；本地缓存按 §11.6 规则处理（密文 part 存密文、元数据/索引明文或另行加密）。
 - [ ] 本地落盘分级（§11.7）：密文对象存密文、元数据可明文、机密经 `encrypt_secret` 包裹、整库不加密；解密明文只驻内存，禁回写 SQLite。
