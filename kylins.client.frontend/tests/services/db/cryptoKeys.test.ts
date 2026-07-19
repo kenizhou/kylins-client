@@ -12,6 +12,7 @@ import {
   generateKey,
   importKeyFromPath,
   exportPublicToPath,
+  exportP12ToPath,
   deleteCryptoKey,
   setDefaultSigningKey,
   type CryptoKeyRow,
@@ -91,6 +92,18 @@ describe('cryptoKeys service wrappers', () => {
       standard: 'smime',
       fingerprint: 'fp',
       outPath: '/out/pub.pem',
+    });
+  });
+
+  it('exportP12ToPath invokes crypto_export_p12_to_path with passphrase + outPath', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await exportP12ToPath('acct', 'smime', 'fp', 'secret-pw', '/out/identity.p12');
+    expect(invoke).toHaveBeenCalledWith('crypto_export_p12_to_path', {
+      accountId: 'acct',
+      standard: 'smime',
+      fingerprint: 'fp',
+      passphrase: 'secret-pw',
+      outPath: '/out/identity.p12',
     });
   });
 

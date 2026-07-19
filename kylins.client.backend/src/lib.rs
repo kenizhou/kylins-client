@@ -254,6 +254,10 @@ pub fn run() {
             db::commands::crypto_generate_key,
             db::commands::crypto_import_key_from_path,
             db::commands::crypto_export_public_to_path,
+            // Plan 3b — S/MIME `.p12`/`.pfx` identity export (cert + private +
+            // intermediates, passphrase-protected). The export mirror of
+            // `crypto_import_key_from_path`.
+            db::commands::crypto_export_p12_to_path,
             // Plan 3 / G5 Task 4 — S/MIME receive orchestrator commands.
             db::commands::crypto_open_message,
             db::commands::db_get_message_crypto_result,

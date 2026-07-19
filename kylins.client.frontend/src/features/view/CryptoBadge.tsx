@@ -22,8 +22,9 @@
 //     'invalid'           → shield + ✕  (error)
 //     'not-signed'        → no glyph
 //
-//   revocation (overlay, only when unchecked/revoked):
-//     'unchecked' → warning triangle (warning)
+//   revocation (overlay, only when unchecked/revoked/stale):
+//     'unchecked' → warning triangle (warning)  "no revocation data"
+//     'stale'     → hourglass-over-triangle (warning, distinct)  "CRL past nextUpdate"
 //     'revoked'   → warning triangle (error)
 //     'good'      → no glyph
 //
@@ -65,7 +66,7 @@ type SignatureState =
   | 'unknown-key'
   | 'mismatch';
 type DecryptState = 'ok' | 'no-key' | 'failed' | 'n/a';
-type RevocationState = 'good' | 'revoked' | 'unchecked';
+type RevocationState = 'good' | 'revoked' | 'unchecked' | 'stale';
 type Tone = 'success' | 'warning' | 'error' | 'muted';
 
 const SIGNATURE_STATES: ReadonlySet<string> = new Set<SignatureState>([
@@ -86,6 +87,7 @@ const REVOCATION_STATES: ReadonlySet<string> = new Set<RevocationState>([
   'good',
   'revoked',
   'unchecked',
+  'stale',
 ]);
 
 function isSignatureState(v?: string | null): v is SignatureState {
@@ -247,6 +249,32 @@ function WarningGlyph({ size }: { size: number }) {
   );
 }
 
+// Stale-CRL glyph — hourglass inside a rounded warning pill. Distinct from
+// `WarningGlyph` so the "CRL past nextUpdate / unusable" overlay reads
+// differently from both "no CRL available" (Unchecked warning) and "cert
+// revoked" (Revoked error). Same `warning` tone — staleness is informational
+// (soft-fail); only the icon shape differs.
+function StaleGlyph({ size }: { size: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {/* Hourglass — universally "out of date / expired". */}
+      <path d="M7 4h10M7 20h10" />
+      <path d="M7 4v3l5 5-5 5v3M17 4v3l-5 5 5 5v3" />
+    </svg>
+  );
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Segments — each rendered state contributes one {glyph, label, tooltip}.
 // ──────────────────────────────────────────────────────────────────────────
@@ -346,7 +374,17 @@ function revocationSegment(state: RevocationState, size: number): Segment | null
       return {
         glyph: <WarningGlyph size={size} />,
         label: 'Revocation unchecked',
-        tooltip: 'Revocation status unchecked',
+        tooltip: 'Revocation status unchecked — no CRL available',
+        tone: 'warning',
+      };
+    case 'stale':
+      // Distinct glyph (hourglass vs. warning triangle) + tooltip wording so
+      // the user can tell "stale revocation data" from "no revocation data".
+      // Same warning tone — staleness is informational (soft-fail).
+      return {
+        glyph: <StaleGlyph size={size} />,
+        label: 'Revocation data stale',
+        tooltip: 'Revocation data stale — CRL past its nextUpdate or unusable',
         tone: 'warning',
       };
     case 'revoked':

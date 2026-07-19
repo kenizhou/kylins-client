@@ -673,3 +673,115 @@ async fn crypto_import_key_from_path_inner_wrong_passphrase_is_user_error() {
         "wrong-passphrase error must mention 'passphrase' (got: {err})"
     );
 }
+
+// ---- Plan 3b — `.p12`/`.pfx` export through the IPC inner fn ---------------
+//
+// Verifies `crypto_export_p12_to_path_inner` (the export mirror of
+// `crypto_import_key_from_path_inner`): generates a key in acct-A, exports it
+// as a passphrase-protected PFX, then re-imports the file into acct-B via the
+// SAME import inner fn the UI uses — proving the PFX we built is readable by
+// our own import path with identical contents (cert + fingerprint match).
+// In-process (no openssl shell-out): p12-keystore writes the PFX, p12-keystore
+// reads it back.
+
+use kylins_client_lib::db::commands::crypto_export_p12_to_path_inner;
+
+/// `crypto_export_p12_to_path_inner` writes a passphrase-protected PFX file at
+/// `out_path`; re-importing that file via `crypto_import_key_from_path_inner`
+/// round-trips the cert + private key into a FRESH account whose fingerprint
+/// matches the source. Exercises the full IPC stack (intermediate resolution
+/// via `list_intermediate_certs` + `SmimeBackend::export_p12` +
+/// `std::fs::write`) without openssl.
+#[tokio::test]
+async fn crypto_export_p12_to_path_writes_pfx() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+    seed_account_with(&pool, "acct-EXP12-A", "exp12a@kylins.com").await;
+
+    // Generate a key in acct-A — the identity we'll export.
+    let row_a = crypto_generate_key_inner(&pool, "acct-EXP12-A", "exp12a@kylins.com")
+        .await
+        .expect("generate_key_inner in acct-EXP12-A");
+    assert!(
+        row_a.has_private,
+        "fixture key must have private material to export"
+    );
+
+    // Export to a temp .p12 with a known passphrase.
+    let p12_path = tmp.path().join("exported-identity.p12");
+    crypto_export_p12_to_path_inner(
+        &pool,
+        "acct-EXP12-A",
+        "smime",
+        &row_a.fingerprint,
+        Some("export-test-pass".to_string()),
+        p12_path.to_str().unwrap(),
+    )
+    .await
+    .expect("export_p12_to_path_inner");
+
+    assert!(p12_path.exists(), ".p12 file must be written");
+    let pfx_bytes = std::fs::read(&p12_path).expect("read p12");
+    assert!(!pfx_bytes.is_empty(), ".p12 bytes must be non-empty");
+
+    // Re-import into a FRESH account (acct-EXP12-B) via the SAME import inner
+    // fn the KeyManager UI calls — proves the PFX we built is readable by our
+    // own import path with identical contents.
+    seed_account_with(&pool, "acct-EXP12-B", "exp12b@kylins.com").await;
+    let row_b = crypto_import_key_from_path_inner(
+        &pool,
+        "acct-EXP12-B",
+        p12_path.to_str().unwrap(),
+        Some("export-test-pass".to_string()),
+    )
+    .await
+    .expect("re-import the exported .p12");
+
+    assert_eq!(row_b.standard, "smime");
+    assert_eq!(
+        row_b.fingerprint, row_a.fingerprint,
+        "re-imported fingerprint must match the source (same cert → same SKI)"
+    );
+    assert!(
+        row_b.has_private,
+        "re-imported .p12 must carry the private key back into acct-EXP12-B"
+    );
+}
+
+/// `crypto_export_p12_to_path_inner` surfaces the empty-passphrase Policy
+/// error as a user-facing string (NOT a panic + NOT a silent no-op). The
+/// passphrase is REQUIRED non-empty — a `.p12` carrying a private key MUST be
+/// encrypted. The frontend confirm-passphrase prompt guards the UX side; this
+/// test pins the backend's defense so a UI regression can't bypass it.
+#[tokio::test]
+async fn crypto_export_p12_to_path_empty_passphrase_is_user_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+    seed_account_with(&pool, "acct-EXP12-NP", "exp12np@kylins.com").await;
+
+    let row = crypto_generate_key_inner(&pool, "acct-EXP12-NP", "exp12np@kylins.com")
+        .await
+        .expect("generate_key_inner");
+
+    let p12_path = tmp.path().join("empty-pass.p12");
+    let err = crypto_export_p12_to_path_inner(
+        &pool,
+        "acct-EXP12-NP",
+        "smime",
+        &row.fingerprint,
+        None,
+        p12_path.to_str().unwrap(),
+    )
+    .await
+    .expect_err("None passphrase must surface an error");
+
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("passphrase"),
+        "empty-passphrase error must mention 'passphrase' (got: {err})"
+    );
+    assert!(
+        !p12_path.exists(),
+        "no .p12 file must be written on passphrase failure"
+    );
+}

@@ -351,6 +351,14 @@ pub struct SignerDetails {
     /// persisted column is NULL (pre-migration rows, the UnknownKey / sig-fail
     /// early-return arms, and all success states).
     pub failure_reason: Option<String>,
+    /// Structured RFC 5280 §5.3.1 CRLReason name (e.g. `"KeyCompromise"`)
+    /// when `revocation_state = 'revoked'` and the CRL entry carried a
+    /// reasonCode extension. `None` for every other outcome. Surfaced from
+    /// `VerificationResult.revocation_reason` →
+    /// `message_crypto_results.revocation_reason` (2026-07-18 CRL-revocation-
+    /// detail spec decision #4). Rendered as a distinct "Reason: <name>" line
+    /// by the dialog (NOT buried inside `failure_reason`).
+    pub revocation_reason: Option<String>,
 }
 
 /// Build a per-call [`SmimeBackend`] bound to `account_id`. Mirrors the helper
@@ -483,7 +491,11 @@ async fn resolve_crls(
 /// `SignatureState`; `failure_reason` is the granular reason surfaced from
 /// `ChainOutcome.failure_reason` via `VerificationResult.failure_reason` by
 /// `SmimeBackend::verify_with_context` (None on the early-return arms and on
-/// success states). The orchestrator threads it in here.
+/// success states); `revocation_reason` is the structured RFC 5280 CRLReason
+/// name from `ChainOutcome.revocation_reason` via
+/// `VerificationResult.revocation_reason` (Some(<name>) only on a revoked-cert
+/// hard-fail; None for every other outcome). The orchestrator threads them in
+/// here.
 #[allow(clippy::too_many_arguments)] // row-builder; bundling adds ceremony without clarity
 fn build_crypto_result_row(
     account_id: &str,
@@ -494,6 +506,7 @@ fn build_crypto_result_row(
     signer_fingerprint: Option<String>,
     signer_email: Option<String>,
     failure_reason: Option<String>,
+    revocation_reason: Option<String>,
 ) -> MessageCryptoResultRow {
     let sig_str = match signature_state {
         SignatureState::NotSigned => "not-signed",
@@ -504,9 +517,13 @@ fn build_crypto_result_row(
         SignatureState::Mismatch => "mismatch",
     };
     // Coarse chain/revocation inference from the SignatureState. The granular
-    // ChainOutcome.failure_reason is now threaded through `failure_reason`
-    // (2026-07-18 spec); chain/revocation columns remain coarse inferences
-    // (revoked vs. unchecked distinction on Invalid is a future carry-forward).
+    // ChainOutcome.failure_reason + .revocation_reason are threaded through
+    // their own columns (2026-07-18 specs); the coarse `revocation_state`
+    // remains an inference from the SignatureState. When a revoked-cert
+    // outcome reaches this builder, the caller (run_verify_path →
+    // finish_open_crypto) supplies the granular `revocation_reason` too; the
+    // coarse state is "unchecked" because the Invalid SignatureState does not
+    // distinguish revocation vs. other chain failures.
     let (chain_valid, revocation_state) = match signature_state {
         SignatureState::ValidVerified
         | SignatureState::ValidUnverified
@@ -529,6 +546,7 @@ fn build_crypto_result_row(
             .map(|d| d.as_secs().to_string())
             .unwrap_or_else(|_| "0".to_string()),
         failure_reason,
+        revocation_reason,
     }
 }
 
@@ -623,7 +641,7 @@ async fn run_verify_path(
     signed_data_der: &[u8],
     from_email: Option<&str>,
     covered_content: Option<&[u8]>,
-) -> Result<(Option<Vec<u8>>, SignatureState, Option<String>, Option<String>, Option<String>), String> {
+) -> Result<VerifyOutcome, String> {
     // Intermediates from the SignedData certificates set (excludes the signer leaf).
     let signed_data_intermediates = crypto_smime::extract_intermediates(signed_data_der)
         .map_err(|e| format!("extract_intermediates: {e}"))?;
@@ -778,17 +796,50 @@ async fn run_verify_path(
         .as_ref()
         .map(|s| s.fingerprint.as_str().to_string())
         .or(signer_fp);
-    Ok((
+    Ok(VerifyOutcome {
         plaintext,
-        result.state,
-        final_signer_fp,
-        signer_email_for_trust,
-        // Granular ChainOutcome.failure_reason (2026-07-18 spec) — surfaced
-        // via `VerificationResult.failure_reason` by `verify_with_context`.
-        // None on the early-return arms (UnknownKey, sig-fail Invalid) and on
-        // success states; the real reason on chain failures + Mismatch.
-        result.failure_reason,
-    ))
+        signature_state: result.state,
+        signer_fp: final_signer_fp,
+        signer_email: signer_email_for_trust,
+        // Granular ChainOutcome.failure_reason (2026-07-18 granular-chain-outcome
+        // spec) — surfaced via `VerificationResult.failure_reason` by
+        // `verify_with_context`. None on the early-return arms (UnknownKey,
+        // sig-fail Invalid) and on success states; the real reason on chain
+        // failures + Mismatch.
+        failure_reason: result.failure_reason,
+        // Structured RFC 5280 CRLReason (2026-07-18 CRL-revocation-detail spec)
+        // — surfaced via `VerificationResult.revocation_reason` by
+        // `verify_with_context`. Some(<name>) only on a revoked-cert hard-fail;
+        // None for every other outcome.
+        revocation_reason: result.revocation_reason,
+    })
+}
+
+/// Outcome of [`run_verify_path`]: the values the orchestrator needs from a
+/// verify-path run. Introduced (2026-07-18 CRL-revocation-detail spec) to
+/// replace the prior 5-tuple return — adding `revocation_reason` would have
+/// pushed the tuple to a 6-tuple smell (flagged by the controller), and the
+/// struct shape is the documented future-ideal. Field names mirror the
+/// `build_crypto_result_row` / `finish_open_crypto` args so the threading
+/// reads cleanly at the call sites.
+struct VerifyOutcome {
+    /// Plaintext MIME bytes (SignedData eContent for encapsulated; the
+    /// externally-supplied covered content for detached).
+    plaintext: Option<Vec<u8>>,
+    /// Final resolved signature state (Invalid / Mismatch / ValidVerified /
+    /// ValidUnverified / UnknownKey).
+    signature_state: SignatureState,
+    /// Signer cert fingerprint, when one was located.
+    signer_fp: Option<String>,
+    /// Signer email (the From header), for trust-decision lookup + UI display.
+    signer_email: Option<String>,
+    /// Granular `ChainOutcome.failure_reason` surfaced via
+    /// `VerificationResult.failure_reason`.
+    failure_reason: Option<String>,
+    /// Structured RFC 5280 CRLReason name surfaced via
+    /// `VerificationResult.revocation_reason`. `Some(<name>)` only when the
+    /// verification hard-failed because the CRL listed the cert as revoked.
+    revocation_reason: Option<String>,
 }
 
 /// Open a crypto-marked message: decrypt + (if signed) verify it. Returns the
@@ -871,7 +922,7 @@ pub async fn open_crypto_message(
         (signed_part.as_deref(), ciphertext.as_deref())
     {
         let covered = part1_bytes.to_vec();
-        let (plaintext, sig_state, sfp, semail, sfailure_reason) = run_verify_path(
+        let outcome = run_verify_path(
             &backend,
             pool,
             &client,
@@ -883,7 +934,7 @@ pub async fn open_crypto_message(
         .await?;
         // `plaintext` is `covered` itself (detached: no eContent) — but use
         // the value returned by run_verify_path for clarity.
-        let plaintext_mime = plaintext.or(Some(covered));
+        let plaintext_mime = outcome.plaintext.or(Some(covered));
         return finish_open_crypto(
             pool,
             account_id,
@@ -891,10 +942,11 @@ pub async fn open_crypto_message(
             plaintext_mime,
             "signed",
             "n/a",
-            sig_state,
-            sfp,
-            semail,
-            sfailure_reason,
+            outcome.signature_state,
+            outcome.signer_fp,
+            outcome.signer_email,
+            outcome.failure_reason,
+            outcome.revocation_reason,
         )
         .await;
     }
@@ -915,6 +967,8 @@ pub async fn open_crypto_message(
                 None,
                 None,
                 // No verify path ran → no ChainOutcome.failure_reason.
+                None,
+                // No verify path ran → no ChainOutcome.revocation_reason.
                 None,
             );
             upsert_message_crypto_result(pool, &row).await?;
@@ -939,8 +993,8 @@ pub async fn open_crypto_message(
     );
 
     // Default crypto_kind from the outer blob; refined below if we recurse
-    // (decrypt-then-verify → encrypted-signed). The 7th tuple slot is the
-    // granular `failure_reason` threaded from `run_verify_path`
+    // (decrypt-then-verify → encrypted-signed). The local `failure_reason` +
+    // `revocation_reason` are threaded from `run_verify_path`
     // (None on the encrypt-only / not-signed branch where no verify ran).
     let (
         plaintext_mime,
@@ -950,6 +1004,7 @@ pub async fn open_crypto_message(
         signer_fp,
         signer_email,
         failure_reason,
+        revocation_reason,
     ) = if is_enveloped {
             // Step 3: decrypt path.
             let keys = list_crypto_keys_for_account(pool, account_id, "smime")
@@ -1043,6 +1098,8 @@ pub async fn open_crypto_message(
                     None,
                     // No verify path ran → no ChainOutcome.failure_reason.
                     None,
+                    // No verify path ran → no ChainOutcome.revocation_reason.
+                    None,
                 );
                 upsert_message_crypto_result(pool, &row).await?;
                 return Ok(OpenCryptoResult {
@@ -1056,7 +1113,7 @@ pub async fn open_crypto_message(
             // Step 3c: if the inner is itself a SignedData (sign-then-encrypt
             // send-side composition), recurse into the verify path.
             if is_signed_data(&inner_bytes) {
-                let (plaintext, sig_state, sfp, semail, sfailure_reason) = run_verify_path(
+                let outcome = run_verify_path(
                     &backend,
                     pool,
                     &client,
@@ -1067,13 +1124,14 @@ pub async fn open_crypto_message(
                 )
                 .await?;
                 (
-                    plaintext,
+                    outcome.plaintext,
                     "encrypted-signed",
                     "ok",
-                    sig_state,
-                    sfp,
-                    semail,
-                    sfailure_reason,
+                    outcome.signature_state,
+                    outcome.signer_fp,
+                    outcome.signer_email,
+                    outcome.failure_reason,
+                    outcome.revocation_reason,
                 )
             } else {
                 // Plaintext MIME — no inner signature.
@@ -1085,11 +1143,12 @@ pub async fn open_crypto_message(
                     None,
                     None,
                     None,
+                    None,
                 )
             }
         } else if is_signed {
             // Step 4: opaque-signed verify path (no decryption).
-            let (plaintext, sig_state, sfp, semail, sfailure_reason) = run_verify_path(
+            let outcome = run_verify_path(
                 &backend,
                 pool,
                 &client,
@@ -1100,13 +1159,14 @@ pub async fn open_crypto_message(
             )
             .await?;
             (
-                plaintext,
+                outcome.plaintext,
                 "signed",
                 "n/a",
-                sig_state,
-                sfp,
-                semail,
-                sfailure_reason,
+                outcome.signature_state,
+                outcome.signer_fp,
+                outcome.signer_email,
+                outcome.failure_reason,
+                outcome.revocation_reason,
             )
         } else {
             return Err(format!(
@@ -1129,6 +1189,9 @@ pub async fn open_crypto_message(
         // Granular ChainOutcome.failure_reason threaded from run_verify_path.
         // None for the not-signed / encrypt-only branch (no verify path ran).
         failure_reason,
+        // Structured RFC 5280 CRLReason threaded from run_verify_path.
+        // None for every non-revoked outcome.
+        revocation_reason,
     )
     .await
 }
@@ -1150,6 +1213,7 @@ async fn finish_open_crypto(
     signer_fp: Option<String>,
     signer_email: Option<String>,
     failure_reason: Option<String>,
+    revocation_reason: Option<String>,
 ) -> Result<OpenCryptoResult, String> {
     // Parse the plaintext MIME → html/text/attachments.
     let (plaintext_html, plaintext_text, attachments) = match plaintext_mime.as_deref() {
@@ -1167,6 +1231,7 @@ async fn finish_open_crypto(
         signer_fp,
         signer_email,
         failure_reason,
+        revocation_reason,
     );
     upsert_message_crypto_result(pool, &row).await?;
 
@@ -1670,6 +1735,13 @@ pub(crate) async fn get_signer_details(
         signer,
         chain_path,
         failure_reason,
+        // Structured RFC 5280 CRLReason (2026-07-18 CRL-revocation-detail
+        // spec). Pass through verbatim — None for every non-revoked outcome;
+        // Some(<name>) only when the cert was revoked AND the CRL entry
+        // carried a reasonCode extension. No fixed-map fallback (unlike
+        // failure_reason): the dialog renders the "Reason: …" line only when
+        // this field is non-null.
+        revocation_reason: row.revocation_reason,
     }))
 }
 
@@ -3346,6 +3418,7 @@ mod tests {
             revocation_state: "unchecked".into(),
             verified_at: "1770000000".into(),
             failure_reason: Some("certificate revoked (KeyCompromise)".into()),
+            revocation_reason: None,
         };
         crate::db::message_crypto_results::upsert_message_crypto_result(
             pool.as_ref(),
@@ -3379,6 +3452,7 @@ mod tests {
             revocation_state: "unchecked".into(),
             verified_at: "1770000000".into(),
             failure_reason: None,
+            revocation_reason: None,
         };
         crate::db::message_crypto_results::upsert_message_crypto_result(
             pool.as_ref(),
@@ -3401,6 +3475,198 @@ mod tests {
             details_null.failure_reason,
             details_with.failure_reason,
             "(b) fallback must produce a different value than the real reason in (a)"
+        );
+    }
+
+    // ─── CRL Revocation Detail persistence + retrieval (2026-07-18 spec) ───
+    //
+    // The structured RFC 5280 CRLReason surfaced by `SmimeBackend::verify_with_context`
+    // (now threaded through `VerificationResult.revocation_reason`) MUST reach
+    // the persisted `message_crypto_results.revocation_reason` column, and
+    // `get_signer_details` MUST return it. The crypto-smime test
+    // `verify_with_context_surfaces_revocation_reason` already pins the source
+    // of the value at the crypto layer; these two backend tests pin the
+    // persistence + retrieval round-trip.
+
+    /// `build_crypto_result_row` persists the `revocation_reason` arg into the
+    /// new `message_crypto_results.revocation_reason` column (not dropped).
+    /// The row builder is the load-bearing boundary between
+    /// `verify_with_context`'s `VerificationResult.revocation_reason` and the
+    /// persisted column — a regression here would silently lose the structured
+    /// reason. Driven via a direct call to `build_crypto_result_row` + a real
+    /// `upsert_message_crypto_result` + `get_message_crypto_result` round-trip
+    /// so the column actually exists and the value survives the SQL boundary.
+    #[tokio::test]
+    async fn build_crypto_result_row_persists_revocation_reason() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+        seed_account(&pool, ACCOUNT_ID, ACCOUNT_EMAIL).await;
+        // Seed the FK thread + message the row's PK requires.
+        seed_message_with_from(&pool, ACCOUNT_ID, "msg-rev-reason", ACCOUNT_EMAIL).await;
+
+        // Build the row with a revoked-cert outcome: signature_state=Invalid,
+        // revocation_reason=Some("KeyCompromise"). The row builder threads
+        // this through to the new column.
+        let row = build_crypto_result_row(
+            ACCOUNT_ID,
+            "msg-rev-reason",
+            "signed",
+            "n/a",
+            SignatureState::Invalid,
+            Some("fp-rev".into()),
+            Some(ACCOUNT_EMAIL.into()),
+            // failure_reason still threaded in parallel (unchanged).
+            Some("certificate 0x123 revoked (KeyCompromise)".into()),
+            // The structured RFC 5280 CRLReason name — the new field.
+            Some("KeyCompromise".into()),
+        );
+        upsert_message_crypto_result(pool.as_ref(), &row)
+            .await
+            .expect("upsert row with revocation_reason");
+
+        // Read back from the DB to confirm the column actually holds the value
+        // (not just the in-memory row echo).
+        let persisted = crate::db::message_crypto_results::get_message_crypto_result(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            "msg-rev-reason",
+        )
+        .await
+        .expect("get_message_crypto_result ok")
+        .expect("row present");
+        assert_eq!(
+            persisted.revocation_reason.as_deref(),
+            Some("KeyCompromise"),
+            "revocation_reason column must carry the structured CRLReason name verbatim"
+        );
+        // failure_reason is still threaded in parallel — both columns coexist.
+        assert!(
+            persisted
+                .failure_reason
+                .as_ref()
+                .map(|r| r.to_lowercase().contains("revoke"))
+                .unwrap_or(false),
+            "failure_reason column should still carry the verbose revocation summary; got {:?}",
+            persisted.failure_reason
+        );
+
+        // Also exercise the NULL arm: a non-revoked outcome (e.g. Mismatch)
+        // threads revocation_reason=None through to the column. NULL is the
+        // canonical "no reason" value — the dialog omits the "Reason: …" line.
+        let row_null = build_crypto_result_row(
+            ACCOUNT_ID,
+            "msg-rev-reason-null",
+            "signed",
+            "n/a",
+            SignatureState::Mismatch,
+            Some("fp-mismatch".into()),
+            Some(ACCOUNT_EMAIL.into()),
+            Some("identity mismatch: ...".into()),
+            // Non-revoked outcome → no revocation reason to surface.
+            None,
+        );
+        seed_message_with_from(&pool, ACCOUNT_ID, "msg-rev-reason-null", ACCOUNT_EMAIL).await;
+        upsert_message_crypto_result(pool.as_ref(), &row_null)
+            .await
+            .expect("upsert row with NULL revocation_reason");
+        let persisted_null = crate::db::message_crypto_results::get_message_crypto_result(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            "msg-rev-reason-null",
+        )
+        .await
+        .expect("get_message_crypto_result ok (null)")
+        .expect("row present (null)");
+        assert!(
+            persisted_null.revocation_reason.is_none(),
+            "non-revoked outcome must persist NULL revocation_reason; got {:?}",
+            persisted_null.revocation_reason
+        );
+    }
+
+    /// `get_signer_details` surfaces the persisted `revocation_reason` column
+    /// straight through when non-NULL. The dialog renders it as a distinct
+    /// "Reason: <name>" line (independent of the failure_reason banner).
+    /// NULL row → the dialog's null-fallback path omits the reason line
+    /// (no fixed-map fallback for revocation_reason — it's structured data,
+    /// not free-form text).
+    #[tokio::test]
+    async fn get_signer_details_returns_revocation_reason() {
+        let h = make_open_crypto_harness().await;
+        let pool = h.pool.clone();
+
+        // ── (a) Real reason persisted → surfaces verbatim ──────────────────
+        let msg_with_reason = "msg-details-with-rev-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_with_reason, ACCOUNT_EMAIL).await;
+        let row_with = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_with_reason.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: Some("fp1".into()),
+            signer_email: Some(ACCOUNT_EMAIL.into()),
+            chain_valid: Some(0),
+            revocation_state: "revoked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: Some("certificate revoked (KeyCompromise)".into()),
+            revocation_reason: Some("KeyCompromise".into()),
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(
+            pool.as_ref(),
+            &row_with,
+        )
+        .await
+        .expect("seed row with revocation_reason");
+
+        let details_with = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_with_reason)
+            .await
+            .expect("get_signer_details ok (a)")
+            .expect("details present (a)");
+        assert_eq!(
+            details_with.revocation_reason.as_deref(),
+            Some("KeyCompromise"),
+            "(a) real revocation_reason must surface verbatim through get_signer_details"
+        );
+
+        // ── (b) NULL revocation_reason → surfaces as None ──────────────────
+        let msg_null = "msg-details-null-rev-reason";
+        seed_message_with_from(&pool, ACCOUNT_ID, msg_null, ACCOUNT_EMAIL).await;
+        let row_null = crate::db::message_crypto_results::MessageCryptoResultRow {
+            account_id: ACCOUNT_ID.into(),
+            message_id: msg_null.into(),
+            crypto_kind: "signed".into(),
+            decrypt_state: "n/a".into(),
+            signature_state: "invalid".into(),
+            signer_fingerprint: None,
+            signer_email: None,
+            chain_valid: Some(0),
+            revocation_state: "unchecked".into(),
+            verified_at: "1770000000".into(),
+            failure_reason: None,
+            revocation_reason: None,
+        };
+        crate::db::message_crypto_results::upsert_message_crypto_result(
+            pool.as_ref(),
+            &row_null,
+        )
+        .await
+        .expect("seed row with NULL revocation_reason");
+
+        let details_null = get_signer_details(pool.as_ref(), ACCOUNT_ID, msg_null)
+            .await
+            .expect("get_signer_details ok (b)")
+            .expect("details present (b)");
+        // NULL surfaces as None — no fixed-map fallback for revocation_reason
+        // (unlike failure_reason). The dialog omits the "Reason: …" line.
+        assert!(
+            details_null.revocation_reason.is_none(),
+            "(b) NULL revocation_reason must surface as None (no fixed-map fallback)"
+        );
+        assert_ne!(
+            details_null.revocation_reason,
+            details_with.revocation_reason,
+            "(b) NULL must differ from the real reason in (a)"
         );
     }
 
@@ -3559,7 +3825,7 @@ mod tests {
         // DB). Must NOT reach ValidVerified / ValidUnverified. This is the
         // no-trust-weakening guard (the leaf alone, with no path to the
         // anchor, must NOT validate).
-        let (_pt, neg_state, _fp, _em, _fr) = run_verify_path(
+        let neg = run_verify_path(
             &backend,
             &pool,
             &reqwest::Client::new(),
@@ -3572,11 +3838,12 @@ mod tests {
         .expect("run_verify_path (negative) ok");
         assert!(
             !matches!(
-                neg_state,
+                neg.signature_state,
                 SignatureState::ValidVerified | SignatureState::ValidUnverified
             ),
-            "without the stored intermediate, the chain MUST NOT validate (got {neg_state:?}); \
-             this is the no-trust-weakening guard"
+            "without the stored intermediate, the chain MUST NOT validate (got {:?}); \
+             this is the no-trust-weakening guard",
+            neg.signature_state
         );
 
         // Persist the INTERMEDIATE as `key_type='intermediate'` — the merge
@@ -3593,7 +3860,7 @@ mod tests {
         // Positive case: the merge adds the stored intermediate to the
         // intermediates list → the validator builds
         // leaf → intermediate(stored) → root(anchor), chain validates.
-        let (_pt, pos_state, _fp, _em, _fr) = run_verify_path(
+        let pos = run_verify_path(
             &backend,
             &pool,
             &reqwest::Client::new(),
@@ -3606,11 +3873,12 @@ mod tests {
         .expect("run_verify_path (positive) ok");
         assert!(
             matches!(
-                pos_state,
+                pos.signature_state,
                 SignatureState::ValidUnverified | SignatureState::ValidVerified
             ),
-            "with the stored intermediate, the chain MUST validate (got {pos_state:?}); \
-             previously failed without the stored intermediate"
+            "with the stored intermediate, the chain MUST validate (got {:?}); \
+             previously failed without the stored intermediate",
+            pos.signature_state
         );
 
         // Cleanup (temp dir reclaims, but explicit for hygiene).

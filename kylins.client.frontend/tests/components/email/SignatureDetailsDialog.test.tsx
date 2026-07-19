@@ -45,6 +45,7 @@ const sampleDetails: SignerDetails = {
     { subjectCn: 'Kylins Test CA', issuerCn: 'Kylins Test CA', isAnchor: true },
   ],
   failureReason: null,
+  revocationReason: null,
 };
 
 const baseProps = {
@@ -160,5 +161,94 @@ describe('SignatureDetailsDialog', () => {
     // No banner shown when failureReason is null (the dialog's `{... && ...}`
     // conditional hides the slot). The state label still renders.
     expect(queryByText(/content may have been altered/i)).toBeNull();
+  });
+
+  // ─── CRL Revocation Detail (2026-07-18 spec) ───
+  //
+  // The structured RFC 5280 CRLReason name rendered as a distinct "Reason:
+  // <name>" line + the Stale revocation banner. Both rendered only when
+  // their backend condition is met; otherwise omitted (no layout shift).
+
+  it('renders the structured CRLReason as a distinct "Reason" line when present', async () => {
+    // A revoked-cert outcome: revocationReason = "KeyCompromise". The dialog
+    // MUST render the structured reason as its own line — not bury it inside
+    // the failure_reason sentence.
+    mockGetSignerDetails.mockResolvedValue({
+      ...sampleDetails,
+      signatureState: 'invalid',
+      revocationState: 'revoked',
+      failureReason: 'certificate 0x123 revoked (KeyCompromise)',
+      revocationReason: 'KeyCompromise',
+    });
+    const { getByTestId } = render(<SignatureDetailsDialog {...baseProps} />);
+
+    await waitFor(() => expect(getByTestId('signature-details-body')).toBeInTheDocument());
+
+    // The dialog renders a "Reason" field. Find its label, then assert the
+    // sibling value block carries the structured CRLReason name. (The
+    // failure_reason banner ALSO contains "KeyCompromise" — the Reason field
+    // is a distinct render, so scope the assertion to the field's parent.)
+    const body = getByTestId('signature-details-body');
+    const reasonLabel = within(body).getByText(/^Reason$/i);
+    // The Reason field's label div + value div are siblings inside an outer
+    // "mb-3" block — climb to that outer block and assert the value.
+    const reasonField = reasonLabel.closest('div.mb-3') ?? reasonLabel.parentElement;
+    expect(reasonField?.textContent ?? '').toMatch(/KeyCompromise/i);
+    // Sanity: the field exists at all (a regression that drops the Reason
+    // line entirely would fail here).
+    expect(reasonLabel).toBeInTheDocument();
+  });
+
+  it('omits the Reason line when revocationReason is null (non-revoked outcome)', async () => {
+    // A non-revoked outcome (e.g. Mismatch) carries revocationReason=null.
+    // The dialog MUST NOT render a "Reason" line (no fixed-map fallback —
+    // revocation_reason is structured data, not free-form text).
+    mockGetSignerDetails.mockResolvedValue({
+      ...sampleDetails,
+      signatureState: 'mismatch',
+      revocationState: 'good',
+      failureReason: 'identity mismatch: ...',
+      revocationReason: null,
+    });
+    const { queryByText } = render(<SignatureDetailsDialog {...baseProps} />);
+
+    await waitFor(() => expect(queryByText(/signature details/i)).toBeInTheDocument());
+
+    // No "Reason" label rendered.
+    expect(queryByText(/^Reason$/i)).toBeNull();
+  });
+
+  it('renders the stale-revocation banner when revocationState is "stale"', async () => {
+    // A stale-CRL outcome: revocationState = "stale". The dialog MUST surface
+    // a distinct warning banner so the user can tell "stale revocation data"
+    // from "no revocation data" (both previously collapsed to "unchecked").
+    mockGetSignerDetails.mockResolvedValue({
+      ...sampleDetails,
+      signatureState: 'valid-verified',
+      revocationState: 'stale',
+      revocationReason: null,
+    });
+    const { getByTestId } = render(<SignatureDetailsDialog {...baseProps} />);
+
+    await waitFor(() => expect(getByTestId('signature-details-body')).toBeInTheDocument());
+
+    const banner = getByTestId('signature-details-stale-banner');
+    expect(banner.textContent ?? '').toMatch(/stale/i);
+    expect(banner.textContent ?? '').toMatch(/nextUpdate|unusable/i);
+  });
+
+  it('omits the stale-revocation banner for non-stale revocation states', async () => {
+    // A non-stale outcome (e.g. good) MUST NOT render the stale banner.
+    mockGetSignerDetails.mockResolvedValue({
+      ...sampleDetails,
+      signatureState: 'valid-verified',
+      revocationState: 'good',
+      revocationReason: null,
+    });
+    const { queryByTestId } = render(<SignatureDetailsDialog {...baseProps} />);
+
+    await waitFor(() => expect(queryByTestId('signature-details-body')).toBeInTheDocument());
+
+    expect(queryByTestId('signature-details-stale-banner')).toBeNull();
   });
 });

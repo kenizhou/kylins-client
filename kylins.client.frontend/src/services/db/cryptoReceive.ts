@@ -51,7 +51,10 @@ export interface MessageCryptoResult {
   signerEmail?: string | null;
   /** `1` / `0` / `null` (unchecked) — SQLite INTEGER column. */
   chainValid?: number | null;
-  /** `'good' | 'revoked' | 'unchecked'`. */
+  /** `'good' | 'revoked' | 'unchecked' | 'stale'`. `'stale'` distinguishes a
+   *  CRL that covered the cert but was unusable (expired past nextUpdate /
+   *  bad sig / out-of-scope / parse error) from `'unchecked'`'s "no CRL
+   *  covered the cert at all" (2026-07-18 CRL-revocation-detail spec). */
   revocationState: string;
   /** Epoch-seconds string (SQLite `strftime('%s','now')` output). */
   verifiedAt: string;
@@ -62,6 +65,15 @@ export interface MessageCryptoResult {
    *  uses `#[serde(skip_serializing_if = "Option::is_none")]` (None → absent
    *  key, not `null`). */
   failureReason?: string | null;
+  /** Structured RFC 5280 §5.3.1 CRLReason name (e.g. `'KeyCompromise'`,
+   *  `'Superseded'`) when `revocationState === 'revoked'` AND the CRL entry
+   *  carried a reasonCode extension (2026-07-18 CRL-revocation-detail spec).
+   *  `null` for every other outcome (success, identity mismatch,
+   *  non-revocation chain failures, the early-return arms, pre-migration
+   *  rows). A revoked cert whose CRL entry omitted the reasonCode extension
+   *  surfaces `'Unspecified'` here. Optional on the wire because the Rust
+   *  side uses `#[serde(skip_serializing_if = "Option::is_none")]`. */
+  revocationReason?: string | null;
 }
 
 /**
@@ -247,7 +259,9 @@ export interface SignerDetails {
   cryptoKind: string;
   /** Persisted nullable INTEGER → `null` = unchecked. */
   chainValid: boolean | null;
-  /** `'good' | 'revoked' | 'unchecked'`. */
+  /** `'good' | 'revoked' | 'unchecked' | 'stale'`. `'stale'` distinguishes a
+   *  CRL that covered the cert but was unusable from `'unchecked'`'s "no CRL
+   *  covered the cert at all" (2026-07-18 CRL-revocation-detail spec). */
   revocationState: string;
   /** Epoch-seconds string. */
   verifiedAt: string;
@@ -263,6 +277,13 @@ export interface SignerDetails {
    *  column is `null` (pre-migration rows, the UnknownKey / sig-fail early-return
    *  arms, and all success states). Rendered verbatim by the dialog. */
   failureReason: string | null;
+  /** Structured RFC 5280 §5.3.1 CRLReason name (e.g. `'KeyCompromise'`)
+   *  when `revocationState === 'revoked'` and the CRL entry carried a
+   *  reasonCode extension (2026-07-18 CRL-revocation-detail spec). `null`
+   *  for every other outcome — the dialog omits the "Reason: …" line when
+   *  null (no fixed-map fallback; revocation_reason is structured data, not
+   *  free-form text). */
+  revocationReason: string | null;
 }
 
 /**

@@ -18,7 +18,7 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import { useAccountStore } from '@/stores/accountStore';
 import { useToastStore } from '@/stores/toastStore';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
-import { ShieldCheckIcon, TrashIcon, DownloadIcon, UploadIcon } from '../icons';
+import { ShieldCheckIcon, TrashIcon, DownloadIcon, UploadIcon, LockIcon } from '../icons';
 import {
   listCryptoKeysForAccount,
   generateKey,
@@ -26,6 +26,7 @@ import {
   setDefaultSigningKey,
   deleteCryptoKey,
   exportPublicToPath,
+  exportP12ToPath,
   type CryptoKeyRow,
 } from '@/services/db/cryptoKeys';
 import { PassphrasePrompt } from './PassphrasePrompt';
@@ -61,6 +62,12 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
   // `<PassphrasePrompt>` below renders + owns focus while this is non-null.
   // Cleared on submit (success or cancel) — null means "no prompt open".
   const [pendingPassphrasePath, setPendingPassphrasePath] = useState<string | null>(null);
+
+  // Pending row awaiting an EXPORT passphrase (Plan 3b .p12 export). Set
+  // when the user clicks "Export .p12" on a row with `hasPrivate`; the
+  // confirm-mode `<PassphrasePrompt>` below renders while this is non-null.
+  // Cleared on submit (success or cancel) — null means "no export prompt".
+  const [pendingExportP12Row, setPendingExportP12Row] = useState<CryptoKeyRow | null>(null);
 
   useEffect(() => {
     if (!effectiveAccountId) return;
@@ -203,6 +210,47 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     }
   }
 
+  /**
+   * Open the confirm-passphrase prompt for `.p12` export (Plan 3b). The
+   * prompt is rendered via the controlled `<PassphrasePrompt>` at the
+   * bottom of this section (mirroring the import flow's pattern) — it
+   * unmounts cleanly with the section, and React Aria's focus-trap +
+   * `ariaHideOutside` observers are scoped to the open modal.
+   *
+   * The actual save-dialog + `exportP12ToPath` call live in
+   * `runExportP12` so the submit handler shares the cleanup-on-finish
+   * path.
+   */
+  function onExportP12(row: CryptoKeyRow) {
+    if (!effectiveAccountId) return;
+    setPendingExportP12Row(row);
+  }
+
+  /**
+   * Drive the .p12 export with the user-confirmed passphrase. Factored
+   * out of the prompt's onSubmit so the state-clear happens in one place
+   * (success OR error). Mirrors `runImport`'s shape.
+   */
+  async function runExportP12(row: CryptoKeyRow, passphrase: string) {
+    if (!effectiveAccountId) return;
+    setPendingExportP12Row(null);
+    // Default filename derived from the row's email so multi-identity
+    // accounts produce distinguishable files. Fall back to a generic name
+    // when the row has no email (CA-root rows, malformed rows, etc.).
+    const safeEmail = (row.email ?? 'identity').replace(/[^A-Za-z0-9._@-]/g, '_');
+    const outPath = await saveDialog({
+      defaultPath: `smime-${safeEmail}.p12`,
+      filters: [{ name: 'PKCS#12 bundle', extensions: ['p12', 'pfx'] }],
+    });
+    if (!outPath) return;
+    try {
+      await exportP12ToPath(effectiveAccountId, SMIME, row.fingerprint, passphrase, outPath);
+      pushToast('Identity exported', 'success');
+    } catch (err) {
+      pushToast(`Export failed: ${formatErr(err)}`, 'error');
+    }
+  }
+
   return (
     <PreferencesSectionCard title="Your S/MIME Keys" icon={ShieldCheckIcon}>
       {/* Account picker — only when no accountId prop was supplied. */}
@@ -309,6 +357,18 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
                 </button>
                 <button
                   type="button"
+                  onClick={() => void onExportP12(k)}
+                  disabled={!k.hasPrivate}
+                  className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                  title={
+                    k.hasPrivate ? 'Export .p12 (cert + private key)' : 'No private key to export'
+                  }
+                  aria-label="Export .p12"
+                >
+                  <LockIcon size={14} />
+                </button>
+                <button
+                  type="button"
                   onClick={() => void onDelete(k.fingerprint)}
                   className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--destructive)] hover:bg-[color-mix(in_oklab,var(--destructive),transparent_90%)] transition-colors"
                   title="Delete"
@@ -327,6 +387,15 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
           isOpen
           onCancel={() => setPendingPassphrasePath(null)}
           onSubmit={(pass) => void runImport(pendingPassphrasePath, pass)}
+        />
+      )}
+
+      {pendingExportP12Row !== null && (
+        <PassphrasePrompt
+          isOpen
+          confirm
+          onCancel={() => setPendingExportP12Row(null)}
+          onSubmit={(pass) => void runExportP12(pendingExportP12Row, pass)}
         />
       )}
     </PreferencesSectionCard>

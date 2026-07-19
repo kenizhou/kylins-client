@@ -200,6 +200,61 @@ describe('CryptoBadge', () => {
       const el = badge();
       expect(el?.getAttribute('aria-label')).not.toMatch(/revocation|revoked/i);
     });
+
+    // 2026-07-18 CRL-revocation-detail spec: a distinct `stale` overlay state.
+    // Stale distinguishes "a CRL covered the cert but was unusable (past
+    // nextUpdate / bad sig / out-of-scope)" from `unchecked`'s "no CRL
+    // covered the cert at all". The two states share a warning tone but MUST
+    // differ in the visible label + the accessible tooltip text so the user
+    // can tell them apart.
+    it('stale: amber warning with distinct stale-revocation-data detail', () => {
+      render(
+        <CryptoBadge
+          variant="label"
+          signatureState="valid-verified"
+          signerEmail="alice@example.com"
+          revocationState="stale"
+        />,
+      );
+      const el = badge();
+      expect(el).not.toBeNull();
+      // Distinct tooltip wording for stale vs. unchecked — both say
+      // "revocation data", but only stale mentions "stale" / "nextUpdate".
+      expect(el?.getAttribute('aria-label')).toMatch(/stale/i);
+      expect(el?.getAttribute('aria-label')).toMatch(/nextupdate|unusable|stale/i);
+      // The visible label must NOT collapse to "unchecked" — a stale data
+      // situation is its own state.
+      expect(el?.textContent ?? '').toMatch(/stale/i);
+      expect(el?.textContent ?? '').not.toMatch(/unchecked/i);
+    });
+
+    it('stale: distinct from unchecked (different label + tooltip wording)', () => {
+      // Render both side-by-side and assert the aria-labels differ — stale
+      // must NOT be a transparent alias for unchecked.
+      const { rerender } = render(
+        <CryptoBadge
+          variant="label"
+          signatureState="valid-verified"
+          signerEmail="alice@example.com"
+          revocationState="unchecked"
+        />,
+      );
+      const uncheckedLabel = badge()?.getAttribute('aria-label') ?? '';
+
+      rerender(
+        <CryptoBadge
+          variant="label"
+          signatureState="valid-verified"
+          signerEmail="alice@example.com"
+          revocationState="stale"
+        />,
+      );
+      const staleLabel = badge()?.getAttribute('aria-label') ?? '';
+
+      expect(staleLabel).not.toStrictEqual(uncheckedLabel);
+      expect(staleLabel.length).toBeGreaterThan(0);
+      expect(uncheckedLabel.length).toBeGreaterThan(0);
+    });
   });
 
   // -------------------------------------------------------------------------

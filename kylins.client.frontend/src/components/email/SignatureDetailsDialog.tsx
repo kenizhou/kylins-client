@@ -74,6 +74,10 @@ const REVOCATION_LABELS: Record<string, string> = {
   good: 'Good',
   revoked: 'Revoked',
   unchecked: 'Unchecked',
+  // 2026-07-18 CRL-revocation-detail spec: distinct label for the "CRL
+  // covered the cert but was unusable (past nextUpdate / bad sig / out-of-
+  // scope)" state — informational (soft-fail), not a security verdict.
+  stale: 'Stale revocation data',
 };
 
 const TRUST_LABELS: Record<string, string> = {
@@ -250,6 +254,31 @@ export function SignatureDetailsDialog({
                 <div className="mb-4 rounded-md border border-[var(--amber)]/40 bg-[var(--amber)]/5 px-3 py-2 text-xs text-[var(--amber)]">
                   {details.failureReason}
                 </div>
+              )}
+              {/* Stale-revocation-data warning (2026-07-18 CRL-revocation-detail
+                  spec). Distinct banner from the failure_reason slot — surfaces
+                  when the CRL covered the cert but was unusable (past
+                  nextUpdate / bad sig / out-of-scope). Informational
+                  (soft-fail); does NOT block message open or weaken
+                  revocation. The banner reads differently from the
+                  `unchecked` case so the user can tell stale data from no
+                  data. */}
+              {details.revocationState === 'stale' && (
+                <div
+                  data-testid="signature-details-stale-banner"
+                  className="mb-4 rounded-md border border-[var(--amber)]/40 bg-[var(--amber)]/5 px-3 py-2 text-xs text-[var(--amber)]"
+                >
+                  Revocation data is stale — the CRL is past its nextUpdate or otherwise unusable.
+                </div>
+              )}
+              {/* Structured RFC 5280 CRLReason (2026-07-18 CRL-revocation-detail
+                  spec). Distinct line — not buried inside the failure_reason
+                  sentence. Rendered only when the cert was revoked AND a
+                  reasonCode was carried by the CRL entry (or surfaced as
+                  "Unspecified" by the crypto layer when reasonCode was
+                  absent). Skipped for non-revoked outcomes (null). */}
+              {details.revocationReason && (
+                <Field label="Reason" value={details.revocationReason} />
               )}
 
               {/* Signer certificate (re-parsed from the cached CMS). */}

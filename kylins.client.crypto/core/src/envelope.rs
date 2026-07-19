@@ -123,6 +123,21 @@ pub struct VerificationResult {
     /// plain text by the dialog (no HTML).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
+    /// Structured RFC 5280 §5.3.1 CRLReason name surfaced from
+    /// `ChainOutcome.revocation_reason` by the smime backend's
+    /// `verify_with_context`. `Some(<reason>)` only when the verification
+    /// hard-failed because the CRL listed the cert as revoked (the
+    /// stringified `CrlReason` variant, e.g. `"KeyCompromise"`). `None` for
+    /// every other outcome (success, identity mismatch, non-revocation chain
+    /// failures, the early-return arms). Surfaced end-to-end (2026-07-18
+    /// CRL-revocation-detail spec decision #3): populated by
+    /// `SmimeBackend::verify_with_context` from `ChainOutcome.revocation_reason`
+    /// → persisted in `message_crypto_results.revocation_reason` → returned by
+    /// `get_signer_details` → rendered as a distinct "Reason: <name>" line by
+    /// the `SignatureDetailsDialog` (instead of burying it inside
+    /// `failure_reason`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -171,12 +186,17 @@ mod tests {
             state: SignatureState::NotSigned,
             signer: None,
             failure_reason: None,
+            revocation_reason: None,
         };
         let json = serde_json::to_string(&v).unwrap();
         assert!(!json.contains("signer"), "None signer is skipped");
         assert!(
             !json.contains("failure_reason"),
             "None failure_reason is skipped"
+        );
+        assert!(
+            !json.contains("revocation_reason"),
+            "None revocation_reason is skipped"
         );
     }
 }

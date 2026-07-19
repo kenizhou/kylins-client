@@ -25,6 +25,7 @@ vi.mock('../../../src/services/db/cryptoKeys', () => ({
   generateKey: vi.fn().mockResolvedValue(undefined),
   importKeyFromPath: vi.fn().mockResolvedValue(undefined),
   exportPublicToPath: vi.fn().mockResolvedValue(undefined),
+  exportP12ToPath: vi.fn().mockResolvedValue(undefined),
   deleteCryptoKey: vi.fn().mockResolvedValue(undefined),
   setDefaultSigningKey: vi.fn().mockResolvedValue(undefined),
 }));
@@ -383,9 +384,138 @@ describe('KeyManagerSection', () => {
     const { exportPublicToPath } = await import('../../../src/services/db/cryptoKeys');
 
     await screen.findByText(/fpFFF666/i);
-    fireEvent.click(screen.getByRole('button', { name: /export/i }));
+    // The DER-export button's accessible name is the exact "Export"
+    // (aria-label); the .p12 button's is "Export .p12". Pin to the exact
+    // name so this test doesn't also match the .p12 export button.
+    fireEvent.click(screen.getByRole('button', { name: /^Export$/ }));
     await waitFor(() => {
       expect(exportPublicToPath).toHaveBeenCalledWith('acct', 'smime', 'fpFFF666', '/out/cert.der');
     });
+  });
+
+  // ── Plan 3b: Export .p12 (identity backup) ───────────────────────────────
+  //
+  // The export mirror of the import flow: confirm-passphrase prompt (TWO
+  // inputs that must match — the user is creating a passphrase that protects
+  // a private key backup, so a typo would lock them out) → save dialog →
+  // exportP12ToPath. The button is disabled for cert-only / public-only rows.
+
+  it('Export .p12 button is disabled when the row has no private key', async () => {
+    await renderWithKeys([makeKey({ id: 'k-pub', fingerprint: 'fpPUB001', hasPrivate: false })]);
+    await screen.findByText(/fpPUB001/i);
+    const exportP12Btn = screen.getByRole('button', { name: /export \.p12/i });
+    expect(exportP12Btn).toBeDisabled();
+  });
+
+  it('Export .p12 button is enabled when the row has a private key', async () => {
+    await renderWithKeys([makeKey({ id: 'k-priv', fingerprint: 'fpPRV001', hasPrivate: true })]);
+    await screen.findByText(/fpPRV001/i);
+    const exportP12Btn = screen.getByRole('button', { name: /export \.p12/i });
+    expect(exportP12Btn).not.toBeDisabled();
+  });
+
+  it('Export .p12 opens the confirm-passphrase prompt with two inputs', async () => {
+    await renderWithKeys([makeKey({ fingerprint: 'fpGGG777', hasPrivate: true })]);
+    await screen.findByText(/fpGGG777/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /export \.p12/i }));
+
+    // Primary passphrase input + confirm input both render.
+    const primary = await screen.findByPlaceholderText(/bundle passphrase/i);
+    const confirm = await screen.findByPlaceholderText(/re-enter passphrase/i);
+    expect(primary).toBeInTheDocument();
+    expect(confirm).toBeInTheDocument();
+  });
+
+  it('Export .p12 with matching passphrases → save dialog → exportP12ToPath', async () => {
+    await renderWithKeys([
+      makeKey({ fingerprint: 'fpHHH888', email: 'hank@example.com', hasPrivate: true }),
+    ]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.save).mockResolvedValue('/out/identity.p12');
+    const { exportP12ToPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/fpHHH888/i);
+    // Use the exact accessible name (aria-label). Regex escaping of the period
+    // should work too, but jsdom's accessible-name computation occasionally
+    // normalizes whitespace; pin to the exact string for stability.
+    fireEvent.click(screen.getByRole('button', { name: 'Export .p12' }));
+
+    // Type matching passphrases in both inputs.
+    const primary = await screen.findByPlaceholderText(/bundle passphrase/i);
+    const confirm = await screen.findByPlaceholderText(/re-enter passphrase/i);
+    fireEvent.change(primary, { target: { value: 'backup-pass' } });
+    fireEvent.change(confirm, { target: { value: 'backup-pass' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /^OK$/i }));
+
+    await waitFor(() => {
+      expect(exportP12ToPath).toHaveBeenCalledWith(
+        'acct',
+        'smime',
+        'fpHHH888',
+        'backup-pass',
+        '/out/identity.p12',
+      );
+    });
+  });
+
+  it('Export .p12 confirm-mismatch blocks submit (no save dialog, no exportP12ToPath)', async () => {
+    await renderWithKeys([
+      makeKey({ fingerprint: 'fpIII999', email: 'iris@example.com', hasPrivate: true }),
+    ]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.save).mockResolvedValue('/out/identity.p12');
+    const { exportP12ToPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/fpIII999/i);
+    fireEvent.click(screen.getByRole('button', { name: /export \.p12/i }));
+
+    const primary = await screen.findByPlaceholderText(/bundle passphrase/i);
+    const confirm = await screen.findByPlaceholderText(/re-enter passphrase/i);
+    // Mismatched values.
+    fireEvent.change(primary, { target: { value: 'first-pass' } });
+    fireEvent.change(confirm, { target: { value: 'second-pass' } });
+
+    // The OK button is disabled while inputs mismatch — querying by role
+    // + name still returns it (disabled buttons are reachable in the a11y
+    // tree), so we assert `disabled` explicitly rather than expecting
+    // `getByRole` to throw.
+    const okBtn = screen.getByRole('button', { name: /^OK$/i });
+    expect(okBtn).toBeDisabled();
+    // The mismatch error must render (a11y: aria-describedby + role=alert).
+    expect(await screen.findByText(/passphrases do not match/i)).toBeInTheDocument();
+
+    // Even a forced form-submit (Enter from the confirm input) must NOT fire
+    // exportP12ToPath — the form's onSubmit gates on `canSubmit`.
+    fireEvent.submit(okBtn.closest('form')!);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(exportP12ToPath).not.toHaveBeenCalled();
+    expect(dialog.save).not.toHaveBeenCalled();
+  });
+
+  it('Export .p12 cancelling the passphrase prompt does NOT open the save dialog', async () => {
+    await renderWithKeys([
+      makeKey({ fingerprint: 'fpJJJ000', email: 'jane@example.com', hasPrivate: true }),
+    ]);
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    const { exportP12ToPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/fpJJJ000/i);
+    fireEvent.click(screen.getByRole('button', { name: /export \.p12/i }));
+
+    // The confirm-passphrase prompt opens; cancel it.
+    await screen.findByPlaceholderText(/re-enter passphrase/i);
+    // The Cancel button lives in the same modal — pick the LAST cancel-typed
+    // button (the imperative portal mounts after the section, so it's after
+    // any other cancel-typed control).
+    const cancelBtns = screen.getAllByRole('button', { name: /cancel/i });
+    fireEvent.click(cancelBtns[cancelBtns.length - 1]!);
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(dialog.save).not.toHaveBeenCalled();
+    expect(exportP12ToPath).not.toHaveBeenCalled();
   });
 });

@@ -79,8 +79,14 @@ use x509_cert_v02::Certificate as CertificateV02;
 /// posture (hard-fail-on-revoked, soft-fail-on-transport):
 /// - `Good` — a CRL covered the cert and the serial was not in the revoked list.
 /// - `Revoked` — the CRL lists the cert's serial → `chain_valid = false`.
-/// - `Unchecked` — no CRL supplied, no CRL covered the cert, or the CRL was
-///   stale/unreachable (soft-fail — chain proceeds, caller warns).
+/// - `Unchecked` — no CRL supplied OR no CRL covered the cert (soft-fail —
+///   chain proceeds, caller warns). Distinct from `Stale`: `Unchecked` means
+///   we have NO revocation data for this cert at all.
+/// - `Stale` — a CRL covered the cert but was unusable (expired past
+///   `nextUpdate`, bad signature, out-of-scope, unparseable). The chain
+///   still soft-fails (proceeds, caller warns), but the user can distinguish
+///   "stale revocation data" from "no revocation data" — surfacing CRL-freshness
+///   as a distinct warning. (2026-07-18 CRL-revocation-detail spec decision #1.)
 ///
 /// Task 5: promoted from `pub(crate)` to `pub` so the backend's
 /// `validate_recipient_certs` helper can read the outcome of
@@ -91,8 +97,14 @@ pub enum RevocationState {
     Good,
     /// CRL reported the cert revoked (hard-fail → `chain_valid = false`).
     Revoked,
-    /// No revocation check performed (no CRL supplied / stale CRL / soft-fail).
+    /// No revocation check performed (no CRL supplied / no CRL covered the
+    /// cert).
     Unchecked,
+    /// A CRL covered the cert but was unusable (expired past `nextUpdate` /
+    /// bad signature / out-of-scope / parse error). Soft-fail — chain
+    /// proceeds. Distinguished from `Unchecked` (no CRL at all) so the UI
+    /// can surface "stale revocation data" as a distinct warning.
+    Stale,
 }
 
 /// Outcome of cert-chain validation. Tasks 2-5 depend on these field names.
@@ -118,6 +130,18 @@ pub struct ChainOutcome {
     /// Human-readable failure reason when `chain_valid == false` or
     /// `identity_match == false`. Suitable for diagnostic logging; not parsed.
     pub failure_reason: Option<String>,
+    /// Structured RFC 5280 §5.3.1 CRLReason name when `revocation_state ==
+    /// Revoked` (the stringified `pkix_revocation::CrlReason` variant, e.g.
+    /// `"KeyCompromise"` / `"CaCompromise"` / `"AffiliationChanged"` /
+    /// `"Superseded"` / `"CessationOfOperation"` / `"CertificateHold"` /
+    /// `"RemoveFromCRL"` / `"PrivilegeWithdrawn"` / `"AaCompromise"` /
+    /// `"Unspecified"`). Populated only when the chain hard-failed because of
+    /// an explicit CRL revocation entry. `None` for every other outcome (Good /
+    /// Unchecked / Stale / non-revocation chain failures). A revoked cert
+    /// whose CRL entry omitted the reasonCode extension surfaces
+    /// `Some("Unspecified")` (spec decision #5 — stable non-null signal).
+    /// (2026-07-18 CRL-revocation-detail spec decision #2.)
+    pub revocation_reason: Option<String>,
 }
 
 /// Validate an S/MIME signer cert chain under the CA/B Forum S/MIME BR profile.
@@ -259,6 +283,7 @@ pub fn validate_signer_chain(
                 identity_match: true,
                 revocation_state: checker.revocation_state(),
                 failure_reason: None,
+                revocation_reason: None,
             },
             // Identity mismatch (path OK, From↔SAN binding failed): per spec
             // §4.4, surface as chain_valid=true, identity_match=false so the
@@ -276,6 +301,9 @@ pub fn validate_signer_chain(
                 // before identity binding). Reflect the checker's state.
                 revocation_state: checker.revocation_state(),
                 failure_reason: Some(format!("identity mismatch: {e}")),
+                // Identity mismatch is not a revocation outcome — the CRL
+                // check passed (otherwise we'd be in the Revoked arm).
+                revocation_reason: None,
             },
             // CRL says revoked → hard-fail (spec §0.4). `KylinsCrlChecker`
             // only returns `Err(Revoked{..})` from `check_revocation`; all
@@ -288,11 +316,23 @@ pub fn validate_signer_chain(
                         Some(r) => format!("certificate {serial} revoked ({r:?})"),
                         None => format!("certificate {serial} revoked"),
                     };
+                    // Stringify the RFC 5280 §5.3.1 CRLReason at the chain.rs
+                    // boundary (the pkix enum is 0.7-line; we don't leak it).
+                    // `format!("{r:?}")` yields the enum variant name verbatim
+                    // (e.g. "KeyCompromise"). `None` reasonCode → "Unspecified"
+                    // (spec decision #5 — stable non-null signal that lets the
+                    // dialog render "Reason: Unspecified" rather than dropping
+                    // the line).
+                    let revocation_reason = Some(match reason_code {
+                        Some(r) => format!("{r:?}"),
+                        None => "Unspecified".to_string(),
+                    });
                     ChainOutcome {
                         chain_valid: false,
                         identity_match: false,
                         revocation_state: RevocationState::Revoked,
                         failure_reason: Some(reason_str),
+                        revocation_reason,
                     }
                 }
                 // Defensive: `KylinsCrlChecker` converts all non-Revoked
@@ -330,6 +370,7 @@ pub fn validate_signer_chain(
                 identity_match: true,
                 revocation_state: checker.revocation_state(),
                 failure_reason: None,
+                revocation_reason: None,
             },
             Err(pkix_chain::Error::Revocation(rev_err)) => match rev_err {
                 pkix_revocation::Error::Revoked { serial, reason_code } => {
@@ -337,11 +378,16 @@ pub fn validate_signer_chain(
                         Some(r) => format!("certificate {serial} revoked ({r:?})"),
                         None => format!("certificate {serial} revoked"),
                     };
+                    let revocation_reason = Some(match reason_code {
+                        Some(r) => format!("{r:?}"),
+                        None => "Unspecified".to_string(),
+                    });
                     ChainOutcome {
                         chain_valid: false,
                         identity_match: false,
                         revocation_state: RevocationState::Revoked,
                         failure_reason: Some(reason_str),
+                        revocation_reason,
                     }
                 }
                 other => fail(format!("revocation: {other}")),
@@ -375,6 +421,8 @@ fn fail(reason: String) -> ChainOutcome {
         identity_match: false,
         revocation_state: RevocationState::Unchecked,
         failure_reason: Some(reason),
+        // Not a revoked-cert outcome → no revocation reason to surface.
+        revocation_reason: None,
     }
 }
 
@@ -466,9 +514,25 @@ impl<V: SignatureVerifier + Copy> KylinsCrlChecker<V> {
     /// Called only when `verify_smime_signer` / `verify_chain` returned `Ok`
     /// (no cert was revoked — a revoked cert surfaces as `Err` and is handled
     /// separately in `validate_signer_chain`).
+    ///
+    /// | `any_matched` | `any_unusable` | Result      |
+    /// |---------------|----------------|-------------|
+    /// | `true`        | `false`        | `Good`      |
+    /// | `true`        | `true`         | `Stale`     |
+    /// | `false`       | (n/a)          | `Unchecked` |
+    ///
+    /// `Stale` distinguishes "a CRL covered the cert but was unusable (expired
+    /// past `nextUpdate`, bad sig, out-of-scope, parse error)" from
+    /// `Unchecked`'s "no CRL covered the cert at all" (2026-07-18 CRL-revocation-
+    /// detail spec decision #1). Both states soft-fail — the chain proceeds —
+    /// but the UI surfaces them with distinct warnings.
     fn revocation_state(&self) -> RevocationState {
-        if self.any_matched.get() && !self.any_unusable.get() {
-            RevocationState::Good
+        if self.any_matched.get() {
+            if self.any_unusable.get() {
+                RevocationState::Stale
+            } else {
+                RevocationState::Good
+            }
         } else {
             RevocationState::Unchecked
         }
@@ -1713,6 +1777,320 @@ mod spike_tests {
             outcome.revocation_state,
             RevocationState::Unchecked,
             "wrong-issuer CRL → no coverage → Unchecked"
+        );
+    }
+
+    // ────── CRL Revocation Detail (2026-07-18 spec) ──────
+    //
+    // Stale-vs-Unchecked revocation discrimination + structured RFC 5280
+    // CRLReason threading. See `docs/superpowers/specs/2026-07-18-crypto-crl-detail-design.md`.
+    // Four RED→GREEN tests:
+    //   1. `revocation_state_stale_when_crl_expired` — CRL past nextUpdate
+    //      covering the cert → `RevocationState::Stale` (was `Unchecked`).
+    //   2. `revocation_state_unchecked_when_no_crl` — no CRL → `Unchecked`
+    //      (regression guard; Stale must NOT appear when no CRL matched).
+    //   3. `chain_outcome_carries_revocation_reason` — a revoked cert →
+    //      `ChainOutcome.revocation_reason == Some("KeyCompromise")`.
+    //   4. `verify_with_context_surfaces_revocation_reason` — the
+    //      `VerificationResult.revocation_reason` mirrors ChainOutcome's.
+
+    /// Build a CRL whose validity window ENDED in the past (nextUpdate <
+    /// signing_time) so `CrlChecker` rejects it as `CrlExpired`. The CRL is
+    /// signed by `issuer` (so its issuer DN matches a real cert's issuer —
+    /// without that, the checker would skip it as `CrlIssuerMismatch`).
+    ///
+    /// Mirrors `build_crl` but flips the validity window into the past. The
+    /// `thisUpdate` is 10 days ago, `nextUpdate` is 3 days ago. When
+    /// `validate_signer_chain` is called with `signing_time = now`, the CRL is
+    /// past its nextUpdate → `CrlExpired` → `KylinsCrlChecker` sets
+    /// `any_unusable=true`. With the issuer matching the leaf's issuer
+    /// (`any_matched=true`), the resulting state is `Stale`.
+    fn build_stale_crl(issuer: &BuiltTestCert) -> Vec<u8> {
+        let issuer_cert = <x509_cert::Certificate as der::Decode>::from_der(&issuer.cert_der)
+            .expect("parse issuer for stale CRL");
+        let issuer_sk = SigningKey::from_pkcs8_der(&issuer.priv_pkcs8_der)
+            .expect("parse issuer key for stale CRL signing");
+
+        let crl_number = CrlNumber(der::asn1::Uint::new(&[1u8]).expect("crl number uint"));
+
+        // Validity window entirely in the past: started 10 days ago, ended 3
+        // days ago. The signing_time used in the test is `now` — well past
+        // `nextUpdate` — so the CRL is stale. `Time::try_from(SystemTime)`
+        // is the x509-cert 0.3 conversion path (no `from_unix_seconds` on Time).
+        let now = std::time::SystemTime::now();
+        let this_update =
+            x509_cert::time::Time::try_from(now - std::time::Duration::from_secs(10 * 24 * 60 * 60))
+                .expect("this_update");
+        let next_update =
+            x509_cert::time::Time::try_from(now - std::time::Duration::from_secs(3 * 24 * 60 * 60))
+                .expect("next_update");
+
+        // `CrlBuilder::new_with_this_update` takes the `this_update` Time +
+        // a separate `with_next_update(Some(time))` call; no `Validity<P>` is
+        // needed, avoiding the Profile type-param inference issue. Turbofish
+        // pins the Profile to Rfc5280 (the default for both Certificate and
+        // CrlBuilder; the manual Time args above don't carry a Profile param,
+        // so inference alone can't pick P).
+        let mut builder =
+            CrlBuilder::<x509_cert::certificate::Rfc5280>::new_with_this_update(
+                &issuer_cert,
+                crl_number,
+                this_update,
+            )
+            .expect("stale crl builder")
+            .with_next_update(Some(next_update));
+
+        // No revoked entries — the CRL covers the cert but is stale.
+        let _ = &mut builder;
+
+        let crl = builder
+            .build::<_, DerSignature>(&issuer_sk)
+            .expect("stale crl build/sign");
+        crl.to_der().expect("stale crl to_der")
+    }
+
+    /// A CRL past its nextUpdate covers the leaf (issuer matches) but is
+    /// unusable → `RevocationState::Stale` (was `Unchecked` before this spec).
+    /// Distinguishes "stale revocation data" from "no revocation data".
+    #[test]
+    fn revocation_state_stale_when_crl_expired() {
+        let root = build_ca("Kylins Stale-CRL Root CA", None);
+        let inter = build_ca(
+            "Kylins Stale-CRL Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "stale-crl@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        // CRL signed by the leaf's issuer (intermediate), validity in the past.
+        let stale_crl_der = build_stale_crl(&inter);
+
+        // signing_time = now (CRL's nextUpdate was 3 days ago → stale).
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("stale-crl@example.com"),
+            signing_time_unix,
+            std::slice::from_ref(&stale_crl_der),
+        );
+
+        // Stale CRL soft-fails: chain still validates.
+        assert!(
+            outcome.chain_valid,
+            "stale CRL must not fail the chain (soft-fail); got {:?}",
+            outcome.failure_reason
+        );
+        // The CRL covered the cert but was unusable → Stale (NOT Unchecked).
+        assert_eq!(
+            outcome.revocation_state,
+            RevocationState::Stale,
+            "CRL past nextUpdate covering the cert → Stale (was Unchecked before)"
+        );
+    }
+
+    /// No CRL in the set → `RevocationState::Unchecked` (regression guard).
+    /// Stale must NOT appear when no CRL matched at all — both states previously
+    /// collapsed to `Unchecked`; the new variant only fires for the
+    /// "matched-but-unusable" case.
+    #[test]
+    fn revocation_state_unchecked_when_no_crl() {
+        let root = build_ca("Kylins No-CRL Root CA", None);
+        let inter = build_ca(
+            "Kylins No-CRL Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "unchecked-no-crl@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("unchecked-no-crl@example.com"),
+            signing_time_unix,
+            // Empty CRL set — no coverage at all.
+            &[],
+        );
+
+        assert!(outcome.chain_valid);
+        assert_eq!(
+            outcome.revocation_state,
+            RevocationState::Unchecked,
+            "no CRL matched → Unchecked (NOT Stale — Stale is matched-but-unusable only)"
+        );
+    }
+
+    /// Build a CRL signed by `issuer` that revokes the given serial number WITH
+    /// a reason-code CRL entry extension. Mirrors `build_crl` but adds the
+    /// RFC 5280 §5.3.1 CRLReason to the revoked-cert entry's extensions.
+    fn build_crl_with_reason(
+        issuer: &BuiltTestCert,
+        revoked_serial: &SerialNumber,
+        reason: x509_cert::ext::pkix::crl::CrlReason,
+    ) -> Vec<u8> {
+        use der::Encode;
+        let issuer_cert = <x509_cert::Certificate as der::Decode>::from_der(&issuer.cert_der)
+            .expect("parse issuer for CRL");
+        let issuer_sk = SigningKey::from_pkcs8_der(&issuer.priv_pkcs8_der)
+            .expect("parse issuer key for CRL signing");
+
+        let crl_number = CrlNumber(der::asn1::Uint::new(&[1u8]).expect("crl number uint"));
+        let now = std::time::SystemTime::now();
+        let this_update = x509_cert::time::Time::try_from(now).expect("this_update");
+        let next_update = x509_cert::time::Time::try_from(
+            now + std::time::Duration::from_secs(7 * 24 * 60 * 60),
+        )
+        .expect("next_update");
+
+        // Build the CRLReason extension: the CrlReason enum carries its own
+        // AssociatedOid (2.5.29.21), so encoding the enum yields the
+        // SEQUENCE-wrapped extnValue OCTET STRING directly. We embed it in the
+        // RevokedCert's `crl_entry_extensions`.
+        let reason_ext = x509_cert::ext::Extension {
+            extn_id: <x509_cert::ext::pkix::crl::CrlReason as const_oid::AssociatedOid>::OID,
+            critical: false,
+            extn_value: der::asn1::OctetString::new(reason.to_der().expect("encode CrlReason"))
+                .expect("octet string"),
+        };
+        let revoked = vec![CrlRevokedCert {
+            serial_number: revoked_serial.clone(),
+            revocation_date: this_update,
+            crl_entry_extensions: Some(vec![reason_ext]),
+        }];
+
+        let mut builder =
+            CrlBuilder::<x509_cert::certificate::Rfc5280>::new_with_this_update(
+                &issuer_cert,
+                crl_number,
+                this_update,
+            )
+            .expect("crl builder")
+            .with_next_update(Some(next_update))
+            .with_certificates(revoked.into_iter());
+
+        let _ = &mut builder;
+
+        let crl = builder
+            .build::<_, DerSignature>(&issuer_sk)
+            .expect("crl-with-reason build/sign");
+        crl.to_der().expect("crl-with-reason to_der")
+    }
+
+    /// A revoked cert with a reason code → `ChainOutcome.revocation_reason`
+    /// carries the stringified RFC 5280 CRLReason name. The structured enum is
+    /// surfaced (not just stringified into `failure_reason`); `None` reason_code
+    /// → `Some("Unspecified")` (spec decision #5).
+    #[test]
+    fn chain_outcome_carries_revocation_reason() {
+        let root = build_ca("Kylins Reason Root CA", None);
+        let inter = build_ca(
+            "Kylins Reason Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "reason@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        // CRL signed by the intermediate that revokes the leaf's serial with
+        // CRLReason = KeyCompromise (RFC 5280 §5.3.1 code 1).
+        let serial = leaf_serial(&leaf);
+        let crl_der = build_crl_with_reason(
+            &inter,
+            &serial,
+            x509_cert::ext::pkix::crl::CrlReason::KeyCompromise,
+        );
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("reason@example.com"),
+            signing_time_unix,
+            std::slice::from_ref(&crl_der),
+        );
+
+        assert!(!outcome.chain_valid, "revoked cert hard-fails");
+        assert_eq!(outcome.revocation_state, RevocationState::Revoked);
+        // Structured reason surfaces as a distinct field — the stringified
+        // pkix enum name (debug-formatted, e.g. "KeyCompromise").
+        assert_eq!(
+            outcome.revocation_reason.as_deref(),
+            Some("KeyCompromise"),
+            "ChainOutcome.revocation_reason must carry the stringified RFC 5280 CRLReason name"
+        );
+        // The legacy failure_reason still carries the revocation summary
+        // (unchanged from the prior behavior).
+        assert!(
+            outcome
+                .failure_reason
+                .as_ref()
+                .map(|r| r.to_lowercase().contains("revoke"))
+                .unwrap_or(false),
+            "failure_reason should still mention revocation; got {:?}",
+            outcome.failure_reason
+        );
+    }
+
+    /// `RevocationReason == None` for non-revoked outcomes (Good / Unchecked /
+    /// Stale). Guards against the field accidentally picking up a value when
+    /// the chain did not hard-fail-on-revoked.
+    #[test]
+    fn chain_outcome_revocation_reason_none_for_non_revoked() {
+        let root = build_ca("Kylins Reason-None Root CA", None);
+        let inter = build_ca(
+            "Kylins Reason-None Intermediate CA",
+            Some((&root.cert_der, &root.priv_pkcs8_der)),
+        );
+        let leaf = build_smime_leaf(
+            "reason-none@example.com",
+            (&inter.cert_der, &inter.priv_pkcs8_der),
+        );
+
+        let signing_time_unix = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 86_400) as i64;
+
+        let outcome = validate_signer_chain(
+            &leaf.cert_der,
+            &[inter.cert_der.as_slice()],
+            std::slice::from_ref(&root.cert_der),
+            Some("reason-none@example.com"),
+            signing_time_unix,
+            // No CRL — Unchecked.
+            &[],
+        );
+
+        assert!(outcome.chain_valid);
+        assert_eq!(outcome.revocation_state, RevocationState::Unchecked);
+        assert!(
+            outcome.revocation_reason.is_none(),
+            "revocation_reason must be None when the cert was not revoked; got {:?}",
+            outcome.revocation_reason
         );
     }
 

@@ -171,6 +171,8 @@ impl SmimeBackend {
                     // Early-return arm (spec decision #2): chain validation never
                     // runs, so there's no ChainOutcome.failure_reason to surface.
                     failure_reason: None,
+                    // No revocation check ran either → no reason.
+                    revocation_reason: None,
                 });
             }
             Err(e) => return Err(e),
@@ -198,6 +200,8 @@ impl SmimeBackend {
                 // is no ChainOutcome.failure_reason to surface. The dialog's
                 // fixed-map fallback handles this state.
                 failure_reason: None,
+                // Same — no revocation check ran → no reason.
+                revocation_reason: None,
             });
         }
 
@@ -256,10 +260,18 @@ impl SmimeBackend {
         // on Mismatch it carries the identity-mismatch format string. Thread
         // it through so the Signature Details dialog can show the REAL reason
         // instead of the coarse fixed enum→map.
+        //
+        // Surface the structured RFC 5280 CRLReason from
+        // `ChainOutcome.revocation_reason` end-to-end (2026-07-18 CRL-revocation-
+        // detail spec decision #3). `Some(<name>)` only on a revoked-cert
+        // hard-fail; `None` for every other outcome. Threaded alongside
+        // `failure_reason` so the dialog can render "Reason: <name>" as a
+        // distinct line (not buried inside the failure_reason sentence).
         Ok(VerificationResult {
             state,
             signer,
             failure_reason: outcome.failure_reason,
+            revocation_reason: outcome.revocation_reason,
         })
     }
 }
@@ -459,6 +471,8 @@ impl CryptoBackend for SmimeBackend {
                     // Pre-chain trait impl: no ChainOutcome computed, so no
                     // granular reason to surface.
                     failure_reason: None,
+                    // No revocation check ran → no reason.
+                    revocation_reason: None,
                 });
             }
             Err(e) => return Err(e),
@@ -487,6 +501,8 @@ impl CryptoBackend for SmimeBackend {
             // Pre-chain trait impl: chain/trust assessment (G4) is not run
             // here, so there is no ChainOutcome.failure_reason to surface.
             failure_reason: None,
+            // Same — no chain validation → no revocation reason.
+            revocation_reason: None,
         })
     }
 
@@ -745,6 +761,133 @@ impl SmimeBackend {
 
         let handle = self.persist_imported(cert_der, priv_der).await?;
         Ok((handle, intermediates))
+    }
+
+    /// Export an S/MIME identity (cert + private key + caller-supplied chain
+    /// intermediates) as a passphrase-protected PKCS#12 / PFX bundle (Plan 3b
+    /// — the export mirror of Plan 3 `import_key_with_chain`).
+    ///
+    /// The PFX is built in-memory via `p12-keystore`'s writer API using the
+    /// modern strong algorithms `PbeWithHmacSha256AndAes256` (content PBE) +
+    /// `HmacSha256` (integrity MAC) — the same line the import fixtures use,
+    /// avoiding legacy SHA-1/PBE1. The backend writes the returned bytes to
+    /// the user-chosen file (plaintext private bytes never hit disk
+    /// unencrypted — the PFX is passphrase-encrypted before the write).
+    ///
+    /// # Inputs
+    ///
+    /// - `handle`             — keystore handle of the leaf cert + private key
+    ///   to export (resolves via `self.keystore.get` exactly as `sign`/
+    ///   `decrypt`/`export_public` do). MUST have `private_data`; a cert-only /
+    ///   public-only row is refused with `Policy("export_p12: key has no
+    ///   private material")` (spec decision #6).
+    /// - `intermediate_ders`  — additional CA cert DERs to bundle in the chain
+    ///   (typically the account's stored intermediates from
+    ///   `db::crypto_keys::list_intermediate_certs`). Each must be a real
+    ///   CA-signed parent of the leaf (p12-keystore's reader reconstructs the
+    ///   chain via an issuer-chase loop matching `subject == leaf.issuer`); a
+    ///   malformed/unrelated intermediate is silently skipped by the reader on
+    ///   re-import, mirroring the import path's defensive skip.
+    /// - `passphrase`         — REQUIRED non-empty. A `.p12` carrying a private
+    ///   key MUST be encrypted; `None` or `Some("")` is refused with
+    ///   `Policy("p12 export requires a non-empty passphrase")` (spec decision
+    ///   #2). Wrapped in a `SecretBox` so the heap buffer is zeroized on drop
+    ///   at the end of this scope; the passphrase is never logged nor
+    ///   persisted beyond the returned PFX bytes (which are themselves
+    ///   passphrase-encrypted).
+    ///
+    /// # Security
+    ///
+    /// The private key leaves the keystore ONLY inside this scope. The PKCS#8
+    /// DER bytes are cloned into a `Zeroizing<Vec<u8>>` (same hygiene as
+    /// `sign`/`decrypt`) so the clone is wiped on drop; the `SecretBox` they
+    /// came from zeroizes its own buffer independently. The passphrase is
+    /// exposed via `secrecy::ExposeSecret` only for the duration of the
+    /// `p12-keystore` writer call.
+    ///
+    /// # Errors
+    ///
+    /// - `Policy("p12 export requires a non-empty passphrase")` — `None` or
+    ///   empty passphrase.
+    /// - `Policy("export_p12: key has no private material")` — cert-only /
+    ///   public-only row (no `private_data`).
+    /// - `KeyNotFound` — handle does not resolve in the keystore (mirrors
+    ///   `export_public`).
+    /// - `Malformed` — p12-keystore writer error (mapped via the existing
+    ///   `map_p12_error` helper; a writer failure on in-memory inputs is
+    ///   always a structural problem with the cert/key DER, never a
+    ///   passphrase issue — the passphrase was already validated non-empty).
+    pub async fn export_p12(
+        &self,
+        handle: &KeyHandle,
+        intermediate_ders: &[Vec<u8>],
+        passphrase: Option<SecretBox<String>>,
+    ) -> crypto_core::Result<Vec<u8>> {
+        // Require a non-empty passphrase BEFORE touching the keystore — a
+        // `.p12` carrying a private key MUST be encrypted, so refusing the
+        // empty case up front means we never expose private material to a
+        // call that could not have produced an encrypted bag anyway.
+        let pass = expose_passphrase(&passphrase)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CryptoError::Policy("p12 export requires a non-empty passphrase".into())
+            })?;
+
+        // Resolve the stored cert + private key. The keystore lookup mirrors
+        // `export_public` (cert) + `sign`/`decrypt` (private) — a missing
+        // handle is `KeyNotFound`, a present-but-public-only row is `Policy`.
+        let stored = self
+            .keystore
+            .get(handle)
+            .await?
+            .ok_or_else(|| CryptoError::KeyNotFound(format!("export_p12: {handle:?}")))?;
+        let priv_box = stored.private_data.as_ref().ok_or_else(|| {
+            CryptoError::Policy("export_p12: key has no private material".into())
+        })?;
+        // Zeroizing so the cloned PKCS#8 private bytes are wiped on drop —
+        // same hygiene as `sign`/`decrypt`/`encrypt`. The `SecretBox` they
+        // came from zeroizes its own buffer; this clone must too.
+        let priv_der =
+            zeroize::Zeroizing::new(crypto_core::secret::expose_bytes(priv_box).to_vec());
+
+        // Build the p12-keystore wrappers from raw DER. The leaf cert heads
+        // the chain per `PrivateKeyChain::new`'s contract (entity cert FIRST),
+        // followed by every caller-supplied intermediate in caller order. We
+        // do NOT re-validate that each intermediate actually chains from the
+        // leaf here — the import path's issuer-chase loop is the authority on
+        // what counts as a chain member, and the spec's "self-contained
+        // bundle" intent is satisfied by including whatever the caller
+        // (backend's `list_intermediate_certs`) supplied.
+        let leaf_cert = p12_keystore::Certificate::from_der(&stored.public_data)
+            .map_err(map_p12_error)?;
+        let key = p12_keystore::PrivateKey::from_der(priv_der.as_slice())
+            .map_err(map_p12_error)?;
+        let mut chain_certs = Vec::with_capacity(1 + intermediate_ders.len());
+        chain_certs.push(leaf_cert);
+        for der in intermediate_ders {
+            match p12_keystore::Certificate::from_der(der) {
+                Ok(c) => chain_certs.push(c),
+                // One malformed intermediate must not block the export — log +
+                // skip, mirroring `import_p12_with_chain`'s defensive
+                // skip-just-that-cert failure mode.
+                Err(e) => log::warn!("[crypto] export_p12: skipping malformed intermediate: {e}"),
+            }
+        }
+        let chain =
+            p12_keystore::PrivateKeyChain::new("smime-identity", key, chain_certs);
+
+        let mut ks = p12_keystore::KeyStore::new();
+        ks.add_entry(
+            "smime-identity",
+            p12_keystore::KeyStoreEntry::PrivateKeyChain(chain),
+        );
+        let pfx = ks
+            .writer(pass)
+            .encryption_algorithm(p12_keystore::EncryptionAlgorithm::PbeWithHmacSha256AndAes256)
+            .mac_algorithm(p12_keystore::MacAlgorithm::HmacSha256)
+            .write()
+            .map_err(map_p12_error)?;
+        Ok(pfx)
     }
 }
 
@@ -2471,6 +2614,336 @@ mod tests {
             res.failure_reason.is_none(),
             "ValidVerified must carry no failure_reason; got {:?}",
             res.failure_reason
+        );
+    }
+
+    // ─── CRL Revocation Detail (2026-07-18 spec) ───
+    //
+    // The structured RFC 5280 CRLReason surfaced from `ChainOutcome.revocation_reason`
+    // through `VerificationResult.revocation_reason`. Today the field is dropped
+    // at the `verify_with_context` return boundary; this test pins its presence
+    // (Some + the stringified CrlReason name on a revoked cert).
+
+    /// A revoked cert MUST surface the structured RFC 5280 CRLReason via
+    /// `VerificationResult.revocation_reason` — not just stringified inside
+    /// `failure_reason`. The test builds a self-signed S/MIME cert, signs a
+    /// payload, then verifies against a CRL that revokes the signer's serial
+    /// with `CrlReason::KeyCompromise`. Expected outcome: state=Invalid
+    /// (chain_valid=false because of revocation), failure_reason mentions
+    /// revocation, AND revocation_reason == Some("KeyCompromise").
+    #[tokio::test]
+    async fn verify_with_context_surfaces_revocation_reason() {
+        use x509_cert::crl::RevokedCert as CrlRevokedCert;
+        use x509_cert::ext::pkix::crl::{CrlNumber, CrlReason};
+        use x509_cert::builder::{Builder as _, CrlBuilder};
+        use pkcs8::DecodePrivateKey;
+        use der::Encode as _;
+
+        let (b, signer, cert_der, signed) =
+            sign_with_self_signed("rev-reason@kylins.com").await;
+
+        // Build a CRL issued by the signer's own cert (self-signed leaf acting
+        // as its own CA — the test harness uses the signer cert as the trust
+        // anchor already). The CRL revokes the signer's serial with
+        // CrlReason::KeyCompromise. CRL issuer = the leaf's subject (self).
+        let issuer_cert =
+            <x509_cert::Certificate as der::Decode>::from_der(&cert_der).expect("parse issuer");
+        // Pull the leaf's private key out of the stub keystore so we can sign
+        // the CRL with it.
+        let stored = b
+            .keystore
+            .get(&signer.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+        let priv_der =
+            crypto_core::secret::expose_bytes(stored.private_data.as_ref().unwrap()).to_vec();
+        let issuer_sk = p256::ecdsa::SigningKey::from_pkcs8_der(&priv_der)
+            .expect("parse issuer key for CRL signing");
+
+        // The signer's serial — must match what the CRL revokes.
+        let signer_serial = issuer_cert.tbs_certificate().serial_number().clone();
+
+        // Build the CRLReason extension (OID 2.5.29.21, CrlReason::KeyCompromise=1).
+        let reason_ext = x509_cert::ext::Extension {
+            extn_id: <CrlReason as const_oid::AssociatedOid>::OID,
+            critical: false,
+            extn_value: der::asn1::OctetString::new(
+                CrlReason::KeyCompromise.to_der().expect("encode CrlReason"),
+            )
+            .expect("octet string"),
+        };
+        let now = std::time::SystemTime::now();
+        let this_update =
+            x509_cert::time::Time::try_from(now).expect("this_update");
+        let next_update = x509_cert::time::Time::try_from(
+            now + std::time::Duration::from_secs(7 * 24 * 60 * 60),
+        )
+        .expect("next_update");
+        let revoked = vec![CrlRevokedCert {
+            serial_number: signer_serial,
+            revocation_date: this_update,
+            crl_entry_extensions: Some(vec![reason_ext]),
+        }];
+        let crl_number = CrlNumber(der::asn1::Uint::new(&[1u8]).expect("crl number uint"));
+        let mut builder = CrlBuilder::new_with_this_update(
+            &issuer_cert,
+            crl_number,
+            this_update,
+        )
+        .expect("crl builder")
+        .with_next_update(Some(next_update))
+        .with_certificates(revoked.into_iter());
+        let _ = &mut builder;
+        let crl = builder
+            .build::<_, p256::ecdsa::DerSignature>(&issuer_sk)
+            .expect("crl build/sign");
+        let crl_der = crl.to_der().expect("crl to_der");
+
+        let res = b
+            .verify_with_context(
+                &signed,
+                Some("rev-reason@kylins.com"),
+                std::slice::from_ref(&cert_der),
+                &[],
+                std::slice::from_ref(&crl_der),
+                TrustState::Verified,
+            )
+            .await
+            .expect("verify_with_context ok");
+
+        // The revoked cert hard-fails → Invalid.
+        assert_eq!(
+            res.state,
+            SignatureState::Invalid,
+            "revoked cert must hard-fail → Invalid; got {:?}",
+            res.state
+        );
+        // Structured RFC 5280 CRLReason surfaces as a distinct field —
+        // the stringified `CrlReason::KeyCompromise` enum name.
+        assert_eq!(
+            res.revocation_reason.as_deref(),
+            Some("KeyCompromise"),
+            "VerificationResult.revocation_reason must mirror ChainOutcome.revocation_reason; got {:?}",
+            res.revocation_reason
+        );
+        // The legacy failure_reason still carries the verbose summary.
+        let reason = res
+            .failure_reason
+            .as_ref()
+            .expect("failure_reason must be Some on a revoked cert");
+        assert!(
+            reason.to_lowercase().contains("revoke"),
+            "failure_reason should still mention revocation; got {reason:?}"
+        );
+    }
+
+    // ─── Plan 3b: .p12/.pfx export (TDD) ───
+    //
+    // The export mirror of Plan 3 import. `export_p12` reads the cert + private
+    // PKCS#8 DER out of the keystore, bundles them (+ any caller-supplied
+    // intermediate CA certs) as a passphrase-protected PFX via `p12-keystore`'s
+    // writer API (PbeWithHmacSha256AndAes256 content + HmacSha256 MAC — modern
+    // strong algorithms matching the import fixtures). The export MUST refuse
+    // an empty passphrase (a `.p12` carrying a private key MUST be encrypted)
+    // and a public-only row (can't build a PrivateKeyChain without the key).
+
+    /// `export_p12` round-trips: generate → export under passphrase → re-import
+    /// → leaf cert + fingerprint match. Exercises the simplest case (no chain
+    /// intermediates), proving the PFX we build is readable by our own import
+    /// path with identical contents.
+    #[tokio::test]
+    async fn export_p12_round_trips_through_import() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "p12-export-rt@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let cert_der = b.export_public(&gen.handle).await.expect("export cert");
+
+        let pass = SecretBox::new(Box::new("testpw".to_string()));
+        let pfx = b
+            .export_p12(&gen.handle, &[], Some(pass))
+            .await
+            .expect("export_p12 ok");
+        assert!(!pfx.is_empty(), "export_p12 must return non-empty PFX bytes");
+
+        // Re-import into a fresh backend so the round-trip is provable (the
+        // imported key demonstrably came from the PFX, not memory).
+        let b2 = backend();
+        let pass2 = SecretBox::new(Box::new("testpw".to_string()));
+        let (imported, intermediates) = b2
+            .import_key_with_chain(&pfx, Some(pass2))
+            .await
+            .expect("import_key_with_chain ok");
+        assert_eq!(imported.standard, Standard::Smime);
+        assert_eq!(
+            imported.fingerprint.as_str(),
+            gen.fingerprint.as_str(),
+            "re-imported fingerprint must match the original (same SKI)"
+        );
+        let re_exported = b2
+            .export_public(&imported.handle)
+            .await
+            .expect("re-export cert");
+        assert_eq!(
+            re_exported, cert_der,
+            "re-imported cert DER must match the original byte-for-byte"
+        );
+        assert!(
+            intermediates.is_empty(),
+            "leaf-only export must round-trip with no intermediates; got {intermediates:?}"
+        );
+    }
+
+    /// `export_p12` bundles the caller-supplied intermediates into the chain so
+    /// the recipient can validate without re-fetching. Build a real CA-signed
+    /// leaf, import it, export with the CA as an intermediate, re-import, and
+    /// assert the CA comes back.
+    #[tokio::test]
+    async fn export_p12_bundles_intermediates() {
+        let ca = build_self_signed_ca_fixture("Export Inter CA");
+        let leaf = build_leaf_signed_by_ca_fixture("p12-export-chain@kylins.com", &ca);
+
+        // Seed the backend with the leaf (cert+priv) by importing a fixture PFX
+        // that carries leaf+CA. `import_key_with_chain` persists the leaf and
+        // returns its handle + the bag's intermediates (which we ignore — we
+        // exercise `export_p12`'s own intermediate handling below).
+        let b = backend();
+        let seed_pfx = build_p12_fixture_with_chain(
+            &leaf.cert_der,
+            &leaf.priv_pkcs8_der,
+            &ca.cert_der,
+            "seed-pass",
+        );
+        let seed_pass = SecretBox::new(Box::new("seed-pass".to_string()));
+        let (leaf_handle, _seed_intermediates) = b
+            .import_key_with_chain(&seed_pfx, Some(seed_pass))
+            .await
+            .expect("seed import ok");
+
+        // Export the leaf again, explicitly threading the CA cert as the
+        // intermediate chain (mirrors the backend IPC passing
+        // `list_intermediate_certs(..)` results in).
+        let export_pass = SecretBox::new(Box::new("export-pw".to_string()));
+        let pfx = b
+            .export_p12(
+                &leaf_handle.handle,
+                std::slice::from_ref(&ca.cert_der),
+                Some(export_pass),
+            )
+            .await
+            .expect("export_p12 with intermediates ok");
+
+        // Re-import on a fresh backend and assert the CA round-trips.
+        let b2 = backend();
+        let reimport_pass = SecretBox::new(Box::new("export-pw".to_string()));
+        let (_reimported, intermediates) = b2
+            .import_key_with_chain(&pfx, Some(reimport_pass))
+            .await
+            .expect("re-import ok");
+        assert_eq!(
+            intermediates.len(),
+            1,
+            "expected exactly 1 intermediate in the round-tripped PFX; got {}",
+            intermediates.len()
+        );
+        assert_eq!(
+            intermediates[0], ca.cert_der,
+            "round-tripped intermediate must match the CA cert DER"
+        );
+    }
+
+    /// `export_p12` refuses an empty passphrase — a `.p12` carrying a private
+    /// key MUST be encrypted (spec decision #2). Both `None` (caller omitted
+    /// the passphrase entirely) and `Some("")` (user left the field blank) map
+    /// to `Policy("p12 export requires a non-empty passphrase")`.
+    #[tokio::test]
+    async fn export_p12_refuses_empty_passphrase() {
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "p12-export-nopass@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+
+        // None → Policy.
+        let err = b
+            .export_p12(&gen.handle, &[], None)
+            .await
+            .expect_err("None passphrase must error");
+        assert!(
+            matches!(err, CryptoError::Policy(ref m) if m.contains("non-empty passphrase")),
+            "None passphrase must be Policy(\"...non-empty passphrase...\"), got {err:?}"
+        );
+
+        // Some("") → Policy.
+        let empty_pass = SecretBox::new(Box::new(String::new()));
+        let err = b
+            .export_p12(&gen.handle, &[], Some(empty_pass))
+            .await
+            .expect_err("empty passphrase must error");
+        assert!(
+            matches!(err, CryptoError::Policy(ref m) if m.contains("non-empty passphrase")),
+            "empty passphrase must be Policy(\"...non-empty passphrase...\"), got {err:?}"
+        );
+    }
+
+    /// `export_p12` refuses a public-only / cert-only row (no `private_data`)
+    /// — a PrivateKeyChain requires the private key (spec decision #6). The UI
+    /// grays-out the Export-.p12 button for these rows; this test pins the
+    /// backend's defense so a UI regression can't bypass it.
+    #[tokio::test]
+    async fn export_p12_refuses_public_only_key() {
+        // Generate a real key (which has private material), then build a fresh
+        // backend seeded with a StoredKey carrying the SAME cert but
+        // `private_data: None` — simulating a public-only / cert-only row.
+        let b = backend();
+        let gen = b
+            .generate_key(KeyGenParams {
+                standard: Standard::Smime,
+                user_id: "p12-export-pubonly@kylins.com".into(),
+                algorithm: "ECDSA-P256".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate_key ok");
+        let stored = b
+            .keystore
+            .get(&gen.handle)
+            .await
+            .expect("keystore get")
+            .expect("stored key present");
+
+        // Build a fresh StubKeyStore seeded with the public-only twin under
+        // the same handle, then wrap it in a new SmimeBackend so `export_p12`
+        // resolves the same handle but finds `private_data: None`.
+        let ks = Arc::new(StubKeyStore::new());
+        let public_only = StoredKey {
+            handle: stored.handle.clone(),
+            public_data: stored.public_data.clone(),
+            private_data: None,
+        };
+        ks.put(public_only).await.expect("seed public-only twin");
+        let b_pub = SmimeBackend::new(ks, CryptoPolicy::default_baseline());
+
+        let pass = SecretBox::new(Box::new("testpw".to_string()));
+        let err = b_pub
+            .export_p12(&gen.handle, &[], Some(pass))
+            .await
+            .expect_err("public-only key must error");
+        assert!(
+            matches!(err, CryptoError::Policy(ref m) if m.contains("no private material")),
+            "public-only key must be Policy(\"...no private material...\"), got {err:?}"
         );
     }
 }
