@@ -33,52 +33,10 @@ use sequoia_openpgp::serialize::Marshal;
 
 use crate::error::CryptoResult;
 
-// --- Sequoia error adapter ---------------------------------------------------
-//
-// Task 2's `error::map_err` requires `E: std::error::Error + Send + Sync + 'static`,
-// and its doc comment claims this works for `anyhow::Error` (which backs
-// `openpgp::Result`). That claim is **incorrect**: `anyhow::Error` deliberately
-// does NOT implement `std::error::Error` (its inner `Box<dyn Error + Send +
-// Sync>` already does; wrapping it again would be redundant — see anyhow's
-// design rationale). The Task 2 tests didn't catch this because they use a
-// hand-rolled `TestErr` that does impl `Error`.
-//
-// We can't fix `error.rs` from this slice (slice boundary: only `keymap.rs`
-// and `lib.rs`). Instead, this adapter bridges Sequoia's `anyhow::Result` into
-// the framework's `CryptoResult` by stringifying the Display into a tiny
-// newtype that DOES impl `Error`. The framework still sees `CryptoError::Backend`
-// (Display preserved); the typed source chain remains non-walkable, which is
-// the SAME limitation Task 2's report already documents for the `Backend`
-// variant overall (`#[error("... {0}")]` without `#[source]`).
-//
-// Tracked as a Task 2 follow-up: `error::map_err` should accept
-// `E: Into<Box<dyn StdError + Send + Sync>>` (or have a dedicated
-// `map_anyhow` companion) so callers don't need to re-stringify.
-
-/// Thin wrapper carrying a Sequoia `anyhow::Error`'s Display into the
-/// framework's type-erased `Backend` variant.
-struct SequoiaDisplay(String);
-
-impl std::fmt::Display for SequoiaDisplay {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::fmt::Debug for SequoiaDisplay {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SequoiaDisplay({:?})", self.0)
-    }
-}
-
-impl std::error::Error for SequoiaDisplay {}
-
-/// Adapt a Sequoia `anyhow::Result<T>` into the framework's `CryptoResult<T>`.
-/// See the module-level note above for why this exists instead of
-/// `crate::error::map_err`.
-fn map_seq<T>(r: openpgp::Result<T>) -> CryptoResult<T> {
-    r.map_err(|e| crypto_core::CryptoError::backend(SequoiaDisplay(e.to_string())))
-}
+// All Sequoia results in this module route through `crate::error::map_sequoia`
+// (the canonical mapper for `openpgp::Result<T>` = `Result<T, anyhow::Error>`).
+// `anyhow::Error` does not implement `std::error::Error`, so the generic
+// `crate::error::map_err` cannot accept it — see `error.rs` for details.
 
 /// Framework fingerprint of a Cert's primary key (lowercase hex).
 ///
@@ -118,7 +76,7 @@ pub fn cert_to_handle(cert: &openpgp::Cert) -> KeyHandleRef {
 /// `SecretSubkey` packets when the underlying key has secret material.
 pub fn cert_to_secret_blob(cert: &openpgp::Cert) -> CryptoResult<Vec<u8>> {
     let mut buf = Vec::new();
-    map_seq(cert.as_tsk().serialize(&mut buf))?;
+    crate::error::map_sequoia(cert.as_tsk().serialize(&mut buf))?;
     Ok(buf)
 }
 
@@ -131,7 +89,7 @@ pub fn cert_to_public_blob(cert: &openpgp::Cert) -> CryptoResult<Vec<u8>> {
     // `&Cert` is unaffected.
     let public_only = cert.clone().strip_secret_key_material();
     let mut buf = Vec::new();
-    map_seq(public_only.serialize(&mut buf))?;
+    crate::error::map_sequoia(public_only.serialize(&mut buf))?;
     Ok(buf)
 }
 
@@ -142,7 +100,7 @@ pub fn cert_to_public_blob(cert: &openpgp::Cert) -> CryptoResult<Vec<u8>> {
 /// public-only by construction (see the module-level API notes).
 pub fn cert_to_armored_public(cert: &openpgp::Cert) -> CryptoResult<Vec<u8>> {
     let mut buf = Vec::new();
-    map_seq(cert.armored().serialize(&mut buf))?;
+    crate::error::map_sequoia(cert.armored().serialize(&mut buf))?;
     Ok(buf)
 }
 
@@ -150,12 +108,12 @@ pub fn cert_to_armored_public(cert: &openpgp::Cert) -> CryptoResult<Vec<u8>> {
 ///
 /// `CertParser::from_bytes` auto-detects the format. Returns certs in stream
 /// order. Errors from a malformed preamble or any individual cert are routed
-/// through [`map_seq`] (i.e. surfaced as `CryptoError::Backend`).
+/// through [`crate::error::map_sequoia`] (i.e. surfaced as `CryptoError::Backend`).
 pub fn parse_certs(data: &[u8]) -> CryptoResult<Vec<openpgp::Cert>> {
-    let parser = map_seq(CertParser::from_bytes(data))?;
+    let parser = crate::error::map_sequoia(CertParser::from_bytes(data))?;
     let mut out = Vec::new();
     for cert in parser {
-        out.push(map_seq(cert)?);
+        out.push(crate::error::map_sequoia(cert)?);
     }
     Ok(out)
 }
