@@ -39,7 +39,7 @@ export function CalendarPage() {
   if (!activeAccountId) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-[var(--muted-foreground)]">
-        <div className="rounded-full bg-[var(--surface)] p-3">
+        <div className="rounded-full bg-surface-elevated p-3">
           <CalendarIcon size={24} />
         </div>
         No account selected.
@@ -48,7 +48,7 @@ export function CalendarPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
+    <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-surface">
       <CalendarToolbar onNewEvent={() => setShowCreate(true)} />
       {error && (
         <div className="flex items-center gap-1.5 border-b border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-4 py-1.5 text-xs text-[var(--destructive)]">

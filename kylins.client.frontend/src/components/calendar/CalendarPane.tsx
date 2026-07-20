@@ -216,7 +216,7 @@ export function CalendarPane() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-1.5">
+      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-3 py-1.5">
         <span className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
           Calendars
         </span>
@@ -226,7 +226,7 @@ export function CalendarPane() {
             onPress={() => setShowNew(true)}
             isDisabled={!activeAccountId}
             aria-label="New calendar"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-40"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--primary)] disabled:opacity-40"
           >
             <PlusIcon size={15} />
           </Button>
@@ -284,7 +284,7 @@ export function CalendarPane() {
                   <div
                     key={cal.id}
                     onContextMenu={(e) => handleContextMenu(e, cal)}
-                    className="group flex items-center gap-2 rounded-md px-1 py-1.5 text-foreground hover:bg-[var(--hover)]"
+                    className="group flex items-center gap-2 rounded-md px-1 py-1.5 text-foreground hover:bg-[var(--primary-subtle)] hover:text-[var(--primary)]"
                   >
                     <Checkbox
                       isSelected={cal.isVisible}
@@ -297,7 +297,7 @@ export function CalendarPane() {
                             className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
                               isSelected
                                 ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)]'
-                                : 'border-[var(--border)] bg-[var(--background)]'
+                                : 'border-[var(--border)] bg-surface-elevated'
                             }`}
                           >
                             {isSelected && <CheckIcon size={10} strokeWidth={3} />}
@@ -328,7 +328,7 @@ export function CalendarPane() {
         })}
       </div>
 
-      <div className="border-t border-[var(--border)] px-3 py-2">
+      <div className="border-t border-[var(--border-subtle)] px-3 py-2">
         <InjectedComponentSet role="calendar:pane:footer" containersRequired={false} />
       </div>
 

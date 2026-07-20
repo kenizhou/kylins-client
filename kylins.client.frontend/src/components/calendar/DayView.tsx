@@ -36,11 +36,11 @@ export function DayView() {
         {items.map((o) => (
           <div
             key={`${o.uid}-${o.start.getTime()}`}
-            className="group flex gap-3 rounded-lg border border-[var(--border)] border-l-[3px] border-l-[var(--primary)] bg-[var(--surface)] px-3 py-2 transition-colors hover:border-[var(--primary)] hover:bg-[var(--hover)]"
+            className="group flex gap-3 rounded-lg border border-[var(--border-subtle)] border-l-[3px] border-l-[var(--primary)] bg-[var(--surface)] px-3 py-2 transition-colors hover:border-[var(--primary)] hover:bg-[var(--primary-subtle)]"
           >
             <div className="w-24 shrink-0 text-xs text-[var(--muted-text)]">
               {o.allDay ? (
-                <span className="rounded bg-[var(--highlight)] px-1.5 py-0.5 text-[0.625rem] font-medium text-[var(--highlight-text)]">
+                <span className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[0.625rem] font-medium text-[var(--highlight-text)]">
                   All day
                 </span>
               ) : (
@@ -54,7 +54,7 @@ export function DayView() {
         ))}
         {items.length === 0 && (
           <div className="flex flex-col items-center justify-center gap-2 py-8 text-sm text-[var(--muted-text)]">
-            <div className="rounded-full bg-[var(--surface)] p-3">
+            <div className="rounded-full bg-surface-elevated p-3">
               <CalendarIcon size={24} />
             </div>
             No events scheduled for this day.

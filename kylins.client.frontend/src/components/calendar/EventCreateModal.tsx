@@ -138,7 +138,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
       isDismissable
       className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
     >
-      <RACModal className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-xl outline-none">
+      <RACModal className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-surface-floating p-5 shadow-xl outline-none">
         <Dialog aria-label="New event" className="outline-none">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-base font-semibold text-foreground">New event</h3>
@@ -156,7 +156,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
               <Input
                 type="text"
                 placeholder="Title"
-                className="h-11 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                className="h-11 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--background)] px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
               />
             </TextField>
 
@@ -164,7 +164,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
               <Input
                 type="text"
                 placeholder="Location"
-                className="h-11 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                className="h-11 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--background)] px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
               />
             </TextField>
 
@@ -175,7 +175,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
               className="block"
             >
               <Label className="mb-1 block text-xs text-muted-text">Calendar</Label>
-              <Button className="flex h-11 w-full items-center justify-between rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring disabled:opacity-50">
+              <Button className="flex h-11 w-full items-center justify-between rounded-md border border-[var(--border-subtle)] bg-[var(--background)] px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring disabled:opacity-50">
                 <span className="flex items-center gap-2">
                   {selectedCalendar && (
                     <span
@@ -196,14 +196,14 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                   <path d="M6 9l6 6 6-6" />
                 </svg>
               </Button>
-              <Popover className="min-w-[var(--trigger-width)] rounded-md border border-border bg-surface py-1 shadow-lg">
+              <Popover className="min-w-[var(--trigger-width)] rounded-md border border-[var(--border-subtle)] bg-surface-floating py-1 shadow-lg">
                 <ListBox>
                   {accountCalendars.map((cal) => (
                     <ListBoxItem
                       key={cal.id}
                       id={cal.id}
                       textValue={cal.displayName || 'Untitled calendar'}
-                      className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm text-foreground outline-none hover:bg-hover data-[selected=true]:bg-selected data-[selected=true]:text-selected-text"
+                      className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm text-foreground outline-none hover:bg-[var(--primary-subtle)] data-[selected=true]:bg-[var(--primary-muted)] data-[selected=true]:text-[var(--foreground)]"
                     >
                       <span
                         className="h-3.5 w-3.5 rounded-full border border-border"
@@ -229,7 +229,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                     }`}
                   >
                     <span
-                      className={`h-3 w-3 rounded-full bg-white transition-transform ${
+                      className={`h-3 w-3 rounded-full bg-[var(--surface-floating)] transition-transform ${
                         isSelected ? 'translate-x-3' : 'translate-x-0.5'
                       }`}
                     />
@@ -246,7 +246,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                   type="datetime-local"
                   value={start}
                   onChange={(e) => setStart(e.target.value)}
-                  className="mt-1 h-11 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                  className="mt-1 h-11 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--background)] px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
                 />
               </Label>
               <Label className="flex-1 text-xs text-muted-text">
@@ -255,7 +255,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
                   type="datetime-local"
                   value={end}
                   onChange={(e) => setEnd(e.target.value)}
-                  className="mt-1 h-11 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                  className="mt-1 h-11 w-full rounded-md border border-[var(--border-subtle)] bg-[var(--background)] px-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
                 />
               </Label>
             </div>
@@ -264,7 +264,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
               <TextArea
                 placeholder="Description"
                 rows={3}
-                className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
+                className="w-full resize-y rounded-md border border-[var(--border-subtle)] bg-[var(--background)] px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-ring"
               />
             </TextField>
 

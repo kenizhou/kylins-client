@@ -52,25 +52,25 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
   });
 
   return (
-    <div className="flex items-center gap-2 border-b border-border bg-surface px-4 py-1.5">
+    <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] bg-surface px-4 py-1.5">
       <Button
         onPress={() => setCurrentDate(new Date())}
-        className="h-11 min-w-11 rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-hover"
+        className="h-11 min-w-11 rounded-md border border-[var(--border-subtle)] px-3 text-xs font-medium text-foreground transition-colors hover:bg-[var(--primary-subtle)]"
       >
         Today
       </Button>
-      <div className="flex items-center overflow-hidden rounded-md border border-border">
+      <div className="flex items-center overflow-hidden rounded-md border border-[var(--border-subtle)]">
         <Button
           onPress={() => shift(-1)}
           aria-label="Previous period"
-          className="relative flex h-11 w-11 items-center justify-center border-r border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="relative flex h-11 w-11 items-center justify-center border-r border-[var(--border-subtle)] text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowLeftIcon size={14} />
         </Button>
         <Button
           onPress={() => shift(1)}
           aria-label="Next period"
-          className="relative flex h-11 w-11 items-center justify-center text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="relative flex h-11 w-11 items-center justify-center text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ArrowRightIcon size={14} />
         </Button>
@@ -81,7 +81,7 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
         <Button
           onPress={() => setCalendarPaneVisible(!calendarPaneVisible)}
           aria-label={calendarPaneVisible ? 'Hide calendar pane' : 'Show calendar pane'}
-          className="flex h-11 w-11 items-center justify-center rounded-md border border-border text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+          className="flex h-11 w-11 items-center justify-center rounded-md border border-[var(--border-subtle)] text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground"
         >
           {calendarPaneVisible ? <PanelLeftCloseIcon size={16} /> : <PanelLeftOpenIcon size={16} />}
         </Button>

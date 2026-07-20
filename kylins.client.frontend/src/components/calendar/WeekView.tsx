@@ -21,7 +21,7 @@ export function WeekView() {
   const todayKey = dayKey(new Date());
 
   return (
-    <div className="grid flex-1 grid-cols-7 overflow-auto border-t border-[var(--border)]">
+    <div className="grid flex-1 grid-cols-7 overflow-auto border-t border-[var(--border-subtle)]">
       {days.map((date) => {
         const k = dayKey(date);
         const items = (byDay.get(k) ?? [])
@@ -31,12 +31,12 @@ export function WeekView() {
         return (
           <div
             key={k}
-            className={`flex min-h-[140px] flex-col border-r border-b border-[var(--border)] transition-colors ${
-              isToday ? 'bg-[var(--accent)]/30' : 'hover:bg-[var(--hover)]/50'
+            className={`flex min-h-[140px] flex-col border-r border-b border-[var(--border-subtle)] transition-colors ${
+              isToday ? 'bg-[var(--primary-subtle)]' : 'hover:bg-[var(--primary-subtle)]/70'
             }`}
           >
             <div
-              className={`border-b border-[var(--border)] px-2 py-1.5 text-xs ${
+              className={`border-b border-[var(--border-subtle)] px-2 py-1.5 text-xs ${
                 isToday ? 'font-semibold text-[var(--primary)]' : 'text-[var(--muted-text)]'
               }`}
             >
