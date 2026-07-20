@@ -118,12 +118,16 @@
   --chrome: color-mix(in srgb, var(--primary) 4%, var(--series-200));
   --chrome-foreground: var(--foreground);
 
-  /* Glassmorphism chrome surfaces — translucent with a subtle gradient. */
-  --chrome-glass: color-mix(in srgb, var(--chrome) 82%, transparent);
-  --chrome-glass-start: color-mix(in srgb, var(--chrome) 92%, transparent);
-  --chrome-glass-end: color-mix(in srgb, var(--chrome) 72%, transparent);
-  --glass-border: color-mix(in srgb, var(--foreground) 6%, transparent);
-  --glass-shadow: 0 4px 24px -6px color-mix(in srgb, var(--series-950) 8%, transparent);
+  /* Glassmorphism chrome surfaces — more translucent with a top-light sheen. */
+  --chrome-glass: color-mix(in srgb, var(--chrome) 70%, transparent);
+  --chrome-glass-start: color-mix(
+    in srgb,
+    #ffffff 10%,
+    color-mix(in srgb, var(--chrome) 78%, transparent)
+  );
+  --chrome-glass-end: color-mix(in srgb, var(--chrome) 58%, transparent);
+  --glass-border: color-mix(in srgb, var(--foreground) 4%, transparent);
+  --glass-shadow: 0 8px 32px -6px color-mix(in srgb, var(--series-950) 14%, transparent);
 
   /* Shared typography */
   --text-overline: 700 11px / 1.2 var(--font-ui);
@@ -223,11 +227,15 @@
   --chrome-foreground: var(--foreground);
 
   /* Glassmorphism chrome surfaces — slightly more translucent in dark mode. */
-  --chrome-glass: color-mix(in srgb, var(--chrome) 78%, transparent);
-  --chrome-glass-start: color-mix(in srgb, var(--chrome) 88%, transparent);
-  --chrome-glass-end: color-mix(in srgb, var(--chrome) 68%, transparent);
-  --glass-border: color-mix(in srgb, var(--foreground) 8%, transparent);
-  --glass-shadow: 0 4px 24px -6px color-mix(in srgb, #000000 28%, transparent);
+  --chrome-glass: color-mix(in srgb, var(--chrome) 65%, transparent);
+  --chrome-glass-start: color-mix(
+    in srgb,
+    #ffffff 7%,
+    color-mix(in srgb, var(--chrome) 72%, transparent)
+  );
+  --chrome-glass-end: color-mix(in srgb, var(--chrome) 52%, transparent);
+  --glass-border: color-mix(in srgb, var(--foreground) 5%, transparent);
+  --glass-shadow: 0 8px 32px -6px color-mix(in srgb, #000000 30%, transparent);
 }
 
 [data-contrast='high'],
