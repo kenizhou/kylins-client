@@ -78,11 +78,20 @@ describe('TitleBar search', () => {
     expect(toggleMaximize).toHaveBeenCalledTimes(1);
   });
 
-  it('collapses search to an icon button at medium width', () => {
+  it('keeps the search field visible (compressed) at medium width', () => {
     currentBreakpoint = 'medium';
     render(<TitleBar />);
-    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /search mail/i })).toBeInTheDocument();
+    expect(screen.getByRole('searchbox')).toBeInTheDocument();
+    expect(screen.getByTestId('window-controls')).toBeInTheDocument();
+  });
+
+  it('hides MenuBar at medium width to prevent overflow', () => {
+    currentBreakpoint = 'medium';
+    render(<TitleBar />);
+    // MenuBar renders multiple menu buttons; at medium width none should appear.
+    expect(
+      screen.queryAllByRole('button', { name: /^(File|Edit|View|Go|Tools|Help)$/i }),
+    ).toHaveLength(0);
   });
 
   it('hides MenuBar, Settings and Account icons at compact width but keeps window controls', () => {
@@ -92,5 +101,11 @@ describe('TitleBar search', () => {
     expect(screen.queryByRole('button', { name: /settings/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /account/i })).not.toBeInTheDocument();
     expect(screen.getByTestId('window-controls')).toBeInTheDocument();
+  });
+
+  it('always keeps window controls visible even at compact width', () => {
+    currentBreakpoint = 'compact';
+    render(<TitleBar />);
+    expect(screen.getByTestId('window-controls')).toBeVisible();
   });
 });

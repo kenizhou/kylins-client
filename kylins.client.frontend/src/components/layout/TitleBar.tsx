@@ -51,7 +51,6 @@ export function TitleBar() {
   const openAccountSetup = () => useUIStore.getState().setAccountSetupOpen(true);
   const { breakpoint } = useWindowSize();
   const isCompact = breakpoint === 'compact';
-  const isMediumOrCompact = breakpoint === 'medium' || breakpoint === 'compact';
   const [searchOpen, setSearchOpen] = useState(false);
   const isMaximized = useMaximizedState();
 
@@ -63,6 +62,8 @@ export function TitleBar() {
       tasks: 'Search tasks…',
     }[activeApp] ?? 'Search…';
 
+  const showMenuBar = breakpoint === 'default' || breakpoint === 'wide';
+
   async function handleToggleMaximize() {
     try {
       await getCurrentWindow().toggleMaximize();
@@ -73,7 +74,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-[var(--header-h)] flex items-center overflow-hidden px-2 bg-[var(--chrome)] select-none"
+      className="relative h-[var(--header-h)] flex items-center pl-2 pr-[148px] bg-[var(--chrome)] select-none"
       style={dragStyle}
     >
       {/* Left: hamburger + menu bar */}
@@ -85,13 +86,13 @@ export function TitleBar() {
           onClick={() => setActiveCategory(activeCategory === 'File' ? null : 'File')}
           className="mr-1"
         />
-        {!isCompact && <MenuBar />}
+        {showMenuBar && <MenuBar />}
       </div>
 
-      {/* Left drag region: large target for moving / double-click maximize */}
+      {/* Left drag region: balances the right side and provides a move target */}
       <div
         data-testid="title-bar-drag-region"
-        className="flex-1 min-w-[64px] cursor-default"
+        className="flex-1 min-w-[40px] cursor-default"
         style={dragStyle}
         onDoubleClick={handleToggleMaximize}
         aria-label={
@@ -100,10 +101,10 @@ export function TitleBar() {
         role="button"
       />
 
-      {/* Center: search */}
-      <div className="flex-shrink-0 flex justify-center px-4" style={noDragStyle}>
-        <div className="w-[min(480px,45vw)]">
-          {isMediumOrCompact ? (
+      {/* Center: wide, centered search that scales with the window */}
+      <div className="flex-shrink-0 flex justify-center px-2" style={noDragStyle}>
+        <div className="w-[min(560px,45vw)]">
+          {isCompact ? (
             <>
               <IconButton
                 icon={<SearchIcon size={18} />}
@@ -113,7 +114,7 @@ export function TitleBar() {
               />
               {searchOpen && (
                 <div
-                  className="absolute right-0 top-1/2 -translate-y-1/2 z-[var(--z-sticky)]"
+                  className="absolute right-[148px] top-1/2 -translate-y-1/2 z-[var(--z-sticky)]"
                   style={noDragStyle}
                 >
                   <SearchField className="relative w-64" aria-label={searchPlaceholder}>
@@ -173,15 +174,19 @@ export function TitleBar() {
         </div>
       </div>
 
-      {/* Right drag region: symmetrical movable target */}
+      {/* Right drag region: symmetrical move target, keeps the search centered */}
       <div
         data-testid="title-bar-drag-region"
-        className="flex-1 min-w-[64px] cursor-default"
+        className="flex-1 min-w-[40px] cursor-default"
         style={dragStyle}
         onDoubleClick={handleToggleMaximize}
+        aria-label={
+          isMaximized ? 'Double-click to restore window' : 'Double-click to maximize window'
+        }
+        role="button"
       />
 
-      {/* Right: app icons + window controls */}
+      {/* Right: app icons (window controls are absolutely positioned) */}
       <div className="flex items-center gap-0.5 flex-shrink-0" style={noDragStyle}>
         {!isCompact && (
           <>
@@ -191,9 +196,15 @@ export function TitleBar() {
               onClick={openPreferences}
             />
             <IconButton icon={<UserIcon size={16} />} title="Account" onClick={openAccountSetup} />
-            <div className="mx-1 h-5 w-px bg-[var(--border)]" />
           </>
         )}
+      </div>
+
+      {/* Window controls: fixed to the right so they stay visible at any width */}
+      <div
+        className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5"
+        style={noDragStyle}
+      >
         <WindowControls />
       </div>
     </div>
