@@ -52,17 +52,16 @@
 
 ---
 
-## Phase 1: Token & Utility Foundation
+# Task 1: Add Surface & Depth Tokens
 
-**Goal:** Introduce the new Fluent Acrylic token system and utility classes so later phases have a consistent language.
+**Goal:** Introduce Fluent Acrylic surface, elevation, accent-subtle, and motion tokens into the theme system.
 
 **Files:**
 - Modify: `src/styles/theme.css`
-- Modify: `src/styles/globals.css`
-- Modify: `src/styles/skins.css`
-- Modify: `tests/styles/themeTokens.test.ts`
 
-### Task 1.1: Add surface & depth tokens
+**Interfaces:**
+- Consumes: existing `--background`, `--foreground`, `--card`, `--chrome`, `--primary`, `--border`, `--series-950`.
+- Produces: `--surface-elevated`, `--surface-floating`, `--chrome-tint`, `--primary-subtle`, `--primary-muted`, `--primary-subtle-solid`, `--primary-muted-solid`, `--border-subtle`, `--shadow-sm`, `--shadow`, `--shadow-md`, `--shadow-lg`, `--shadow-xl`, `--duration-instant`, `--duration-fast`, `--duration-normal`, `--duration-slow`, `--ease-out`, `--ease-spring`.
 
 - [ ] **Step 1: Add new semantic tokens to `:root` in `theme.css`**
 
@@ -144,7 +143,42 @@ In both `[data-contrast='high']` and `[data-contrast='high'].dark`, add:
   --shadow-xl: none;
 ```
 
-### Task 1.2: Expose tokens in Tailwind v4
+- [ ] **Step 4: Self-review**
+
+Check that every new token has a dark-mode counterpart and a high-contrast fallback.
+
+- [ ] **Step 5: Verification**
+
+Run:
+
+```bash
+cd kylins.client.frontend
+npx tsc --noEmit
+npm run lint
+```
+
+Expected: no new errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+git add src/styles/theme.css
+git commit -m "feat(frontend): add Fluent Acrylic surface and depth tokens"
+```
+
+---
+
+# Task 2: Expose Tokens in Tailwind v4
+
+**Goal:** Map the new tokens into Tailwind v4 `@theme inline` and create reusable `@utility` classes.
+
+**Files:**
+- Modify: `src/styles/globals.css`
+
+**Interfaces:**
+- Consumes: all tokens produced by Task 1.
+- Produces: Tailwind color classes (`surface-elevated`, `surface-floating`, `chrome-tint`, `primary-subtle`, `primary-muted`, `border-subtle`), shadow classes, radius classes, and transition utilities.
 
 - [ ] **Step 1: Extend `@theme inline` in `globals.css`**
 
@@ -243,7 +277,38 @@ Add after the existing `@utility glass` block:
 }
 ```
 
-### Task 1.3: Verify tokens with tests
+- [ ] **Step 3: Verification**
+
+Run:
+
+```bash
+cd kylins.client.frontend
+npx tsc --noEmit
+npm run lint
+```
+
+Expected: no new errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+git add src/styles/globals.css
+git commit -m "feat(frontend): expose acrylic tokens as Tailwind utilities"
+```
+
+---
+
+# Task 3: Verify Tokens with Tests
+
+**Goal:** Add test assertions for the new tokens so future regressions are caught.
+
+**Files:**
+- Modify: `tests/styles/themeTokens.test.ts`
+
+**Interfaces:**
+- Consumes: `src/styles/theme.css` (read from disk).
+- Produces: passing test assertions.
 
 - [ ] **Step 1: Update `tests/styles/themeTokens.test.ts`**
 
@@ -295,30 +360,26 @@ npx vitest run tests/styles/themeTokens.test.ts
 
 Expected: all tests pass.
 
-### Task 1.4: Commit
+- [ ] **Step 3: Commit**
 
 ```bash
 cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
-git add -A
-git commit -m "feat(frontend): add Fluent Acrylic token system" -m "- Add surface-elevated, surface-floating, chrome-tint, primary-subtle/muted" -m "- Add elevation shadow tokens and motion tokens" -m "- Expose tokens via Tailwind v4 @theme inline and @utility classes" -m "- Add token assertions to themeTokens.test.ts"
-git push origin feat/redesign-frontend-02
+git add tests/styles/themeTokens.test.ts
+git commit -m "test(frontend): assert new acrylic tokens exist"
 ```
 
 ---
 
-## Phase 2: Chrome Bars Acrylic Polish
+# Task 4: Strengthen Glass Tokens
 
-**Goal:** Make the titlebar, leftbar, and statusbar clearly acrylic with no split lines, stronger blur, and a subtle light sheen.
+**Goal:** Make the chrome bar acrylic effect stronger and more visible.
 
 **Files:**
-- Modify: `src/styles/theme.css` (glass tokens)
-- Modify: `src/styles/globals.css` (glass utility)
-- Modify: `src/components/layout/TitleBar.tsx`
-- Modify: `src/components/layout/ToolWindowBar.tsx`
-- Modify: `src/components/layout/StatusBar.tsx`
-- Modify: `src/components/layout/AppShell.tsx`
+- Modify: `src/styles/theme.css`
 
-### Task 2.1: Strengthen glass tokens
+**Interfaces:**
+- Consumes: existing `--chrome`, `--foreground`, `--series-950`.
+- Produces: updated `--chrome-glass`, `--chrome-glass-start`, `--chrome-glass-end`, `--glass-border`, `--glass-shadow`.
 
 - [ ] **Step 1: Update glass tokens in `theme.css`**
 
@@ -343,7 +404,37 @@ And in `.dark`:
   --glass-shadow: 0 8px 32px -6px color-mix(in srgb, #000000 35%, transparent);
 ```
 
-### Task 2.2: Strengthen glass utility
+- [ ] **Step 2: Verification**
+
+Run:
+
+```bash
+cd kylins.client.frontend
+npx tsc --noEmit
+npm run lint
+npx vitest run tests/styles/themeTokens.test.ts
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+git add src/styles/theme.css
+git commit -m "feat(frontend): strengthen chrome glass tokens"
+```
+
+---
+
+# Task 5: Strengthen Glass Utility
+
+**Goal:** Increase the blur and saturation of the `.glass` utility class.
+
+**Files:**
+- Modify: `src/styles/globals.css`
+
+**Interfaces:**
+- Consumes: `--chrome-glass`.
+- Produces: updated `.glass` utility.
 
 - [ ] **Step 1: Update `.glass` utility in `globals.css`**
 
@@ -355,7 +446,38 @@ And in `.dark`:
 }
 ```
 
-### Task 2.3: Apply to chrome bars
+- [ ] **Step 2: Verification**
+
+Run:
+
+```bash
+cd kylins.client.frontend
+npx tsc --noEmit
+npm run lint
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+git add src/styles/globals.css
+git commit -m "feat(frontend): increase glass blur and saturation"
+```
+
+---
+
+# Task 6: Apply Acrylic to Chrome Bars
+
+**Goal:** Update TitleBar, ToolWindowBar, and StatusBar to use the stronger acrylic styling without split borders.
+
+**Files:**
+- Modify: `src/components/layout/TitleBar.tsx`
+- Modify: `src/components/layout/ToolWindowBar.tsx`
+- Modify: `src/components/layout/StatusBar.tsx`
+
+**Interfaces:**
+- Consumes: `.glass` utility, `--chrome-glass-start`, `--chrome-glass-end`, `--glass-shadow`.
+- Produces: updated chrome bar components.
 
 - [ ] **Step 1: Update `TitleBar.tsx`**
 
@@ -381,21 +503,9 @@ Change footer className to:
 className="h-[var(--status-h)] flex items-center justify-between px-3 text-xs glass bg-gradient-to-t from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] shadow-[var(--glass-shadow)] text-[var(--muted-text)] shrink-0"
 ```
 
-### Task 2.4: Adjust root background for depth
+- [ ] **Step 4: Verification**
 
-- [ ] **Step 1: Update `AppShell.tsx` root background**
-
-Change root className from `bg-[var(--chrome)]` to a slightly deeper tone so glass can read as translucent:
-
-```tsx
-className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--chrome-tint)] text-[var(--foreground)]"
-```
-
-This makes the area behind the chrome bars subtly different from the chrome itself, letting the acrylic effect be visible.
-
-### Task 2.5: Verify
-
-- [ ] **Step 1: Run checks**
+Run:
 
 ```bash
 cd kylins.client.frontend
@@ -405,68 +515,73 @@ npm run lint
 npx vitest run tests/components/layout/TitleBar.test.tsx tests/components/layout/StatusBar.test.tsx tests/components/layout/ResizablePaneGroup.test.tsx tests/styles/themeTokens.test.ts
 ```
 
-### Task 2.6: Commit
+Expected: tests pass, no new lint/type errors.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
-git add -A
-git commit -m "feat(frontend): strengthen chrome bar acrylic" -m "- Increase glass blur to 20px and saturation to 200%" -m "- Add stronger white sheen and deeper shadows" -m "- Remove chrome bar borders to eliminate split lines" -m "- Use chrome-tint as root background for visible depth"
+git add src/components/layout/TitleBar.tsx src/components/layout/ToolWindowBar.tsx src/components/layout/StatusBar.tsx
+git commit -m "feat(frontend): apply stronger acrylic to chrome bars"
+```
+
+---
+
+# Task 7: Adjust Root Background for Depth
+
+**Goal:** Make the area behind the chrome bars subtly tinted so the acrylic translucency is visible.
+
+**Files:**
+- Modify: `src/components/layout/AppShell.tsx`
+
+**Interfaces:**
+- Consumes: `--chrome-tint`.
+- Produces: updated root background.
+
+- [ ] **Step 1: Update `AppShell.tsx` root background**
+
+Change root className from `bg-[var(--chrome)]` to:
+
+```tsx
+className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--chrome-tint)] text-[var(--foreground)]"
+```
+
+- [ ] **Step 2: Verification**
+
+Run:
+
+```bash
+cd kylins.client.frontend
+npm run format
+npx tsc --noEmit
+npm run lint
+npx vitest run tests/components/layout/TitleBar.test.tsx tests/components/layout/StatusBar.test.tsx tests/components/layout/ResizablePaneGroup.test.tsx tests/styles/themeTokens.test.ts
+```
+
+- [ ] **Step 3: Commit and push Phase 2**
+
+```bash
+cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+git add src/components/layout/AppShell.tsx
+git commit -m "feat(frontend): use chrome-tint as root background for acrylic depth"
 git push origin feat/redesign-frontend-02
 ```
 
 ---
 
-## Phase 3: Mail Surfaces (High-Level Outline)
+## Phase 3-5 Outline (Future Work)
 
-**Goal:** Apply Fluent Acrylic surfaces to folder pane, message list, reading pane, and ribbon.
+### Phase 3: Mail Surfaces
 
-**Files:**
+Apply Fluent Acrylic surfaces to:
 - `src/components/layout/FolderPane.tsx`
 - `src/components/layout/MessageList.tsx`
 - `src/components/layout/ReadingPane.tsx`
-- `src/components/layout/CommandRibbon.tsx`
-- `src/components/layout/ribbon/ReadRibbon.tsx`
-- `src/components/layout/ribbon/ComposeRibbon.tsx`
-- `src/components/layout/ribbon/RibbonPrimitives.tsx`
-- `src/components/layout/ribbon/RibbonShell.tsx`
-- `src/features/view/components/ReadingPaneLayout.tsx`
+- `src/components/layout/CommandRibbon.tsx` and `ribbon/*`
 
-### Task 3.1: FolderPane
+### Phase 4: Secondary Pages
 
-- Convert container to `surface` background with `border-r border-subtle`.
-- Use `primary-muted` for selected row, `primary-subtle` for hover.
-- Add accent left pill to selected row.
-- Increase row padding slightly (`px-3 py-2`).
-
-### Task 3.2: MessageList
-
-- Container: `surface` background.
-- Header: `surface-elevated` with subtle bottom border.
-- Rows: `primary-subtle` hover, `primary-muted` selected.
-- Unread: bold text + accent thread ribbon.
-- Hover quick actions: floating buttons with `surface-floating` + `shadow-elevation`.
-
-### Task 3.3: ReadingPane
-
-- Wrapper card: `card` + `shadow-elevation-md` + `rounded-lg`.
-- Header: `surface-elevated` + bottom border.
-- Action buttons: hover `primary-subtle` + slight scale.
-- Attachment chips: `surface-floating`.
-
-### Task 3.4: CommandRibbon
-
-- Shell: `chrome-tint` background.
-- Active tab: accent underline indicator.
-- Groups: `border-r border-subtle` separators.
-- Buttons: hover `primary-subtle`, icon+label layout.
-
----
-
-## Phase 4: Secondary Pages (High-Level Outline)
-
-**Goal:** Unify calendar, contacts, tasks, composer, preferences, dialogs, and empty states with the new token system.
-
-**Files:**
+Apply Fluent Acrylic surfaces to:
 - `src/components/calendar/*.tsx`
 - `src/components/contacts/*.tsx`
 - `src/components/tasks/*.tsx`
@@ -474,74 +589,278 @@ git push origin feat/redesign-frontend-02
 - `src/components/preferences/*.tsx`
 - `src/components/ui/*.tsx`
 
-### Task 4.1: Calendar
+### Phase 5: Motion Polish
 
-- Toolbar: `chrome-tint`.
-- Month grid: `surface` cells, `border-subtle` grid lines.
-- Today: accent circle.
-- Event chips: skin-aware subtle backgrounds.
-
-### Task 4.2: Contacts
-
-- List: `surface` background, row hover `primary-subtle`.
-- Detail card: `card` + `shadow-elevation-md`.
-- Avatar initials: accent background.
-
-### Task 4.3: Tasks
-
-- Toolbar: `chrome-tint`.
-- List: `surface`, priority dots use accent/amber/red.
-- Detail: `card`.
-
-### Task 4.4: Composer
-
-- Header: `surface-elevated`.
-- Toolbar: `chrome-tint`.
-- Inputs: `surface-floating` focus background.
-- Attachment chips: `surface-floating` + `shadow-elevation-sm`.
-
-### Task 4.5: Preferences & Dialogs
-
-- Preferences sections: `card` + `shadow-elevation-sm`.
-- Modal: `surface-floating` + `shadow-elevation-xl` + `rounded-xl`.
-- Empty states: subtle icon + text, no large gray blocks.
+Add consistent micro-interactions and reduced-motion support.
 
 ---
 
-## Phase 5: Motion Polish (High-Level Outline)
+# Task 8: Apply Acrylic Surfaces to FolderPane
 
-**Goal:** Add consistent, subtle micro-interactions.
+**Goal:** Bring the folder pane into the Fluent Acrylic elevation system, unifying selected/hover states with primary-subtle/muted tokens and removing hard visual splits.
 
 **Files:**
-- `src/styles/globals.css`
-- Interactive components across the app.
+- Modify: `src/components/layout/FolderPane.tsx`
 
-### Task 5.1: Add motion utilities
+**Interfaces:**
+- Consumes: `--surface`, `--border-subtle`, `--primary-subtle`, `--primary-muted`, `--selected-text`, `--muted-text`, `--surface-elevated`, `--duration-fast`.
+- Produces: updated FolderPane surfaces.
 
-- Add `@utility hover-lift`, `@utility hover-scale`, `@utility press-scale` in `globals.css`.
+- [ ] **Step 1: Pane root surface**
 
-### Task 5.2: Apply micro-interactions
+  Change the root `className` from `flex h-full flex-col rounded-xl bg-surface` to use a level-1 surface treatment:
 
-- Buttons: `hover:scale-[1.02]` + background transition.
-- Cards: `hover:-translate-y-px` + shadow deepen.
-- List rows: `transition-fast` background.
-- Popovers/menus: 120ms scale + fade.
-- Toasts: 200ms slide-up.
+  ```tsx
+  className="flex h-full flex-col rounded-xl bg-surface border border-[var(--border-subtle)]"
+  ```
 
-### Task 5.3: Respect reduced motion
+- [ ] **Step 2: Unify row selected/hover states**
 
-- Ensure `[data-reduce-motion='true']` and `prefers-reduced-motion` zero out transforms.
+  In `FolderRow`, replace the active/hover background classes:
+  - active: `bg-[var(--primary-muted)] text-[var(--selected-text)]`
+  - hover: `hover:bg-[var(--primary-subtle)]`
+
+  Keep the existing `group` and left accent pill (`absolute ... w-[2px] bg-primary`).
+
+  In `AccountFolderTree` `TreeItem` className callback, replace `bg-selected` / `bg-hover` with the same `primary-muted` / `primary-subtle` tokens.
+
+- [ ] **Step 3: Favorites/account separator**
+
+  Change the separator `<div className="mx-3 h-px bg-border" />` to `bg-[var(--border-subtle)]`.
+
+- [ ] **Step 4: Group header readability**
+
+  Ensure the `FolderGroup` header uses `text-[var(--muted-text)]` instead of `text-foreground`.
+
+- [ ] **Step 5: Unread badge**
+
+  For non-selected rows, change the badge container from `border border-border bg-surface` to `border border-[var(--border-subtle)] bg-[var(--surface-elevated)]`.
+
+- [ ] **Step 6: Transitions**
+
+  Add `transition-colors duration-fast` to `FolderRow` and `TreeItem` row elements so hover/selection changes are smooth.
+
+- [ ] **Step 7: Verification**
+
+  Run:
+
+  ```bash
+  cd kylins.client.frontend
+  npm run format
+  npx tsc --noEmit
+  npm run lint
+  npx vitest run tests/components/layout/FolderPane.test.tsx tests/styles/themeTokens.test.ts
+  ```
+
+- [ ] **Step 8: Commit**
+
+  ```bash
+  cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+  git add src/components/layout/FolderPane.tsx
+  git commit -m "feat(frontend): apply acrylic surfaces to FolderPane"
+  ```
 
 ---
 
-## Verification (Run After Each Phase)
+# Task 9: Apply Acrylic Surfaces to MessageList
 
-```bash
-cd kylins.client.frontend
-npm run format
-npx tsc --noEmit
-npm run lint
-npx vitest run
-```
+**Goal:** Update the message list container, day headers, tab bar, and rows to use the new surface/accent tokens, and make selected vs hover states visually distinct.
 
-All must pass before committing.
+**Files:**
+- Modify: `src/components/layout/MessageList.tsx`
+
+**Interfaces:**
+- Consumes: `--surface`, `--surface-elevated`, `--surface-floating`, `--border-subtle`, `--primary-subtle`, `--primary-muted`, `--muted-text`, `--text`, `--foreground`.
+- Produces: updated MessageList surfaces.
+
+- [ ] **Step 1: List container**
+
+  Change root `className="message-list flex flex-col h-full bg-[var(--card)]"` to `bg-surface` and add a subtle border:
+
+  ```tsx
+  className="message-list flex flex-col h-full bg-surface border-r border-[var(--border-subtle)]"
+  ```
+
+- [ ] **Step 2: Inbox tabs**
+
+  For the active tab, replace `bg-[var(--selected)]` with `bg-[var(--primary-muted)] text-[var(--foreground)]`.
+  For inactive tabs, replace `hover:bg-[var(--hover)]` with `hover:bg-[var(--primary-subtle)]`.
+  Keep focus rings.
+
+- [ ] **Step 3: Day group headers**
+
+  Change the header border from `border-b border-[var(--border)]` to `border-b border-[var(--border-subtle)]`.
+
+- [ ] **Step 4: MessageRow states**
+
+  Replace the row background logic:
+  - selected: `bg-[var(--primary-muted)]`
+  - hover: `hover:bg-[var(--primary-subtle)]`
+
+  Ensure the `prominent` tint row still applies its own background when not selected.
+
+- [ ] **Step 5: Quick actions floating bar**
+
+  In `MessageRowQuickActions`, replace the container background:
+  - selected: `bg-[var(--surface-floating)]`
+  - default/hover: `bg-[var(--surface-elevated)]`
+
+  Use `border-[var(--border-subtle)]` for the bar border and `hover:bg-[var(--primary-subtle)]` for the inner icon buttons.
+
+- [ ] **Step 6: Loading/empty states**
+
+  Keep icons and text using `text-[var(--muted-text)]`; ensure empty-state panels inherit `bg-surface`.
+
+- [ ] **Step 7: Verification**
+
+  Run:
+
+  ```bash
+  cd kylins.client.frontend
+  npm run format
+  npx tsc --noEmit
+  npm run lint
+  npx vitest run tests/components/layout/MessageList.test.tsx tests/styles/themeTokens.test.ts
+  ```
+
+- [ ] **Step 8: Commit**
+
+  ```bash
+  cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+  git add src/components/layout/MessageList.tsx
+  git commit -m "feat(frontend): apply acrylic surfaces to MessageList"
+  ```
+
+---
+
+# Task 10: Apply Acrylic Surfaces to ReadingPane
+
+**Goal:** Promote the reading pane from a flat card to a level-2 card surface and update the message header to match the new token system.
+
+**Files:**
+- Modify: `src/components/layout/ReadingPane.tsx`
+- Modify: `src/features/viewer/MessageHeader.tsx`
+
+**Interfaces:**
+- Consumes: `--surface-elevated`, `--surface-floating`, `--surface`, `--border`, `--border-subtle`, `--primary-subtle`, `--primary-muted`, `--muted-text`, `--text`, `--shadow-sm`.
+- Produces: updated ReadingPane and MessageHeader surfaces.
+
+- [ ] **Step 1: ReadingPane root card surface**
+
+  Change both the message view root and the empty-state root from `bg-[var(--card)]` to a level-2 card treatment.
+
+  Message view:
+  ```tsx
+  className="reading-pane relative flex h-full min-w-0 flex-col bg-surface-elevated border-l border-[var(--border-subtle)] shadow-sm"
+  ```
+
+  Empty state:
+  ```tsx
+  className="flex h-full flex-col items-center justify-center bg-surface-elevated min-w-0 text-[var(--muted-text)]"
+  ```
+
+- [ ] **Step 2: Empty-state icon circle**
+
+  Change the empty-state icon circle from `bg-[var(--surface)]` to `bg-[var(--surface-floating)]`.
+
+- [ ] **Step 3: MessageHeader chrome**
+
+  In `MessageHeader.tsx`, change the header root from `border-b border-[var(--border)]` to `border-b border-[var(--border-subtle)] bg-[var(--surface-elevated)]`.
+
+  Update the action icon buttons and the "More actions" button to use `hover:bg-[var(--primary-subtle)]` instead of `hover:bg-[var(--hover)]`.
+
+  Update the "Add to contacts" chip from `bg-[var(--secondary)]` to `bg-[var(--primary-subtle)] text-[var(--foreground)]`.
+
+  Update the popover in MessageHeader from `bg-[var(--background)]` to `bg-[var(--surface-floating)]` and `border-[var(--border)]` to `border-[var(--border-subtle)]`.
+
+- [ ] **Step 4: Decrypt failure panel**
+
+  Keep the panel centered; change the icon circle from `bg-[var(--surface)]` to `bg-[var(--surface-floating)]`.
+
+- [ ] **Step 5: Verification**
+
+  Run:
+
+  ```bash
+  cd kylins.client.frontend
+  npm run format
+  npx tsc --noEmit
+  npm run lint
+  npx vitest run tests/components/layout/ReadingPane.test.tsx tests/styles/themeTokens.test.ts
+  ```
+
+- [ ] **Step 6: Commit**
+
+  ```bash
+  cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+  git add src/components/layout/ReadingPane.tsx src/features/viewer/MessageHeader.tsx
+  git commit -m "feat(frontend): apply acrylic surfaces to ReadingPane"
+  ```
+
+---
+
+# Task 11: Apply Acrylic Surfaces to CommandRibbon
+
+**Goal:** Update the ribbon shell, group separators, button primitives, and dropdown surfaces to use the Fluent Acrylic chrome/token system.
+
+**Files:**
+- Modify: `src/components/layout/ribbon/RibbonShell.tsx`
+- Modify: `src/components/layout/ribbon/RibbonPrimitives.tsx`
+- Modify: `src/components/layout/ribbon/ReadRibbon.tsx`
+- Modify: `src/components/layout/ribbon/ComposeRibbon.tsx`
+
+**Interfaces:**
+- Consumes: `--chrome-tint`, `--border-subtle`, `--primary-subtle`, `--primary-muted`, `--surface-floating`, `--text`, `--foreground`.
+- Produces: updated ribbon surfaces.
+
+- [ ] **Step 1: RibbonShell chrome surface**
+
+  Change the shell className from `... bg-[var(--card)] border border-[var(--border)] ...` to:
+
+  ```tsx
+  className="mx-1 mt-1 flex min-h-[var(--ribbon-h)] min-w-0 flex-col items-stretch justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-2 py-1 shadow-sm md:mx-2 md:mt-2 md:px-3 md:py-1.5"
+  ```
+
+- [ ] **Step 2: RibbonGroup separator**
+
+  Change the group border from `border-r border-border` to `border-r-[var(--border-subtle)]`.
+
+- [ ] **Step 3: RibbonButton hover/active**
+
+  In `RibbonButton`, replace the non-primary hover background:
+
+  - default: `text-[var(--text)] hover:bg-[var(--primary-subtle)] active:bg-[var(--primary-muted)]`
+
+  Keep the primary variant unchanged.
+
+- [ ] **Step 4: RibbonToggle hover**
+
+  In `RibbonToggle`, replace `hover:bg-hover` with `hover:bg-[var(--primary-subtle)]` (and keep the selected checkmark background using primary).
+
+- [ ] **Step 5: Dropdown/popover surfaces**
+
+  In `ReadRibbon.tsx` and `ComposeRibbon.tsx`, replace all popover className backgrounds `bg-[var(--background)]` with `bg-[var(--surface-floating)]` and borders `border-[var(--border)]` with `border-[var(--border-subtle)]`.
+
+  In `ReadRibbon.tsx`, also update the split-button caret area hover from `hover:bg-[var(--hover)]` to `hover:bg-[var(--primary-subtle)]`.
+
+- [ ] **Step 6: Verification**
+
+  Run:
+
+  ```bash
+  cd kylins.client.frontend
+  npm run format
+  npx tsc --noEmit
+  npm run lint
+  npx vitest run tests/components/layout/ReadingPane.test.tsx tests/styles/themeTokens.test.ts
+  ```
+
+  (No dedicated CommandRibbon test exists; ReadingPane exercises ReadRibbon via MessageHeader actions.)
+
+- [ ] **Step 7: Commit**
+
+  ```bash
+  cd D:/Projects/mailclient/kylins/.worktrees/feat/redesign-frontend-02
+  git add src/components/layout/ribbon/RibbonShell.tsx src/components/layout/ribbon/RibbonPrimitives.tsx src/components/layout/ribbon/ReadRibbon.tsx src/components/layout/ribbon/ComposeRibbon.tsx
+  git commit -m "feat(frontend): apply acrylic surfaces to CommandRibbon"
+  ```
