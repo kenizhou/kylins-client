@@ -134,14 +134,14 @@ function SplitButton({
           <Button
             isDisabled={disabled}
             aria-label={menuLabel}
-            className={`my-auto flex h-11 items-center rounded-r px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 ${caretClassName}`}
+            className={`my-auto flex h-11 items-center rounded-r px-1.5 text-[10px] text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 ${caretClassName}`}
           >
             <CaretDownIcon size={10} />
           </Button>
         </Provider>
       </div>
       {state.isOpen && (
-        <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+        <Popover className="min-w-[180px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
           {menu}
         </Popover>
       )}
@@ -447,7 +447,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             >
               Move
             </RibbonButton>
-            <Popover className="min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-border bg-background py-1 shadow-lg">
+            <Popover className="min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
               {selectedThread && (
                 <FolderPickerMenu
                   accountId={selectedThread.accountId}
@@ -504,7 +504,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             >
               More
             </RibbonButton>
-            <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+            <Popover className="min-w-[180px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
               <Menu aria-label="More actions" className="outline-none">
                 <MenuItem
                   isDisabled={!hasThread}
@@ -550,7 +550,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             triggerRef={overflowButtonRef}
             isOpen={moveOpen}
             onOpenChange={setMoveOpen}
-            className="min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-border bg-background py-1 shadow-lg"
+            className="min-w-[220px] max-h-[360px] overflow-auto rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg"
           >
             {selectedThread && (
               <FolderPickerMenu

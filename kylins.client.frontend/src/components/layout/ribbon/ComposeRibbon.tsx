@@ -75,7 +75,7 @@ export function ComposeRibbon() {
             <span className="whitespace-nowrap">Importance: {importanceLabel}</span>
             <CaretDownIcon size={10} className="opacity-70" />
           </Button>
-          <Popover className="min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+          <Popover className="min-w-[140px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
             <Menu
               aria-label="Importance"
               selectionMode="single"
@@ -115,7 +115,7 @@ export function ComposeRibbon() {
             )}
             <CaretDownIcon size={10} className="opacity-70" />
           </Button>
-          <Popover className="min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+          <Popover className="min-w-[160px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
             <Menu aria-label="Tracking" className="outline-none">
               <MenuItem
                 id="read-receipt"

@@ -8,7 +8,7 @@ export interface RibbonGroupProps {
 
 export function RibbonGroup({ children }: RibbonGroupProps) {
   return (
-    <div className="flex min-w-0 flex-wrap items-stretch border-r border-border px-1 last:border-r-0">
+    <div className="flex min-w-0 flex-wrap items-stretch border-r-[var(--border-subtle)] px-1 last:border-r-0">
       {children}
     </div>
   );
@@ -39,7 +39,7 @@ export const RibbonButton = forwardRef<HTMLButtonElement, RibbonButtonProps>(fun
       className={`my-auto flex h-11 items-center gap-1.5 rounded px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         primary
           ? 'bg-primary text-primary-fg hover:opacity-90 disabled:hover:opacity-40'
-          : 'text-text hover:bg-hover disabled:hover:bg-transparent'
+          : 'text-[var(--text)] hover:bg-[var(--primary-subtle)] active:bg-[var(--primary-muted)] disabled:hover:bg-transparent'
       } ${iconOnly ? 'w-11 justify-center px-0' : ''} ${className ?? ''}`}
     >
       {icon}
@@ -73,7 +73,9 @@ export function RibbonToggle({
       isDisabled={disabled}
       aria-label={title ?? label}
       className={`flex h-11 items-center gap-1.5 rounded px-2 text-xs ${
-        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-hover'
+        disabled
+          ? 'cursor-not-allowed opacity-60'
+          : 'cursor-pointer hover:bg-[var(--primary-subtle)]'
       }`}
     >
       {({ isSelected }) => (
