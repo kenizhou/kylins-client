@@ -6,14 +6,7 @@ import { usePreferencesStore } from '../../stores/preferencesStore';
 import { MenuBar } from '../ui/MenuBar';
 import { IconButton } from '../ui/IconButton';
 import { WindowControls } from '../ui/WindowTitleBar';
-import {
-  MenuIcon,
-  NotificationIcon,
-  SettingsIcon,
-  UserIcon,
-  CloseIcon,
-  SearchIcon,
-} from '../icons';
+import { MenuIcon, SettingsIcon, UserIcon, CloseIcon, SearchIcon } from '../icons';
 import { useWindowSize } from '../../hooks/useWindowSize';
 
 const dragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' } = {
@@ -97,18 +90,14 @@ export function TitleBar() {
       {/* Left drag region: large target for moving / double-click maximize */}
       <div
         data-testid="title-bar-drag-region"
-        className="flex-1 flex items-center min-w-[64px] cursor-default"
+        className="flex-1 min-w-[64px] cursor-default"
         style={dragStyle}
         onDoubleClick={handleToggleMaximize}
         aria-label={
           isMaximized ? 'Double-click to restore window' : 'Double-click to maximize window'
         }
         role="button"
-      >
-        <span className="hidden lg:block px-2 text-sm font-medium text-[var(--foreground)] opacity-80">
-          Kylins Mail
-        </span>
-      </div>
+      />
 
       {/* Center: search */}
       <div className="flex-shrink-0 flex justify-center px-4" style={noDragStyle}>
@@ -193,7 +182,6 @@ export function TitleBar() {
 
       {/* Right: app icons + window controls */}
       <div className="flex items-center gap-0.5 flex-shrink-0" style={noDragStyle}>
-        <IconButton icon={<NotificationIcon size={16} />} title="Notifications" />
         <IconButton icon={<SettingsIcon size={16} />} title="Settings" onClick={openPreferences} />
         <IconButton icon={<UserIcon size={16} />} title="Account" onClick={openAccountSetup} />
 
