@@ -174,7 +174,7 @@ function SplitRibbonButton({
     <SplitButton
       disabled={disabled}
       menuLabel={`${label} options`}
-      caretClassName="border-r-[var(--border-subtle)]"
+      caretClassName="border-r border-[var(--border-subtle)]"
       main={
         <Button
           isDisabled={disabled}
