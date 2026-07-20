@@ -257,6 +257,7 @@ pub fn run() {
             // Plan 3 / G5 Task 4 — S/MIME receive orchestrator commands.
             db::commands::crypto_open_message,
             db::commands::db_get_message_crypto_result,
+            db::commands::crypto_get_signer_details,
             sync_engine::commands::sync_start,
             sync_engine::commands::sync_stop,
             sync_engine::commands::sync_account_now,

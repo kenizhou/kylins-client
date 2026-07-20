@@ -13,8 +13,10 @@ import {
   type DbMessageRow,
 } from '../services/db/threads';
 import { getMessageBody } from '../services/db/messageBodies';
-import { useViewStore } from '../features/view/viewStore';
+import { getMessageCryptoResult, openCryptoMessage } from '../services/db/cryptoReceive';
+import { useViewStore, type MailMessage } from '../features/view/viewStore';
 import { useFolderStore } from './folderStore';
+import { useToastStore } from './toastStore';
 import { getFolderByRole } from '../services/db/labels';
 import type { FolderRole } from '../services/mail/folders';
 
@@ -116,35 +118,106 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       const messages = await getMessagesForThread(thread.accountId, thread.id);
       const latest = messages[messages.length - 1] ?? null;
       if (latest) {
-        // Headers-first sync: the folder sweep no longer downloads bodies, so
-        // open them on demand. If the body is uncached, ask the backend to
-        // fetch it (sync_request_bodies → source.fetch_body → message_bodies
-        // upsert) then re-read. Best-effort: on failure we render whatever the
-        // cache has (null body → reading pane shows the text fallback).
-        let body = await getMessageBody(thread.accountId, latest.id);
-        console.log(
-          '[select] latestId=',
-          latest.id,
-          'accountId=',
-          thread.accountId,
-          'body=',
-          body ? `${body.bodyHtml?.length ?? 'null'} chars` : 'null',
-        );
-        if (!body || body.bodyHtml == null) {
-          console.log('[select] CACHE MISS for', latest.id, '— triggering sync_request_bodies');
-          try {
-            await invoke('sync_request_bodies', {
-              accountId: thread.accountId,
-              messageIds: [latest.id],
-            });
-            body = await getMessageBody(thread.accountId, latest.id);
-          } catch (e) {
-            console.error('on-demand body fetch failed:', e);
+        // S/MIME crypto path (Phase 1b Plan 4): an encrypted/signed message is
+        // opened through the decrypt + verify pipeline (`openCryptoMessage`)
+        // instead of the plain body fetch. The decrypted plaintext is
+        // SESSION-ONLY — it flows into `viewStore.selectedMessage.html`
+        // (in-memory React state) + `viewStore.decryptedCache` (RAM) so
+        // re-opening doesn't re-decrypt. NEVER written to disk. On decrypt
+        // failure we set `decryptState: 'failed'` + push a toast so ReadingPane
+        // (T4) shows the decrypt-failure panel; we do NOT crash the open flow.
+        // Rust `MessageRow.is_encrypted`/`is_signed` are `bool` → JSON
+        // `true`/`false` (NOT 0/1 ints — the read path was cut over from
+        // plugin-sql to Rust db commands). Coerce truthily; `=== 1` would
+        // silently never match a boolean, gating the crypto path off for EVERY
+        // encrypted message (regression that left the smime.p7m envelope
+        // rendering as a plain attachment instead of decrypting).
+        const isCrypto = !!latest.is_encrypted || !!latest.is_signed;
+        if (isCrypto) {
+          const cached = useViewStore.getState().decryptedCache[latest.id];
+          let mail: MailMessage;
+          if (cached) {
+            // Session cache hit — skip the crypto invoke entirely. The cached
+            // plaintext (RAM) is the source of truth for re-open. Re-attach the
+            // persisted verification outcome via getMessageCryptoResult (cheap
+            // DB read, no decrypt; always-current — reflects any trust decision
+            // since first open) so the CryptoBadge renders on re-open, not just
+            // first open. Without this the badge vanishes on every re-open.
+            mail = mapMessageToMailMessage(latest, cached.html);
+            mail.text = cached.text;
+            const cr = await getMessageCryptoResult(thread.accountId, latest.id);
+            if (cr) {
+              mail.signatureState = cr.signatureState as MailMessage['signatureState'];
+              mail.decryptState = cr.decryptState as MailMessage['decryptState'];
+              mail.signerEmail = cr.signerEmail ?? undefined;
+              mail.signerFingerprint = cr.signerFingerprint ?? undefined;
+              mail.revocationState = cr.revocationState as MailMessage['revocationState'];
+            }
+          } else {
+            try {
+              const result = await openCryptoMessage(thread.accountId, latest.id);
+              // Cache the plaintext BEFORE mapping so a re-open in the same
+              // session hits the cache even if setSelectedMessage throws below.
+              useViewStore
+                .getState()
+                .setDecrypted(latest.id, result.plaintextHtml, result.plaintextText);
+              mail = mapMessageToMailMessage(latest, result.plaintextHtml);
+              mail.text = result.plaintextText;
+              const cr = result.cryptoResult;
+              // Layer the persisted verification outcome onto the MailMessage.
+              // Casts narrow the backend's `string` fields to the MailMessage
+              // literal unions — the Rust side emits exactly these variants per
+              // the `message_crypto_results` CHECK constraints.
+              mail.signatureState = cr.signatureState as MailMessage['signatureState'];
+              mail.decryptState = cr.decryptState as MailMessage['decryptState'];
+              mail.signerEmail = cr.signerEmail ?? undefined;
+              mail.signerFingerprint = cr.signerFingerprint ?? undefined;
+              mail.revocationState = cr.revocationState as MailMessage['revocationState'];
+            } catch (e) {
+              // Decrypt/verify failure: surface the failure panel + toast. The
+              // base MailMessage (from the DB row) still carries isEncrypted /
+              // isSigned so the ReadingPane knows it was a crypto message.
+              console.error('[selectThread] crypto open failed:', e);
+              useToastStore
+                .getState()
+                .push(`Decrypt failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+              mail = mapMessageToMailMessage(latest, null);
+              mail.decryptState = 'failed';
+            }
           }
+          useViewStore.getState().setSelectedMessage(mail);
+        } else {
+          // Plain path (unchanged) — headers-first body fetch. The folder sweep
+          // no longer downloads bodies, so open them on demand. If the body is
+          // uncached, ask the backend to fetch it (sync_request_bodies →
+          // source.fetch_body → message_bodies upsert) then re-read. Best
+          // effort: on failure we render whatever the cache has (null body →
+          // reading pane shows the text fallback).
+          let body = await getMessageBody(thread.accountId, latest.id);
+          console.log(
+            '[select] latestId=',
+            latest.id,
+            'accountId=',
+            thread.accountId,
+            'body=',
+            body ? `${body.bodyHtml?.length ?? 'null'} chars` : 'null',
+          );
+          if (!body || body.bodyHtml == null) {
+            console.log('[select] CACHE MISS for', latest.id, '— triggering sync_request_bodies');
+            try {
+              await invoke('sync_request_bodies', {
+                accountId: thread.accountId,
+                messageIds: [latest.id],
+              });
+              body = await getMessageBody(thread.accountId, latest.id);
+            } catch (e) {
+              console.error('on-demand body fetch failed:', e);
+            }
+          }
+          useViewStore
+            .getState()
+            .setSelectedMessage(mapMessageToMailMessage(latest, body?.bodyHtml ?? null));
         }
-        useViewStore
-          .getState()
-          .setSelectedMessage(mapMessageToMailMessage(latest, body?.bodyHtml ?? null));
       } else {
         useViewStore.getState().setSelectedMessage(null);
       }

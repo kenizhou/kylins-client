@@ -21,8 +21,10 @@ import { useThreadStore } from '../stores/threadStore';
 import { useAccountStore } from '../stores/accountStore';
 import { useUIStore } from '../stores/uiStore';
 import { useToastStore } from '../stores/toastStore';
+import { useViewStore } from '../features/view/viewStore';
 import { SEND_COMPLETE_EVENT } from '../services/composer/send';
 import { notifyNewMailBatchDeduped } from '../services/notifications/notificationManager';
+import { getMessageCryptoResult } from '../services/db/cryptoReceive';
 
 /**
  * Per-account sync state, emitted by the Rust SyncEngine on every round
@@ -43,6 +45,70 @@ export interface StatusEvent {
 }
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+/**
+ * G6 Task 6: apply a `sync:crypto-result` event to the currently-selected
+ * message. Extracted from the listener closure so it is unit-testable in
+ * jsdom (the full hook short-circuits via `isTauri` and is awkward to drive
+ * from tests).
+ *
+ * Contract:
+ *   - no-op when `selectedMessage` is null or the payload's `messageId`
+ *     doesn't match the selected message's id (the event was for a different
+ *     message — e.g. background re-verify on another message the user opened
+ *     earlier).
+ *   - re-reads `getMessageCryptoResult(accountId, messageId)` (the row is
+ *     already written — `crypto_open_message` emits the event AFTER the
+ *     write; see `db/commands.rs:1508`).
+ *   - layers the crypto fields onto a NEW `selectedMessage` object and calls
+ *     `setSelectedMessage` so Zustand sees a new reference (CryptoBadge
+ *     re-renders). Non-crypto fields (subject, body, etc.) are preserved.
+ *   - no-op when the re-read returns null (the row was never written — e.g.
+ *     the event fired for a non-crypto message; the G5 orchestrator only
+ *     emits after a successful write so this branch is defensive).
+ *   - pushes a toast on the notable transition INTO 'valid-verified' (the
+ *     common case after a background re-verify following a CA-root import —
+ *     the user just saw "chain unverified" and now the badge flips). Stays
+ *     quiet on every other transition (the badge update is enough).
+ *
+ * The field mapping mirrors the threadStore crypto branch
+ * (`stores/threadStore.ts:137-144`) so the badge renders identically here.
+ */
+export async function applyCryptoResultToSelectedMessage(payload: {
+  accountId: string;
+  messageId: string;
+}): Promise<void> {
+  const current = useViewStore.getState().selectedMessage;
+  if (!current) return;
+  if (current.id !== payload.messageId) return;
+
+  const cr = await getMessageCryptoResult(payload.accountId, payload.messageId);
+  if (!cr) return;
+
+  // TOCTOU re-check: the user may have navigated to a different message during
+  // the IPC round-trip above. Don't clobber their new selection with `updated`
+  // (built from the now-stale `current`). Re-verify the selection is still this
+  // message before writing.
+  if (useViewStore.getState().selectedMessage?.id !== payload.messageId) return;
+
+  const priorSignatureState = current.signatureState;
+  const updated = {
+    ...current,
+    signatureState: cr.signatureState as NonNullable<typeof current.signatureState>,
+    decryptState: cr.decryptState as NonNullable<typeof current.decryptState>,
+    signerEmail: cr.signerEmail ?? undefined,
+    signerFingerprint: cr.signerFingerprint ?? undefined,
+    revocationState: cr.revocationState as NonNullable<typeof current.revocationState>,
+  };
+  useViewStore.getState().setSelectedMessage(updated);
+
+  // Toast only on the transition INTO 'valid-verified' — that's the signal a
+  // user actually cares about ("the signed mail you're looking at is now
+  // fully trusted"). Other transitions are silent (the badge updates).
+  if (priorSignatureState !== 'valid-verified' && cr.signatureState === 'valid-verified') {
+    useToastStore.getState().push('Signature verified', 'success');
+  }
+}
 
 export function useSyncEvents(): void {
   // Trailing debounce for `threadStore.refresh()` on `sync:delta{messages}`.
@@ -224,6 +290,19 @@ export function useSyncEvents(): void {
             // the matching threads' snippets in place so the list updates
             // without a scroll-resetting refresh() (react-virtualized #1837).
             useThreadStore.getState().patchSnippets(e.payload.updates);
+          }),
+        );
+
+        unlisteners.push(
+          await listen<{ accountId: string; messageId: string }>('sync:crypto-result', (e) => {
+            // G6 Task 6: a crypto-marked message was just opened/verified
+            // (the orchestrator emits AFTER the row write — see
+            // db/commands.rs:1508). If it's the one the user is looking at,
+            // re-read the persisted result + update selectedMessage's crypto
+            // fields so the CryptoBadge refreshes without a full re-decrypt.
+            // Best-effort: errors inside the helper are swallowed so a bad
+            // row never crashes the event bus.
+            void applyCryptoResultToSelectedMessage(e.payload).catch(() => {});
           }),
         );
 

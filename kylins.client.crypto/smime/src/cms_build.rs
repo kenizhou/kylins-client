@@ -14,7 +14,6 @@ use cms::builder::{
 use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
 use cms::content_info::ContentInfo;
 use cms::signed_data::{EncapsulatedContentInfo, SignerIdentifier};
-use der::asn1::OctetString;
 use der::{Any, AnyRef, Decode, Encode, Tag};
 use p256::NistP256;
 use p256::pkcs8::DecodePrivateKey;
@@ -58,14 +57,27 @@ pub(crate) fn build_signed_data(
     let signing_key = p256::ecdsa::SigningKey::from(&secret);
 
     // Encapsulated content: the payload as id-data. Detached ⇒ eContent None.
+    //
+    // RFC 5652 §3: eContent is `[0] EXPLICIT OCTET STRING`. The cms crate types
+    // the field as `Option<Any>` with `#[asn1(context_specific="0", EXPLICIT)]`,
+    // so the serializer adds the `[0] EXPLICIT` wrapper; the `Any` itself IS
+    // the OCTET STRING (tag 0x04, value = the raw payload bytes). Storing the
+    // payload directly as the Any's value — NOT the DER encoding of a separate
+    // `OctetString` — is what makes the messageDigest (RFC 5652 §5.4, computed
+    // by the cms builder over `any.value()`) cover SHA-256(payload), matching
+    // what an OpenSSL/Thunderbird verifier computes. The previous form
+    // `Any::new(OctetString, OctetString::new(payload).to_der())` stored the
+    // full `04||len||payload` TLV as the Any's value, double-wrapping the
+    // eContent and making the digest cover the inner TLV instead of the
+    // payload (G7 Task 1 fix).
     let encap = {
         let econtent = if detached {
             None
         } else {
-            let oct = OctetString::new(payload.to_vec())
-                .map_err(|e| cms_err("payload octet string", e))?;
-            let oct_der = oct.to_der().map_err(|e| cms_err("encode octet string", e))?;
-            Some(Any::new(Tag::OctetString, oct_der).map_err(|e| cms_err("wrap payload any", e))?)
+            Some(
+                Any::new(Tag::OctetString, payload.to_vec())
+                    .map_err(|e| cms_err("wrap payload any", e))?,
+            )
         };
         EncapsulatedContentInfo {
             econtent_type: const_oid::db::rfc5911::ID_DATA,
@@ -258,6 +270,7 @@ pub(crate) fn recipient_input_from_cert(cert_der: &[u8]) -> Result<RecipientInpu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use der::asn1::OctetString;
     use cms::signed_data::SignedData;
     use der::{Decode, Encode};
     use p256::ecdsa::{VerifyingKey, signature::Verifier};
@@ -311,6 +324,178 @@ mod tests {
         )
         .unwrap();
         vk.verify(&signed_attrs_der, &sig).expect("signature verifies");
+    }
+
+    /// RFC 5652 §3 + §5.4 conformance guard: the encapsulated eContent MUST be
+    /// a single `[0] EXPLICIT OCTET STRING` whose *value* is the payload, and
+    /// the `messageDigest` signed attribute MUST equal SHA-256(payload). This
+    /// is the OUR-SIGNS→THUNDERBIRD-VERIFIES interop invariant: an
+    /// OpenSSL/Thunderbird verifier computing SHA-256 over the OCTET STRING's
+    /// value (per §5.4) must match the digest the signer stored.
+    ///
+    /// History: Plan 1's review flagged a suspected double-wrap where
+    /// `Any::new(OctetString, OctetString::new(payload).to_der())` stored the
+    /// full `04||len||payload` TLV as the Any's *value*. The cms builder then
+    /// hashed `any.value()` (= `04||len||payload`) for the messageDigest,
+    /// instead of just the payload. Self-round-trips passed because both the
+    /// build side and the verify side (cms_parse::verify_signed) hashed the
+    /// same wrong bytes. This guard fails fast if the double-wrap (or any
+    /// other eContent wrapping drift) is reintroduced — it is the permanent
+    /// regression check for the G7 Task 1 fix.
+    #[test]
+    fn encapsulated_econtent_is_rfc5652_conformant() {
+        use der::Tagged;
+        use sha2::Digest;
+
+        let built = crate::cert::build_self_signed_smime_cert("t1-signer@kylins.com").unwrap();
+        let payload = b"hello thunderbird; please verify me";
+        let der = build_signed_data(payload, /*detached=*/ false, &built.cert_der, &built.priv_pkcs8_der)
+            .expect("build signed data");
+
+        // Re-parse: ContentInfo { id-signed-data, SignedData }.
+        let ci: ContentInfo = <ContentInfo as Decode>::from_der(&der).unwrap();
+        assert_eq!(ci.content_type, const_oid::db::rfc5911::ID_SIGNED_DATA);
+        let sd: SignedData =
+            <SignedData as Decode>::from_der(ci.content.to_der().unwrap().as_slice()).unwrap();
+
+        // RFC 5652 §3: eContent is `[0] EXPLICIT OCTET STRING`. The cms crate
+        // types the field as `Option<Any>` with `#[asn1(context_specific="0",
+        // EXPLICIT)]`, so the [0] EXPLICIT wrapper is added by the serializer;
+        // the `Any` itself IS the OCTET STRING (tag 0x04, value = payload).
+        let econtent = sd
+            .encap_content_info
+            .econtent
+            .as_ref()
+            .expect("encapsulated eContent must be present when detached=false");
+        assert_eq!(
+            econtent.tag(),
+            Tag::OctetString,
+            "eContent Any must carry the OCTET STRING tag (0x04), not a wrapper"
+        );
+        assert_eq!(
+            econtent.value(),
+            payload,
+            "eContent OCTET STRING value must be the raw payload (RFC 5652 §5.4 \
+             messageDigest input). If this equals 04||len||payload the eContent \
+             is double-wrapped and Thunderbird/OpenSSL would reject our signature."
+        );
+
+        // RFC 5652 §5.4 + §11.2: the messageDigest signed attribute MUST equal
+        // SHA-256 of the eContent OCTET STRING's value (= the payload). This
+        // is the digest a Thunderbird/OpenSSL verifier computes and compares.
+        let signer_info = sd.signer_infos.0.get(0).expect("one signer info");
+        let signed_attrs = signer_info
+            .signed_attrs
+            .as_ref()
+            .expect("signed attrs present");
+        let md_attr = signed_attrs
+            .iter()
+            .find(|a| a.oid.to_string() == "1.2.840.113549.1.9.4")
+            .expect("messageDigest attribute present");
+        let md_any = md_attr.values.get(0).unwrap();
+        let md_octets: OctetString = md_any.decode_as().expect("decode messageDigest octet string");
+        let expected = sha2::Sha256::digest(payload);
+        assert_eq!(
+            md_octets.as_bytes(),
+            &expected[..],
+            "messageDigest must equal SHA-256(payload) per RFC 5652 §5.4. \
+             If it equals SHA-256(04||len||payload) the eContent is double-wrapped."
+        );
+    }
+
+    /// Independent cross-check of the eContent OCTET STRING nesting using
+    /// `openssl asn1parse` (RFC 5652 §3 conformance, viewed through an
+    /// independent DER parser). This is a belt-and-suspenders check on top of
+    /// `encapsulated_econtent_is_rfc5652_conformant` — if that test passes,
+    /// this one is redundant; if the cms crate's own parser were ever buggy
+    /// in the same way as the builder, this test would still catch the
+    /// double-wrap. Skipped silently when openssl is not on PATH.
+    #[test]
+    fn openssl_asn1parse_confirms_single_octet_string_econtent() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let built = crate::cert::build_self_signed_smime_cert("t1-x509@kylins.com").unwrap();
+        // Payload chosen so its length does not collide with the SignatureValue
+        // OCTET STRING length (~70-72B for DER-encoded ECDSA-P256 sigs).
+        let payload = b"interop-bytes-single-wrap";
+        assert_eq!(payload.len(), 25);
+        let der = build_signed_data(payload, false, &built.cert_der, &built.priv_pkcs8_der).unwrap();
+
+        let mut child = match Command::new("openssl")
+            .arg("asn1parse")
+            .arg("-inform")
+            .arg("DER")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("openssl not available; skipping asn1parse cross-check");
+                return;
+            }
+        };
+        child.stdin.as_mut().unwrap().write_all(&der).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "openssl asn1parse failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        eprintln!("openssl asn1parse output:\n{stdout}");
+
+        // openssl asn1parse formats lines as `OFFSET:d=N hl=HL l= LEN prim/cons: TYPE :VALUE`.
+        // The `l=` field is right-padded to width 4 (`l=  25`), so `split_whitespace`
+        // yields `l=` and `25` as two separate tokens. Parse accordingly.
+        fn parse_octet_string_len(line: &str) -> Option<usize> {
+            if !line.contains("OCTET STRING") {
+                return None;
+            }
+            let mut tokens = line.split_whitespace();
+            let mut prev_was_l_eq = false;
+            for t in tokens.by_ref() {
+                if t == "l=" {
+                    prev_was_l_eq = true;
+                    continue;
+                }
+                if prev_was_l_eq {
+                    return t.parse::<usize>().ok();
+                }
+                if let Some(rest) = t.strip_prefix("l=") {
+                    if !rest.is_empty() {
+                        return rest.parse::<usize>().ok();
+                    }
+                    prev_was_l_eq = true;
+                    continue;
+                }
+                prev_was_l_eq = false;
+            }
+            None
+        }
+
+        let payload_len = payload.len();
+        let lens: Vec<usize> = stdout.lines().filter_map(parse_octet_string_len).collect();
+        eprintln!("OCTET STRING lengths in dump: {lens:?}");
+
+        // RFC 5652 §3 single-wrap: the eContent is exactly one OCTET STRING of
+        // length payload.len() (visible in the asn1parse dump with the payload
+        // as its value, e.g. `:interop-bytes-single-wrap`). The double-wrap
+        // form would have surfaced an OCTET STRING of length payload.len() + 2
+        // (the outer Any's TLV holding the inner OctetString DER).
+        assert!(
+            lens.contains(&payload_len),
+            "expected an OCTET STRING of length {payload_len} (RFC-conformant eContent); \
+             OCTET STRING lengths seen: {lens:?}; asn1parse:\n{stdout}"
+        );
+        assert!(
+            !lens.contains(&(payload_len + 2)),
+            "found an OCTET STRING of length {} (payload.len() + 2) — that's the \
+             double-wrap signature; OCTET STRING lengths seen: {lens:?}; asn1parse:\n{stdout}",
+            payload_len + 2
+        );
     }
 
     /// detached=true must sign over the external payload: the SignedData's

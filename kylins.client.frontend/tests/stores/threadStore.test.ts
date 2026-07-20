@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useThreadStore } from '../../src/stores/threadStore';
 import { useFolderStore } from '../../src/stores/folderStore';
 import { useViewStore } from '../../src/features/view/viewStore';
+import { useToastStore } from '../../src/stores/toastStore';
 import { getThreads, getMessagesForThread } from '../../src/services/db/threads';
 import { getMessageBody } from '../../src/services/db/messageBodies';
+import { getMessageCryptoResult, openCryptoMessage } from '../../src/services/db/cryptoReceive';
 import type { Thread, DbMessageRow } from '../../src/services/db/threads';
+import type { OpenCryptoResult } from '../../src/services/db/cryptoReceive';
 import { invoke } from '@tauri-apps/api/core';
 
 // `selectThread` now routes mark-read through the Rust sync engine via
@@ -28,6 +31,18 @@ vi.mock('../../src/services/db/messageBodies', () => ({
   setMessageBody: vi.fn(),
   evictBody: vi.fn(),
 }));
+
+// G6 Task 3: the crypto branch of `selectThread` delegates to
+// `openCryptoMessage` (T1) — mock it so the wiring test asserts the call
+// shape + that the crypto path is taken INSTEAD OF `sync_request_bodies`.
+// Other cryptoReceive exports are preserved via importActual so the module's
+// type surface stays intact.
+vi.mock('../../src/services/db/cryptoReceive', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/db/cryptoReceive')>(
+    '../../src/services/db/cryptoReceive',
+  );
+  return { ...actual, openCryptoMessage: vi.fn(), getMessageCryptoResult: vi.fn() };
+});
 
 const thread = (over: Partial<Thread> = {}): Thread => ({
   id: 't1',
@@ -55,6 +70,10 @@ function reset() {
     currentQuery: null,
   });
   useViewStore.getState().setSelectedMessage(null);
+  // G6 Task 3: session plaintext cache + toast store must be isolated per test
+  // so a prior test's cache hit / toast doesn't leak into the next one.
+  useViewStore.getState().clearDecrypted();
+  useToastStore.setState({ toasts: [] });
   useFolderStore.setState({
     byAccount: {},
     favorites: new Set(),
@@ -69,6 +88,8 @@ beforeEach(() => {
   vi.mocked(getThreads).mockReset();
   vi.mocked(getMessagesForThread).mockReset();
   vi.mocked(getMessageBody).mockReset();
+  vi.mocked(openCryptoMessage).mockReset();
+  vi.mocked(getMessageCryptoResult).mockReset();
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined as never);
 });
@@ -258,6 +279,187 @@ describe('threadStore.selectThread', () => {
     // No on-demand fetch when the cache already had the body.
     expect(invoke).not.toHaveBeenCalledWith('sync_request_bodies', expect.anything());
     expect(useViewStore.getState().selectedMessage?.html).toBe('<p>cached</p>');
+  });
+
+  // ---- G6 Task 3: S/MIME receive crypto wiring (Phase 1b Plan 4) ----
+  //
+  // A crypto-marked message (`is_encrypted`/`is_signed`) MUST route through
+  // `openCryptoMessage` (decrypt + verify) instead of the plain
+  // `getMessageBody` + `sync_request_bodies` fetch. The decrypted plaintext
+  // is surfaced to selectedMessage + cached in the session `decryptedCache`
+  // (RAM-only) so re-opening doesn't re-decrypt. On decrypt failure we set
+  // `decryptState: 'failed'` + push a toast (ReadingPane T4 shows the failure
+  // panel) and do NOT crash the open flow.
+
+  function sampleOpenCryptoResult(): OpenCryptoResult {
+    return {
+      // CAMELCASE outer keys (Rust OpenCryptoResult has rename_all).
+      plaintextHtml: '<p>decrypted</p>',
+      plaintextText: 'decrypted text',
+      attachments: [
+        {
+          // SNAKE_CASE ImapAttachment keys (no rename_all on that struct).
+          part_id: '2',
+          filename: 'doc.pdf',
+          mime_type: 'application/pdf',
+          size: 1234,
+          content_id: null,
+          is_inline: false,
+        },
+      ],
+      cryptoResult: {
+        accountId: 'a1',
+        messageId: 'm1',
+        cryptoKind: 'encrypted-signed',
+        decryptState: 'ok',
+        signatureState: 'valid-verified',
+        signerFingerprint: 'sha256:ab',
+        signerEmail: 'signer@kylins.local',
+        chainValid: 1,
+        revocationState: 'good',
+        verifiedAt: '1750000000',
+      },
+    };
+  }
+
+  it('routes an encrypted message through openCryptoMessage (NOT sync_request_bodies) + surfaces crypto_result fields', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
+    ]);
+    vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    // Crypto path taken — openCryptoMessage fires for (accountId, messageId).
+    expect(openCryptoMessage).toHaveBeenCalledWith('a1', 'm1');
+    // Plain-body fetch is bypassed entirely for crypto messages.
+    expect(getMessageBody).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith('sync_request_bodies', expect.anything());
+    // selectedMessage carries the decrypted plaintext (NOT body_text) +
+    // every crypto_result field the ReadingPane (T4) needs to render badges.
+    const selected = useViewStore.getState().selectedMessage;
+    expect(selected?.html).toBe('<p>decrypted</p>');
+    expect(selected?.text).toBe('decrypted text');
+    expect(selected?.isEncrypted).toBe(true);
+    expect(selected?.isSigned).toBe(true);
+    expect(selected?.signatureState).toBe('valid-verified');
+    expect(selected?.decryptState).toBe('ok');
+    expect(selected?.signerEmail).toBe('signer@kylins.local');
+    expect(selected?.signerFingerprint).toBe('sha256:ab');
+    expect(selected?.revocationState).toBe('good');
+    // Plaintext cached in RAM so the next open skips the crypto invoke.
+    expect(useViewStore.getState().decryptedCache['m1']).toEqual({
+      html: '<p>decrypted</p>',
+      text: 'decrypted text',
+    });
+  });
+
+  it('hits the session decryptedCache on re-open (no second openCryptoMessage invoke) + re-attaches the crypto result', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
+    ]);
+    vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
+    // On cache-hit re-open, selectThread re-reads the persisted crypto result
+    // (cheap DB read, no decrypt) so the CryptoBadge renders on re-open.
+    vi.mocked(getMessageCryptoResult).mockResolvedValue({
+      accountId: 'a1',
+      messageId: 'm1',
+      cryptoKind: 'encrypted-signed',
+      decryptState: 'ok',
+      signatureState: 'valid-verified',
+      signerFingerprint: 'sha256:ab',
+      signerEmail: 'signer@kylins.local',
+      chainValid: 1,
+      revocationState: 'good',
+      verifiedAt: '1750000000',
+    });
+
+    // First open: cache miss → openCryptoMessage fires, plaintext cached.
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+    // Second open: cache hit → the crypto invoke MUST NOT fire again.
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    expect(openCryptoMessage).toHaveBeenCalledTimes(1);
+    // The persisted crypto result is re-read on the cache-hit re-open.
+    expect(getMessageCryptoResult).toHaveBeenCalledWith('a1', 'm1');
+    // Plaintext is still surfaced (from the session cache).
+    expect(useViewStore.getState().selectedMessage?.html).toBe('<p>decrypted</p>');
+    expect(useViewStore.getState().selectedMessage?.text).toBe('decrypted text');
+    // Crypto-result fields are re-attached on re-open (badge does NOT vanish).
+    expect(useViewStore.getState().selectedMessage?.signatureState).toBe('valid-verified');
+    expect(useViewStore.getState().selectedMessage?.decryptState).toBe('ok');
+  });
+
+  it('still uses the plain body-fetch path (sync_request_bodies on cache miss) for non-crypto messages', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([
+      messageRow({ id: 'm1', is_encrypted: false, is_signed: false }),
+    ]);
+    // Cache miss → then present after the backend fetch.
+    vi.mocked(getMessageBody).mockResolvedValueOnce(null).mockResolvedValueOnce({
+      accountId: 'a1',
+      messageId: 'm1',
+      bodyHtml: '<p>plain</p>',
+      fetchedAt: 99,
+    });
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    // Plain path: crypto invoke NEVER fires.
+    expect(openCryptoMessage).not.toHaveBeenCalled();
+    // sync_request_bodies fires exactly as before for the body fetch.
+    expect(invoke).toHaveBeenCalledWith('sync_request_bodies', {
+      accountId: 'a1',
+      messageIds: ['m1'],
+    });
+    expect(useViewStore.getState().selectedMessage?.html).toBe('<p>plain</p>');
+    // No crypto_result fields attached to a non-crypto message.
+    expect(useViewStore.getState().selectedMessage?.decryptState).toBeUndefined();
+    expect(useViewStore.getState().selectedMessage?.signatureState).toBeUndefined();
+    // decryptedCache untouched for plain messages.
+    expect(useViewStore.getState().decryptedCache['m1']).toBeUndefined();
+  });
+
+  it('on decrypt failure sets decryptState=failed, pushes an error toast, and does NOT crash the open flow', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([
+      messageRow({ id: 'm1', is_encrypted: true, is_signed: true }),
+    ]);
+    vi.mocked(openCryptoMessage).mockRejectedValue(new Error('no matching decryption cert'));
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    // Failure panel trigger: decryptState='failed' so ReadingPane T4 renders
+    // the decrypt-failure UI.
+    const selected = useViewStore.getState().selectedMessage;
+    expect(selected).not.toBeNull();
+    expect(selected?.decryptState).toBe('failed');
+    expect(selected?.isEncrypted).toBe(true);
+    // Toast surfaces the failure to the user.
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+    expect(useToastStore.getState().toasts[0]?.type).toBe('error');
+    expect(useToastStore.getState().toasts[0]?.message).toContain('Decrypt failed');
+    expect(useToastStore.getState().toasts[0]?.message).toContain('no matching decryption cert');
+    // Nothing was cached (no plaintext to cache).
+    expect(useViewStore.getState().decryptedCache['m1']).toBeUndefined();
+  });
+
+  it('routes a signed-only (non-encrypted) message through the crypto path', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([
+      messageRow({ id: 'm1', is_encrypted: false, is_signed: true }),
+    ]);
+    vi.mocked(openCryptoMessage).mockResolvedValue(sampleOpenCryptoResult());
+
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: true }));
+
+    // Signed-only still goes through openCryptoMessage (signature verification
+    // path) — is_signed=1 is enough to take the crypto branch.
+    expect(openCryptoMessage).toHaveBeenCalledWith('a1', 'm1');
+    expect(getMessageBody).not.toHaveBeenCalled();
+    expect(useViewStore.getState().selectedMessage?.signatureState).toBe('valid-verified');
   });
 });
 

@@ -121,12 +121,19 @@ pub struct ImapFolderSyncResult {
 ///
 /// `raw_ciphertext` carries the raw CMS payload (DER) when the top-level
 /// Content-Type is `application/pkcs7-mime` (S/MIME enveloped-data OR opaque
-/// signed-data); the engine persists it to `message_bodies.body_mime_ciphertext`
-/// so the receive orchestrator (Phase 1b G5 Task 3) can decrypt/verify on open
-/// WITHOUT re-fetching from IMAP. `None` for ordinary mail AND for
-/// `multipart/signed` (clear-signed: the body is already plaintext, the
-/// signature is a `smime.p7s` attachment handled separately). Plaintext is
-/// NEVER persisted via this path — only the opaque CMS blob.
+/// signed-data) OR when the top-level Content-Type is `multipart/signed`
+/// (clear-signed: the detached `smime.p7s` SignedData DER, which IS a CMS
+/// blob). The engine persists it to `message_bodies.body_mime_ciphertext` so
+/// the receive orchestrator (Phase 1b G5 Task 3 + G7 Task 2) can decrypt/verify
+/// on open WITHOUT re-fetching from IMAP. `None` for ordinary mail.
+///
+/// `raw_signed_part` carries the raw part-1 MIME entity bytes for clear-signed
+/// `multipart/signed` mail (the bytes the detached `.p7s` signature covers —
+/// the part-1 entity including its MIME headers, blank line, body, and exactly
+/// one trailing CRLF). Persisted to `message_bodies.body_mime_signed_part`.
+/// `None` for ordinary mail AND for `application/pkcs7-mime` opaque S/MIME
+/// (which has no detached signature — the signature is encapsulated in the CMS
+/// blob). Plaintext is NEVER persisted via either path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FetchedBody {
     pub uid: u32,
@@ -134,9 +141,14 @@ pub struct FetchedBody {
     pub body_text: Option<String>,
     pub snippet: String,
     pub attachments: Vec<ImapAttachment>,
-    /// Raw CMS DER (`smime.p7m` body bytes) for `application/pkcs7-mime`
-    /// messages. See the struct doc for the full contract.
+    /// Raw CMS DER: `smime.p7m` body bytes for `application/pkcs7-mime`
+    /// messages, OR the detached `smime.p7s` SignedData DER for
+    /// `multipart/signed` clear-signed messages. See the struct doc.
     pub raw_ciphertext: Option<Vec<u8>>,
+    /// Raw part-1 MIME entity bytes (the bytes the detached signature covers)
+    /// for `multipart/signed` clear-signed messages. `None` otherwise. See the
+    /// struct doc.
+    pub raw_signed_part: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

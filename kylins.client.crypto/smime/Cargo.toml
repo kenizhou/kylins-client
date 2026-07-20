@@ -56,6 +56,12 @@ const-oid = { version = "0.10", features = ["db"] }
 # feature, which provides `AssociatedOid for Sha256` — required by the
 # CertificateBuilder signing path for ECDSA P-256.
 sha2 = { version = "0.11", features = ["oid"] }
+# SHA-1 for the kari KDF dispatch (G7 T5). openssl/Thunderbird/NSS historically
+# default to `dhSinglePass-stdDH-sha1kdf-scheme` (1.3.133.16.840.63.0.2) for the
+# ANSI X9.63 KDF; our build side uses SHA-256. The receive path dispatches on
+# `kari.key_enc_alg.oid` → `ansi_x963_kdf::<Sha1|Sha256>`. Same 0.11 line as
+# sha2 (shared `digest 0.11` Digest trait), so `sha2::Digest` covers both.
+sha1 = "0.11"
 # rand 0.10 provides rand_core 0.10, which is what elliptic-curve 0.14's
 # `Generate::generate_from_rng` expects (`CryptoRngCore` bound).
 rand = "0.10"

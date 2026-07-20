@@ -727,6 +727,19 @@ pub async fn fetch_bodies_batch_on_session(
             let snippet = derive_snippet(body_text.as_deref().unwrap_or(""));
             let attachments = extract_attachments(&parsed, uid);
             let raw_ciphertext = extract_raw_ciphertext(&parsed);
+            // For multipart/signed (clear-signed), locate the detached
+            // `smime.p7s` signature part + the raw part-1 MIME entity bytes
+            // (the signed content). Both are persisted by the engine so the
+            // receive orchestrator can verify on open WITHOUT re-fetching.
+            // Returns None for every other top-level Content-Type.
+            let (raw_signed_part, p7s_der) = extract_clear_signed_parts(&parsed);
+            // When the clear-signed extraction succeeds, `raw_ciphertext`
+            // above is None (extract_raw_ciphertext returns None for
+            // multipart/signed) — fold the p7s DER into the same field so the
+            // engine + orchestrator only have one "raw CMS blob" column to
+            // consult. (Semantically consistent: a p7s IS a CMS blob — a
+            // SignedData with detached content.)
+            let raw_ciphertext = raw_ciphertext.or(p7s_der);
             out.push(FetchedBody {
                 uid,
                 body_html,
@@ -734,6 +747,7 @@ pub async fn fetch_bodies_batch_on_session(
                 snippet,
                 attachments,
                 raw_ciphertext,
+                raw_signed_part,
             });
         }
     }
@@ -1833,6 +1847,156 @@ fn derive_snippet(body_text: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     collapsed.chars().take(200).collect()
+}
+
+/// Extract the raw CMS ciphertext (DER) from the body of an
+/// `application/pkcs7-mime` message (S/MIME enveloped-data OR opaque
+/// signed-data). Returns the already-CTE-decoded bytes (mail_parser handles
+/// base64 / quoted-printable) so the receive orchestrator (Phase 1b G5 Task 3)
+/// can hand them straight to `decrypt_enveloped` / `verify_signed` without
+/// re-fetching from IMAP or re-decoding.
+///
+/// Returns `None` for every other top-level Content-Type, INCLUDING
+/// `multipart/signed` (clear-signed mail): its body is already plaintext and
+/// the signature is a `smime.p7s` attachment handled separately. Only the
+/// opaque `application/pkcs7-mime` form carries a CMS blob as the body.
+///
+/// Pure (borrows `&Message`) so it can be unit-tested without a socket — the
+/// live `fetch_bodies_batch_on_session` is exercised by the manual integration
+/// test, but the Content-Type gate + root-part extraction are regression-locked
+/// here.
+fn extract_raw_ciphertext(message: &mail_parser::Message) -> Option<Vec<u8>> {
+    // Re-assemble the full "type/subtype" string the same way
+    // `parse_message` / `imap_message_to_remote` do so the gate matches the
+    // detection path the engine already uses.
+    let ct = message.content_type()?;
+    let full = match ct.subtype() {
+        Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
+        None => ct.ctype().to_lowercase(),
+    };
+    if full != "application/pkcs7-mime" {
+        return None;
+    }
+    // The root part holds the CMS blob. mail_parser has already done CTE
+    // (base64/QP) decoding, so `Binary` / `InlineBinary` carry the DER bytes
+    // directly — no base64 round-trip needed. (A `Text` root would be a
+    // producer quirk; we take its bytes verbatim. Multipart roots never carry
+    // pkcs7-mime as the top-level type, so they are not expected here.)
+    let root = message.parts.first()?;
+    match &root.body {
+        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+            Some(d.as_ref().to_vec())
+        }
+        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
+        mail_parser::PartType::Html(h) => Some(h.as_bytes().to_vec()),
+        mail_parser::PartType::Message(_) | mail_parser::PartType::Multipart(_) => None,
+    }
+}
+
+/// Extract `(part1_bytes, p7s_der)` from a clear-signed `multipart/signed`
+/// message. Returns `(None, None)` for every other top-level Content-Type.
+///
+/// **Part 1** is the raw MIME entity the detached signature covers — including
+/// its own MIME headers (Content-Type / Content-Transfer-Encoding / etc.), the
+/// blank line, the body, and exactly one trailing CRLF. This is the byte
+/// sequence a Thunderbird-style signer hashes; mail_parser exposes it via
+/// `raw_message[parts[part1_idx].offset_header..parts[part1_idx].offset_end]`.
+/// The parser's `offset_end` excludes the CRLF that precedes the next boundary
+/// delimiter (verified against `seek_next_part_offset` in mail-parser 0.9.4),
+/// so we re-attach exactly one trailing CRLF to match what the signer covered
+/// (RFC 1847 §2.1; send-side counterpart: `mail::crypto::ensure_one_trailing_crlf`
+/// + `wrap_multipart_signed`).
+///
+/// **Part 2** is the detached `smime.p7s` (an
+/// `application/pkcs7-signature` attachment). mail_parser has already base64-
+/// decoded its body into `PartType::Binary`; we return those bytes as the CMS
+/// SignedData DER for the verify pipeline.
+///
+/// Detection gate: the top-level Content-Type must be exactly
+/// `multipart/signed` AND the message must have exactly two body parts
+/// (RFC 1847 §2.1: "contains exactly two parts"). Multipart/signed with any
+/// other shape is treated as not-clear-signed (returns None) so the orchestrator
+/// falls through to the existing "no ciphertext" path rather than guessing.
+///
+/// Pure (borrows `&Message`) so it can be unit-tested without a socket.
+fn extract_clear_signed_parts(message: &mail_parser::Message) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    // Top-level Content-Type gate.
+    let ct = match message.content_type() {
+        Some(c) => c,
+        None => return (None, None),
+    };
+    let full = match ct.subtype() {
+        Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
+        None => ct.ctype().to_lowercase(),
+    };
+    if full != "multipart/signed" {
+        return (None, None);
+    }
+
+    // The root part (parts[0]) is the multipart container — its body holds the
+    // child indices.
+    let root = match message.parts.first() {
+        Some(r) => r,
+        None => return (None, None),
+    };
+    let child_indices: &[usize] = match &root.body {
+        mail_parser::PartType::Multipart(ids) => ids.as_ref(),
+        _ => return (None, None),
+    };
+    if child_indices.len() != 2 {
+        // RFC 1847 §2.1: multipart/signed has exactly two parts. Anything else
+        // is malformed; bail so we don't verify against the wrong bytes.
+        return (None, None);
+    }
+    let part1_idx = child_indices[0];
+    let p7s_idx = child_indices[1];
+
+    // --- Part 1 raw MIME entity bytes ---
+    let part1 = match message.parts.get(part1_idx) {
+        Some(p) => p,
+        None => return (None, None),
+    };
+    // Slice the raw_message using the part's header/end offsets. Bounds-check
+    // defensively (offset_end > offset_header; both within raw_message). If the
+    // parser produced inconsistent offsets for a malformed message, bail.
+    let part1_raw: &[u8] = match part1.offset_end.checked_sub(part1.offset_header) {
+        Some(len) if len <= message.raw_message.len().saturating_sub(part1.offset_header) => {
+            &message.raw_message[part1.offset_header..part1.offset_end]
+        }
+        _ => return (None, None),
+    };
+    // Canonicalize the trailing line ending to exactly one CRLF — this matches
+    // the send side's `ensure_one_trailing_crlf` + `wrap_multipart_signed`
+    // (which emit part 1 with exactly one trailing CRLF). The parser's
+    // `offset_end` excludes the CRLF that precedes the next boundary, so we
+    // re-attach it here. Same helper the signer uses, so byte-exact parity.
+    let mut part1_bytes = part1_raw.to_vec();
+    if !part1_bytes.ends_with(b"\r\n") {
+        part1_bytes.extend_from_slice(b"\r\n");
+    }
+
+    // --- Part 2 detached p7s DER ---
+    let p7s_part = match message.parts.get(p7s_idx) {
+        Some(p) => p,
+        None => return (Some(part1_bytes), None),
+    };
+    let p7s_der: Vec<u8> = match &p7s_part.body {
+        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
+            d.as_ref().to_vec()
+        }
+        // Some producers mis-label the signature part as Text/Html (rare). Take
+        // the bytes verbatim — the cms parser will reject them if they're not
+        // real DER, surfacing as Invalid rather than a hard error.
+        mail_parser::PartType::Text(t) => t.as_bytes().to_vec(),
+        mail_parser::PartType::Html(h) => h.as_bytes().to_vec(),
+        mail_parser::PartType::Message(_) | mail_parser::PartType::Multipart(_) => {
+            // Signature part is a nested message or another multipart —
+            // malformed multipart/signed; return what we have.
+            return (Some(part1_bytes), None);
+        }
+    };
+
+    (Some(part1_bytes), Some(p7s_der))
 }
 
 /// Build the `a1 LOGIN` / `a1 AUTHENTICATE XOAUTH2` command for `config`. Used
@@ -3226,33 +3390,6 @@ pub(crate) fn extract_attachments(message: &mail_parser::Message, uid: u32) -> V
         .collect()
 }
 
-/// Extract the raw CMS ciphertext (DER) from the body of an
-/// `application/pkcs7-mime` message (S/MIME enveloped-data OR opaque
-/// signed-data). Returns the already-CTE-decoded bytes so the receive
-/// orchestrator can decrypt/verify without re-fetching from IMAP.
-///
-/// Returns `None` for every other top-level Content-Type, INCLUDING
-/// `multipart/signed` (clear-signed mail).
-fn extract_raw_ciphertext(message: &mail_parser::Message) -> Option<Vec<u8>> {
-    let ct = message.content_type()?;
-    let full = match ct.subtype() {
-        Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
-        None => ct.ctype().to_lowercase(),
-    };
-    if full != "application/pkcs7-mime" {
-        return None;
-    }
-    let root = message.parts.first()?;
-    match &root.body {
-        mail_parser::PartType::Binary(d) | mail_parser::PartType::InlineBinary(d) => {
-            Some(d.as_ref().to_vec())
-        }
-        mail_parser::PartType::Text(t) => Some(t.as_bytes().to_vec()),
-        mail_parser::PartType::Html(h) => Some(h.as_bytes().to_vec()),
-        mail_parser::PartType::Message(_) | mail_parser::PartType::Multipart(_) => None,
-    }
-}
-
 fn build_imap_section_map(
     message: &mail_parser::Message,
 ) -> std::collections::HashMap<usize, String> {
@@ -3441,12 +3578,19 @@ fn extract_starttls_injection(ok_response: &[u8]) -> Option<String> {
 mod tests {
     use super::{
         capabilities_from_strs, decode_part_bytes, derive_snippet, detect_special_use_from_attrs,
-        ends_with_crlf_crlf, extract_fetch_attr, extract_starttls_injection,
-        fetch_changed_flags_response_from_fetches, parse_imap_quoted, parse_list_line,
-        parse_status_line, uid_set_raw, BASE_SYNC_FETCH_QUERY,
+        ends_with_crlf_crlf,
+        extract_clear_signed_parts, extract_raw_ciphertext, extract_fetch_attr, extract_starttls_injection,
+        parse_imap_quoted, parse_list_line, parse_status_line, fetch_changed_flags_response_from_fetches, uid_set_raw, BASE_SYNC_FETCH_QUERY,
     };
     use crate::sync_engine::Capabilities;
     use base64::Engine;
+
+    fn parse_raw(raw: &[u8]) -> mail_parser::Message<'static> {
+        mail_parser::MessageParser::default()
+            .parse(raw)
+            .expect("raw message must parse")
+            .into_owned()
+    }
 
     // ---------- derive_snippet (pure preview-text helper for fetch_bodies_batch) ----------
     //
@@ -4013,5 +4157,156 @@ mod tests {
             Some("\\Drafts".to_string())
         );
         assert_eq!(detect_special_use_from_attrs(&[], "Personal"), None);
+    }
+
+    // ---------- extract_clear_signed_parts (Phase 1b G7 Task 2) ----------
+    //
+    // For `multipart/signed` (clear-signed), the body is plaintext + the
+    // signature is a detached `smime.p7s` attachment. The helper extracts
+    // BOTH:
+    //   - the raw part-1 MIME entity bytes (the bytes the signer covered),
+    //   - the part-2 `.p7s` DER (already base64-decoded by mail_parser).
+    //
+    // Critical contract: the part-1 bytes returned must equal what a
+    // Thunderbird-style signer hashed. The send side
+    // (`mail::crypto::wrap_multipart_signed` + `ensure_one_trailing_crlf`)
+    // signs part 1 with exactly one trailing CRLF; mail_parser's `offset_end`
+    // excludes that CRLF, so the helper must re-attach it.
+
+    /// Build a `multipart/signed` RFC 822 message for unit tests, using the
+    /// same wire format the send side emits (`wrap_multipart_signed` shape).
+    /// Returns the raw bytes + the part-1 bytes that were "signed" (so the
+    /// caller can assert the extraction matches).
+    fn build_clear_signed(
+        boundary: &str,
+        part1_signed_bytes: &[u8],
+        p7s_der: &[u8],
+    ) -> Vec<u8> {
+        use base64::Engine;
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(p7s_der);
+        let mut out = Vec::new();
+        out.extend_from_slice(b"From: a@b.com\r\nTo: c@d.com\r\nSubject: clear\r\n");
+        out.extend_from_slice(
+            format!(
+                "Content-Type: multipart/signed; \
+                 protocol=\"application/pkcs7-signature\"; micalg=sha-256; \
+                 boundary=\"{boundary}\"\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(b"This is a cryptographically signed message in MIME format.\r\n");
+        out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        out.extend_from_slice(part1_signed_bytes);
+        out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        out.extend_from_slice(
+            b"Content-Type: application/pkcs7-signature; name=\"smime.p7s\"\r\n\
+              Content-Transfer-Encoding: base64\r\n\
+              Content-Disposition: attachment; filename=\"smime.p7s\"\r\n\r\n",
+        );
+        for chunk in sig_b64.as_bytes().chunks(72) {
+            out.extend_from_slice(chunk);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        out
+    }
+
+    /// Core contract: the part-1 bytes returned by `extract_clear_signed_parts`
+    /// must equal the bytes a Thunderbird-style signer covered (the part-1
+    /// MIME entity with exactly one trailing CRLF).
+    #[test]
+    fn extract_clear_signed_parts_returns_byte_exact_part1_and_p7s_der() {
+        let boundary = "----=_kylins_smime_signed_0001";
+        // Realistic part-1 entity (text headers + blank + body + one CRLF).
+        let part1: &[u8] =
+            b"Content-Type: text/plain; charset=utf-8\r\n\r\nhello signed body\r\n";
+        let p7s_der = b"\x30\x82\x00\x10FAKE-DETACHED-SIGNATURE";
+
+        let raw = build_clear_signed(boundary, part1, p7s_der);
+        let msg = parse_raw(&raw);
+        let (got_part1, got_p7s) = extract_clear_signed_parts(&msg);
+        let got_part1 = got_part1.expect("part1 must be extracted for multipart/signed");
+        let got_p7s = got_p7s.expect("p7s must be extracted for multipart/signed");
+
+        assert_eq!(
+            got_part1, part1,
+            "extracted part-1 bytes must match what the signer covered (byte-exact)"
+        );
+        assert_eq!(
+            got_p7s, p7s_der,
+            "extracted p7s DER must match the input signature DER (base64-decoded)"
+        );
+    }
+
+    /// Non-multipart/signed Content-Types return `(None, None)`. Pin the gate
+    /// so the orchestrator's clear-signed branch only fires for genuine
+    /// multipart/signed mail.
+    #[test]
+    fn extract_clear_signed_parts_returns_none_for_non_multipart_signed() {
+        // application/pkcs7-mime (opaque) is NOT clear-signed.
+        let pkcs7 = b"From: a@b\r\nContent-Type: application/pkcs7-mime\r\n\r\nbody\r\n";
+        let msg = parse_raw(pkcs7);
+        let (p1, p7s) = extract_clear_signed_parts(&msg);
+        assert!(p1.is_none(), "pkcs7-mime must not yield a signed_part");
+        assert!(p7s.is_none(), "pkcs7-mime must not yield a p7s via this helper");
+
+        // Plain text.
+        let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\nhello\r\n";
+        let msg = parse_raw(plain);
+        let (p1, p7s) = extract_clear_signed_parts(&msg);
+        assert!(p1.is_none());
+        assert!(p7s.is_none());
+    }
+
+    /// `multipart/mixed` (a non-signed multipart) must NOT trigger the
+    /// clear-signed extraction — only `multipart/signed` qualifies.
+    #[test]
+    fn extract_clear_signed_parts_returns_none_for_multipart_mixed() {
+        let raw = b"From: a@b\r\nContent-Type: multipart/mixed; boundary=\"X\"\r\n\r\n--X\r\nContent-Type: text/plain\r\n\r\nhello\r\n--X--\r\n";
+        let msg = parse_raw(raw);
+        let (p1, p7s) = extract_clear_signed_parts(&msg);
+        assert!(p1.is_none(), "multipart/mixed must not yield a signed_part");
+        assert!(p7s.is_none());
+    }
+
+    /// A multipart/signed with a body that already ends with CRLF (so the
+    /// parser's `offset_end` lands after the CRLF rather than before) — the
+    /// helper's canonicalization must NOT double the trailing CRLF (matches
+    /// `ensure_one_trailing_crlf`'s collapse behavior on the send side).
+    #[test]
+    fn extract_clear_signed_parts_does_not_double_trailing_crlf() {
+        let boundary = "----=_kylins_smime_signed_0002";
+        // Construct a raw multipart/signed by hand where part 1 is followed
+        // directly by the boundary with no extra blank line, so the byte slice
+        // between the boundaries already ends with exactly one CRLF (verifies
+        // the canonicalization's idempotence).
+        let part1: &[u8] = b"Content-Type: text/plain; charset=utf-8\r\n\r\nbody\r\n";
+        let raw = build_clear_signed(boundary, part1, b"\x30\x02fake");
+        let msg = parse_raw(&raw);
+        let (got_part1, _) = extract_clear_signed_parts(&msg);
+        let got_part1 = got_part1.expect("part1 present");
+        // Must end with exactly one CRLF (no doubled).
+        assert!(
+            got_part1.ends_with(b"\r\n"),
+            "part1 must end with one CRLF; got trailing {:?}",
+            std::str::from_utf8(&got_part1[got_part1.len().saturating_sub(8)..]).unwrap_or("")
+        );
+        assert!(
+            !got_part1.ends_with(b"\r\n\r\n"),
+            "part1 must NOT end with doubled CRLF"
+        );
+        assert_eq!(got_part1, part1);
+    }
+
+    /// Multipart/signed with three body parts (malformed per RFC 1847 §2.1)
+    /// → helper bails: returns `(None, None)` so the orchestrator falls through
+    /// rather than verifying against the wrong bytes.
+    #[test]
+    fn extract_clear_signed_parts_bails_on_wrong_part_count() {
+        let raw = b"From: a@b\r\nContent-Type: multipart/signed; boundary=\"X\"\r\n\r\n--X\r\nContent-Type: text/plain\r\n\r\na\r\n--X\r\nContent-Type: text/plain\r\n\r\nb\r\n--X\r\nContent-Type: text/plain\r\n\r\nc\r\n--X--\r\n";
+        let msg = parse_raw(raw);
+        let (p1, p7s) = extract_clear_signed_parts(&msg);
+        assert!(p1.is_none(), "malformed multipart/signed (3 parts) must yield no part1");
+        assert!(p7s.is_none());
     }
 }
