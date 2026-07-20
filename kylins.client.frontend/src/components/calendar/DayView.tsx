@@ -23,22 +23,27 @@ export function DayView() {
     .filter((o) => dayKey(o.start) === k)
     .sort((a, b) => a.start.getTime() - b.start.getTime());
 
-  const header = currentDate.toLocaleDateString(undefined, {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-  });
+  const headerWeekday = currentDate.toLocaleDateString(undefined, { weekday: 'long' });
+  const headerDate = currentDate.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+  const isToday = k === dayKey(new Date());
 
   return (
     <div className="flex-1 overflow-auto p-4">
-      <h3 className="mb-4 text-base font-semibold text-[var(--foreground)]">{header}</h3>
+      <h3
+        className={`mb-4 text-base ${
+          isToday ? 'font-semibold text-primary' : 'font-semibold text-[var(--foreground)]'
+        }`}
+      >
+        <span className="type-overline">{headerWeekday}</span>{' '}
+        <span className="tabular-nums">{headerDate}</span>
+      </h3>
       <div className="space-y-2">
         {items.map((o) => (
           <div
             key={`${o.uid}-${o.start.getTime()}`}
             className="group flex gap-3 rounded-lg border border-[var(--border-subtle)] border-l-[3px] border-l-[var(--primary)] bg-[var(--surface)] px-3 py-2 transition-colors hover:border-[var(--primary)] hover:bg-[var(--primary-subtle)]"
           >
-            <div className="w-24 shrink-0 text-xs text-[var(--muted-text)]">
+            <div className="type-caption w-24 shrink-0 tabular-nums text-[var(--muted-text)]">
               {o.allDay ? (
                 <span className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[0.625rem] font-medium text-[var(--foreground)]">
                   All day

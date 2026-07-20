@@ -82,7 +82,7 @@ export function TasksPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-surface">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-surface">
       <TaskToolbar
         filter={filter}
         sortBy={sortBy}

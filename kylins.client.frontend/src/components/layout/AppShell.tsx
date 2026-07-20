@@ -18,7 +18,7 @@ import { TasksPage } from '../tasks/TasksPage';
 
 function MainContent({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-1 flex-col min-w-0 overflow-hidden rounded-lg bg-[var(--surface)] p-2">
+    <div className="flex flex-1 flex-col min-w-0 overflow-hidden bg-[var(--surface)] p-2">
       {children}
     </div>
   );

@@ -90,24 +90,24 @@ export function TaskDetail({ task, onUpdate, onDelete }: TaskDetailProps) {
 
       <div className="space-y-4">
         <TextField className="block">
-          <Label className="mb-1 block text-xs text-muted-text">Title</Label>
+          <Label className="type-overline mb-1 block text-muted-text">Title</Label>
           <Input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onBlur={save}
-            className="h-11 w-full rounded border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary"
+            className="h-11 w-full rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary"
           />
         </TextField>
 
         <TextField className="block">
-          <Label className="mb-1 block text-xs text-muted-text">Description</Label>
+          <Label className="type-overline mb-1 block text-muted-text">Description</Label>
           <TextArea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             onBlur={save}
             placeholder="Add details..."
-            className="min-h-[120px] w-full rounded border border-[var(--border-subtle)] bg-surface-floating px-2 py-2 text-sm text-foreground outline-none focus:border-primary"
+            className="min-h-[120px] w-full rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 py-2 text-sm text-foreground outline-none focus:border-primary"
           />
         </TextField>
 
@@ -120,12 +120,12 @@ export function TaskDetail({ task, onUpdate, onDelete }: TaskDetailProps) {
             }}
             className="block"
           >
-            <Label className="mb-1 block text-xs text-muted-text">Priority</Label>
-            <Button className="flex h-11 w-full items-center justify-between rounded border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary">
+            <Label className="type-overline mb-1 block text-muted-text">Priority</Label>
+            <Button className="flex h-11 w-full items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary">
               <SelectValue />
               <span aria-hidden="true">▼</span>
             </Button>
-            <Popover className="z-[var(--z-popover)] rounded border border-[var(--border-subtle)] bg-surface-floating shadow-lg">
+            <Popover className="z-[var(--z-popover)] rounded-lg border border-[var(--border-subtle)] bg-surface-floating shadow-lg">
               <ListBox className="py-1">
                 {PRIORITY_OPTIONS.map((opt) => (
                   <ListBoxItem
@@ -149,8 +149,8 @@ export function TaskDetail({ task, onUpdate, onDelete }: TaskDetailProps) {
             granularity="day"
             className="block"
           >
-            <Label className="mb-1 block text-xs text-muted-text">Due date</Label>
-            <Group className="flex h-11 items-center rounded border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus-within:border-primary">
+            <Label className="type-overline mb-1 block text-muted-text">Due date</Label>
+            <Group className="flex h-11 items-center rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus-within:border-primary">
               <DateInput className="flex">
                 {(segment) => (
                   <DateSegment
@@ -160,7 +160,7 @@ export function TaskDetail({ task, onUpdate, onDelete }: TaskDetailProps) {
                 )}
               </DateInput>
             </Group>
-            <Popover className="z-[var(--z-popover)] rounded border border-[var(--border-subtle)] bg-surface-floating p-2 shadow-lg">
+            <Popover className="z-[var(--z-popover)] rounded-lg border border-[var(--border-subtle)] bg-surface-floating p-2 shadow-lg">
               <Calendar className="outline-none">
                 <header className="mb-2 flex items-center justify-between">
                   <Button slot="previous">◀</Button>
@@ -190,18 +190,18 @@ export function TaskDetail({ task, onUpdate, onDelete }: TaskDetailProps) {
         </div>
 
         <TextField className="block">
-          <Label className="mb-1 block text-xs text-muted-text">Tags (comma separated)</Label>
+          <Label className="type-overline mb-1 block text-muted-text">Tags (comma separated)</Label>
           <Input
             type="text"
             value={tags}
             onChange={(e) => setTags(e.target.value)}
             onBlur={save}
             placeholder="work, follow-up"
-            className="h-11 w-full rounded border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary"
+            className="h-11 w-full rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary"
           />
         </TextField>
 
-        <div className="flex items-center gap-2 rounded border border-[var(--border-subtle)] bg-surface-floating p-3">
+        <div className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-surface-floating p-3">
           <Checkbox
             isSelected={task.isCompleted}
             onChange={() => onUpdate(task.id, { isCompleted: !task.isCompleted })}

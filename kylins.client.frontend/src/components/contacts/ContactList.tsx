@@ -117,7 +117,7 @@ export function ContactList() {
                         setSelectedGroupId(item.id);
                       }
                     }}
-                    className={`flex items-center gap-3 rounded-lg border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+                    className={`flex items-center gap-3 rounded-xl border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                       active
                         ? 'border-[var(--primary)] bg-[var(--primary-muted)]'
                         : 'border-[var(--border-subtle)] bg-surface-elevated hover:bg-[var(--primary-subtle)]'
@@ -151,7 +151,7 @@ export function ContactList() {
                       setSelectedContactId(contact.id);
                     }
                   }}
-                  className={`flex items-center gap-3 rounded-lg border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+                  className={`flex items-center gap-3 rounded-xl border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                     active
                       ? 'border-[var(--primary)] bg-[var(--primary-muted)]'
                       : 'border-[var(--border-subtle)] bg-surface-elevated hover:bg-[var(--primary-subtle)]'
@@ -170,7 +170,7 @@ export function ContactList() {
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     {contact.frequency > 0 && (
-                      <span className="text-[10px] text-[var(--muted-text)]">
+                      <span className="text-[10px] tabular-nums text-[var(--muted-text)]">
                         {contact.frequency}
                       </span>
                     )}

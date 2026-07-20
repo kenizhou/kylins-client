@@ -13,6 +13,7 @@
 // hasPrivate + Default chip — enough context without cluttering the row.
 
 import { useEffect, useState } from 'react';
+import { Button, ListBox, ListBoxItem, Popover, Select, SelectValue } from 'react-aria-components';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { useAccountStore } from '@/stores/accountStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -166,23 +167,37 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
       {/* Account picker — only when no accountId prop was supplied. */}
       {!accountIdProp && (
         <div className="flex flex-col gap-1.5">
-          <span className="text-xs text-[var(--muted-text)]">Choose account</span>
+          <span className="type-overline text-[var(--muted-text)]">Choose account</span>
           {accounts.length === 0 ? (
             <span className="text-sm text-[var(--muted-text)]">
               Add an account first to manage keys.
             </span>
           ) : (
-            <select
-              value={effectiveAccountId ?? ''}
-              onChange={(e) => setPickedAccountId(e.target.value)}
-              className="h-11 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
+            <Select
+              selectedKey={effectiveAccountId ?? ''}
+              onSelectionChange={(key) => setPickedAccountId(String(key))}
+              aria-label="Choose account"
             >
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.displayName ? `${a.displayName} (${a.email})` : a.email}
-                </option>
-              ))}
-            </select>
+              <Button className="flex h-11 items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)]">
+                <SelectValue />
+                <span aria-hidden="true" className="text-[var(--muted-text)]">
+                  ▾
+                </span>
+              </Button>
+              <Popover className="min-w-[--trigger-width] rounded-lg border border-[var(--border)] bg-[var(--background)] shadow-lg">
+                <ListBox className="py-1 outline-none">
+                  {accounts.map((a) => (
+                    <ListBoxItem
+                      key={a.id}
+                      id={a.id}
+                      className="flex min-h-11 cursor-pointer items-center px-3 py-2 text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)] selected:bg-[var(--selected)] selected:text-[var(--selected-text)]"
+                    >
+                      {a.displayName ? `${a.displayName} (${a.email})` : a.email}
+                    </ListBoxItem>
+                  ))}
+                </ListBox>
+              </Popover>
+            </Select>
           )}
         </div>
       )}
@@ -193,7 +208,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
           type="button"
           onClick={() => void onImport()}
           disabled={!effectiveAccountId}
-          className="inline-flex items-center gap-1.5 h-11 px-3 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 h-11 px-3 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity disabled:opacity-40"
         >
           <UploadIcon size={14} />
           Import PEM…

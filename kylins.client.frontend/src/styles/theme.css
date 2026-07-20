@@ -1,35 +1,44 @@
 :root {
-  /* Typography — system stacks only; app must run fully offline */
-  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  /*
+   * Typography — Inter Variable is bundled locally (@fontsource-variable/inter);
+   * CJK falls back to system fonts. App must run fully offline.
+   */
+  --font-ui:
+    'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
   --font-serif: Georgia, Cambria, 'Times New Roman', serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Courier New', monospace;
 
   /*
-   * Neutral gray series
+   * Neutral series — cool-tinted slate (oklch, hue 258)
    *
-   * The base scale is intentionally neutral (no hue) so that text, borders,
-   * surfaces, and chrome stay calm and readable regardless of the chosen
-   * accent skin. Skins should only override --series-accent and
-   * --series-accent-hover, not the full gray scale.
+   * The scale carries a whisper of blue so surfaces feel like cool porcelain
+   * rather than flat zinc, and so tinted shadows/glass stay harmonious.
+   * Skins should only override --series-accent and --series-accent-hover,
+   * not the neutral scale.
    */
-  --series-50: #fafafa;
-  --series-100: #f4f4f5;
-  --series-200: #e4e4e7;
-  --series-300: #d4d4d8;
-  --series-400: #a1a1aa;
-  --series-500: #71717a;
-  --series-600: #52525b;
-  --series-700: #3f3f46;
-  --series-800: #27272a;
-  --series-900: #18181b;
-  --series-950: #09090b;
+  --series-50: oklch(0.985 0.003 258);
+  --series-100: oklch(0.965 0.006 258);
+  --series-200: oklch(0.925 0.009 258);
+  --series-300: oklch(0.868 0.013 258);
+  --series-400: oklch(0.705 0.017 258);
+  --series-500: oklch(0.56 0.02 258);
+  --series-600: oklch(0.465 0.02 258);
+  --series-700: oklch(0.395 0.018 258);
+  --series-800: oklch(0.3 0.015 258);
+  --series-900: oklch(0.24 0.013 258);
+  --series-950: oklch(0.175 0.01 258);
 
-  /* Brand / accent — the only part of the palette a skin should change. */
-  --series-accent: #2563eb;
-  --series-accent-hover: #1d4ed8;
+  /* Brand / accent — iris; the only part of the palette a skin should change. */
+  --series-accent: oklch(0.52 0.21 282);
+  --series-accent-hover: oklch(0.46 0.2 282);
+
+  /* Signature gradient — iris → cyan end stop used by the `iris-line` utility. */
+  --iris-end: oklch(0.72 0.12 220);
+  --gradient-iris: linear-gradient(90deg, var(--primary), var(--iris-end));
 
   /* Semantic color mapping — derived from the neutral series */
-  --background: #ffffff;
+  --background: oklch(0.992 0.002 258);
   --foreground: var(--series-900);
 
   --card: #ffffff;
@@ -49,7 +58,7 @@
   --border: var(--series-200);
   --input: var(--series-200);
   --ring: color-mix(in oklab, var(--series-accent), transparent 75%);
-  --radius: 0.375rem;
+  --radius: 0.4375rem;
   --radius-xs: 2px;
 
   /* Provider accent colors (used by account-setup tiles) */
@@ -61,7 +70,7 @@
   --provider-exchange: #0078d4;
 
   /* Status colors */
-  --success: #10b981;
+  --success: #059669;
   --success-foreground: var(--series-900);
   --success-bg: color-mix(in srgb, var(--success) 10%, transparent);
   --success-border: color-mix(in srgb, var(--success) 20%, transparent);
@@ -69,7 +78,7 @@
   --error-foreground: var(--destructive-foreground);
   --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
   --error-border: color-mix(in srgb, var(--error) 20%, transparent);
-  --warning: #f59e0b;
+  --warning: #d97706;
   --warning-foreground: var(--series-900);
 
   /* Semantic desktop tokens */
@@ -90,14 +99,14 @@
   --link-hover: #1d4ed8;
 
   /* Status colors */
-  --amber: #f59e0b;
-  --green: #10b981;
+  --amber: #d97706;
+  --green: #059669;
 
   /* Layout sizing */
-  --header-h: 48px;
-  --ribbon-h: 52px;
-  --tool-w: 44px; /* actively used by ToolWindowBar */
-  --status-h: 44px;
+  --header-h: 56px;
+  --ribbon-h: 56px;
+  --tool-w: 52px; /* actively used by ToolWindowBar */
+  --status-h: 36px;
   --drawer-w: 260px;
   --pane-header-h: 32px;
   --row-h: 28px;
@@ -129,20 +138,26 @@
   /* Border tokens */
   --border-subtle: color-mix(in srgb, var(--border) 60%, transparent);
 
-  /* Elevation shadows */
-  --shadow-sm: 0 1px 2px 0 color-mix(in srgb, var(--series-950) 4%, transparent);
+  /* Modal backdrop — cool ink wash instead of flat black */
+  --backdrop: color-mix(in srgb, var(--series-950) 40%, transparent);
+
+  /* Hue-tinted shadow ink — shadows pick up the slate temperature */
+  --shadow-color: var(--series-950);
+
+  /* Elevation shadows — layered ambient + key, tinted with the neutral hue */
+  --shadow-sm: 0 1px 2px 0 color-mix(in srgb, var(--shadow-color) 5%, transparent);
   --shadow:
-    0 1px 3px 0 color-mix(in srgb, var(--series-950) 6%, transparent),
-    0 1px 2px -1px color-mix(in srgb, var(--series-950) 6%, transparent);
+    0 1px 3px 0 color-mix(in srgb, var(--shadow-color) 8%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--shadow-color) 7%, transparent);
   --shadow-md:
-    0 4px 6px -1px color-mix(in srgb, var(--series-950) 8%, transparent),
-    0 2px 4px -2px color-mix(in srgb, var(--series-950) 8%, transparent);
+    0 2px 4px -2px color-mix(in srgb, var(--shadow-color) 10%, transparent),
+    0 6px 12px -2px color-mix(in srgb, var(--shadow-color) 10%, transparent);
   --shadow-lg:
-    0 10px 15px -3px color-mix(in srgb, var(--series-950) 10%, transparent),
-    0 4px 6px -4px color-mix(in srgb, var(--series-950) 10%, transparent);
+    0 4px 8px -4px color-mix(in srgb, var(--shadow-color) 12%, transparent),
+    0 12px 24px -6px color-mix(in srgb, var(--shadow-color) 14%, transparent);
   --shadow-xl:
-    0 20px 25px -5px color-mix(in srgb, var(--series-950) 12%, transparent),
-    0 8px 10px -6px color-mix(in srgb, var(--series-950) 12%, transparent);
+    0 8px 16px -6px color-mix(in srgb, var(--shadow-color) 14%, transparent),
+    0 24px 48px -12px color-mix(in srgb, var(--shadow-color) 18%, transparent);
 
   /* Motion tokens */
   --duration-instant: 0ms;
@@ -156,15 +171,23 @@
   --chrome-glass: color-mix(in srgb, var(--chrome) 60%, transparent);
   --chrome-glass-start: color-mix(
     in srgb,
-    #ffffff 12%,
-    color-mix(in srgb, var(--chrome) 70%, transparent)
+    #ffffff 18%,
+    color-mix(in srgb, var(--chrome) 65%, transparent)
   );
-  --chrome-glass-end: color-mix(in srgb, var(--chrome) 50%, transparent);
-  --glass-border: color-mix(in srgb, var(--foreground) 3%, transparent);
-  --glass-shadow: 0 8px 32px -6px color-mix(in srgb, var(--series-950) 16%, transparent);
+  --chrome-glass-end: color-mix(in srgb, var(--chrome) 55%, transparent);
+  --glass-border: color-mix(in srgb, var(--foreground) 4%, transparent);
+  --glass-shadow: 0 8px 32px -8px color-mix(in srgb, var(--shadow-color) 18%, transparent);
+  /* Top-light sheen composited onto glass chrome bars (TitleBar/ToolWindowBar/StatusBar) */
+  --chrome-highlight: inset 0 1px 0 0 color-mix(in srgb, #ffffff 40%, transparent);
 
-  /* Shared typography */
-  --text-overline: 700 11px / 1.2 var(--font-ui);
+  /* Shared typography scale */
+  --text-overline: 700 11px / 1.25 var(--font-ui);
+  --text-caption: 500 12px / 1.35 var(--font-ui);
+  --text-body: 400 13px / 1.45 var(--font-ui);
+  --text-body-lg: 400 14px / 1.5 var(--font-ui);
+  --text-subject: 600 15px / 1.35 var(--font-ui);
+  --text-pane-title: 600 13px / 1.3 var(--font-ui);
+  --text-display: 600 28px / 1.2 var(--font-ui);
 
   /* Component tokens */
   --button-primary-bg: var(--primary);
@@ -181,21 +204,23 @@
 }
 
 .dark {
-  /* Neutral gray series, reversed for dark mode. */
-  --series-50: #09090b;
-  --series-100: #18181b;
-  --series-200: #27272a;
-  --series-300: #3f3f46;
-  --series-400: #52525b;
-  --series-500: #71717a;
-  --series-600: #a1a1aa;
-  --series-700: #d4d4d8;
-  --series-800: #e4e4e7;
-  --series-900: #f4f4f5;
-  --series-950: #fafafa;
+  /* Neutral series, reversed for dark mode — deep graphite-navy, never pure black. */
+  --series-50: oklch(0.165 0.01 258);
+  --series-100: oklch(0.205 0.012 258);
+  --series-200: oklch(0.258 0.014 258);
+  --series-300: oklch(0.335 0.016 258);
+  --series-400: oklch(0.455 0.018 258);
+  --series-500: oklch(0.56 0.02 258);
+  --series-600: oklch(0.712 0.016 258);
+  --series-700: oklch(0.8 0.013 258);
+  --series-800: oklch(0.88 0.009 258);
+  --series-900: oklch(0.935 0.006 258);
+  --series-950: oklch(0.975 0.003 258);
 
-  --series-accent: #60a5fa;
-  --series-accent-hover: #3b82f6;
+  --series-accent: oklch(0.7 0.15 285);
+  --series-accent-hover: oklch(0.62 0.18 284);
+
+  --iris-end: oklch(0.8 0.11 220);
 
   --background: var(--series-100);
   --foreground: var(--series-900);
@@ -217,7 +242,7 @@
   --border: var(--series-300);
   --input: var(--series-300);
   --ring: color-mix(in oklab, var(--series-accent), transparent 75%);
-  --radius: 0.375rem;
+  --radius: 0.4375rem;
   --radius-xs: 2px;
 
   /* Provider accent colors (used by account-setup tiles) */
@@ -276,23 +301,38 @@
   /* Border tokens */
   --border-subtle: color-mix(in srgb, var(--border) 50%, transparent);
 
-  /* shadows use black with slightly higher opacity in dark mode */
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.2);
-  --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.25), 0 1px 2px -1px rgb(0 0 0 / 0.25);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.35), 0 4px 6px -4px rgb(0 0 0 / 0.35);
-  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.4), 0 8px 10px -6px rgb(0 0 0 / 0.4);
+  /* Modal backdrop — cool ink wash instead of flat black */
+  --backdrop: color-mix(in srgb, oklch(0.1 0.012 258) 55%, transparent);
+
+  /* Hue-tinted shadow ink — blue-black, not pure black */
+  --shadow-color: oklch(0.1 0.012 258);
+
+  /* Elevation shadows — same geometry, deeper presence on dark surfaces */
+  --shadow-sm: 0 1px 2px 0 color-mix(in srgb, var(--shadow-color) 30%, transparent);
+  --shadow:
+    0 1px 3px 0 color-mix(in srgb, var(--shadow-color) 35%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--shadow-color) 35%, transparent);
+  --shadow-md:
+    0 2px 4px -2px color-mix(in srgb, var(--shadow-color) 40%, transparent),
+    0 6px 12px -2px color-mix(in srgb, var(--shadow-color) 40%, transparent);
+  --shadow-lg:
+    0 4px 8px -4px color-mix(in srgb, var(--shadow-color) 45%, transparent),
+    0 12px 24px -6px color-mix(in srgb, var(--shadow-color) 45%, transparent);
+  --shadow-xl:
+    0 8px 16px -6px color-mix(in srgb, var(--shadow-color) 50%, transparent),
+    0 24px 48px -12px color-mix(in srgb, var(--shadow-color) 50%, transparent);
 
   /* Glassmorphism chrome surfaces — stronger acrylic with top-light sheen */
   --chrome-glass: color-mix(in srgb, var(--chrome) 55%, transparent);
   --chrome-glass-start: color-mix(
     in srgb,
-    #ffffff 8%,
-    color-mix(in srgb, var(--chrome) 65%, transparent)
+    #ffffff 9%,
+    color-mix(in srgb, var(--chrome) 60%, transparent)
   );
-  --chrome-glass-end: color-mix(in srgb, var(--chrome) 45%, transparent);
+  --chrome-glass-end: color-mix(in srgb, var(--chrome) 48%, transparent);
   --glass-border: color-mix(in srgb, var(--foreground) 4%, transparent);
-  --glass-shadow: 0 8px 32px -6px color-mix(in srgb, #000000 35%, transparent);
+  --glass-shadow: 0 8px 32px -8px color-mix(in srgb, var(--shadow-color) 45%, transparent);
+  --chrome-highlight: inset 0 1px 0 0 color-mix(in srgb, #ffffff 6%, transparent);
 }
 
 [data-contrast='high'],
@@ -335,6 +375,7 @@
   --success: #008000;
   --warning: #ff8c00;
   --error: #ff0000;
+  --backdrop: rgb(0 0 0 / 0.6);
 
   /* High contrast disables glassmorphism for readability. */
   --chrome-glass: var(--chrome);
@@ -342,6 +383,10 @@
   --chrome-glass-end: var(--chrome);
   --glass-border: var(--border);
   --glass-shadow: none;
+  --chrome-highlight: none;
+
+  /* High contrast flattens the signature gradient to solid primary. */
+  --gradient-iris: linear-gradient(90deg, var(--primary), var(--primary));
 
   /* Surface depth tokens — high contrast flattens elevation */
   --surface-elevated: var(--surface);
@@ -398,6 +443,7 @@
   --success: #00ff00;
   --warning: #ffd700;
   --error: #ff6666;
+  --backdrop: rgb(0 0 0 / 0.75);
 
   /* High contrast disables glassmorphism for readability. */
   --chrome-glass: var(--chrome);
@@ -405,6 +451,10 @@
   --chrome-glass-end: var(--chrome);
   --glass-border: var(--border);
   --glass-shadow: none;
+  --chrome-highlight: none;
+
+  /* High contrast flattens the signature gradient to solid primary. */
+  --gradient-iris: linear-gradient(90deg, var(--primary), var(--primary));
 
   /* Surface depth tokens — high contrast flattens elevation */
   --surface-elevated: var(--surface);

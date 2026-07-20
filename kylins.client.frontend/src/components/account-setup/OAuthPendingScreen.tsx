@@ -51,7 +51,7 @@ export function OAuthPendingScreen({
         {fallbackUrl && (
           <div className="w-full">
             <label
-              className="mb-1.5 block text-xs font-medium text-muted-text"
+              className="mb-1.5 block type-caption text-muted-text"
               htmlFor="oauth-fallback-url"
             >
               Didn’t open? Paste this URL into your browser:

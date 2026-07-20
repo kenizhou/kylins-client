@@ -31,7 +31,7 @@ const AUX_TOOLS: ToolWindowItem[] = [
 ];
 
 const TOOL_BUTTON_CLASS =
-  'relative grid place-items-center w-11 h-11 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  'relative grid place-items-center w-11 h-11 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 export function ToolWindowBar() {
   const activeToolWindow = useUIStore((s) => s.activeToolWindow);
@@ -64,7 +64,7 @@ export function ToolWindowBar() {
   return (
     <nav
       aria-label="Activity bar"
-      className="flex w-[var(--tool-w)] shrink-0 flex-col items-center justify-between glass bg-gradient-to-r from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] py-2"
+      className="flex w-[var(--tool-w)] shrink-0 flex-col items-center justify-between glass bg-gradient-to-r from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] py-2 shadow-[var(--chrome-highlight)]"
     >
       <ToggleButtonGroup
         selectionMode="single"
@@ -86,7 +86,7 @@ export function ToolWindowBar() {
             className={({ isSelected }) =>
               `${TOOL_BUTTON_CLASS} ${
                 isSelected
-                  ? 'bg-selected text-primary'
+                  ? 'bg-[var(--primary-muted)] text-primary'
                   : 'text-muted-text hover:bg-hover hover:text-foreground'
               }`
             }
@@ -94,7 +94,7 @@ export function ToolWindowBar() {
             {({ isSelected }) => (
               <>
                 {isSelected && (
-                  <span className="absolute bottom-2 left-0 top-2 w-1 rounded-r bg-primary" />
+                  <span className="absolute bottom-2 left-0 top-2 w-[3px] rounded-r-full iris-line" />
                 )}
                 {tool.icon}
                 {tool.id === 'tasks' && incompleteTaskCount > 0 && (
@@ -126,7 +126,7 @@ export function ToolWindowBar() {
               className={({ isSelected }) =>
                 `${TOOL_BUTTON_CLASS} ${
                   isSelected
-                    ? 'bg-selected text-primary'
+                    ? 'bg-[var(--primary-muted)] text-primary'
                     : 'text-muted-text hover:bg-hover hover:text-foreground'
                 }`
               }
@@ -134,7 +134,7 @@ export function ToolWindowBar() {
               {({ isSelected }) => (
                 <>
                   {isSelected && (
-                    <span className="absolute bottom-2 left-0 top-2 w-1 rounded-r bg-primary" />
+                    <span className="absolute bottom-2 left-0 top-2 w-[3px] rounded-r-full iris-line" />
                   )}
                   {tool.icon}
                 </>

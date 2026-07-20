@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Checkbox } from 'react-aria-components';
 import { buildComposerExtensions } from '@/features/composer/editorExtensions';
 import { sanitizeHtml } from '@/utils/sanitize';
 import {
@@ -117,7 +118,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
       >
         <div className="space-y-4">
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="sig-name" className="text-xs text-[var(--muted-text)]">
+            <label htmlFor="sig-name" className="type-overline text-[var(--muted-text)]">
               Name
             </label>
             <input
@@ -131,25 +132,46 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-[var(--muted-text)]">Use for</span>
+            <span className="type-overline text-[var(--muted-text)]">Use for</span>
             <SegmentedControl options={CONTEXT_OPTIONS} value={context} onChange={setContext} />
           </div>
 
-          <label className="flex min-h-11 items-start gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors">
-            <input
-              type="checkbox"
-              checked={isDefault}
-              onChange={(e) => setIsDefault(e.target.checked)}
-              className="mt-0.5 rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
-            />
-            <span className="text-sm text-[var(--foreground)]">
-              Use as default for this context
-            </span>
-          </label>
+          <Checkbox
+            isSelected={isDefault}
+            onChange={setIsDefault}
+            className="flex min-h-11 items-start gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors"
+          >
+            {({ isSelected }) => (
+              <>
+                <div
+                  className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                    isSelected
+                      ? 'border-primary bg-primary text-primary-fg'
+                      : 'border-border bg-background'
+                  }`}
+                >
+                  {isSelected && (
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                      <path
+                        d="M1.5 5.5L4 8l4-5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </div>
+                <span className="text-sm text-[var(--foreground)]">
+                  Use as default for this context
+                </span>
+              </>
+            )}
+          </Checkbox>
 
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-[var(--muted-text)]">Body</span>
+              <span className="type-overline text-[var(--muted-text)]">Body</span>
               <button type="button" onClick={toggleSource} className="kylins-link text-xs">
                 {showSource ? 'Visual editor' : 'HTML source'}
               </button>
@@ -232,7 +254,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-[var(--muted-text)]">Preview</span>
+            <span className="type-overline text-[var(--muted-text)]">Preview</span>
             <div
               className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] min-h-[80px]"
               dangerouslySetInnerHTML={{ __html: sanitizeHtml(bodyHtml) }}
@@ -251,7 +273,7 @@ export function SignatureEditor({ initial, onSave, onCancel }: SignatureEditorPr
               type="button"
               onClick={() => void handleSave()}
               disabled={!name.trim() || isSaving}
-              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
             >
               {isSaving ? 'Saving…' : 'Save signature'}
             </button>

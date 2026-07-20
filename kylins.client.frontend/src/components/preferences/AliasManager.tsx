@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Checkbox } from 'react-aria-components';
 import type { Account } from '../../types';
 import {
   getMappedAliasesForAccount,
@@ -181,14 +182,14 @@ export function AliasManager({ account }: AliasManagerProps) {
 
       <form
         onSubmit={handleSave}
-        className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-3 space-y-3"
+        className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 space-y-3"
       >
         <div className="text-sm font-medium text-[var(--foreground)]">
           {editingAlias ? 'Edit alias' : 'Add alias'}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-[var(--muted-text)]">Email</span>
+            <span className="type-overline text-[var(--muted-text)]">Email</span>
             <input
               type="email"
               value={email}
@@ -200,7 +201,7 @@ export function AliasManager({ account }: AliasManagerProps) {
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-[var(--muted-text)]">Display name</span>
+            <span className="type-overline text-[var(--muted-text)]">Display name</span>
             <input
               type="text"
               value={displayName}
@@ -210,7 +211,9 @@ export function AliasManager({ account }: AliasManagerProps) {
             />
           </label>
           <label className="flex flex-col gap-1 sm:col-span-2">
-            <span className="text-xs text-[var(--muted-text)]">Reply-to address (optional)</span>
+            <span className="type-overline text-[var(--muted-text)]">
+              Reply-to address (optional)
+            </span>
             <input
               type="email"
               value={replyTo}
@@ -221,29 +224,71 @@ export function AliasManager({ account }: AliasManagerProps) {
           </label>
         </div>
         <div className="flex flex-wrap items-center gap-4">
-          <label className="flex min-h-11 items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={isDefault}
-              onChange={(e) => setIsDefault(e.target.checked)}
-              className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
-            />
-            Default alias
-          </label>
-          <label className="flex min-h-11 items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={treatAsAlias}
-              onChange={(e) => setTreatAsAlias(e.target.checked)}
-              className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
-            />
-            Treat as alias
-          </label>
+          <Checkbox
+            isSelected={isDefault}
+            onChange={setIsDefault}
+            className="flex min-h-11 items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer"
+          >
+            {({ isSelected }) => (
+              <>
+                <div
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                    isSelected
+                      ? 'border-primary bg-primary text-primary-fg'
+                      : 'border-border bg-background'
+                  }`}
+                >
+                  {isSelected && (
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                      <path
+                        d="M1.5 5.5L4 8l4-5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </div>
+                Default alias
+              </>
+            )}
+          </Checkbox>
+          <Checkbox
+            isSelected={treatAsAlias}
+            onChange={setTreatAsAlias}
+            className="flex min-h-11 items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer"
+          >
+            {({ isSelected }) => (
+              <>
+                <div
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                    isSelected
+                      ? 'border-primary bg-primary text-primary-fg'
+                      : 'border-border bg-background'
+                  }`}
+                >
+                  {isSelected && (
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                      <path
+                        d="M1.5 5.5L4 8l4-5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </div>
+                Treat as alias
+              </>
+            )}
+          </Checkbox>
         </div>
         <div className="flex items-center gap-2">
           <button
             type="submit"
-            className="inline-flex items-center justify-center h-11 px-3 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
+            className="inline-flex items-center justify-center h-11 px-3 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity"
           >
             <PlusIcon size={14} />
             {editingAlias ? 'Save changes' : 'Add alias'}

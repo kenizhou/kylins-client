@@ -12,15 +12,15 @@ import { Modal } from '@/components/ui/Modal';
 import { InjectedComponentSet } from '@/components/plugins/InjectedComponentSet';
 
 const PRESET_COLORS = [
-  '#ef4444',
-  '#f97316',
-  '#eab308',
-  '#22c55e',
-  '#06b6d4',
-  '#3b82f6',
-  '#8b5cf6',
-  '#ec4899',
-  '#6b7280',
+  '#f0655a',
+  '#f28c4a',
+  '#e5b93b',
+  '#3fbf7f',
+  '#22b8cf',
+  '#5b8def',
+  '#8b7cf6',
+  '#e06ba8',
+  '#7a8199',
 ];
 
 interface ColorDialogProps {
@@ -64,7 +64,9 @@ function ColorDialog({ isOpen, initialColor, onClose, onSelect }: ColorDialogPro
               type="button"
               onClick={() => setColor(c)}
               className={`h-8 w-8 rounded-full border-2 transition-transform ${
-                color === c ? 'border-[var(--foreground)] scale-110' : 'border-transparent'
+                color === c
+                  ? 'scale-110 border-transparent ring-2 ring-[var(--ring)] ring-offset-2 ring-offset-[var(--surface-floating)]'
+                  : 'border-transparent'
               }`}
               style={{ backgroundColor: c }}
               aria-label={`Select color ${c}`}
@@ -367,7 +369,7 @@ export function CalendarPane() {
       {colorCal && (
         <ColorDialog
           isOpen
-          initialColor={colorCal.color || '#3b82f6'}
+          initialColor={colorCal.color || '#5b8def'}
           onClose={() => setColorCal(null)}
           onSelect={async (color) => {
             await updateCalendar(colorCal.id, { color });

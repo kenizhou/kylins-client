@@ -36,11 +36,12 @@ export function WeekView() {
             }`}
           >
             <div
-              className={`border-b border-[var(--border-subtle)] px-2 py-1.5 text-xs ${
-                isToday ? 'font-semibold text-[var(--primary)]' : 'text-[var(--muted-text)]'
+              className={`border-b border-[var(--border-subtle)] px-2 py-1.5 ${
+                isToday ? 'font-semibold text-primary' : 'text-[var(--muted-text)]'
               }`}
             >
-              {WEEKDAYS[date.getDay()]} {date.getDate()}
+              <span className="type-overline">{WEEKDAYS[date.getDay()]}</span>{' '}
+              <span className="tabular-nums">{date.getDate()}</span>
             </div>
             <div className="flex-1 space-y-1 p-1">
               {items.map((o) => (

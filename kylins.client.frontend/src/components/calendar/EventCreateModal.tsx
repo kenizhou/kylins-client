@@ -136,9 +136,9 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
         if (!open) onClose();
       }}
       isDismissable
-      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-[var(--backdrop)] p-4"
     >
-      <RACModal className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-surface-floating p-5 shadow-xl outline-none">
+      <RACModal className="w-full max-w-md rounded-xl border border-[var(--border-subtle)] bg-surface-floating p-5 shadow-xl outline-none">
         <Dialog aria-label="New event" className="outline-none">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-base font-semibold text-foreground">New event</h3>
@@ -286,7 +286,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
             <Button
               isDisabled={!summary.trim() || saving || !effectiveCalendarId}
               onPress={handleSave}
-              className="flex h-11 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-fg transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-11 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-fg shadow-[var(--shadow-sm)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving && (
                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />

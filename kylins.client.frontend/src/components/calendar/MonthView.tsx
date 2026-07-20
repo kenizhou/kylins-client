@@ -51,9 +51,9 @@ export function MonthView() {
               }`}
             >
               <div
-                className={`mb-1 flex h-5 w-5 items-center justify-center text-xs ${
+                className={`mb-1 flex h-5 w-5 items-center justify-center text-xs tabular-nums ${
                   isToday
-                    ? 'rounded-full bg-[var(--primary)] font-medium text-[var(--primary-fg)]'
+                    ? 'rounded-full iris-line font-semibold text-[var(--primary-fg)]'
                     : inMonth
                       ? 'text-[var(--foreground)]'
                       : 'text-[var(--muted-text)]'

@@ -917,7 +917,7 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const composerPanel = (
     <div
-      className={`composer-panel pointer-events-auto relative flex flex-col rounded-xl border bg-[var(--background)] shadow-2xl ${
+      className={`composer-panel pointer-events-auto relative flex flex-col rounded-2xl border bg-[var(--background)] shadow-2xl ${
         windowed
           ? 'h-full w-full rounded-none border-0 shadow-none'
           : isFullpage
@@ -947,7 +947,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       {windowed ? (
         <WindowTitleBar title={modeLabel} />
       ) : (
-        <div className="flex items-center justify-between rounded-t-lg border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+        <div className="flex items-center justify-between rounded-t-2xl border-b border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
           <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
           <div className="flex items-center gap-0.5">
             <IconButton
@@ -1129,7 +1129,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between rounded-b-lg border-t border-[var(--border)] bg-[var(--surface)] px-4 py-2.5">
+      <div className="flex items-center justify-between rounded-b-2xl border-t border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
         <div className="flex items-center gap-3">
           <div className="text-xs text-[var(--muted-foreground)]">
             {fromEmail ?? activeAccount?.email ?? 'No account'}
@@ -1158,7 +1158,7 @@ export function Composer({ windowed = false }: ComposerProps) {
             onPress={windowed ? handleSendAndCloseWindow : handleSend}
             isDisabled={to.length === 0 || sendProgressActive}
             aria-label={undefined}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] shadow-[var(--shadow-sm)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             {sendProgressActive ? <SpinnerIcon size={14} /> : <SendIcon size={14} />}
             {sendProgressActive ? 'Sending…' : 'Send'}
@@ -1195,7 +1195,10 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   return (
     <div className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center p-4 pointer-events-none">
-      <div className="pointer-events-auto absolute inset-0 bg-black/30" onClick={handleClose} />
+      <div
+        className="pointer-events-auto absolute inset-0 bg-[var(--backdrop)]"
+        onClick={handleClose}
+      />
       {composerPanel}
     </div>
   );

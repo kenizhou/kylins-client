@@ -47,7 +47,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       onPress={onClick}
       aria-label={ariaLabel ?? title ?? label}
       data-active={active || undefined}
-      className={`relative inline-flex items-center justify-center rounded text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`relative inline-flex items-center justify-center rounded-lg text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         active
           ? 'bg-selected text-selected-text'
           : 'hover:bg-[var(--primary-subtle)] hover:text-foreground'

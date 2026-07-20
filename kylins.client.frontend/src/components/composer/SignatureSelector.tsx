@@ -53,13 +53,13 @@ export function SignatureSelector() {
       selectedKey={signatureId ?? ''}
       onSelectionChange={(key) => handleChange(String(key))}
       aria-label="Signature"
-      className="cursor-pointer rounded border border-border bg-secondary px-1.5 py-0.5 text-[0.625rem] text-muted-text"
+      className="cursor-pointer rounded-lg border border-[var(--border-subtle)] bg-secondary px-1.5 py-0.5 text-[0.625rem] text-muted-text"
     >
       <Button className="flex items-center gap-1 outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <SelectValue />
         <span aria-hidden="true">▾</span>
       </Button>
-      <Popover className="min-w-[--trigger-width] rounded border border-border bg-popover shadow-lg">
+      <Popover className="min-w-[--trigger-width] rounded-lg border border-[var(--border-subtle)] bg-popover shadow-[var(--shadow-lg)]">
         <ListBox className="py-1 outline-none">
           <ListBoxItem
             id=""

@@ -67,11 +67,11 @@ export function TaskToolbar({
           className="flex items-center gap-2"
         >
           <span className="text-sm text-muted-text">Sort:</span>
-          <Button className="flex h-9 items-center justify-between gap-2 rounded border border-[var(--border-subtle)] bg-surface-elevated px-2 text-sm text-foreground outline-none focus:border-primary">
+          <Button className="flex h-9 items-center justify-between gap-2 rounded-lg border border-[var(--border-subtle)] bg-surface-elevated px-2 text-sm text-foreground outline-none focus:border-primary">
             <SelectValue />
             <span aria-hidden="true">▼</span>
           </Button>
-          <Popover className="z-[var(--z-popover)] rounded border border-[var(--border-subtle)] bg-surface-elevated shadow-lg">
+          <Popover className="z-[var(--z-popover)] rounded-lg border border-[var(--border-subtle)] bg-surface-elevated shadow-lg">
             <ListBox className="py-1">
               {SORT_OPTIONS.map((opt) => (
                 <ListBoxItem
@@ -88,7 +88,7 @@ export function TaskToolbar({
 
         <Button
           onPress={() => onSortDirectionChange(sortDirection === 'asc' ? 'desc' : 'asc')}
-          className="inline-flex h-9 w-9 items-center justify-center rounded border border-border bg-background text-sm text-foreground hover:bg-hover"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-background text-sm text-foreground hover:bg-hover"
           aria-label={sortDirection === 'asc' ? 'Sort descending' : 'Sort ascending'}
         >
           {sortDirection === 'asc' ? '↑' : '↓'}
@@ -96,7 +96,7 @@ export function TaskToolbar({
 
         <Button
           onPress={onNewTask}
-          className="inline-flex h-9 items-center gap-1.5 rounded bg-primary px-3 text-sm text-primary-fg transition-opacity hover:opacity-90"
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm text-primary-fg shadow-[var(--shadow-sm)] transition-opacity hover:opacity-90"
         >
           <PlusIcon size={16} />
           New task

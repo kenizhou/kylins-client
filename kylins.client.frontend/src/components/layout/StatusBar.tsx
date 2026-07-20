@@ -7,7 +7,6 @@ import { useAccountStore } from '../../stores/accountStore';
 import { useViewStore } from '../../features/view/viewStore';
 import type { MessageListDensity, ReadingPanePosition } from '../../features/view/types';
 import { formatRelativeTime } from '../../utils/relativeTime';
-import { IconButton } from '@/components/ui/IconButton';
 import { PlusIcon, MinimizeIcon, SpinnerIcon } from '../icons';
 
 const MIN_ZOOM = 0.5;
@@ -74,6 +73,15 @@ function SyncStatusIndicator() {
 
   const worst = pickWorstState(syncStateByAccount);
 
+  const dotColor =
+    worst === 'rate_limited'
+      ? 'var(--warning)'
+      : worst === 'syncing'
+        ? 'var(--primary)'
+        : worst === 'error'
+          ? 'var(--destructive)'
+          : 'var(--success)';
+
   const content = (() => {
     if (worst === 'rate_limited') {
       return <span title="A provider asked us to slow down">Rate limited</span>;
@@ -99,8 +107,13 @@ function SyncStatusIndicator() {
       type="button"
       onClick={triggerSync}
       aria-label="Sync now"
-      className="hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] rounded px-1"
+      className="inline-flex items-center gap-1.5 hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] rounded px-1"
     >
+      <span
+        aria-hidden
+        className="inline-block h-1.5 w-1.5 rounded-full"
+        style={{ backgroundColor: dotColor }}
+      />
       {content}
     </button>
   );
@@ -134,7 +147,7 @@ export function StatusBar() {
   const readingPanePosition = useViewStore((s) => s.readingPanePosition);
 
   return (
-    <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-xs glass bg-gradient-to-t from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] shadow-[var(--glass-shadow)] text-[var(--muted-text)] shrink-0">
+    <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-xs glass bg-gradient-to-t from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] text-[var(--muted-text)] shrink-0">
       <div className="flex items-center gap-3">
         <SyncStatusIndicator />
         <SendProgressIndicator />
@@ -143,26 +156,30 @@ export function StatusBar() {
       <div className="flex items-center gap-3">
         <InjectedComponentSet role="status-bar" containersRequired={false} />
         <div className="flex items-center gap-0.5">
-          <IconButton
-            icon={<MinimizeIcon size={11} />}
-            title="Zoom out"
-            onClick={() => setReaderZoom(clampZoom(+(readerZoom - 0.1).toFixed(1)))}
-          />
+          <Button
+            onPress={() => setReaderZoom(clampZoom(+(readerZoom - 0.1).toFixed(1)))}
+            aria-label="Zoom out"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+          >
+            <MinimizeIcon size={11} />
+          </Button>
           <Button
             onPress={() => setReaderZoom(1)}
             aria-label="Reset zoom"
-            className="min-w-11 h-8 text-center tabular-nums rounded transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+            className="min-w-11 h-7 text-center tabular-nums rounded-md transition-colors hover:text-[var(--foreground)] hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
           >
             {Math.round(readerZoom * 100)}%
           </Button>
-          <IconButton
-            icon={<PlusIcon size={11} />}
-            title="Zoom in"
-            onClick={() => setReaderZoom(clampZoom(+(readerZoom + 0.1).toFixed(1)))}
-          />
+          <Button
+            onPress={() => setReaderZoom(clampZoom(+(readerZoom + 0.1).toFixed(1)))}
+            aria-label="Zoom in"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+          >
+            <PlusIcon size={11} />
+          </Button>
         </div>
         <span>{DENSITY_LABEL[messageListDensity]}</span>
-        <span className="mx-1 h-3 w-px bg-[var(--border)]" />
+        <span className="mx-1 h-3 w-px bg-[var(--border-subtle)]" />
         <span>{POSITION_LABEL[readingPanePosition]}</span>
       </div>
     </footer>

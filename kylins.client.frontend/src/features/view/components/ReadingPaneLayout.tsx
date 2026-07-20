@@ -16,7 +16,7 @@ interface ReadingPaneLayoutProps {
 function PanelCard({ children }: { children: React.ReactNode }) {
   return (
     <div
-      className="relative h-full overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-md"
+      className="relative h-full overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--card)] shadow-md"
       style={{
         maskImage:
           'radial-gradient(circle at 0 100%, transparent 12px, black 12px), radial-gradient(circle at 100% 100%, transparent 12px, black 12px)',

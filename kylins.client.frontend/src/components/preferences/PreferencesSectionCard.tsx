@@ -15,7 +15,7 @@ export function PreferencesSectionCard({
 }: PreferencesSectionCardProps) {
   return (
     <div
-      className={`rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-sm ${className}`}
+      className={`rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-5 shadow-[var(--shadow-sm)] ${className}`}
     >
       <div className="flex items-center gap-2.5 mb-4">
         {Icon && (
@@ -23,7 +23,7 @@ export function PreferencesSectionCard({
             <Icon size={16} />
           </span>
         )}
-        <h3 className="text-sm font-semibold text-[var(--foreground)]">{title}</h3>
+        <h3 className="type-pane-title text-[var(--foreground)]">{title}</h3>
       </div>
       <div className="space-y-4">{children}</div>
     </div>

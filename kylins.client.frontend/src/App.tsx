@@ -354,6 +354,7 @@ export default function App() {
             onClose={handleCloseSetup}
             disableBackdropClose
             size="auto"
+            className="h-[min(90vh,860px)]"
             contentClassName="bg-[var(--background)] p-6 pt-14"
           >
             <AccountSetupFlow variant="modal" onComplete={handleSetupComplete} />

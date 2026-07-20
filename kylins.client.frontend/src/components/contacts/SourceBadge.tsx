@@ -10,11 +10,15 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 const SOURCE_STYLES: Record<string, string> = {
-  mail: 'bg-[var(--secondary)] text-[var(--secondary-foreground)]',
-  local: 'bg-primary-subtle text-primary',
-  carddav: 'bg-[var(--success)]/10 text-[var(--success)]',
-  google_people: 'bg-primary-subtle text-primary',
-  eas_gal: 'bg-[var(--warning)]/10 text-[var(--warning)]',
+  mail: 'bg-[color-mix(in_srgb,var(--muted-text)_10%,transparent)] text-[var(--muted-text)] border-[color-mix(in_srgb,var(--muted-text)_25%,transparent)]',
+  local:
+    'bg-[color-mix(in_srgb,var(--primary)_10%,transparent)] text-[var(--primary)] border-[color-mix(in_srgb,var(--primary)_25%,transparent)]',
+  carddav:
+    'bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[var(--success)] border-[color-mix(in_srgb,var(--success)_25%,transparent)]',
+  google_people:
+    'bg-[color-mix(in_srgb,var(--primary)_10%,transparent)] text-[var(--primary)] border-[color-mix(in_srgb,var(--primary)_25%,transparent)]',
+  eas_gal:
+    'bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-[var(--warning)] border-[color-mix(in_srgb,var(--warning)_25%,transparent)]',
 };
 
 interface SourceBadgeProps {
@@ -26,7 +30,7 @@ export function SourceBadge({ contact }: SourceBadgeProps) {
   const style = SOURCE_STYLES[contact.source] ?? SOURCE_STYLES.local;
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${style}`}
+      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium ${style}`}
       title={contact.isReadonly ? `${label} (read-only)` : label}
     >
       {contact.isReadonly && <LockIcon size={10} />}

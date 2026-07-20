@@ -26,7 +26,7 @@ export function AttachmentPicker() {
             <Tag
               id={att.id}
               textValue={att.filename}
-              className="inline-flex items-center gap-1.5 rounded-full bg-highlight px-2.5 py-1 text-xs text-highlight-text outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring data-[selected]:opacity-100"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-highlight px-2.5 py-1 text-xs text-highlight-text outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring data-[selected]:opacity-100"
             >
               <span className="max-w-[150px] truncate">{att.filename}</span>
               <span className="text-highlight-text/70">{formatFileSize(att.size)}</span>

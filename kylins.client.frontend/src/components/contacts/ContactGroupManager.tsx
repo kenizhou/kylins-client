@@ -58,7 +58,7 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
         />
         <button
           type="submit"
-          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
+          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity"
         >
           <PlusIcon size={13} />
           Add
@@ -72,7 +72,7 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
         {groups.map((group) => (
           <li
             key={group.id}
-            className="flex items-center justify-between gap-2 rounded-md border border-[var(--border-subtle)] bg-surface-elevated px-3 py-2"
+            className="flex items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-surface-elevated px-3 py-2"
           >
             {editingId === group.id ? (
               <div className="flex items-center gap-2 flex-1">

@@ -122,15 +122,17 @@ function FolderRow({
           ${active ? 'bg-[var(--primary-muted)] text-[var(--selected-text)]' : 'text-foreground hover:bg-[var(--primary-subtle)]'}
         `}
       >
-        {active && <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />}
+        {active && (
+          <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line" />
+        )}
         <span className="shrink-0">{icon}</span>
         <span className="flex-1 truncate text-[13px]">{name}</span>
         {unread > 0 && (
           <span
-            className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
+            className={`rounded-full px-1.5 py-0.5 tabular-nums text-[11px] font-medium ${
               active
                 ? 'bg-primary text-primary-fg'
-                : 'border border-[var(--border-subtle)] bg-[var(--surface-elevated)] text-foreground'
+                : 'bg-[var(--primary-subtle-solid)] text-primary'
             }`}
           >
             {unread}
@@ -172,7 +174,7 @@ function FolderGroup({
   if (!collapsible) {
     return (
       <div className="pb-2 pt-2 first:pt-3 last:pb-0">
-        <div className="flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-text)]">
+        <div className="flex w-full items-center gap-1 px-3 pb-1.5 text-left type-overline text-[var(--muted-text)]">
           {headerContent}
         </div>
         <div className="space-y-0.5 px-0">{children}</div>
@@ -188,7 +190,7 @@ function FolderGroup({
     >
       <Button
         slot="trigger"
-        className="group flex h-11 w-full items-center gap-1 px-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-text)] transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex h-11 w-full items-center gap-1 px-3 text-left type-overline text-[var(--muted-text)] transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {headerContent}
       </Button>
@@ -416,7 +418,7 @@ function AccountFolderTree({
                 }}
               >
                 {isSelected && (
-                  <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />
+                  <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line" />
                 )}
                 {hasChildItems ? (
                   <Button
@@ -451,10 +453,10 @@ function AccountFolderTree({
                     <span className="flex-1 truncate text-[13px]">{folder.name}</span>
                     {unread > 0 && (
                       <span
-                        className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
+                        className={`rounded-full px-1.5 py-0.5 tabular-nums text-[11px] font-medium ${
                           isSelected
                             ? 'bg-primary text-primary-fg'
-                            : 'border border-[var(--border-subtle)] bg-[var(--surface-elevated)] text-foreground'
+                            : 'bg-[var(--primary-subtle-solid)] text-primary'
                         }`}
                       >
                         {unread}
@@ -643,7 +645,7 @@ export function FolderPane() {
     : [];
 
   return (
-    <div className="flex h-full flex-col rounded-xl bg-surface border border-[var(--border-subtle)]">
+    <div className="flex h-full flex-col rounded-2xl bg-surface border border-[var(--border-subtle)]">
       <div className={`flex-1 folder-pane-scroll ${scrollbarClass}`}>
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-text">

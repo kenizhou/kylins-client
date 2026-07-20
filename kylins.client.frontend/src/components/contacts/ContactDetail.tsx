@@ -165,7 +165,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
             <button
               type="button"
               onClick={handleCompose}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity"
             >
               <MailIcon size={13} />
               Compose
@@ -173,7 +173,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
             <button
               type="button"
               onClick={handleCopy}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors"
             >
               <CopyIcon size={13} />
               {copied ? 'Copied' : 'Copy email'}
@@ -184,7 +184,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
                   type="button"
                   onClick={handleSave}
                   disabled={isLoading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
                   <CheckIcon size={13} />
                   Save
@@ -203,7 +203,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
                     });
                     setIsEditing(false);
                   }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors"
                 >
                   <CloseIcon size={13} />
                   Cancel
@@ -215,7 +215,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
               <button
                 type="button"
                 onClick={() => setIsEditing(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors"
               >
                 <PencilIcon size={13} />
                 Edit
@@ -225,7 +225,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
               <button
                 type="button"
                 onClick={handleDelete}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--primary-subtle)] transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--primary-subtle)] transition-colors"
               >
                 <TrashIcon size={13} />
                 Delete
@@ -237,9 +237,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
 
       <div className="flex-1 overflow-y-auto kylins-scrollbar p-5 space-y-5">
         <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-text)] mb-2">
-            Contact info
-          </h3>
+          <h3 className="type-overline text-[var(--muted-text)] mb-2">Contact info</h3>
           <div className="space-y-3">
             <Labeled label="Company">
               {isEditing ? (
@@ -270,9 +268,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
 
         <section>
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-text)]">
-              Emails
-            </h3>
+            <h3 className="type-overline text-[var(--muted-text)]">Emails</h3>
             {isEditing && (
               <button
                 type="button"
@@ -326,9 +322,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
 
         <section>
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-text)]">
-              Phone numbers
-            </h3>
+            <h3 className="type-overline text-[var(--muted-text)]">Phone numbers</h3>
             {isEditing && (
               <button
                 type="button"
@@ -381,9 +375,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
         </section>
 
         <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-text)] mb-2">
-            Notes
-          </h3>
+          <h3 className="type-overline text-[var(--muted-text)] mb-2">Notes</h3>
           {isEditing ? (
             <textarea
               value={draft.notes ?? ''}
@@ -400,9 +392,7 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
 
         {groups.length > 0 && (
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-text)] mb-2">
-              Groups
-            </h3>
+            <h3 className="type-overline text-[var(--muted-text)] mb-2">Groups</h3>
             <div className="flex flex-wrap gap-2">
               {groups.map((g) => {
                 const active = contactGroups.some((cg) => cg.id === g.id);
@@ -426,11 +416,10 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
         )}
 
         <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-text)] mb-2">
-            Activity
-          </h3>
+          <h3 className="type-overline text-[var(--muted-text)] mb-2">Activity</h3>
           <div className="text-sm text-[var(--muted-text)]">
-            Frequency: <span className="text-[var(--foreground)]">{contact.frequency}</span>
+            Frequency:{' '}
+            <span className="tabular-nums text-[var(--foreground)]">{contact.frequency}</span>
           </div>
           {contact.lastContactedAt && (
             <div className="text-sm text-[var(--muted-text)]">

@@ -61,9 +61,9 @@ export function InputDialog({
         if (!open) onClose();
       }}
       isDismissable
-      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/30 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-[var(--backdrop)] p-4"
     >
-      <RACModal className="relative w-80 rounded-lg border border-border bg-background p-4 shadow-xl outline-none">
+      <RACModal className="relative w-80 rounded-2xl border border-[var(--border-subtle)] bg-background p-4 shadow-[var(--shadow-xl)] outline-none">
         <Dialog aria-label={title} className="outline-none">
           {({ close }) => (
             <form
@@ -94,7 +94,7 @@ export function InputDialog({
                       value={values[f.key] ?? ''}
                       placeholder={f.placeholder}
                       onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                      className="h-11 w-full rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+                      className="h-11 w-full rounded-lg border border-[var(--border-subtle)] bg-background px-2.5 text-sm text-foreground outline-none focus:border-primary"
                     />
                   </TextField>
                 ))}
@@ -103,13 +103,13 @@ export function InputDialog({
               <div className="mt-4 flex justify-end gap-2">
                 <Button
                   slot="close"
-                  className="h-11 rounded px-3 text-sm text-foreground transition-colors hover:bg-hover"
+                  className="h-11 rounded-lg px-3 text-sm text-foreground transition-colors hover:bg-hover"
                 >
                   Cancel
                 </Button>
                 <Button
                   type="submit"
-                  className="h-11 rounded bg-primary px-3 text-sm text-primary-fg transition-opacity hover:opacity-90"
+                  className="h-11 rounded-lg bg-primary px-3 text-sm text-primary-fg shadow-[var(--shadow-sm)] transition-opacity hover:opacity-90"
                 >
                   {submitLabel}
                 </Button>

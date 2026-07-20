@@ -74,9 +74,11 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-[var(--header-h)] flex items-center pl-2 pr-[148px] glass bg-gradient-to-b from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] shadow-[var(--glass-shadow)] select-none"
+      className="relative h-[var(--header-h)] flex items-center pl-2 pr-[148px] glass bg-gradient-to-b from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] shadow-[var(--glass-shadow),var(--chrome-highlight)] select-none"
       style={dragStyle}
     >
+      {/* Signature iris hairline along the bottom edge */}
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 h-px iris-line opacity-70" />
       {/* Left: hamburger + menu bar */}
       <div className="flex items-center flex-shrink-0" style={noDragStyle}>
         <IconButton
@@ -156,7 +158,7 @@ export function TitleBar() {
                     type="search"
                     placeholder={searchPlaceholder}
                     style={noDragStyle}
-                    className="w-full h-9 px-3 pr-8 text-sm rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none transition-colors"
+                    className="w-full h-9 px-3 pr-8 text-sm rounded-lg border border-[var(--border-subtle)] bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none transition-colors shadow-[var(--shadow-sm)]"
                   />
                   {!isEmpty && (
                     <Button

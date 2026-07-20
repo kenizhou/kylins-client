@@ -59,7 +59,7 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
       >
         Today
       </Button>
-      <div className="flex items-center overflow-hidden rounded-md border border-[var(--border-subtle)]">
+      <div className="flex items-center overflow-hidden rounded-lg border border-[var(--border-subtle)]">
         <Button
           onPress={() => shift(-1)}
           aria-label="Previous period"
@@ -95,7 +95,7 @@ export function CalendarToolbar({ onNewEvent }: CalendarToolbarProps) {
         />
         <Button
           onPress={onNewEvent}
-          className="flex h-11 min-w-11 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-fg transition-colors hover:opacity-90"
+          className="flex h-11 min-w-11 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-fg shadow-[var(--shadow-sm)] transition-colors hover:opacity-90"
         >
           <PlusIcon size={13} />
           New event

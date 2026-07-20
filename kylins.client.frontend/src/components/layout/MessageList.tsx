@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { Button } from 'react-aria-components';
 import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
 import type { ColumnDef } from '../../features/view/types';
@@ -11,6 +12,7 @@ import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
 import { useAutoHideScrollbar } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
+import { avatarGradient } from '../../utils/avatarGradient';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
 import { isProminent, levelStyle } from '../../features/classification/classificationStyle';
@@ -58,7 +60,7 @@ function optionId(threadId: string): string {
 }
 
 const RIBBON_COLOR: Record<MessageState, string> = {
-  unread: 'bg-[var(--primary)]',
+  unread: 'iris-line',
   read: 'bg-[var(--border)]',
   flagged: 'bg-[var(--amber)]',
   vip: 'bg-[var(--green)]',
@@ -83,45 +85,56 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
   return (
     <span
       data-testid="message-quick-actions"
-      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border-subtle)] p-0.5 shadow-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'} ${selected ? 'bg-[var(--surface-floating)]' : 'bg-[var(--surface-elevated)]'}`}
+      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] p-0.5 shadow-[var(--shadow-md)] backdrop-blur-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'} ${selected ? 'bg-[var(--surface-floating)]' : 'bg-[var(--surface-elevated)]'}`}
       onClick={(e) => e.stopPropagation()}
     >
-      <button
+      <Button
         type="button"
         aria-label="Archive"
-        title="Archive"
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void archiveThread(thread)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void archiveThread(thread)}
       >
-        <ArchiveIcon size={14} />
-      </button>
-      <button
+        {/* RAC Button strips `title`; keep the tooltip on the icon wrapper. */}
+        <span title="Archive" className="inline-flex items-center justify-center">
+          <ArchiveIcon size={14} />
+        </span>
+      </Button>
+      <Button
         type="button"
         aria-label="Delete"
-        title="Delete"
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void trashThread(thread)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void trashThread(thread)}
       >
-        <DeleteIcon size={14} />
-      </button>
-      <button
+        <span title="Delete" className="inline-flex items-center justify-center">
+          <DeleteIcon size={14} />
+        </span>
+      </Button>
+      <Button
         type="button"
         aria-label={thread.isStarred ? 'Unflag' : 'Flag'}
-        title={thread.isStarred ? 'Unflag' : 'Flag'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void toggleThreadStarred(thread)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void toggleThreadStarred(thread)}
       >
-        <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
-      </button>
-      <button
+        <span
+          title={thread.isStarred ? 'Unflag' : 'Flag'}
+          className="inline-flex items-center justify-center"
+        >
+          <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
+        </span>
+      </Button>
+      <Button
         type="button"
         aria-label={thread.isRead ? 'Mark unread' : 'Mark read'}
-        title={thread.isRead ? 'Mark unread' : 'Mark read'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void markThreadRead(thread, !thread.isRead)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void markThreadRead(thread, !thread.isRead)}
       >
-        <MailIcon size={14} />
-      </button>
+        <span
+          title={thread.isRead ? 'Mark unread' : 'Mark read'}
+          className="inline-flex items-center justify-center"
+        >
+          <MailIcon size={14} />
+        </span>
+      </Button>
     </span>
   );
 }
@@ -178,10 +191,20 @@ const MessageRow = memo(function MessageRow({
         <div className="flex-1 min-w-0 px-2 py-0.5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--border)] text-[10px] font-bold text-[var(--muted-text)]">
+              <span
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
+                style={{
+                  background: avatarGradient(sender).background,
+                  color: avatarGradient(sender).foreground,
+                }}
+              >
                 {getInitials(sender)}
               </span>
-              <span className={`truncate ${unread ? 'font-semibold' : ''}`}>{sender}</span>
+              <span
+                className={`truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
+              >
+                {sender}
+              </span>
               {showImportance && thread.isImportant && (
                 <span title="Important" aria-label="Important" className="text-[var(--warning)]">
                   <WarningIcon size={14} />
@@ -197,13 +220,15 @@ const MessageRow = memo(function MessageRow({
                 size={12}
               />
             </div>
-            <span className="shrink-0 text-[11px] font-mono text-[var(--muted-text)]">
+            <span className="shrink-0 text-[11px] tabular-nums text-[var(--muted-text)]">
               {thread.lastMessageAt != null
                 ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
                 : ''}
             </span>
           </div>
-          <div className={`truncate ${unread ? 'font-semibold' : ''}`}>
+          <div
+            className={`truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
+          >
             {thread.subject ?? '(no subject)'}
           </div>
           {thread.snippet && (
@@ -617,7 +642,7 @@ export function MessageList() {
                   {item.kind === 'group' ? (
                     <div
                       role="presentation"
-                      className="py-1.5 px-3 border-b border-[var(--border-subtle)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]"
+                      className="py-1.5 px-3 border-b border-[var(--border-subtle)] bg-[var(--surface)] type-overline text-[var(--muted-text)]"
                     >
                       {item.label}
                     </div>

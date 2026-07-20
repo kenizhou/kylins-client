@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Button } from 'react-aria-components';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { MailIcon } from '../icons';
 import { useViewStore } from '../../features/view/viewStore';
@@ -531,13 +532,13 @@ function DecryptFailurePanel({ decryptState, onManageKeys }: DecryptFailurePanel
       </div>
       <p className="text-lg font-medium text-[var(--foreground)]">{headline}</p>
       <p className="mt-1 max-w-md text-sm text-[var(--muted-text)]">{subtext}</p>
-      <button
+      <Button
         type="button"
-        onClick={onManageKeys}
+        onPress={onManageKeys}
         className="mt-5 inline-flex h-9 items-center rounded-md border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text)] transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
         Manage keys
-      </button>
+      </Button>
     </div>
   );
 }

@@ -35,7 +35,7 @@ export function ProviderPicker({ onPick }: ProviderPickerProps) {
         ))}
       </div>
 
-      <p className="mt-6 text-center text-xs text-muted-text">
+      <p className="mt-6 text-center type-caption text-muted-text">
         Don’t see your provider? Use Other (IMAP/SMTP) or Exchange.
       </p>
     </SetupCard>
