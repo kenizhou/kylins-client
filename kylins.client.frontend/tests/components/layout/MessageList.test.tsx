@@ -352,11 +352,11 @@ describe('MessageList', () => {
     expect(useComposerStore.getState().threadId).toBe('t1');
   });
 
-  it('shows Focused/Other tabs in the inbox and filters threads', async () => {
+  it('shows All/Unread tabs in the inbox and filters threads', async () => {
     vi.mocked(getThreads).mockResolvedValue({
       threads: [
-        thread({ id: 't1', subject: 'Focused unread', isRead: false }),
-        thread({ id: 't2', subject: 'Other read', isRead: true }),
+        thread({ id: 't1', subject: 'Unread message', isRead: false }),
+        thread({ id: 't2', subject: 'Read message', isRead: true }),
       ],
       nextCursor: null,
     });
@@ -367,16 +367,16 @@ describe('MessageList', () => {
       },
     });
     render(<MessageList />);
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Focused' })).toBeInTheDocument());
-    expect(screen.getByText('Focused unread')).toBeInTheDocument();
-    expect(screen.queryByText('Other read')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'All' })).toBeInTheDocument());
+    expect(screen.getByText('Unread message')).toBeInTheDocument();
+    expect(screen.getByText('Read message')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
-    await waitFor(() => expect(screen.queryByText('Focused unread')).not.toBeInTheDocument());
-    expect(screen.getByText('Other read')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Unread' }));
+    await waitFor(() => expect(screen.queryByText('Read message')).not.toBeInTheDocument());
+    expect(screen.getByText('Unread message')).toBeInTheDocument();
   });
 
-  it('does not show Focused/Other tabs outside the inbox', async () => {
+  it('does not show All/Unread tabs outside the inbox', async () => {
     vi.mocked(getThreads).mockResolvedValue({
       threads: [thread({ id: 't1', subject: 'Hello', isRead: true })],
       nextCursor: null,
@@ -389,11 +389,11 @@ describe('MessageList', () => {
     });
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
-    expect(screen.queryByRole('tab', { name: 'Focused' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Other' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'All' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Unread' })).not.toBeInTheDocument();
   });
 
-  it('shows the focused/other empty state when the active tab is empty', async () => {
+  it('shows the All/Unread empty state when the active tab is empty', async () => {
     vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
     useFolderStore.setState({
       selected: { accountId: 'a1', labelId: 'inbox' },
@@ -402,16 +402,16 @@ describe('MessageList', () => {
       },
     });
     render(<MessageList />);
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Focused' })).toBeInTheDocument());
-    expect(screen.getByText('No focused messages.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'All' })).toBeInTheDocument());
+    expect(screen.getByText('No messages in this folder.')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
-    await waitFor(() => expect(screen.getByText('No other messages.')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Unread' }));
+    await waitFor(() => expect(screen.getByText('No unread messages.')).toBeInTheDocument());
   });
 
-  it('keeps loading when the active tab is empty but more pages exist', async () => {
+  it('keeps loading when the Unread tab is empty but more pages exist', async () => {
     vi.mocked(getThreads).mockResolvedValue({
-      threads: [thread({ id: 't1', subject: 'Focused only', isRead: false })],
+      threads: [thread({ id: 't1', subject: 'Unread only', isRead: false })],
       nextCursor: 'cursor-1',
     });
     const loadMore = vi.spyOn(useThreadStore.getState(), 'loadMore').mockResolvedValue(undefined);
@@ -422,9 +422,9 @@ describe('MessageList', () => {
       },
     });
     render(<MessageList />);
-    await waitFor(() => expect(screen.getByText('Focused only')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Unread only')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Other' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Unread' }));
     await waitFor(() => expect(loadMore).toHaveBeenCalled());
     loadMore.mockRestore();
   });

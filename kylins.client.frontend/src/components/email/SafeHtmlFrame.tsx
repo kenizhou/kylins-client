@@ -18,10 +18,11 @@ function getThemeStyles(): string {
   const foreground = root.getPropertyValue('--foreground').trim();
   const background = root.getPropertyValue('--background').trim();
   const accent = root.getPropertyValue('--color-accent').trim();
+  const fontUi = root.getPropertyValue('--font-ui').trim();
 
   return `
     body {
-      font-family: sans-serif;
+      font-family: ${fontUi || 'sans-serif'};
       color: ${foreground || '#000'};
       background: ${background || '#fff'};
       margin: 0;

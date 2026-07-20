@@ -7,26 +7,26 @@
  * and readable.
  */
 
-/* ---------- Slate (neutral enterprise default) ---------- */
-[data-skin='slate'] {
-  --series-accent: #2563eb;
-  --series-accent-hover: #1d4ed8;
+/* ---------- Iris (default — periwinkle blue-violet, distinct from Indigo) ---------- */
+[data-skin='iris'] {
+  --series-accent: oklch(0.52 0.21 282);
+  --series-accent-hover: oklch(0.46 0.2 282);
 }
 
-.dark[data-skin='slate'] {
-  --series-accent: #60a5fa;
-  --series-accent-hover: #3b82f6;
+.dark[data-skin='iris'] {
+  --series-accent: oklch(0.7 0.15 285);
+  --series-accent-hover: oklch(0.62 0.18 284);
 }
 
 /* ---------- Blue ---------- */
 [data-skin='blue'] {
-  --series-accent: #2563eb;
-  --series-accent-hover: #1d4ed8;
+  --series-accent: #0a59f7;
+  --series-accent-hover: #0848cc;
 }
 
 .dark[data-skin='blue'] {
-  --series-accent: #60a5fa;
-  --series-accent-hover: #3b82f6;
+  --series-accent: #5c93ff;
+  --series-accent-hover: #3d7dff;
 }
 
 /* ---------- Indigo ---------- */

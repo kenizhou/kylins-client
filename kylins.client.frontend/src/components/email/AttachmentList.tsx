@@ -110,9 +110,9 @@ export function AttachmentList({ accountId, messageId, bodyHtml }: AttachmentLis
           onPress={() => void handleDownload(att)}
           isDisabled={busy !== null}
           aria-label={att.filename ?? 'attachment'}
-          className="group flex max-w-full items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs transition-colors hover:bg-[var(--hover)] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group flex max-w-full items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-xs shadow-[var(--shadow-sm)] transition-colors hover:border-[var(--border)] hover:bg-[var(--primary-subtle)] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Paperclip size={13} className="shrink-0 text-[var(--muted-text)]" />
+          <Paperclip size={13} className="shrink-0 text-[var(--primary)]" />
           <span className="max-w-[180px] truncate text-[var(--foreground)]">
             {att.filename ?? 'attachment'}
           </span>

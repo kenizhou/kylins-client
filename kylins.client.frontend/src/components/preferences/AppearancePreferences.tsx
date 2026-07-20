@@ -223,7 +223,7 @@ export function AppearancePreferences() {
                       aria-pressed={active}
                       className={`group setup-focus-ring flex flex-col items-center gap-1.5 rounded-lg p-2 transition-colors ${
                         active
-                          ? 'bg-[var(--highlight)] ring-1 ring-[var(--primary)]'
+                          ? 'bg-[var(--highlight)] ring-1 ring-[var(--ring)]'
                           : 'hover:bg-[var(--hover)]'
                       }`}
                     >

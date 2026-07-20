@@ -28,14 +28,14 @@ export function MonthView() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="grid grid-cols-7 border-b border-[var(--border)] bg-[var(--surface)] text-xs font-medium text-[var(--muted-text)]">
+      <div className="grid grid-cols-7 border-b border-[var(--border-subtle)] bg-[var(--surface)] text-xs font-medium text-[var(--muted-text)]">
         {WEEKDAYS.map((d) => (
           <div key={d} className="px-2 py-1.5">
             {d}
           </div>
         ))}
       </div>
-      <div className="grid flex-1 grid-cols-7 overflow-auto border-l border-t border-[var(--border)]">
+      <div className="grid flex-1 grid-cols-7 overflow-auto border-l border-t border-[var(--border-subtle)]">
         {cells.map((date) => {
           const k = dayKey(date);
           const inMonth = date.getMonth() === currentDate.getMonth();
@@ -44,16 +44,16 @@ export function MonthView() {
           return (
             <div
               key={k}
-              className={`min-h-[96px] border-b border-r border-[var(--border)] p-1 transition-colors ${
+              className={`min-h-[96px] border-b border-r border-[var(--border-subtle)] p-1 transition-colors ${
                 inMonth
-                  ? 'bg-[var(--background)] hover:bg-[var(--hover)]'
-                  : 'bg-[var(--surface)]/60'
+                  ? 'bg-[var(--background)] hover:bg-[var(--primary-subtle)]'
+                  : 'bg-surface-elevated'
               }`}
             >
               <div
-                className={`mb-1 flex h-5 w-5 items-center justify-center text-xs ${
+                className={`mb-1 flex h-5 w-5 items-center justify-center text-xs tabular-nums ${
                   isToday
-                    ? 'rounded-full bg-[var(--primary)] font-medium text-[var(--primary-fg)]'
+                    ? 'rounded-full iris-line font-semibold text-[var(--primary-fg)]'
                     : inMonth
                       ? 'text-[var(--foreground)]'
                       : 'text-[var(--muted-text)]'
@@ -69,7 +69,7 @@ export function MonthView() {
                   <button
                     type="button"
                     onClick={() => handleMore(date)}
-                    className="mt-0.5 w-full rounded px-1 py-0.5 text-left text-[0.625rem] font-medium text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)]"
+                    className="mt-0.5 w-full rounded px-1 py-0.5 text-left text-[0.625rem] font-medium text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)]"
                   >
                     +{items.length - 3} more
                   </button>

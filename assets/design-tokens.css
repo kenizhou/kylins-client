@@ -3,16 +3,16 @@
 
 /* === PRIMITIVES === */
 :root {
-  --primitive-color-primary-blue-50: #eff6ff;
-  --primitive-color-primary-blue-100: #dbeafe;
-  --primitive-color-primary-blue-200: #bfdbfe;
-  --primitive-color-primary-blue-300: #93c5fd;
-  --primitive-color-primary-blue-400: #60a5fa;
-  --primitive-color-primary-blue-500: #2563eb;
-  --primitive-color-primary-blue-600: #1d4ed8;
-  --primitive-color-primary-blue-700: #1e40af;
-  --primitive-color-primary-blue-800: #1e3a8a;
-  --primitive-color-primary-blue-900: #172554;
+  --primitive-color-primary-blue-50: #eef0ff;
+  --primitive-color-primary-blue-100: #e0e2ff;
+  --primitive-color-primary-blue-200: #c9ccfd;
+  --primitive-color-primary-blue-300: #a8abfa;
+  --primitive-color-primary-blue-400: #8b8cf6;
+  --primitive-color-primary-blue-500: #6a66ef;
+  --primitive-color-primary-blue-600: #4f47e4;
+  --primitive-color-primary-blue-700: #4036c4;
+  --primitive-color-primary-blue-800: #372fa0;
+  --primitive-color-primary-blue-900: #2d2878;
   --primitive-color-bright-blue-50: #eff6ff;
   --primitive-color-bright-blue-100: #dbeafe;
   --primitive-color-bright-blue-200: #bfdbfe;
@@ -33,17 +33,17 @@
   --primitive-color-priority-red-700: #991b1b;
   --primitive-color-priority-red-800: #7f1d1d;
   --primitive-color-priority-red-900: #450a0a;
-  --primitive-color-slate-50: #f8fafc;
-  --primitive-color-slate-100: #f1f5f9;
-  --primitive-color-slate-200: #e2e8f0;
-  --primitive-color-slate-300: #cbd5e1;
-  --primitive-color-slate-400: #94a3b8;
-  --primitive-color-slate-500: #64748b;
-  --primitive-color-slate-600: #475569;
-  --primitive-color-slate-700: #334155;
-  --primitive-color-slate-800: #1e293b;
-  --primitive-color-slate-900: #0f172a;
-  --primitive-color-slate-950: #020617;
+  --primitive-color-slate-50: #f8f8fa;
+  --primitive-color-slate-100: #f0f1f5;
+  --primitive-color-slate-200: #e3e5ed;
+  --primitive-color-slate-300: #d0d3e0;
+  --primitive-color-slate-400: #a3a8bc;
+  --primitive-color-slate-500: #757a8f;
+  --primitive-color-slate-600: #5a5f73;
+  --primitive-color-slate-700: #484c5e;
+  --primitive-color-slate-800: #343746;
+  --primitive-color-slate-900: #282b36;
+  --primitive-color-slate-950: #191b23;
   --primitive-color-green-500: #22c55e;
   --primitive-color-green-600: #16a34a;
   --primitive-color-amber-500: #f59e0b;
@@ -52,33 +52,35 @@
 
 /* === SEMANTIC === */
 :root {
-  --color-background: #ffffff;
-  --color-foreground: #18181b;
-  --color-surface: #f4f4f5;
-  --color-chrome: #e4e4e7;
+  --color-background: #fcfcfd;
+  --color-foreground: #282b36;
+  --color-surface: #f0f1f5;
+  --color-chrome: #e3e5ed;
   --color-card: #ffffff;
-  --color-muted: #f4f4f5;
-  --color-muted-foreground: #71717a;
-  --color-border: #e4e4e7;
-  --color-input: #e4e4e7;
-  --color-primary: #2563eb;
+  --color-muted: #f0f1f5;
+  --color-muted-foreground: #5a5f73;
+  --color-border: #e3e5ed;
+  --color-input: #e3e5ed;
+  --color-primary: #4f47e4;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #f4f4f5;
-  --color-secondary-foreground: #18181b;
-  --color-accent: #fafafa;
-  --color-accent-foreground: #18181b;
+  --color-secondary: #f0f1f5;
+  --color-secondary-foreground: #282b36;
+  --color-accent: #f8f8fa;
+  --color-accent-foreground: #282b36;
   --color-destructive: #dc2626;
   --color-destructive-foreground: #ffffff;
-  --color-success: #10b981;
-  --color-success-foreground: #18181b;
-  --color-warning: #f59e0b;
+  --color-success: #059669;
+  --color-success-foreground: #282b36;
+  --color-warning: #d97706;
   --color-error: #dc2626;
   --color-info: #3b82f6;
   --color-link: #2563eb;
   --color-link-hover: #1d4ed8;
-  --color-ring: color-mix(in oklab, #2563eb, transparent 75%);
+  --color-ring: color-mix(in oklab, #4f47e4, transparent 75%);
   --font-ui:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC",
+    system-ui, sans-serif;
   --font-mono:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New",
     monospace;
@@ -144,29 +146,29 @@
 
 /* === DARK MODE === */
 .dark {
-  --color-background: #18181b;
-  --color-foreground: #f4f4f5;
-  --color-surface: #27272a;
-  --color-chrome: #18181b;
-  --color-card: #27272a;
-  --color-muted: #27272a;
-  --color-muted-foreground: #a1a1aa;
-  --color-border: #3f3f46;
-  --color-input: #3f3f46;
-  --color-primary: #60a5fa;
-  --color-primary-foreground: #09090b;
-  --color-secondary: #27272a;
-  --color-secondary-foreground: #f4f4f5;
-  --color-accent: #3f3f46;
-  --color-accent-foreground: #f4f4f5;
+  --color-background: #1e212a;
+  --color-foreground: #ebedf2;
+  --color-surface: #292d39;
+  --color-chrome: #1e212a;
+  --color-card: #292d39;
+  --color-muted: #292d39;
+  --color-muted-foreground: #a8adc0;
+  --color-border: #3b4050;
+  --color-input: #3b4050;
+  --color-primary: #8b8cf6;
+  --color-primary-foreground: #15171e;
+  --color-secondary: #292d39;
+  --color-secondary-foreground: #ebedf2;
+  --color-accent: #3b4050;
+  --color-accent-foreground: #ebedf2;
   --color-destructive: #f87171;
-  --color-destructive-foreground: #fafafa;
+  --color-destructive-foreground: #f6f7f9;
   --color-success: #34d399;
-  --color-success-foreground: #fafafa;
+  --color-success-foreground: #f6f7f9;
   --color-warning: #fbbf24;
   --color-error: #f87171;
   --color-info: #60a5fa;
   --color-link: #60a5fa;
   --color-link-hover: #93c5fd;
-  --color-ring: color-mix(in oklab, #60a5fa, transparent 75%);
+  --color-ring: color-mix(in oklab, #8b8cf6, transparent 75%);
 }

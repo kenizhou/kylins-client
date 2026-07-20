@@ -19,7 +19,7 @@ export function SecurityPreferences() {
             checked={shareDiagnosticsData}
             onChange={setShareDiagnosticsData}
           />
-          <p className="text-xs text-muted-text">
+          <p className="type-caption text-[var(--muted-text)]">
             Diagnostics are anonymous and help improve stability. No message content is shared.
           </p>
         </div>

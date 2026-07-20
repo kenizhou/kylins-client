@@ -256,7 +256,7 @@ export function ContactsPage() {
                 setIsAddOpen(false);
                 setNewEmail('');
               }}
-              className="h-11 rounded-md px-3 text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="h-11 rounded-lg px-3 text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               Cancel
             </button>
@@ -264,7 +264,7 @@ export function ContactsPage() {
               type="button"
               onClick={() => void handleAddContact()}
               disabled={!newEmail.trim() || !newEmail.includes('@')}
-              className="h-11 rounded-md bg-[var(--primary)] px-3 text-sm text-[var(--primary-fg)] transition-colors hover:opacity-90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="h-11 rounded-md bg-[var(--primary)] px-3 text-sm text-[var(--primary-fg)] shadow-[var(--shadow-sm)] transition-colors hover:opacity-90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               Add
             </button>
@@ -287,7 +287,7 @@ export function ContactsPage() {
               }
             }}
             placeholder="name@example.com"
-            className="h-11 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="h-11 w-full rounded-md border border-[var(--border-subtle)] bg-surface-elevated px-3 text-sm text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           />
         </div>
       </Modal>

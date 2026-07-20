@@ -201,4 +201,62 @@ describe('ReadRibbon', () => {
       expect(screen.getByText('Delete')).toBeVisible();
     });
   });
+
+  it('renders Mark Read and Flag icons at the same size as neighboring ribbon icons in icon-only mode', async () => {
+    setRibbonWidth(750);
+    useThreadStore.setState({
+      threads: [
+        { id: 't1', accountId: 'a1', subject: 'x', isRead: true, isStarred: true } as never,
+      ],
+      selectedThreadId: 't1',
+    });
+    render(<ReadRibbon />);
+
+    await waitFor(() => {
+      const markReadButton = screen.getByRole('button', { name: /mark as unread/i });
+      const flagButton = screen.getByRole('button', { name: /remove flag/i });
+      expect(markReadButton.querySelector('svg')).toHaveAttribute('width', '18');
+      expect(markReadButton.querySelector('svg')).toHaveAttribute('height', '18');
+      expect(flagButton.querySelector('svg')).toHaveAttribute('width', '18');
+      expect(flagButton.querySelector('svg')).toHaveAttribute('height', '18');
+    });
+  });
+
+  it('hides the split caret for Move and Mark Read in icon-only mode so the icon stays centered', async () => {
+    setRibbonWidth(750);
+    useThreadStore.setState({
+      threads: [
+        { id: 't1', accountId: 'a1', subject: 'x', isRead: true, isStarred: true } as never,
+      ],
+      selectedThreadId: 't1',
+    });
+    render(<ReadRibbon />);
+
+    await waitFor(() => {
+      const moveButton = screen.getByRole('button', { name: /move to folder/i });
+      const markReadButton = screen.getByRole('button', { name: /mark as unread/i });
+      // Each split button should contain only the action icon, not an extra caret.
+      expect(moveButton.querySelectorAll('svg')).toHaveLength(1);
+      expect(markReadButton.querySelectorAll('svg')).toHaveLength(1);
+    });
+  });
+
+  it('shows the split caret for Move and Mark Read when labels are visible', async () => {
+    setRibbonWidth(1024);
+    useThreadStore.setState({
+      threads: [
+        { id: 't1', accountId: 'a1', subject: 'x', isRead: true, isStarred: true } as never,
+      ],
+      selectedThreadId: 't1',
+    });
+    render(<ReadRibbon />);
+
+    await waitFor(() => {
+      const moveButton = screen.getByRole('button', { name: /move to folder/i });
+      const markReadButton = screen.getByRole('button', { name: /mark as unread/i });
+      // With labels visible the caret should still be rendered.
+      expect(moveButton.querySelectorAll('svg')).toHaveLength(2);
+      expect(markReadButton.querySelectorAll('svg')).toHaveLength(2);
+    });
+  });
 });

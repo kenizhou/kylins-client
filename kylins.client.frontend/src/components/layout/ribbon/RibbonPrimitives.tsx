@@ -8,7 +8,7 @@ export interface RibbonGroupProps {
 
 export function RibbonGroup({ children }: RibbonGroupProps) {
   return (
-    <div className="flex min-w-0 flex-wrap items-stretch border-r border-border px-1 last:border-r-0">
+    <div className="flex min-w-0 flex-wrap items-stretch border-r-[var(--border-subtle)] px-1 last:border-r-0">
       {children}
     </div>
   );
@@ -36,15 +36,15 @@ export const RibbonButton = forwardRef<HTMLButtonElement, RibbonButtonProps>(fun
       isDisabled={disabled}
       onPress={onClick}
       aria-label={title ?? (typeof children === 'string' ? children : undefined)}
-      className={`my-auto flex h-11 items-center gap-1.5 rounded px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`my-auto flex h-11 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 ${
         primary
-          ? 'bg-primary text-primary-fg hover:opacity-90 disabled:hover:opacity-40'
-          : 'text-text hover:bg-hover disabled:hover:bg-transparent'
+          ? 'bg-primary text-primary-fg shadow-[var(--shadow-sm)] hover:opacity-90 disabled:hover:opacity-40'
+          : 'text-[var(--text)] hover:bg-[var(--primary-subtle)] active:bg-[var(--primary-muted)] disabled:hover:bg-transparent'
       } ${iconOnly ? 'w-11 justify-center px-0' : ''} ${className ?? ''}`}
     >
       {icon}
       <span className={`whitespace-nowrap ${iconOnly ? 'sr-only' : ''}`}>{children}</span>
-      {split && <CaretDownIcon size={10} className="ml-0.5 opacity-70" />}
+      {split && !iconOnly && <CaretDownIcon size={10} className="ml-0.5 opacity-70" />}
     </Button>
   );
 });
@@ -72,8 +72,10 @@ export function RibbonToggle({
       onChange={onChange}
       isDisabled={disabled}
       aria-label={title ?? label}
-      className={`flex h-11 items-center gap-1.5 rounded px-2 text-xs ${
-        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-hover'
+      className={`flex h-11 items-center gap-1.5 rounded-md px-2 text-xs ${
+        disabled
+          ? 'cursor-not-allowed opacity-60'
+          : 'cursor-pointer hover:bg-[var(--primary-subtle)]'
       }`}
     >
       {({ isSelected }) => (
@@ -81,10 +83,10 @@ export function RibbonToggle({
           {icon}
           <span className="flex-1 whitespace-nowrap text-foreground">{label}</span>
           <div
-            className={`ml-auto flex h-3.5 w-3.5 items-center justify-center rounded border ${
+            className={`ml-auto flex h-3.5 w-3.5 items-center justify-center rounded-sm border ${
               isSelected
                 ? 'border-primary bg-primary text-primary-fg'
-                : 'border-border bg-background'
+                : 'border-[var(--border-subtle)] bg-[var(--surface-floating)]'
             }`}
           >
             {isSelected && (

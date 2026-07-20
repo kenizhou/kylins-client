@@ -198,7 +198,7 @@ export function ShortcutsPreferences() {
                 <span className="text-sm font-medium text-[var(--foreground)]">
                   Active platform set
                 </span>
-                <span className="text-xs text-[var(--muted-text)]">
+                <span className="type-caption text-[var(--muted-text)]">
                   Defaults and display labels switch to match the selected platform.
                 </span>
               </div>

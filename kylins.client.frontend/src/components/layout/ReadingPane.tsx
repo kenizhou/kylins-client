@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Button } from 'react-aria-components';
 import { InjectedComponentSet } from '../plugins/InjectedComponentSet';
 import { MailIcon } from '../icons';
 import { useViewStore } from '../../features/view/viewStore';
@@ -254,9 +255,9 @@ export function ReadingPane() {
 
   if (!message) {
     return (
-      <div className="flex h-full flex-col items-center justify-center bg-[var(--card)] min-w-0 text-[var(--muted-text)]">
+      <div className="flex h-full flex-col items-center justify-center bg-surface-elevated min-w-0 text-[var(--muted-text)]">
         <div className="text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface)] text-[var(--muted-text)]">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface-floating)] text-[var(--muted-text)]">
             <MailIcon size={24} />
           </div>
           <p className="text-lg font-medium text-[var(--foreground)]">No message selected</p>
@@ -320,7 +321,7 @@ export function ReadingPane() {
   const decryptFailed = message.decryptState === 'no-key' || message.decryptState === 'failed';
 
   return (
-    <div className="reading-pane relative flex h-full min-w-0 flex-col bg-[var(--card)]">
+    <div className="reading-pane relative flex h-full min-w-0 flex-col bg-surface-elevated border-l border-[var(--border-subtle)] shadow-sm">
       {prominent && level && <ClassificationBanner level={level} position="top" />}
 
       {isCryptoMessage && (
@@ -511,7 +512,7 @@ function DecryptFailurePanel({ decryptState, onManageKeys }: DecryptFailurePanel
       role="status"
       aria-live="polite"
     >
-      <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface)] text-[var(--amber)]">
+      <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface-floating)] text-[var(--amber)]">
         <svg
           width="24"
           height="24"
@@ -531,13 +532,13 @@ function DecryptFailurePanel({ decryptState, onManageKeys }: DecryptFailurePanel
       </div>
       <p className="text-lg font-medium text-[var(--foreground)]">{headline}</p>
       <p className="mt-1 max-w-md text-sm text-[var(--muted-text)]">{subtext}</p>
-      <button
+      <Button
         type="button"
-        onClick={onManageKeys}
-        className="mt-5 inline-flex h-9 items-center rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={onManageKeys}
+        className="mt-5 inline-flex h-9 items-center rounded-md border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text)] transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
         Manage keys
-      </button>
+      </Button>
     </div>
   );
 }

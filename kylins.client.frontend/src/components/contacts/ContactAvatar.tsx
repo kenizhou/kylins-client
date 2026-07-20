@@ -1,4 +1,5 @@
 import type { Contact } from '../../services/db/contacts';
+import { avatarGradient } from '@/utils/avatarGradient';
 
 interface ContactAvatarProps {
   contact?: Contact | null;
@@ -18,11 +19,18 @@ export function ContactAvatar({
   const displayName = contact?.displayName ?? name ?? contact?.email ?? email ?? '?';
   const initial = (displayName.trim()[0] ?? '?').toUpperCase();
   const avatarUrl = contact?.avatarUrl;
+  const gradient = avatarGradient(displayName);
 
   return (
     <span
-      className={`inline-flex items-center justify-center rounded-full overflow-hidden shrink-0 bg-[var(--primary)] text-[var(--primary-fg)] ${className}`}
-      style={{ width: size, height: size, fontSize: Math.max(10, size * 0.42) }}
+      className={`inline-flex items-center justify-center rounded-full overflow-hidden shrink-0 ${className}`}
+      style={{
+        width: size,
+        height: size,
+        fontSize: Math.max(10, size * 0.42),
+        background: gradient.background,
+        color: gradient.foreground,
+      }}
       title={displayName}
     >
       {avatarUrl ? (

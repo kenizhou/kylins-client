@@ -122,7 +122,7 @@ export function TrustDialog({
         if (!open && !busy) onCancel();
       }}
       isDismissable={!busy}
-      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-[var(--backdrop)] p-4"
     >
       <RACModal className="w-full max-w-md rounded-lg border border-border bg-background p-5 shadow-xl outline-none">
         <Dialog

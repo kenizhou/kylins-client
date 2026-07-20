@@ -121,9 +121,9 @@ export function TaskCreateDialog({
         if (!open) onClose();
       }}
       isDismissable
-      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/30 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-[var(--backdrop)] p-4"
     >
-      <RACModal className="relative w-[480px] max-w-full rounded-lg border border-border bg-background p-4 shadow-xl outline-none">
+      <RACModal className="relative w-[480px] max-w-full rounded-xl border border-[var(--border-subtle)] bg-surface-floating p-4 shadow-xl outline-none">
         <Dialog aria-label={isEdit ? 'Edit task' : 'Create task'} className="outline-none">
           {({ close }) => (
             <form onSubmit={handleSubmit} className="relative">
@@ -142,24 +142,24 @@ export function TaskCreateDialog({
 
               <div className="space-y-4">
                 <TextField className="block" isRequired>
-                  <Label className="mb-1 block text-xs text-muted-text">Title</Label>
+                  <Label className="type-overline mb-1 block text-muted-text">Title</Label>
                   <Input
                     autoFocus
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="What needs to be done?"
-                    className="h-11 w-full rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+                    className="h-11 w-full rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary"
                   />
                 </TextField>
 
                 <TextField className="block">
-                  <Label className="mb-1 block text-xs text-muted-text">Description</Label>
+                  <Label className="type-overline mb-1 block text-muted-text">Description</Label>
                   <TextArea
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="Add details..."
-                    className="min-h-[80px] w-full rounded border border-border bg-background px-2 py-2 text-sm text-foreground outline-none focus:border-primary"
+                    className="min-h-[80px] w-full rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 py-2 text-sm text-foreground outline-none focus:border-primary"
                   />
                 </TextField>
 
@@ -169,18 +169,18 @@ export function TaskCreateDialog({
                     onSelectionChange={(key) => setPriority(key as TaskPriority)}
                     className="block"
                   >
-                    <Label className="mb-1 block text-xs text-muted-text">Priority</Label>
-                    <Button className="flex h-11 w-full items-center justify-between rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary">
+                    <Label className="type-overline mb-1 block text-muted-text">Priority</Label>
+                    <Button className="flex h-11 w-full items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary">
                       <SelectValue />
                       <span aria-hidden="true">▼</span>
                     </Button>
-                    <Popover className="z-[var(--z-popover)] rounded border border-border bg-background shadow-lg">
+                    <Popover className="z-[var(--z-popover)] rounded-lg border border-[var(--border-subtle)] bg-surface-floating shadow-lg">
                       <ListBox className="py-1">
                         {PRIORITY_OPTIONS.map((opt) => (
                           <ListBoxItem
                             key={opt.value}
                             id={opt.value}
-                            className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover data-[selected=true]:bg-selected"
+                            className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-[var(--primary-subtle)] data-[selected=true]:bg-[var(--primary-muted)]"
                           >
                             {opt.label}
                           </ListBoxItem>
@@ -195,8 +195,8 @@ export function TaskCreateDialog({
                     granularity="day"
                     className="block"
                   >
-                    <Label className="mb-1 block text-xs text-muted-text">Due date</Label>
-                    <Group className="flex h-11 items-center rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus-within:border-primary">
+                    <Label className="type-overline mb-1 block text-muted-text">Due date</Label>
+                    <Group className="flex h-11 items-center rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus-within:border-primary">
                       <DateInput className="flex">
                         {(segment) => (
                           <DateSegment
@@ -206,7 +206,7 @@ export function TaskCreateDialog({
                         )}
                       </DateInput>
                     </Group>
-                    <Popover className="z-[var(--z-popover)] rounded border border-border bg-background p-2 shadow-lg">
+                    <Popover className="z-[var(--z-popover)] rounded-lg border border-[var(--border-subtle)] bg-surface-floating p-2 shadow-lg">
                       <Calendar className="outline-none">
                         <header className="mb-2 flex items-center justify-between">
                           <Button slot="previous">◀</Button>
@@ -225,7 +225,7 @@ export function TaskCreateDialog({
                             {(date) => (
                               <CalendarCell
                                 date={date}
-                                className="h-8 w-8 cursor-pointer rounded text-center text-sm text-foreground outline-none hover:bg-hover data-[selected=true]:bg-primary data-[selected=true]:text-primary-fg"
+                                className="h-8 w-8 cursor-pointer rounded text-center text-sm text-foreground outline-none hover:bg-[var(--primary-subtle)] data-[selected=true]:bg-primary data-[selected=true]:text-primary-fg"
                               />
                             )}
                           </CalendarGridBody>
@@ -236,7 +236,7 @@ export function TaskCreateDialog({
                 </div>
 
                 <TextField className="block">
-                  <Label className="mb-1 block text-xs text-muted-text">
+                  <Label className="type-overline mb-1 block text-muted-text">
                     Tags (comma separated)
                   </Label>
                   <Input
@@ -244,7 +244,7 @@ export function TaskCreateDialog({
                     value={tags}
                     onChange={(e) => setTags(e.target.value)}
                     placeholder="work, follow-up"
-                    className="h-11 w-full rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+                    className="h-11 w-full rounded-lg border border-[var(--border-subtle)] bg-surface-floating px-2 text-sm text-foreground outline-none focus:border-primary"
                   />
                 </TextField>
               </div>
@@ -253,14 +253,14 @@ export function TaskCreateDialog({
                 <Button
                   type="button"
                   onPress={close}
-                  className="h-11 rounded px-3 text-sm text-foreground transition-colors hover:bg-hover"
+                  className="h-11 rounded-lg px-3 text-sm text-foreground transition-colors hover:bg-hover"
                 >
                   Cancel
                 </Button>
                 <Button
                   type="submit"
                   isDisabled={!title.trim()}
-                  className="h-11 rounded bg-primary px-3 text-sm text-primary-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+                  className="h-11 rounded-lg bg-primary px-3 text-sm text-primary-fg shadow-[var(--shadow-sm)] transition-opacity hover:opacity-90 disabled:opacity-40"
                 >
                   {isEdit ? 'Save' : 'Create'}
                 </Button>

@@ -48,13 +48,41 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   return { r: r!, g: g!, b: b! };
 }
 
-function relativeLuminance(hex: string): number {
-  const { r, g, b } = hexToRgb(hex);
+/** oklch(L C h) → linear sRGB (0..1 per channel). */
+function oklchToLinearRgb(l: number, c: number, h: number): { r: number; g: number; b: number } {
+  const hr = (h * Math.PI) / 180;
+  const a = c * Math.cos(hr);
+  const b = c * Math.sin(hr);
+  const l_ = l + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = l - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = l - 0.0894841775 * a - 1.291485548 * b;
+  const lc = l_ ** 3;
+  const mc = m_ ** 3;
+  const sc = s_ ** 3;
+  return {
+    r: 4.0767416621 * lc - 3.3077115913 * mc + 0.2309699292 * sc,
+    g: -1.2684380046 * lc + 2.6097574011 * mc - 0.3413193965 * sc,
+    b: -0.0041960863 * lc - 0.7034186147 * mc + 1.707614701 * sc,
+  };
+}
+
+/** Any supported color string (hex or oklch) → linear sRGB channels. */
+function colorToLinearRgb(color: string): { r: number; g: number; b: number } {
+  const oklchMatch = color.match(/^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)$/i);
+  if (oklchMatch) {
+    return oklchToLinearRgb(Number(oklchMatch[1]), Number(oklchMatch[2]), Number(oklchMatch[3]));
+  }
+  const { r, g, b } = hexToRgb(color);
   const channel = (c: number) => {
     const s = c / 255;
     return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
   };
-  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  return { r: channel(r), g: channel(g), b: channel(b) };
+}
+
+function relativeLuminance(color: string): number {
+  const { r, g, b } = colorToLinearRgb(color);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
 function contrastRatio(a: string, b: string): number {
@@ -86,30 +114,78 @@ describe('theme.css contrast (WCAG AA)', () => {
   const darkBlock = parseDeclarations(extractBlock(css, '.dark'));
 
   it('light theme muted text meets AA on background and surface', () => {
-    assertContrast('--muted-text', '--background', lightBlock, '#52525b', '#ffffff');
-    assertContrast('--muted-text', '--surface', lightBlock, '#52525b', '#f4f4f5');
+    assertContrast(
+      '--muted-text',
+      '--background',
+      lightBlock,
+      'oklch(0.465 0.02 258)',
+      'oklch(0.992 0.002 258)',
+    );
+    assertContrast(
+      '--muted-text',
+      '--surface',
+      lightBlock,
+      'oklch(0.465 0.02 258)',
+      'oklch(0.965 0.006 258)',
+    );
   });
 
   it('light theme muted foreground meets AA on background and surface', () => {
-    assertContrast('--muted-foreground', '--background', lightBlock, '#52525b', '#ffffff');
-    assertContrast('--muted-foreground', '--surface', lightBlock, '#52525b', '#f4f4f5');
+    assertContrast(
+      '--muted-foreground',
+      '--background',
+      lightBlock,
+      'oklch(0.465 0.02 258)',
+      'oklch(0.992 0.002 258)',
+    );
+    assertContrast(
+      '--muted-foreground',
+      '--surface',
+      lightBlock,
+      'oklch(0.465 0.02 258)',
+      'oklch(0.965 0.006 258)',
+    );
   });
 
   it('light theme link meets AA on background', () => {
-    assertContrast('--link', '--background', lightBlock, '#2563eb', '#ffffff');
+    assertContrast('--link', '--background', lightBlock, '#2563eb', 'oklch(0.992 0.002 258)');
   });
 
   it('dark theme muted text meets AA on background and surface', () => {
-    assertContrast('--muted-text', '--background', darkBlock, '#a1a1aa', '#18181b');
-    assertContrast('--muted-text', '--surface', darkBlock, '#a1a1aa', '#27272a');
+    assertContrast(
+      '--muted-text',
+      '--background',
+      darkBlock,
+      'oklch(0.712 0.016 258)',
+      'oklch(0.205 0.012 258)',
+    );
+    assertContrast(
+      '--muted-text',
+      '--surface',
+      darkBlock,
+      'oklch(0.712 0.016 258)',
+      'oklch(0.258 0.014 258)',
+    );
   });
 
   it('dark theme muted foreground meets AA on background and surface', () => {
-    assertContrast('--muted-foreground', '--background', darkBlock, '#a1a1aa', '#18181b');
-    assertContrast('--muted-foreground', '--surface', darkBlock, '#a1a1aa', '#27272a');
+    assertContrast(
+      '--muted-foreground',
+      '--background',
+      darkBlock,
+      'oklch(0.712 0.016 258)',
+      'oklch(0.205 0.012 258)',
+    );
+    assertContrast(
+      '--muted-foreground',
+      '--surface',
+      darkBlock,
+      'oklch(0.712 0.016 258)',
+      'oklch(0.258 0.014 258)',
+    );
   });
 
   it('dark theme link meets AA on background', () => {
-    assertContrast('--link', '--background', darkBlock, '#60a5fa', '#18181b');
+    assertContrast('--link', '--background', darkBlock, '#60a5fa', 'oklch(0.205 0.012 258)');
   });
 });

@@ -18,6 +18,6 @@ describe('PreferencesDialog accessibility', () => {
   it('skin swatches have accessible names when Appearance is open', () => {
     usePreferencesStore.setState({ activeTab: 'Appearance' });
     render(<PreferencesDialog />);
-    expect(screen.getByRole('button', { name: /select slate skin/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /select iris skin/i })).toBeInTheDocument();
   });
 });

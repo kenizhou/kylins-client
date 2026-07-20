@@ -14,7 +14,7 @@ export function WelcomeScreen({ onDone }: WelcomeScreenProps) {
         </div>
 
         <div className="flex flex-col gap-2">
-          <h1 className="text-balance text-2xl font-semibold text-foreground">Account connected</h1>
+          <h1 className="type-display text-balance text-foreground">Account connected</h1>
           <p className="text-balance text-sm text-muted-text">
             You’re all set. Welcome to your inbox.
           </p>

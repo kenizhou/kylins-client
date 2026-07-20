@@ -57,7 +57,7 @@ export function TemplatePicker({ editor }: TemplatePickerProps) {
           ▾
         </span>
       </Button>
-      <Popover className="max-h-48 w-56 overflow-y-auto rounded-md border border-border bg-popover shadow-lg">
+      <Popover className="max-h-48 w-56 overflow-y-auto rounded-lg border border-[var(--border-subtle)] bg-popover shadow-[var(--shadow-lg)]">
         <Menu
           aria-label="Templates"
           items={templates}

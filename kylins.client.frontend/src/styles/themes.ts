@@ -1,5 +1,5 @@
 export type ThemePackId =
-  | 'slate'
+  | 'iris'
   | 'blue'
   | 'indigo'
   | 'rose'
@@ -30,27 +30,27 @@ export interface ThemePack {
 
 export const THEME_PACKS: ThemePack[] = [
   {
-    id: 'slate',
-    name: 'Slate',
-    swatch: '#64748b',
+    id: 'iris',
+    name: 'Iris',
+    swatch: '#7a6ff0',
     variants: [
-      { mode: 'light', selector: ':root', accent: '#64748b', accentDark: '#94a3b8' },
-      { mode: 'dark', selector: '.dark', accent: '#94a3b8', accentDark: '#cbd5e1' },
+      { mode: 'light', selector: ':root', accent: '#6457f0', accentDark: '#9d97f8' },
+      { mode: 'dark', selector: '.dark', accent: '#9d97f8', accentDark: '#c3bffb' },
       {
         mode: 'high-contrast',
         selector: '[data-contrast="high"]',
-        accent: '#000000',
-        accentDark: '#ffffff',
+        accent: '#0000ff',
+        accentDark: '#00ffff',
       },
     ],
   },
   {
     id: 'blue',
     name: 'Blue',
-    swatch: '#3b82f6',
+    swatch: '#0a59f7',
     variants: [
-      { mode: 'light', selector: ':root', accent: '#2563eb', accentDark: '#60a5fa' },
-      { mode: 'dark', selector: '.dark', accent: '#60a5fa', accentDark: '#93c5fd' },
+      { mode: 'light', selector: ':root', accent: '#0a59f7', accentDark: '#5c93ff' },
+      { mode: 'dark', selector: '.dark', accent: '#5c93ff', accentDark: '#9dbdff' },
       {
         mode: 'high-contrast',
         selector: '[data-contrast="high"]',
@@ -151,7 +151,7 @@ export const THEME_PACKS: ThemePack[] = [
   },
 ];
 
-export const DEFAULT_THEME_PACK: ThemePackId = 'slate';
+export const DEFAULT_THEME_PACK: ThemePackId = 'iris';
 
 export function isThemePackId(value: string): value is ThemePackId {
   return THEME_PACKS.some((t) => t.id === value);

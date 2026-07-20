@@ -58,12 +58,14 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       style={style}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
-      className="min-w-[180px] rounded-md border border-border bg-surface py-1 shadow-lg"
+      className="min-w-[180px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]"
     >
       <Menu aria-label="Context menu" className="outline-none">
         {items.map((item, i) => {
           if (item.separator) {
-            return <Separator key={`sep-${i}`} className="my-1 border-t border-border" />;
+            return (
+              <Separator key={`sep-${i}`} className="my-1 border-t border-[var(--border-subtle)]" />
+            );
           }
           const Icon = item.icon;
           return (

@@ -23,9 +23,7 @@ export function VerifyStep({ error, onRetry, onBack, onReplace }: VerifyStepProp
               <CloseIcon size={28} className="text-destructive" aria-hidden="true" />
             </div>
             <div className="flex flex-col gap-1" role="alert" aria-live="assertive">
-              <h1 className="text-balance text-xl font-semibold text-destructive">
-                Couldn’t connect
-              </h1>
+              <h1 className="type-subject text-balance text-destructive">Couldn’t connect</h1>
               <p className="max-w-xs text-balance text-sm text-muted-text">{error}</p>
             </div>
             <div className="mt-2 flex items-center gap-3">
@@ -42,7 +40,7 @@ export function VerifyStep({ error, onRetry, onBack, onReplace }: VerifyStepProp
           <>
             <span className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             <div className="flex flex-col gap-1">
-              <h1 className="text-balance text-xl font-semibold text-foreground">Connecting…</h1>
+              <h1 className="type-subject text-balance text-foreground">Connecting…</h1>
               <p className="text-balance text-sm text-muted-text">
                 Verifying your credentials and syncing folders.
               </p>

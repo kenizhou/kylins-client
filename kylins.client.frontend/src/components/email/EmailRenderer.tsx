@@ -138,15 +138,15 @@ export function EmailRenderer({
   <style>
     body {
       margin: 0; padding: 16px;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      font-family: "Inter Variable", "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", Roboto, Arial, sans-serif;
       font-size: ${14 * zoom}px; line-height: 1.6;
-      color: ${plainTextDark ? '#e5e7eb' : '#1f2937'};
-      background: ${htmlDark ? '#f8f9fa' : 'transparent'};
+      color: ${plainTextDark ? '#dadce5' : '#343746'};
+      background: ${htmlDark ? '#f8f8fa' : 'transparent'};
       word-wrap: break-word; overflow-wrap: break-word; overflow: hidden;
     }
     img { max-width: 100%; height: auto; }
     a { color: ${plainTextDark ? '#60a5fa' : '#3b82f6'}; }
-    blockquote { border-left: 3px solid ${plainTextDark ? '#4b5563' : '#d1d5db'}; margin: 8px 0; padding: 4px 12px; color: ${plainTextDark ? '#9ca3af' : '#6b7280'}; }
+    blockquote { border-left: 3px solid ${plainTextDark ? '#585d6f' : '#d0d3e0'}; margin: 8px 0; padding: 4px 12px; color: ${plainTextDark ? '#a8adc0' : '#757a8f'}; }
     pre { overflow-x: auto; }
     table { max-width: 100%; }
   </style>

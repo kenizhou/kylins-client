@@ -75,9 +75,7 @@ export function ImapManualForm({
       <form onSubmit={handleSubmit} className="flex flex-col gap-5">
         <div className="grid gap-6 md:grid-cols-2">
           <fieldset className="flex flex-col gap-4 md:pr-6">
-            <legend className="mb-1 text-sm font-semibold text-foreground">
-              Incoming Mail (IMAP):
-            </legend>
+            <legend className="mb-1 type-pane-title text-foreground">Incoming Mail (IMAP):</legend>
             <SetupField label="Server" error={errors.imapHost}>
               <SetupInput
                 placeholder="imap.example.com"
@@ -134,9 +132,7 @@ export function ImapManualForm({
           </fieldset>
 
           <fieldset className="flex flex-col gap-4 md:pl-6">
-            <legend className="mb-1 text-sm font-semibold text-foreground">
-              Outgoing Mail (SMTP):
-            </legend>
+            <legend className="mb-1 type-pane-title text-foreground">Outgoing Mail (SMTP):</legend>
             <SetupField label="Server" error={errors.smtpHost}>
               <SetupInput
                 placeholder="smtp.example.com"

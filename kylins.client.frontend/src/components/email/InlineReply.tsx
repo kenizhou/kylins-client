@@ -561,14 +561,14 @@ export function InlineReply({
                 className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
               >
                 <span className="max-w-[150px] truncate">{att.filename}</span>
-                <button
+                <Button
                   type="button"
-                  onClick={() => setAttachments((prev) => prev.filter((a) => a.id !== att.id))}
+                  onPress={() => setAttachments((prev) => prev.filter((a) => a.id !== att.id))}
                   className="text-[var(--muted-text)] outline-none hover:text-[var(--foreground)] focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label={`Remove ${att.filename}`}
                 >
                   <CloseIcon size={12} />
-                </button>
+                </Button>
               </span>
             ))}
           </div>

@@ -36,10 +36,10 @@ export function FromSelector({ aliases, selectedEmail, onChange }: FromSelectorP
       className="flex items-center gap-2"
     >
       <Label className="w-8 shrink-0 pt-1.5 text-xs font-medium text-muted-text">From</Label>
-      <Button className="-ml-1 flex-1 cursor-pointer rounded border-none bg-transparent px-1 py-0.5 text-left text-sm text-foreground outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
+      <Button className="-ml-1 flex-1 cursor-pointer rounded-lg border-none bg-transparent px-1 py-0.5 text-left text-sm text-foreground outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
         <SelectValue />
       </Button>
-      <Popover className="min-w-[--trigger-width] rounded border border-border bg-popover shadow-lg">
+      <Popover className="min-w-[--trigger-width] rounded-lg border border-[var(--border-subtle)] bg-popover shadow-[var(--shadow-lg)]">
         <ListBox className="py-1 outline-none">
           {aliases.map((alias) => (
             <ListBoxItem
