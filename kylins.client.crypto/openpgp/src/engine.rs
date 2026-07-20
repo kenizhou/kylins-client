@@ -707,16 +707,19 @@ pub fn sign_detached(
 /// None, helper)?.verify_bytes(payload)?` (the verified `## detached-verify`
 /// shape).
 ///
-/// **Weak-algorithm advisory:** [`crate::policy::PgpPolicy::note_weak`] is
-/// called on the parsed `Signature` packet. If it returns a warning:
-/// - on `ValidVerified`: the warning is folded into `failure_reason` as
-///   advisory text (the framework docstring says `failure_reason` is `None`
-///   on success states — engine-core extends this with a weak-algo advisory
-///   because no separate channel exists yet; a cleaner surfacing path lands
-///   with the receive slice's Web-of-Trust wiring). The state STAYS
-///   `ValidVerified` — weak-but-valid is NOT a verification failure.
-/// - on `Invalid`: the warning is appended to the failure reason after a
-///   separator, providing additional context.
+/// **`failure_reason` contract:** per the framework docstring
+/// (`crypto_core::envelope::VerificationResult::failure_reason`), this field
+/// is `None` on success states (`ValidVerified` / `ValidUnverified`). The
+/// `Invalid` arm surfaces the Sequoia `verify_bytes` error message verbatim.
+///
+/// **Weak-algorithm detection** is NOT surfaced in the `VerificationResult`
+/// here: `failure_reason` must stay `None` on `ValidVerified`, so a
+/// weak-but-valid signature cannot append an advisory without violating the
+/// contract. The detection itself is unit-tested in
+/// `policy::tests::note_weak_*`; surfacing the warning in the result is
+/// deferred to the receive slice (spec §7), which will add a dedicated
+/// channel (e.g. `weak_algo_warning: Option<String>`) rather than overload
+/// `failure_reason`.
 ///
 /// `revocation_reason` is always `None` (PGP key revocation handling arrives
 /// with Web-of-Trust in the receive slice).
@@ -812,34 +815,29 @@ pub fn verify_detached(
     // matching certs is the multi-signer case, not in scope here).
     let signer_handle = keymap::cert_to_handle(matching[0]);
 
-    // Weak-algo advisory is computed regardless of outcome — a tampered
-    // signature over a weak-algo sig packet still surfaces the warning as
-    // extra context.
-    let weak_warning = pgp_policy.note_weak(&sig_packet);
+    // Weak-algo detection is NOT surfaced here: `failure_reason` must stay
+    // `None` on `ValidVerified` per the framework contract, and on `Invalid`
+    // it carries only the verify-FAILURE reason. The detector itself is
+    // unit-tested in `policy::tests::note_weak_*`; surfacing the warning in
+    // `VerificationResult` is deferred to the receive slice (spec §7) which
+    // will add a dedicated channel — `failure_reason` must stay `None` on
+    // success states per the framework contract.
 
     match verify_outcome {
         Ok(()) => Ok(crypto_core::VerificationResult {
             state: crypto_core::SignatureState::ValidVerified,
             signer: Some(signer_handle),
-            // Advisory: `None` when the sig uses modern algos (the common
-            // case). Engine-core convention — see the docstring above.
-            failure_reason: weak_warning,
+            // Per framework contract: `None` on all success states.
+            failure_reason: None,
             revocation_reason: None,
         }),
-        Err(e) => {
-            // Fold the weak-algo warning (if any) into the failure reason as
-            // additional context. The Sequoia error message is primary.
-            let reason = match weak_warning {
-                Some(w) => format!("{}; {}", e, w),
-                None => format!("{}", e),
-            };
-            Ok(crypto_core::VerificationResult {
-                state: crypto_core::SignatureState::Invalid,
-                signer: Some(signer_handle),
-                failure_reason: Some(reason),
-                revocation_reason: None,
-            })
-        }
+        Err(e) => Ok(crypto_core::VerificationResult {
+            state: crypto_core::SignatureState::Invalid,
+            signer: Some(signer_handle),
+            // Just the verify-FAILURE reason — NOT a weak-algo advisory.
+            failure_reason: Some(format!("{}", e)),
+            revocation_reason: None,
+        }),
     }
 }
 
@@ -1806,9 +1804,12 @@ mod tests {
 
     #[test]
     fn verify_detached_valid_verified_silences_failure_reason_on_modern_algos() {
-        // Mirrors `sign_detached_then_verify_round_trips_as_valid_verified` but
-        // explicit about the no-weak-warning invariant: a modern-algo sig
-        // produces a fully clean VerificationResult (no failure_reason).
+        // Contract check: `failure_reason` must be `None` on `ValidVerified`
+        // (modern algo OR weak algo — the contract is unconditional; the
+        // framework docstring at `envelope.rs:153-157` says `None` on all
+        // success states). This test uses a modern-algo fixture; weak-algo
+        // surfacing is deferred to the receive slice per the engine-core
+        // docstring on `verify_detached`.
         let pol = pgp_policy();
         let cert = gen();
         let sig = sign_detached(b"clean payload", &cert, &pol).expect("sign");
@@ -1822,7 +1823,7 @@ mod tests {
         assert_eq!(result.state, crypto_core::SignatureState::ValidVerified);
         assert!(
             result.failure_reason.is_none(),
-            "modern-algo ValidVerified must have None failure_reason; got {:?}",
+            "ValidVerified must have None failure_reason (contract is unconditional); got {:?}",
             result.failure_reason
         );
     }
