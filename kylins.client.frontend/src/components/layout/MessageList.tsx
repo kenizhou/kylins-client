@@ -83,14 +83,14 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
   return (
     <span
       data-testid="message-quick-actions"
-      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border)] p-0.5 shadow-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'} ${selected ? 'bg-[var(--selected)]' : 'bg-[var(--hover)]'}`}
+      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border-subtle)] p-0.5 shadow-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'} ${selected ? 'bg-[var(--surface-floating)]' : 'bg-[var(--surface-elevated)]'}`}
       onClick={(e) => e.stopPropagation()}
     >
       <button
         type="button"
         aria-label="Archive"
         title="Archive"
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onClick={() => void archiveThread(thread)}
       >
         <ArchiveIcon size={14} />
@@ -99,7 +99,7 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
         type="button"
         aria-label="Delete"
         title="Delete"
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onClick={() => void trashThread(thread)}
       >
         <DeleteIcon size={14} />
@@ -108,7 +108,7 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
         type="button"
         aria-label={thread.isStarred ? 'Unflag' : 'Flag'}
         title={thread.isStarred ? 'Unflag' : 'Flag'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onClick={() => void toggleThreadStarred(thread)}
       >
         <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
@@ -117,7 +117,7 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
         type="button"
         aria-label={thread.isRead ? 'Mark unread' : 'Mark read'}
         title={thread.isRead ? 'Mark unread' : 'Mark read'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onClick={() => void markThreadRead(thread, !thread.isRead)}
       >
         <MailIcon size={14} />
@@ -163,7 +163,7 @@ const MessageRow = memo(function MessageRow({
           '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
         } as React.CSSProperties
       }
-      className={`group relative cursor-pointer ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
+      className={`group relative cursor-pointer ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
     >
       <div className="flex items-stretch px-1">
         {/* Left state ribbon */}
@@ -489,7 +489,7 @@ export function MessageList() {
   }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
-    <div className="message-list flex flex-col h-full bg-[var(--card)]">
+    <div className="message-list flex flex-col h-full bg-surface border-r border-[var(--border-subtle)]">
       {conversationView && (
         <div className="px-3 py-1 text-[11px] text-[var(--foreground)] bg-[var(--selected)]">
           Conversation view enabled
@@ -507,7 +507,7 @@ export function MessageList() {
             role="tab"
             aria-selected={inboxTab === 'all'}
             onClick={() => setInboxTab('all')}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${inboxTab === 'all' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${inboxTab === 'all' ? 'bg-[var(--primary-muted)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--primary-subtle)]'}`}
           >
             All
           </button>
@@ -516,7 +516,7 @@ export function MessageList() {
             role="tab"
             aria-selected={inboxTab === 'unread'}
             onClick={() => setInboxTab('unread')}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${inboxTab === 'unread' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${inboxTab === 'unread' ? 'bg-[var(--primary-muted)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--primary-subtle)]'}`}
           >
             Unread
           </button>
@@ -617,7 +617,7 @@ export function MessageList() {
                   {item.kind === 'group' ? (
                     <div
                       role="presentation"
-                      className="py-1.5 px-3 border-b border-[var(--border)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]"
+                      className="py-1.5 px-3 border-b border-[var(--border-subtle)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]"
                     >
                       {item.label}
                     </div>
