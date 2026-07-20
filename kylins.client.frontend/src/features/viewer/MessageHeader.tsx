@@ -200,7 +200,6 @@ export function MessageHeader({
             label="Reply"
             title="Reply"
             onClick={onReply}
-            className="hover:bg-[var(--primary-subtle)]"
             icon={
               <span className="text-[var(--primary)]">
                 <ReplyFilledIcon size={18} />
@@ -212,7 +211,6 @@ export function MessageHeader({
             label="Reply all"
             title="Reply all"
             onClick={onReplyAll}
-            className="hover:bg-[var(--primary-subtle)]"
             icon={
               <span className="text-[var(--primary)]">
                 <ReplyAllFilledIcon size={18} />
@@ -224,7 +222,6 @@ export function MessageHeader({
             label="Forward"
             title="Forward"
             onClick={onForward}
-            className="hover:bg-[var(--primary-subtle)]"
             icon={
               <span className="text-[var(--primary)]">
                 <MailSendIcon size={18} />
@@ -249,7 +246,7 @@ export function MessageHeader({
                 {(item) => (
                   <MenuItem
                     id={item.key}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)]"
                   >
                     {item.icon}
                     <span>{item.label}</span>

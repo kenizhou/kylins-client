@@ -69,7 +69,7 @@ export function ComposeRibbon() {
       <RibbonGroup>
         <MenuTrigger>
           <Button
-            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Importance"
           >
             <span className="whitespace-nowrap">Importance: {importanceLabel}</span>
@@ -92,7 +92,7 @@ export function ComposeRibbon() {
               {(option) => (
                 <MenuItem
                   id={option.value}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)] selected:bg-[var(--selected)] selected:text-[var(--foreground)]"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)] selected:bg-[var(--primary-muted)] selected:text-[var(--foreground)]"
                 >
                   <span className="text-[var(--muted-text)]">{option.icon}</span>
                   <span className="flex-1 whitespace-nowrap">{option.label}</span>
@@ -106,7 +106,7 @@ export function ComposeRibbon() {
       <RibbonGroup>
         <MenuTrigger>
           <Button
-            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             aria-label="Tracking"
           >
             <span className="whitespace-nowrap">Tracking</span>
@@ -120,7 +120,7 @@ export function ComposeRibbon() {
               <MenuItem
                 id="read-receipt"
                 onAction={() => setRequestReadReceipt(!requestReadReceipt)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)]"
               >
                 <span className="text-[var(--muted-text)]">
                   <MailOpenIcon size={14} />
@@ -131,7 +131,7 @@ export function ComposeRibbon() {
               <MenuItem
                 id="delivery-receipt"
                 onAction={() => setRequestDeliveryReceipt(!requestDeliveryReceipt)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)]"
               >
                 <span className="text-[var(--muted-text)]">
                   <MailIcon size={14} />

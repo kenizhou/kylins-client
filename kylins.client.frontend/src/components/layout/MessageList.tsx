@@ -491,7 +491,7 @@ export function MessageList() {
   return (
     <div className="message-list flex flex-col h-full bg-surface border-r border-[var(--border-subtle)]">
       {conversationView && (
-        <div className="px-3 py-1 text-[11px] text-[var(--foreground)] bg-[var(--selected)]">
+        <div className="px-3 py-1 text-[11px] text-[var(--foreground)] bg-[var(--primary-muted)]">
           Conversation view enabled
         </div>
       )}
@@ -500,7 +500,7 @@ export function MessageList() {
         <div
           role="tablist"
           aria-label="Inbox view"
-          className="flex items-center gap-1 border-b border-[var(--border)] px-3 py-1.5"
+          className="flex items-center gap-1 border-b border-[var(--border-subtle)] px-3 py-1.5"
         >
           <button
             type="button"

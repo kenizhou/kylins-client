@@ -174,13 +174,13 @@ function SplitRibbonButton({
     <SplitButton
       disabled={disabled}
       menuLabel={`${label} options`}
-      caretClassName="border-r border-[var(--border)]"
+      caretClassName="border-r-[var(--border-subtle)]"
       main={
         <Button
           isDisabled={disabled}
           onPress={primary}
           aria-label={title ?? label}
-          className={`flex items-center gap-1.5 rounded-l px-2.5 h-11 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--hover)] disabled:hover:bg-transparent ${
+          className={`flex items-center gap-1.5 rounded-l px-2.5 h-11 my-auto text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40 text-[var(--text)] hover:bg-[var(--primary-subtle)] disabled:hover:bg-transparent ${
             iconOnly ? 'w-11 justify-center px-0' : ''
           }`}
         >
@@ -202,7 +202,7 @@ function SplitRibbonButton({
           {(item) => (
             <MenuItem
               id={String(items.indexOf(item))}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
             >
               <span className="flex-1 whitespace-nowrap">{item.label}</span>
             </MenuItem>
@@ -224,7 +224,7 @@ function ClassificationMenuItem({
     <MenuItem
       id={level.id}
       onAction={onAction}
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
     >
       {level.icon ? (
         <span className="flex w-5 items-center justify-center">
@@ -509,21 +509,21 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
                 <MenuItem
                   isDisabled={!hasThread}
                   onAction={() => selectedThread && void archiveThread(selectedThread)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
                 >
                   <ArchiveIcon size={14} /> Archive
                 </MenuItem>
                 <MenuItem
                   isDisabled={!hasThread}
                   onAction={() => selectedThread && void deleteThread(selectedThread)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
                 >
                   <DeleteIcon size={14} /> Delete
                 </MenuItem>
                 <MenuItem
                   isDisabled={!hasThread}
                   onAction={() => selectedThread && setMoveOpen(true)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
                 >
                   <MoveIcon size={14} /> Move
                 </MenuItem>
@@ -532,14 +532,14 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
                   onAction={() =>
                     selectedThread && void markThreadRead(selectedThread, !selectedThread.isRead)
                   }
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
                 >
                   <MailIcon size={14} /> {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
                 </MenuItem>
                 <MenuItem
                   isDisabled={!hasThread}
                   onAction={() => selectedThread && void toggleThreadStarred(selectedThread)}
-                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--hover)] data-[focus-visible]:bg-[var(--hover)]"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
                 >
                   <FlagIcon size={14} /> {selectedThread?.isStarred ? 'Unflag' : 'Flag'}
                 </MenuItem>

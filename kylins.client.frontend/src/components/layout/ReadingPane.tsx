@@ -534,7 +534,7 @@ function DecryptFailurePanel({ decryptState, onManageKeys }: DecryptFailurePanel
       <button
         type="button"
         onClick={onManageKeys}
-        className="mt-5 inline-flex h-9 items-center rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="mt-5 inline-flex h-9 items-center rounded-md border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text)] transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
       >
         Manage keys
       </button>

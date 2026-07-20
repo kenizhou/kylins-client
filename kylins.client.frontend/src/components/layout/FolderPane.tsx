@@ -421,7 +421,7 @@ function AccountFolderTree({
                 {hasChildItems ? (
                   <Button
                     slot="chevron"
-                    className="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
                   >
                     {isExpanded ? <ArrowDownIcon size={12} /> : <ArrowRightIcon size={12} />}
@@ -736,7 +736,7 @@ export function FolderPane() {
           <>
             <Button
               onPress={() => setDeleteTarget(null)}
-              className="h-11 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
+              className="h-11 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-[var(--primary-subtle)]"
             >
               Cancel
             </Button>
