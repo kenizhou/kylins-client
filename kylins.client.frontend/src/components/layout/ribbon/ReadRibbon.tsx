@@ -465,7 +465,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
       {!compact && (
         <RibbonGroup>
           <RibbonButton
-            icon={<MailIcon />}
+            icon={<MailIcon size={18} />}
             split
             iconOnly={iconOnly}
             disabled={!hasThread}
@@ -478,7 +478,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
             {selectedThread?.isRead ? 'Mark Unread' : 'Mark Read'}
           </RibbonButton>
           <RibbonButton
-            icon={<FlagIcon />}
+            icon={<FlagIcon size={18} />}
             iconOnly={iconOnly}
             disabled={!hasThread}
             title={selectedThread?.isStarred ? 'Remove flag' : 'Flag'}

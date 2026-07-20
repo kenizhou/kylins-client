@@ -201,4 +201,24 @@ describe('ReadRibbon', () => {
       expect(screen.getByText('Delete')).toBeVisible();
     });
   });
+
+  it('renders Mark Read and Flag icons at the same size as neighboring ribbon icons in icon-only mode', async () => {
+    setRibbonWidth(750);
+    useThreadStore.setState({
+      threads: [
+        { id: 't1', accountId: 'a1', subject: 'x', isRead: true, isStarred: true } as never,
+      ],
+      selectedThreadId: 't1',
+    });
+    render(<ReadRibbon />);
+
+    await waitFor(() => {
+      const markReadButton = screen.getByRole('button', { name: /mark as unread/i });
+      const flagButton = screen.getByRole('button', { name: /remove flag/i });
+      expect(markReadButton.querySelector('svg')).toHaveAttribute('width', '18');
+      expect(markReadButton.querySelector('svg')).toHaveAttribute('height', '18');
+      expect(flagButton.querySelector('svg')).toHaveAttribute('width', '18');
+      expect(flagButton.querySelector('svg')).toHaveAttribute('height', '18');
+    });
+  });
 });
