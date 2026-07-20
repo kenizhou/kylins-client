@@ -607,23 +607,14 @@ fn cross_impl_cli_encrypts_engine_decrypts() {
 /// via `engine::encrypt`; the CLI decrypts and writes the literal-data body
 /// (our framed payload) to a file. We unframe it and compare to the original.
 ///
-/// **`#[ignore]` — REAL wire-format interop gap (Sequoia 2.4.1 vs GnuPG 2.4):**
-/// Sequoia's `Encryptor` auto-upgrades to AEAD (SEIPDv2) + PKESK v6 when the
-/// recipient cert advertises `Features::seipdv2` in its binding signature
-/// (`sequoia-openpgp-2.4.1/src/serialize/stream.rs:3057-3067`), which
-/// `CertBuilder::new()` does by default. GnuPG 2.4.x does NOT support PKESK
-/// v6 / SEIPDv2 (added in GnuPG 2.5 per the GnuPG NEWS file), so `gpg
-/// --decrypt` fails with `packet(1) with unknown version 6`. This is the
-/// asymmetric-interop gap the brief calls out: GnuPG-produced output
-/// (v4-only) decrypts cleanly here (Sequoia's read policy is permissive),
-/// but our default output cannot be read by the most widely deployed
-/// GnuPG stable branch. Fixing it requires either (a) changing
-/// `engine::generate` to emit `Features::empty().set_seipdv1()` (src/
-/// change, out of scope for Task 9), or (b) adding a v4-compat profile to
-/// `engine::encrypt` (also src/), or (c) waiting for GnuPG 2.5 to reach
-/// widespread deployment. Run with `--include-ignored` to reproduce.
+/// **History:** until the `engine::generate` SEIPDv1-only fix landed, this
+/// test was `#[ignore]`'d because Sequoia's default `Features::seipdv2`
+/// caused `engine::encrypt` to emit PKESK v6 + SEIPDv2, which GnuPG 2.4.x
+/// could not parse. Now that `engine::generate` advertises SEIPDv1 only,
+/// Sequoia's `Encryptor` falls back to PKESK v3 + SEIPDv1 (RFC 4880) and
+/// this test passes against GnuPG 2.4.9. See `engine::generate`'s doc
+/// comment for the full rationale.
 #[test]
-#[ignore = "Sequoia 2.4.1 emits PKESK v6 / SEIPDv2 by default; GnuPG 2.4.x only supports v4"]
 fn cross_impl_engine_encrypts_cli_decrypts() {
     if skip_no_cli() {
         return;
@@ -764,13 +755,10 @@ fn cross_impl_engine_signs_cli_verifies() {
 /// that helper, then exercises `backend.encrypt` across the impl boundary
 /// (CLI decrypts our output).
 ///
-/// **`#[ignore]` — same wire-format gap as
-/// `cross_impl_engine_encrypts_cli_decrypts`**: the backend delegates to
-/// `engine::encrypt`, which inherits Sequoia's PKESK v6 / SEIPDv2 default.
-/// GnuPG 2.4.x can't parse the result. See the sibling test's ignore reason
-/// for the full diagnosis and fix options.
+/// **History:** same SEIPDv2/v4 gap as `cross_impl_engine_encrypts_cli_decrypts`
+/// — was `#[ignore]`'d until the `engine::generate` SEIPDv1-only fix landed.
+/// Now passes against GnuPG 2.4.9.
 #[tokio::test]
-#[ignore = "Sequoia 2.4.1 emits PKESK v6 / SEIPDv2 by default; GnuPG 2.4.x only supports v4"]
 async fn cross_impl_backend_encrypt_then_cli_decrypts() {
     if skip_no_cli() {
         return;

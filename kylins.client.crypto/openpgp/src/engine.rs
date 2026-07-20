@@ -47,6 +47,7 @@ use sequoia_openpgp::parse::stream::{
 use sequoia_openpgp::parse::Parse;
 use sequoia_openpgp::policy::Policy;
 use sequoia_openpgp::serialize::stream::{Encryptor, LiteralWriter, Message, Signer};
+use sequoia_openpgp::types::Features;
 use std::io::{Read, Write};
 
 use crate::error::{map_err, map_sequoia, policy, CryptoResult};
@@ -58,6 +59,8 @@ use crate::keymap;
 /// - Ed25519 primary key (certify-only per `CertBuilder::new()` defaults)
 /// - X25519 transport-encryption subkey
 /// - Ed25519 signing subkey
+/// - **Features:** SEIPDv1 ONLY (NOT SEIPDv2). See the "GnuPG interop" note
+///   below.
 ///
 /// No OpenPGP S2K passphrase is applied; at-rest protection is the framework's
 /// master-key layer (OS keyring + AES-256-GCM in `kylins.client.backend::crypto`),
@@ -69,12 +72,43 @@ use crate::keymap;
 /// is discarded. Out of scope for engine-core; a later slice persists it
 /// alongside the Cert so key revocation can be issued without re-deriving the
 /// primary keypair.
+///
+/// # GnuPG interop: why SEIPDv1-only (not v2)
+///
+/// Sequoia's `CertBuilder::new()` defaults the cert's `Features` to advertise
+/// `seipdv2` (RFC 9580 AEAD-encrypted data packets). When `engine::encrypt`
+/// later encrypts to such a recipient, Sequoia's `Encryptor::build` sees
+/// `supports_seipdv2() == true` on every recipient and auto-upgrades the
+/// ciphertext to **PKESK v6 + SEIPDv2** (`sequoia-openpgp-2.4.1/src/serialize/
+/// stream.rs:3057-3067`). That is the cryptographically modern path — but
+/// **GnuPG 2.4.x** (the current stable as of July 2026) **does NOT support
+/// PKESK v6 / SEIPDv2** (added in GnuPG 2.5), so any ciphertext our engine
+/// produces for a default-features recipient fails to decrypt in GnuPG with
+/// `packet(1) with unknown version 6`. This is the asymmetric-interop gap
+/// Task 9's interop tests caught.
+///
+/// The fix is to advertise SEIPDv1 only — Sequoia's `Encryptor` then falls
+/// back to **PKESK v3 + SEIPDv1** (RFC 4880 / 4880bis), which GnuPG 2.4.x
+/// (and every other OpenPGP implementation going back to GnuPG 1.x) can
+/// decrypt. Trade-off: we lose AEAD's better integrity and nonces for our
+/// own ciphertexts. That is an acceptable trade-off for a desktop mail
+/// client where the load-bearing interop target is Thunderbird/GnuPG; a
+/// future slice may expose a per-call `Profile::RFC9580` opt-in for
+/// SEIPDv2-aware recipients. Verified API (Sequoia 2.4.1):
+/// - `CertBuilder::set_features(self, Features) -> Result<Self>`
+///   (`cert/builder.rs:834`)
+/// - `Features::empty().set_seipdv1() -> Features`
+///   (`types/features.rs:108, 274`)
 pub fn generate(user_id: &str) -> CryptoResult<openpgp::Cert> {
-    // `CertBuilder` uses Sequoia's modern `StandardPolicy` defaults internally,
-    // which align with the crate's write policy (see `policy.rs`); no explicit
-    // policy override is needed on the generate path.
+    // `CertBuilder::set_features` returns `Result<Self>` (the only builder
+    // method in the chain that does); split the chain at that boundary so
+    // the rest (`add_userid` / `add_*_subkey` / `generate`) can chain on the
+    // unwrapped `CertBuilder`. Both `Result`s route through `map_sequoia`.
+    let builder = map_sequoia(
+        CertBuilder::new().set_features(Features::empty().set_seipdv1()),
+    )?;
     let (cert, _revocation) = map_sequoia(
-        CertBuilder::new()
+        builder
             .add_userid(user_id)
             .add_transport_encryption_subkey()
             .add_signing_subkey()
