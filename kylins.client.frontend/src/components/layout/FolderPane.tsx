@@ -118,8 +118,8 @@ function FolderRow({
       <Button
         onPress={onClick}
         className={`
-          group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left
-          ${active ? 'bg-selected text-selected-text' : 'text-foreground hover:bg-hover'}
+          group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left transition-colors duration-fast
+          ${active ? 'bg-[var(--primary-muted)] text-[var(--selected-text)]' : 'text-foreground hover:bg-[var(--primary-subtle)]'}
         `}
       >
         {active && <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />}
@@ -130,7 +130,7 @@ function FolderRow({
             className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
               active
                 ? 'bg-primary text-primary-fg'
-                : 'border border-border bg-surface text-foreground'
+                : 'border border-[var(--border-subtle)] bg-[var(--surface-elevated)] text-foreground'
             }`}
           >
             {unread}
@@ -172,7 +172,7 @@ function FolderGroup({
   if (!collapsible) {
     return (
       <div className="pb-2 pt-2 first:pt-3 last:pb-0">
-        <div className="flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-foreground">
+        <div className="flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-text)]">
           {headerContent}
         </div>
         <div className="space-y-0.5 px-0">{children}</div>
@@ -188,7 +188,7 @@ function FolderGroup({
     >
       <Button
         slot="trigger"
-        className="group flex h-11 w-full items-center gap-1 px-3 text-left text-xs font-semibold uppercase tracking-wide text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex h-11 w-full items-center gap-1 px-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-text)] transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {headerContent}
       </Button>
@@ -394,8 +394,12 @@ function AccountFolderTree({
         id={folder.id}
         textValue={folder.name}
         className={({ isSelected, isHovered }) =>
-          `group relative flex w-full items-center outline-none ${
-            isSelected ? 'bg-selected text-selected-text' : isHovered ? 'bg-hover' : ''
+          `group relative flex w-full items-center outline-none transition-colors duration-fast ${
+            isSelected
+              ? 'bg-[var(--primary-muted)] text-[var(--selected-text)]'
+              : isHovered
+                ? 'bg-[var(--primary-subtle)]'
+                : ''
           }`
         }
       >
@@ -450,7 +454,7 @@ function AccountFolderTree({
                         className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
                           isSelected
                             ? 'bg-primary text-primary-fg'
-                            : 'border border-border bg-surface text-foreground'
+                            : 'border border-[var(--border-subtle)] bg-[var(--surface-elevated)] text-foreground'
                         }`}
                       >
                         {unread}
@@ -639,7 +643,7 @@ export function FolderPane() {
     : [];
 
   return (
-    <div className="flex h-full flex-col rounded-xl bg-surface">
+    <div className="flex h-full flex-col rounded-xl bg-surface border border-[var(--border-subtle)]">
       <div className={`flex-1 folder-pane-scroll ${scrollbarClass}`}>
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-text">
@@ -666,7 +670,7 @@ export function FolderPane() {
               </FolderGroup>
             )}
 
-            {favoriteFolders.length > 0 && <div className="mx-3 h-px bg-border" />}
+            {favoriteFolders.length > 0 && <div className="mx-3 h-px bg-[var(--border-subtle)]" />}
 
             {accounts.map((account) => {
               const folders = byAccount[account.id] ?? [];
