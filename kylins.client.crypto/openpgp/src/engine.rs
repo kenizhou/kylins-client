@@ -169,11 +169,15 @@ pub fn import(data: &[u8], passphrase: Option<SecretBox<String>>) -> CryptoResul
     })?;
 
     // Convert `SecretBox<String>` → Sequoia `Password`. Bytes remain in
-    // zeroizing containers throughout (see the module-level passphrased-handling
-    // note): `SecretBox<String>` (drop zeroizes) → transient `String` →
-    // `Password` (`mem::Encrypted`, drop zeroizes). The transient String is
-    // consumed by `Password::from(String)` in the same statement.
-    let password: Password = pw.expose_secret().clone().into();
+    // zeroizing containers throughout (see the module-level passphrase-handling
+    // note): `SecretBox<String>` (drop zeroizes) → `Zeroizing<String>`
+    // (drop zeroizes) → `Password` (`mem::Encrypted`, drop zeroizes). Wrapping
+    // the transient `String` in `Zeroizing` ensures its heap buffer is wiped on
+    // drop, so no un-zeroized passphrase bytes survive outside a crypto-aware
+    // container (the `String`'s own drop does NOT zeroize).
+    let pw_str: zeroize::Zeroizing<String> =
+        zeroize::Zeroizing::new(pw.expose_secret().clone());
+    let password: Password = pw_str.as_str().into();
 
     // Decrypt each encrypted secret and merge back into the Cert, preserving
     // each key's role. Verified pattern at

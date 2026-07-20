@@ -13,7 +13,7 @@ mod common;
 
 use common::MemoryKeyStore;
 use crypto_core::{
-    CryptoBackend, CryptoPolicy, KeyGenParams, KeyHandle, KeyStore, Part, PartId, PartKind,
+    CryptoBackend, CryptoPolicy, KeyGenParams, KeyStore, Part, PartId, PartKind,
     SerializationStrategy, SignatureState, Standard,
 };
 use crypto_openpgp::OpenpgpBackend;
@@ -403,11 +403,6 @@ fn bogus_handle() -> crypto_core::KeyHandleRef {
         algorithm: "Ed25519/X25519".into(),
     }
 }
-
-/// A placeholder so `KeyHandle` is referenced even if the bogus-handle helper
-/// is reorganized later (keeps imports honest under `-D warnings`).
-#[allow(dead_code)]
-fn _kh_assert(_h: KeyHandle) {}
 
 // ---------- MemoryKeyStore helper interop (put_cert / get_cert) ----------
 //
