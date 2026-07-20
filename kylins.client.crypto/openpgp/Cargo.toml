@@ -29,7 +29,7 @@ secrecy = "0.10"
 sequoia-openpgp = { version = "2", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
 async-trait = "0.1"
-tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 # add tempfile here only if a later task needs it; the spike is in-memory
