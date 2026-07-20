@@ -36,7 +36,7 @@ export function AppShell() {
   const activeApp = useUIStore((s) => s.activeApp);
 
   return (
-    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--chrome)] text-[var(--foreground)]">
+    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--chrome-tint)] text-[var(--foreground)]">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />
