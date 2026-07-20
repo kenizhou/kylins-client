@@ -51,6 +51,7 @@ export function TitleBar() {
   const openAccountSetup = () => useUIStore.getState().setAccountSetupOpen(true);
   const { breakpoint } = useWindowSize();
   const isCompact = breakpoint === 'compact';
+  const isMediumOrCompact = breakpoint === 'medium' || breakpoint === 'compact';
   const [searchOpen, setSearchOpen] = useState(false);
   const isMaximized = useMaximizedState();
 
@@ -72,7 +73,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-[var(--header-h)] flex items-center px-2 bg-[var(--chrome)] select-none"
+      className="relative h-[var(--header-h)] flex items-center overflow-hidden px-2 bg-[var(--chrome)] select-none"
       style={dragStyle}
     >
       {/* Left: hamburger + menu bar */}
@@ -84,7 +85,7 @@ export function TitleBar() {
           onClick={() => setActiveCategory(activeCategory === 'File' ? null : 'File')}
           className="mr-1"
         />
-        <MenuBar />
+        {!isCompact && <MenuBar />}
       </div>
 
       {/* Left drag region: large target for moving / double-click maximize */}
@@ -102,7 +103,7 @@ export function TitleBar() {
       {/* Center: search */}
       <div className="flex-shrink-0 flex justify-center px-4" style={noDragStyle}>
         <div className="w-[min(480px,45vw)]">
-          {isCompact ? (
+          {isMediumOrCompact ? (
             <>
               <IconButton
                 icon={<SearchIcon size={18} />}
@@ -182,10 +183,17 @@ export function TitleBar() {
 
       {/* Right: app icons + window controls */}
       <div className="flex items-center gap-0.5 flex-shrink-0" style={noDragStyle}>
-        <IconButton icon={<SettingsIcon size={16} />} title="Settings" onClick={openPreferences} />
-        <IconButton icon={<UserIcon size={16} />} title="Account" onClick={openAccountSetup} />
-
-        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+        {!isCompact && (
+          <>
+            <IconButton
+              icon={<SettingsIcon size={16} />}
+              title="Settings"
+              onClick={openPreferences}
+            />
+            <IconButton icon={<UserIcon size={16} />} title="Account" onClick={openAccountSetup} />
+            <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          </>
+        )}
         <WindowControls />
       </div>
     </div>

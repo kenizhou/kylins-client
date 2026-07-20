@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { TitleBar } from '@/components/layout/TitleBar';
 import { useUIStore } from '@/stores/uiStore';
+import type { WindowBreakpoint } from '@/hooks/useWindowSize';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
@@ -15,6 +16,17 @@ vi.mock('@tauri-apps/api/window', () => ({
 
 vi.mock('@/components/ui/WindowTitleBar', () => ({
   WindowControls: () => <div data-testid="window-controls" />,
+}));
+
+let currentBreakpoint: WindowBreakpoint = 'default';
+vi.mock('@/hooks/useWindowSize', () => ({
+  useWindowSize: () => ({
+    width: 1024,
+    height: 768,
+    get breakpoint() {
+      return currentBreakpoint;
+    },
+  }),
 }));
 
 describe('TitleBar search', () => {
@@ -64,5 +76,21 @@ describe('TitleBar search', () => {
     expect(dragRegions[0]).toBeTruthy();
     fireEvent.doubleClick(dragRegions[0]!);
     expect(toggleMaximize).toHaveBeenCalledTimes(1);
+  });
+
+  it('collapses search to an icon button at medium width', () => {
+    currentBreakpoint = 'medium';
+    render(<TitleBar />);
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /search mail/i })).toBeInTheDocument();
+  });
+
+  it('hides MenuBar, Settings and Account icons at compact width but keeps window controls', () => {
+    currentBreakpoint = 'compact';
+    render(<TitleBar />);
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /settings/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /account/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId('window-controls')).toBeInTheDocument();
   });
 });
