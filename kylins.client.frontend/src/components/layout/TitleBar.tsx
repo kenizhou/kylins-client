@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { SearchField, Input, Label, Button } from 'react-aria-components';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useUIStore } from '../../stores/uiStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { MenuBar } from '../ui/MenuBar';
@@ -22,6 +23,33 @@ const noDragStyle: React.CSSProperties & { WebkitAppRegion?: 'drag' | 'no-drag' 
   WebkitAppRegion: 'no-drag',
 };
 
+function useMaximizedState() {
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+
+    async function init() {
+      try {
+        setIsMaximized(await appWindow.isMaximized());
+        unlisten = await appWindow.onResized(async () => {
+          setIsMaximized(await appWindow.isMaximized());
+        });
+      } catch {
+        // Ignore in non-Tauri contexts (e.g. Vitest/jsdom).
+      }
+    }
+    void init();
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  return isMaximized;
+}
+
 export function TitleBar() {
   const activeCategory = useUIStore((s) => s.activeMenuCategory);
   const setActiveCategory = useUIStore((s) => s.setActiveMenuCategory);
@@ -31,6 +59,7 @@ export function TitleBar() {
   const { breakpoint } = useWindowSize();
   const isCompact = breakpoint === 'compact';
   const [searchOpen, setSearchOpen] = useState(false);
+  const isMaximized = useMaximizedState();
 
   const searchPlaceholder =
     {
@@ -39,6 +68,14 @@ export function TitleBar() {
       contacts: 'Search contacts…',
       tasks: 'Search tasks…',
     }[activeApp] ?? 'Search…';
+
+  async function handleToggleMaximize() {
+    try {
+      await getCurrentWindow().toggleMaximize();
+    } catch {
+      // Ignore in non-Tauri contexts.
+    }
+  }
 
   return (
     <div
@@ -57,9 +94,25 @@ export function TitleBar() {
         <MenuBar />
       </div>
 
+      {/* Left drag region: large target for moving / double-click maximize */}
+      <div
+        data-testid="title-bar-drag-region"
+        className="flex-1 flex items-center min-w-[64px] cursor-default"
+        style={dragStyle}
+        onDoubleClick={handleToggleMaximize}
+        aria-label={
+          isMaximized ? 'Double-click to restore window' : 'Double-click to maximize window'
+        }
+        role="button"
+      >
+        <span className="hidden lg:block px-2 text-sm font-medium text-[var(--foreground)] opacity-80">
+          Kylins Mail
+        </span>
+      </div>
+
       {/* Center: search */}
-      <div className="flex-1 flex justify-center px-4" style={noDragStyle}>
-        <div className="w-full max-w-xl">
+      <div className="flex-shrink-0 flex justify-center px-4" style={noDragStyle}>
+        <div className="w-[min(480px,45vw)]">
           {isCompact ? (
             <>
               <IconButton
@@ -129,6 +182,14 @@ export function TitleBar() {
           )}
         </div>
       </div>
+
+      {/* Right drag region: symmetrical movable target */}
+      <div
+        data-testid="title-bar-drag-region"
+        className="flex-1 min-w-[64px] cursor-default"
+        style={dragStyle}
+        onDoubleClick={handleToggleMaximize}
+      />
 
       {/* Right: app icons + window controls */}
       <div className="flex items-center gap-0.5 flex-shrink-0" style={noDragStyle}>

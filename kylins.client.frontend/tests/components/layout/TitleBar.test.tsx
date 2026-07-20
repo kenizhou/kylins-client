@@ -4,12 +4,22 @@ import { useUIStore } from '@/stores/uiStore';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
+const toggleMaximize = vi.fn();
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({
+    isMaximized: vi.fn().mockResolvedValue(false),
+    onResized: vi.fn().mockResolvedValue(() => {}),
+    toggleMaximize,
+  }),
+}));
+
 vi.mock('@/components/ui/WindowTitleBar', () => ({
   WindowControls: () => <div data-testid="window-controls" />,
 }));
 
 describe('TitleBar search', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useUIStore.setState({
       activeMenuCategory: null,
       accountSetupOpen: false,
@@ -28,10 +38,10 @@ describe('TitleBar search', () => {
     expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', 'Search contacts…');
   });
 
-  it('does not use absolute positioning for search container', () => {
-    const { container } = render(<TitleBar />);
-    const searchContainer = container.querySelector('.flex-1.flex.justify-center');
-    expect(searchContainer).toBeInTheDocument();
+  it('renders draggable regions on both sides of the search', () => {
+    render(<TitleBar />);
+    const dragRegions = screen.getAllByTestId('title-bar-drag-region');
+    expect(dragRegions).toHaveLength(2);
   });
 
   it('shows the clear button only when the search has text and clears on click', () => {
@@ -46,5 +56,13 @@ describe('TitleBar search', () => {
 
     fireEvent.click(clear);
     expect(input).toHaveValue('');
+  });
+
+  it('toggles maximize on double-click of a drag region', () => {
+    render(<TitleBar />);
+    const dragRegions = screen.getAllByTestId('title-bar-drag-region');
+    expect(dragRegions[0]).toBeTruthy();
+    fireEvent.doubleClick(dragRegions[0]!);
+    expect(toggleMaximize).toHaveBeenCalledTimes(1);
   });
 });
