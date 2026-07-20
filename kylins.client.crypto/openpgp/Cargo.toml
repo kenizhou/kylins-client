@@ -32,4 +32,9 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 
 [dev-dependencies]
-# add tempfile here only if a later task needs it; the spike is in-memory
+# Task 9 interop tests isolate gpg/sq state in a temp homedir (`gpg --homedir`,
+# `sq --keystore`) so we never touch the user's real keyring. `tempfile::TempDir`
+# gives us RAII cleanup without bespoke Drop code (smime's `interop_tests.rs`
+# rolls its own; we follow the Task-9 brief here which explicitly asks for the
+# `tempfile` crate).
+tempfile = "3"
