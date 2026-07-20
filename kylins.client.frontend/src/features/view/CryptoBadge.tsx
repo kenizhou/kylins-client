@@ -47,6 +47,10 @@ export interface CryptoBadgeProps {
   signerFingerprint?: string | null;
   variant: 'icon' | 'label';
   size?: number;
+  /** When provided, the badge becomes a button that opens the "Signature
+   *  details…" dialog (ReadingPane only). Absent on list rows / ReadRibbon /
+   *  icon variants — those stay a non-interactive tooltip. */
+  onShowDetails?: () => void;
 }
 
 // Narrowed unions. The Rust side stores these as String (the SQLite columns
@@ -369,6 +373,7 @@ export function CryptoBadge({
   signerFingerprint,
   variant,
   size = 14,
+  onShowDetails,
 }: CryptoBadgeProps) {
   const segments: Segment[] = [];
 
@@ -387,10 +392,45 @@ export function CryptoBadge({
 
   const ariaLabel = segments.map((s) => s.tooltip).join('; ');
   const wrapperStyle: CSSProperties = { color: 'var(--muted-text)' };
-  const className =
+  const baseClassName =
     variant === 'label'
       ? 'inline-flex items-center gap-1.5 text-[11px] text-[var(--muted-text)]'
       : 'inline-flex items-center gap-0.5 text-[var(--muted-text)]';
+  // When an onShowDetails handler is supplied (ReadingPane), render the badge
+  // as a button so it's keyboard-focusable + announces the dialog affordance.
+  // List rows / ReadRibbon / icon variants pass no handler → stay a span.
+  const interactiveClassName = onShowDetails
+    ? 'cursor-pointer rounded transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]'
+    : '';
+
+  const inner = segments.map((seg, i) => (
+    <span
+      key={i}
+      className="inline-flex items-center gap-0.5"
+      style={{ color: toneVar(seg.tone) }}
+      aria-hidden="true"
+    >
+      {seg.glyph}
+      {variant === 'label' && <span>{seg.label}</span>}
+    </span>
+  ));
+
+  if (onShowDetails) {
+    return (
+      <button
+        type="button"
+        data-testid="crypto-badge"
+        onClick={onShowDetails}
+        aria-label={ariaLabel}
+        aria-haspopup="dialog"
+        title={ariaLabel}
+        className={`${baseClassName} ${interactiveClassName}`}
+        style={wrapperStyle}
+      >
+        {inner}
+      </button>
+    );
+  }
 
   return (
     <span
@@ -398,20 +438,10 @@ export function CryptoBadge({
       role="img"
       aria-label={ariaLabel}
       title={ariaLabel}
-      className={className}
+      className={`${baseClassName} ${interactiveClassName}`}
       style={wrapperStyle}
     >
-      {segments.map((seg, i) => (
-        <span
-          key={i}
-          className="inline-flex items-center gap-0.5"
-          style={{ color: toneVar(seg.tone) }}
-          aria-hidden="true"
-        >
-          {seg.glyph}
-          {variant === 'label' && <span>{seg.label}</span>}
-        </span>
-      ))}
+      {inner}
     </span>
   );
 }

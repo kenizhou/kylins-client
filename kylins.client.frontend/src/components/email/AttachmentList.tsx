@@ -58,7 +58,29 @@ export function AttachmentList({ accountId, messageId, bodyHtml }: AttachmentLis
 
   // Hide attachments whose content_id is referenced inline by the body.
   const inlineCids = referencedCids(bodyHtml);
-  const visible = attachments.filter((a) => !a.contentId || !inlineCids.has(a.contentId));
+  // S/MIME crypto-structure parts are NOT user-facing attachments — they are
+  // the envelope / detached signature the app decrypts / verifies internally:
+  //   - `application/pkcs7-mime` → the `smime.p7m` envelope (enveloped-data
+  //     or opaque signed-data). The decrypted body + inner attachments are
+  //     surfaced separately; the raw envelope must never show as a chip.
+  //   - `application/pkcs7-signature` → the detached `smime.p7s` of a
+  //     clear-signed `multipart/signed` message.
+  // (RFC 3851 names these; matching is case-insensitive.) A standalone .p7m
+  // attached to a plain message would also be hidden — acceptable, since the
+  // app treats any pkcs7-mime part as crypto structure to process, not to
+  // hand to the user as a download.
+  const CRYPTO_ENVELOPE_TYPES = new Set([
+    'application/pkcs7-mime',
+    'application/pkcs7-signature',
+    'application/x-pkcs7-mime',
+    'application/x-pkcs7-signature',
+  ]);
+  const visible = attachments.filter((a) => {
+    if (a.contentId && inlineCids.has(a.contentId)) return false;
+    const mt = (a.mimeType ?? '').toLowerCase();
+    if (mt && CRYPTO_ENVELOPE_TYPES.has(mt)) return false;
+    return true;
+  });
   if (visible.length === 0) return null;
 
   const handleDownload = async (att: AttachmentRow) => {

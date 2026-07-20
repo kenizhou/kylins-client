@@ -126,7 +126,13 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         // re-opening doesn't re-decrypt. NEVER written to disk. On decrypt
         // failure we set `decryptState: 'failed'` + push a toast so ReadingPane
         // (T4) shows the decrypt-failure panel; we do NOT crash the open flow.
-        const isCrypto = latest.is_encrypted === 1 || latest.is_signed === 1;
+        // Rust `MessageRow.is_encrypted`/`is_signed` are `bool` → JSON
+        // `true`/`false` (NOT 0/1 ints — the read path was cut over from
+        // plugin-sql to Rust db commands). Coerce truthily; `=== 1` would
+        // silently never match a boolean, gating the crypto path off for EVERY
+        // encrypted message (regression that left the smime.p7m envelope
+        // rendering as a plain attachment instead of decrypting).
+        const isCrypto = !!latest.is_encrypted || !!latest.is_signed;
         if (isCrypto) {
           const cached = useViewStore.getState().decryptedCache[latest.id];
           let mail: MailMessage;
