@@ -114,7 +114,7 @@ export function MessageHeader({
   ];
 
   return (
-    <div className="reading-pane-header border-b border-[var(--border)] px-5 pt-4 pb-3">
+    <div className="reading-pane-header border-b border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-5 pt-4 pb-3">
       <h1 className="reading-pane-subject min-w-0 text-[22px] font-semibold leading-[1.25] tracking-tight text-[var(--text)]">
         {message.subject}
       </h1>
@@ -147,7 +147,7 @@ export function MessageHeader({
               <button
                 type="button"
                 onClick={onAddContact}
-                className="inline-flex items-center gap-1 rounded bg-[var(--secondary)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--secondary-foreground)] transition-opacity hover:opacity-90"
+                className="inline-flex items-center gap-1 rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--foreground)] transition-opacity hover:opacity-90"
                 title="Add sender to contacts"
               >
                 {contactAdded ? 'Saved' : 'Add to contacts'}
@@ -200,6 +200,7 @@ export function MessageHeader({
             label="Reply"
             title="Reply"
             onClick={onReply}
+            className="hover:bg-[var(--primary-subtle)]"
             icon={
               <span className="text-[var(--primary)]">
                 <ReplyFilledIcon size={18} />
@@ -211,6 +212,7 @@ export function MessageHeader({
             label="Reply all"
             title="Reply all"
             onClick={onReplyAll}
+            className="hover:bg-[var(--primary-subtle)]"
             icon={
               <span className="text-[var(--primary)]">
                 <ReplyAllFilledIcon size={18} />
@@ -222,6 +224,7 @@ export function MessageHeader({
             label="Forward"
             title="Forward"
             onClick={onForward}
+            className="hover:bg-[var(--primary-subtle)]"
             icon={
               <span className="text-[var(--primary)]">
                 <MailSendIcon size={18} />
@@ -232,11 +235,11 @@ export function MessageHeader({
           <DialogTrigger>
             <Button
               aria-label="More actions"
-              className="inline-flex h-8 w-8 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="inline-flex h-8 w-8 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               <MoreIcon size={18} />
             </Button>
-            <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+            <Popover className="min-w-[180px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
               <Menu
                 aria-label="More actions"
                 items={menuItems}
