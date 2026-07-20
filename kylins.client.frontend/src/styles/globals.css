@@ -40,6 +40,33 @@
   --color-primary-fg: var(--primary-fg);
   --color-chrome: var(--chrome);
   --color-chrome-foreground: var(--chrome-foreground);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-floating: var(--surface-floating);
+  --color-chrome-tint: var(--chrome-tint);
+  --color-primary-subtle: var(--primary-subtle);
+  --color-primary-muted: var(--primary-muted);
+  --color-border-subtle: var(--border-subtle);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow: var(--shadow);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+
+  --duration-instant: 0ms;
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
   --color-amber: var(--amber);
   --color-green: var(--green);
 
@@ -52,11 +79,6 @@
   --font-sans: var(--font-ui);
   --font-serif: var(--font-serif);
   --font-mono: var(--font-mono);
-
-  --radius-xs: 2px;
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
 }
 
 @layer base {
@@ -91,6 +113,64 @@
   background-color: var(--chrome-glass);
   backdrop-filter: blur(18px) saturate(180%);
   -webkit-backdrop-filter: blur(18px) saturate(180%);
+}
+
+@utility surface {
+  background-color: var(--surface);
+}
+
+@utility surface-elevated {
+  background-color: var(--surface-elevated);
+}
+
+@utility surface-floating {
+  background-color: var(--surface-floating);
+}
+
+@utility chrome-tint {
+  background-color: var(--chrome-tint);
+}
+
+@utility primary-subtle {
+  background-color: var(--primary-subtle);
+}
+
+@utility primary-muted {
+  background-color: var(--primary-muted);
+}
+
+@utility border-subtle {
+  border-color: var(--border-subtle);
+}
+
+@utility shadow-elevation-sm {
+  box-shadow: var(--shadow-sm);
+}
+
+@utility shadow-elevation {
+  box-shadow: var(--shadow);
+}
+
+@utility shadow-elevation-md {
+  box-shadow: var(--shadow-md);
+}
+
+@utility shadow-elevation-lg {
+  box-shadow: var(--shadow-lg);
+}
+
+@utility shadow-elevation-xl {
+  box-shadow: var(--shadow-xl);
+}
+
+@utility transition-fast {
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-out);
+}
+
+@utility transition-normal {
+  transition-duration: var(--duration-normal);
+  transition-timing-function: var(--ease-out);
 }
 
 /* High-contrast mode disables backdrop blur to keep edges crisp. */
