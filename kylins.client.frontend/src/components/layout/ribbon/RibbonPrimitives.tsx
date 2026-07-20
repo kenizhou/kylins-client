@@ -44,7 +44,7 @@ export const RibbonButton = forwardRef<HTMLButtonElement, RibbonButtonProps>(fun
     >
       {icon}
       <span className={`whitespace-nowrap ${iconOnly ? 'sr-only' : ''}`}>{children}</span>
-      {split && <CaretDownIcon size={10} className="ml-0.5 opacity-70" />}
+      {split && !iconOnly && <CaretDownIcon size={10} className="ml-0.5 opacity-70" />}
     </Button>
   );
 });
