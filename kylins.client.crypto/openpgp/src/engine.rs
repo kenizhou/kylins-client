@@ -33,13 +33,23 @@
 //! internally — also zeroized on drop). The intermediate `String` is short-lived
 //! (a single statement); the bytes never leave crypto-aware containers.
 
-use crypto_core::SecretBox;
+use crypto_core::{
+    DecryptedPayload, EncryptedEnvelope, EncryptedPart, KeyPacketRef, Part, PartId, PartKind,
+    SecretBox, SerializationStrategy, Standard,
+};
 use secrecy::ExposeSecret;
 use sequoia_openpgp as openpgp;
 use sequoia_openpgp::cert::prelude::*;
 use sequoia_openpgp::crypto::Password;
+use sequoia_openpgp::parse::stream::{
+    DecryptorBuilder, DecryptionHelper, MessageLayer, MessageStructure, VerificationHelper,
+};
+use sequoia_openpgp::parse::Parse;
+use sequoia_openpgp::policy::Policy;
+use sequoia_openpgp::serialize::stream::{Encryptor, LiteralWriter, Message, Signer};
+use std::io::{Read, Write};
 
-use crate::error::{map_sequoia, policy, CryptoResult};
+use crate::error::{map_err, map_sequoia, policy, CryptoResult};
 use crate::keymap;
 
 /// Generate a fresh OpenPGP Cert with the engine's standard key shape.
@@ -176,6 +186,554 @@ pub fn import(data: &[u8], passphrase: Option<SecretBox<String>>) -> CryptoResul
 /// crosses this boundary).
 pub fn export_armored_public(cert: &openpgp::Cert) -> CryptoResult<Vec<u8>> {
     keymap::cert_to_armored_public(cert)
+}
+
+// =========================================================================
+// encrypt / decrypt (Task 6)
+// =========================================================================
+//
+// Streaming encrypt/decrypt of `Part` bytes for the framework's
+// `SingleMimeBlob` strategy. The engine sits BETWEEN the framework op
+// (`EncryptOp` / `DecryptOp`) and Sequoia: Task 8 resolves the framework's
+// `KeyHandleRef`s to `openpgp::Cert`s via `KeyStore` and then calls these
+// functions.
+//
+// ## Scope (engine-core)
+//
+// - **`SingleMimeBlob` only.** All parts are framed into ONE plaintext blob
+//   and encrypted as ONE OpenPGP message. `SplitPerPart` returns
+//   [`CryptoError::Policy`]`("SplitPerPart not supported in engine-core")`;
+//   wiring for it lands in a later slice.
+// - **No MIME framing.** PGP/MIME multipart framing is the send slice's job;
+//   here `Part::data` is opaque bytes.
+// - **No standalone sign/verify.** Those land in Task 7. Inline
+//   sign-then-encrypt IS in scope here (the embedded signature lives inside
+//   the ciphertext stream and is verified on decrypt via the helper's
+//   `VerificationHelper::check`).
+//
+// ## EncryptedEnvelope shape for OpenPGP
+//
+// The framework separates `parts[].ciphertext` from `recipients: Vec<KeyPacketRef>`,
+// but OpenPGP embeds the per-recipient PKESK key-wrap packets inside the
+// single encrypted-message blob (not cleanly separable). Resolution:
+// - **`parts`**: a single [`EncryptedPart`] whose `ciphertext` carries the
+//   full OpenPGP encrypted message (PKESKs + SEIP data). Its `id` / `kind`
+//   mirror the FIRST input `Part` (a label; the SEIP body is the framing
+//   blob, not the original part bytes).
+// - **`recipients`**: populated INFORMATIVELY from the input `recipient_certs`
+//   via [`keymap::cert_to_handle`]. The `packet` field is EMPTY — the actual
+//   PKESK key-wrap bytes are embedded in `parts[0].ciphertext` and are not
+//   extracted out in this slice. Documented mapping; a cleaner
+//   per-recipient-packet separation is out of scope.
+// - **`parts[].signature`** stays `None`. The embedded signature (when
+//   `sign_with` is `Some`) lives in the ciphertext stream, verified on
+//   decrypt via the helper's `check()`. Task 7's detached signatures are a
+//   separate flow.
+//
+// [`CryptoError::Policy`]: crypto_core::CryptoError::Policy
+
+/// Encode a slice of [`Part`]s into a single plaintext blob for
+/// `SingleMimeBlob` encryption.
+///
+/// Framing (little-endian, self-describing, symmetric under decode):
+/// ```text
+/// u32 LE part_count
+/// for each part:
+///   u32 LE id_len || id_bytes
+///   u8 kind_tag                                   // 0 = Body, 1 = Attachment
+///   if Attachment:
+///     u32 LE filename_len || filename_bytes
+///     u32 LE mime_len      || mime_bytes
+///     u8  content_id_present                       // 0 or 1
+///     if present: u32 LE content_id_len || content_id_bytes
+///   u32 LE data_len || data_bytes
+/// ```
+///
+/// This is INTERNAL framing — not a wire format. The decode side is
+/// [`unframe_parts`]; both sides live in this module so the contract is
+/// local. Not MIME: PGP/MIME composition is the send slice's job.
+fn frame_parts(parts: &[Part]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(parts.len() as u32).to_le_bytes());
+    for p in parts {
+        // id
+        out.extend_from_slice(&(p.id.0.len() as u32).to_le_bytes());
+        out.extend_from_slice(p.id.0.as_bytes());
+        // kind
+        match &p.kind {
+            PartKind::Body => {
+                out.push(0u8);
+            }
+            PartKind::Attachment {
+                filename,
+                mime,
+                content_id,
+            } => {
+                out.push(1u8);
+                out.extend_from_slice(&(filename.len() as u32).to_le_bytes());
+                out.extend_from_slice(filename.as_bytes());
+                out.extend_from_slice(&(mime.len() as u32).to_le_bytes());
+                out.extend_from_slice(mime.as_bytes());
+                match content_id {
+                    Some(cid) => {
+                        out.push(1u8);
+                        out.extend_from_slice(&(cid.len() as u32).to_le_bytes());
+                        out.extend_from_slice(cid.as_bytes());
+                    }
+                    None => out.push(0u8),
+                }
+            }
+        }
+        // data
+        out.extend_from_slice(&(p.data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&p.data);
+    }
+    out
+}
+
+/// Invert [`frame_parts`]. Returns [`CryptoError::Malformed`] on any framing
+/// violation (truncated length, bad kind tag, overflow).
+fn unframe_parts(blob: &[u8]) -> CryptoResult<Vec<Part>> {
+    use crypto_core::CryptoError;
+
+    let mut cursor = 0usize;
+    let read_u32 = |buf: &[u8], c: &mut usize| -> CryptoResult<u32> {
+        if (*c + 4) > buf.len() {
+            return Err(CryptoError::Malformed(
+                "framing: truncated u32 length".into(),
+            ));
+        }
+        let v = u32::from_le_bytes([
+            buf[*c], buf[*c + 1], buf[*c + 2], buf[*c + 3],
+        ]);
+        *c += 4;
+        Ok(v)
+    };
+    let read_bytes =
+        |buf: &[u8], c: &mut usize, len: u32| -> CryptoResult<Vec<u8>> {
+            let len = len as usize;
+            if (*c + len) > buf.len() {
+                return Err(CryptoError::Malformed(
+                    "framing: truncated payload".into(),
+                ));
+            }
+            let v = buf[*c..*c + len].to_vec();
+            *c += len;
+            Ok(v)
+        };
+
+    let count = read_u32(blob, &mut cursor)?;
+    // Sanity-cap to avoid pathological allocations on a corrupt framing.
+    if count > 1024 {
+        return Err(CryptoError::Malformed(format!(
+            "framing: part count {count} exceeds sane maximum (1024)"
+        )));
+    }
+
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let id_len = read_u32(blob, &mut cursor)?;
+        let id_bytes = read_bytes(blob, &mut cursor, id_len)?;
+        let id = PartId(String::from_utf8(id_bytes).map_err(|_| {
+            CryptoError::Malformed("framing: PartId is not valid UTF-8".into())
+        })?);
+
+        if cursor >= blob.len() {
+            return Err(CryptoError::Malformed(
+                "framing: truncated kind tag".into(),
+            ));
+        }
+        let kind_tag = blob[cursor];
+        cursor += 1;
+        let kind = match kind_tag {
+            0 => PartKind::Body,
+            1 => {
+                let fname_len = read_u32(blob, &mut cursor)?;
+                let fname = read_bytes(blob, &mut cursor, fname_len)?;
+                let mime_len = read_u32(blob, &mut cursor)?;
+                let mime = read_bytes(blob, &mut cursor, mime_len)?;
+                let cid_present = if cursor >= blob.len() {
+                    return Err(CryptoError::Malformed(
+                        "framing: truncated content_id flag".into(),
+                    ));
+                } else {
+                    blob[cursor]
+                };
+                cursor += 1;
+                let content_id = if cid_present != 0 {
+                    let cid_len = read_u32(blob, &mut cursor)?;
+                    let cid = read_bytes(blob, &mut cursor, cid_len)?;
+                    Some(String::from_utf8(cid).map_err(|_| {
+                        CryptoError::Malformed(
+                            "framing: content_id is not valid UTF-8".into(),
+                        )
+                    })?)
+                } else {
+                    None
+                };
+                PartKind::Attachment {
+                    filename: String::from_utf8(fname).map_err(|_| {
+                        CryptoError::Malformed(
+                            "framing: filename is not valid UTF-8".into(),
+                        )
+                    })?,
+                    mime: String::from_utf8(mime).map_err(|_| {
+                        CryptoError::Malformed(
+                            "framing: mime is not valid UTF-8".into(),
+                        )
+                    })?,
+                    content_id,
+                }
+            }
+            other => {
+                return Err(CryptoError::Malformed(format!(
+                    "framing: unknown PartKind tag {other}"
+                )));
+            }
+        };
+
+        let data_len = read_u32(blob, &mut cursor)?;
+        let data = read_bytes(blob, &mut cursor, data_len)?;
+        out.push(Part { id, kind, data });
+    }
+
+    if cursor != blob.len() {
+        return Err(CryptoError::Malformed(format!(
+            "framing: trailing {} bytes after last part",
+            blob.len() - cursor
+        )));
+    }
+    Ok(out)
+}
+
+/// Resolve a Cert's dedicated signing subkey as a Sequoia [`openpgp::crypto::KeyPair`].
+///
+/// Mirrors the Task-1 spike `detached-sign` / `inline-sign` key-resolution
+/// chain: `cert.keys().unencrypted_secret().with_policy(policy, None)
+/// .supported().alive().revoked(false).for_signing()`. The returned keypair
+/// is consumed by [`Signer::new`].
+fn resolve_signing_keypair(
+    cert: &openpgp::Cert,
+    write_policy: &dyn Policy,
+) -> CryptoResult<openpgp::crypto::KeyPair> {
+    let ka = cert
+        .keys()
+        .unencrypted_secret()
+        .with_policy(write_policy, None)
+        .supported()
+        .alive()
+        .revoked(false)
+        .for_signing()
+        .next()
+        .ok_or_else(|| {
+            policy("encrypt: sign_with cert has no usable signing subkey")
+        })?;
+    let keypair = map_sequoia(ka.key().clone().into_keypair())?;
+    Ok(keypair)
+}
+
+/// Streaming encrypt of `parts` into an [`EncryptedEnvelope`] (OpenPGP).
+///
+/// See the module-level docs above for the [`EncryptedEnvelope`] shape
+/// mapping (single ciphertext blob + informative `recipients` list).
+///
+/// **Spawn-blocking is Task 8's concern** — this function is synchronous.
+///
+/// # Errors
+///
+/// - [`CryptoError::Policy`]`("SplitPerPart not supported in engine-core")`
+///   if `serialization` is not `SingleMimeBlob`.
+/// - [`CryptoError::Policy`]`("encrypt: at least one recipient required")`
+///   if `recipient_certs` is empty.
+/// - [`CryptoError::Policy`]`("encrypt: at least one part required")` if
+///   `parts` is empty (the framing format is `part_count || …` so zero
+///   parts would round-trip but produces a useless envelope; reject
+///   upstream).
+/// - [`CryptoError::Policy`]`("encrypt: sign_with cert has no usable
+///   signing subkey")` if `sign_with` is `Some` and the cert lacks an
+///   alive, unrevoked, policy-accepted signing subkey.
+/// - [`CryptoError::Backend`] for any Sequoia error (encryptor build,
+///   signer build, literal-writer build, write, finalize).
+pub fn encrypt(
+    parts: &[Part],
+    serialization: SerializationStrategy,
+    recipient_certs: &[openpgp::Cert],
+    sign_with: Option<&openpgp::Cert>,
+    pgp_policy: &crate::policy::PgpPolicy,
+) -> CryptoResult<EncryptedEnvelope> {
+    if matches!(serialization, SerializationStrategy::SplitPerPart) {
+        return Err(policy("SplitPerPart not supported in engine-core"));
+    }
+    if recipient_certs.is_empty() {
+        return Err(policy("encrypt: at least one recipient required"));
+    }
+    if parts.is_empty() {
+        return Err(policy("encrypt: at least one part required"));
+    }
+
+    let write_policy = pgp_policy.write_policy();
+    let plaintext = frame_parts(parts);
+
+    // ---- OpenPGP message stack: Encryptor -> [Signer] -> LiteralWriter ----
+    //
+    // Sequoia's `Recipient` holds `&'a Key<…>` (borrows from the Cert), so we
+    // cannot easily collect recipients across certs into a single Vec. The
+    // `add_recipients` builder method takes a separate iterator and chains
+    // it; we use that for the 2..N certs.
+    let mut sink: Vec<u8> = Vec::new();
+    let first_keys = recipient_certs[0]
+        .keys()
+        .with_policy(write_policy, None)
+        .supported()
+        .alive()
+        .revoked(false)
+        .for_transport_encryption();
+    let mut encryptor_builder =
+        Encryptor::for_recipients(Message::new(&mut sink), first_keys);
+    for cert in &recipient_certs[1..] {
+        let keys = cert
+            .keys()
+            .with_policy(write_policy, None)
+            .supported()
+            .alive()
+            .revoked(false)
+            .for_transport_encryption();
+        encryptor_builder = encryptor_builder.add_recipients(keys);
+    }
+    let encryptor_msg = map_sequoia(encryptor_builder.build())?;
+
+    // Optional inline-sign: wrap the encryptor's sink-output in a Signer
+    // stream. The embedded signature is verified on decrypt by the helper's
+    // `check()` (see `Helper::check` below).
+    let signing_target: Message = if let Some(signer_cert) = sign_with {
+        let keypair = resolve_signing_keypair(signer_cert, write_policy)?;
+        let signer = map_sequoia(Signer::new(encryptor_msg, keypair))?;
+        map_sequoia(signer.build())?
+    } else {
+        encryptor_msg
+    };
+
+    // Literal data packet wraps the plaintext (required for OpenPGP message
+    // validity). `LiteralWriter::new(...).build()` returns a `Message`; the
+    // `io::Write` impl feeds bytes into the encryption (and signing) pipeline.
+    let mut literal = map_sequoia(LiteralWriter::new(signing_target).build())?;
+    map_err(literal.write_all(&plaintext))?;
+    map_sequoia(literal.finalize())?;
+
+    // Drop is intentional: at this point the writer stack has been torn down
+    // by `finalize()` and the OpenPGP message is complete in `sink`. We
+    // assert non-empty as a defensive check.
+    debug_assert!(!sink.is_empty(), "encrypt: ciphertext sink is empty");
+
+    // ---- EncryptedEnvelope shape (see module-level docs) ----
+    let first_part_id = parts[0].id.clone();
+    let first_part_kind = parts[0].kind.clone();
+    let recipients: Vec<KeyPacketRef> = recipient_certs
+        .iter()
+        .map(|c| KeyPacketRef {
+            recipient: keymap::cert_to_handle(c),
+            packet: Vec::new(), // PKESK bytes live inside the ciphertext blob.
+        })
+        .collect();
+
+    Ok(EncryptedEnvelope {
+        standard: Standard::OpenPgp,
+        serialization: SerializationStrategy::SingleMimeBlob,
+        parts: vec![EncryptedPart {
+            id: first_part_id,
+            kind: first_part_kind,
+            ciphertext: sink,
+            signature: None, // embedded sig (if any) is in the ciphertext stream.
+        }],
+        recipients,
+    })
+}
+
+/// Streaming decrypt of an [`EncryptedEnvelope`] back into plaintext parts
+/// plus an optional weak-algorithm warning.
+///
+/// Returns `(DecryptedPayload, Option<String>)` where the warning (if any)
+/// is the first legacy/weak signature algorithm noticed by the read path's
+/// `VerificationHelper::check` (see [`crate::policy::PgpPolicy::note_weak`]).
+///
+/// **Engine-core helper scope:** the embedded `VerificationHelper` returns
+/// ONLY the decryption cert (the engine has no signer-cert lookup — that's
+/// the framework's job in Task 8). This means a sign-then-encrypt message
+/// where the signer is NOT the decryption cert will FAIL to verify here,
+/// surfacing as [`CryptoError::Backend`]. For the engine-core round-trip
+/// (signer == decryptor) it works.
+///
+/// **Spawn-blocking is Task 8's concern** — this function is synchronous.
+pub fn decrypt(
+    envelope: &EncryptedEnvelope,
+    decryption_cert: &openpgp::Cert,
+    pgp_policy: &crate::policy::PgpPolicy,
+) -> CryptoResult<(DecryptedPayload, Option<String>)> {
+    let read_policy = pgp_policy.read_policy();
+
+    // For SingleMimeBlob the envelope has exactly one EncryptedPart whose
+    // ciphertext is the full OpenPGP message. SplitPerPart is rejected in
+    // encrypt(); defensively reject it here too.
+    if matches!(
+        envelope.serialization,
+        SerializationStrategy::SplitPerPart
+    ) {
+        return Err(policy("SplitPerPart not supported in engine-core"));
+    }
+    let ciphertext = envelope
+        .parts
+        .first()
+        .ok_or_else(|| policy("decrypt: envelope has no parts"))?
+        .ciphertext
+        .as_slice();
+
+    let helper = Helper {
+        cert: decryption_cert,
+        pgp_policy,
+        weak_warning: None,
+    };
+    // `DecryptorBuilder::from_bytes` returns `openpgp::Result<DecryptorBuilder>`;
+    // `b.with_policy(...)` returns `openpgp::Result<Decryptor<...>>`. Route
+    // each through `map_sequoia` separately (both surface as Backend errors).
+    let builder = map_sequoia(DecryptorBuilder::from_bytes(ciphertext))?;
+    let mut decryptor = map_sequoia(builder.with_policy(read_policy, None, helper))?;
+
+    // Drain the OpenPGP literal-data packet into a plaintext buffer. The
+    // Decryptor implements `io::Read`; `read_to_end` consumes the literal
+    // data and triggers `check()` for any embedded signatures (buffered,
+    // per Sequoia's DEFAULT_BUFFER_SIZE semantics).
+    let mut plaintext = Vec::new();
+    map_err(decryptor.read_to_end(&mut plaintext))?;
+
+    // Recover the helper to surface the weak-algo warning captured during
+    // `check()`. `into_helper` consumes the Decryptor.
+    let helper = decryptor.into_helper();
+
+    let parts = unframe_parts(&plaintext)?;
+    Ok((
+        DecryptedPayload {
+            standard: Standard::OpenPgp,
+            parts,
+        },
+        helper.weak_warning,
+    ))
+}
+
+/// `DecryptionHelper` + `VerificationHelper` for [`decrypt`].
+///
+/// Implements BOTH traits (Sequoia requires both for `DecryptorBuilder::
+/// with_policy`). Captures the first weak-algorithm warning in
+/// [`VerificationHelper::check`] by calling
+/// [`crate::policy::PgpPolicy::note_weak`] on each `GoodChecksum`'s
+/// signature; the engine function extracts it via [`Decryptor::into_helper`]
+/// after the plaintext has been drained.
+struct Helper<'a> {
+    cert: &'a openpgp::Cert,
+    pgp_policy: &'a crate::policy::PgpPolicy,
+    /// First weak-algo warning observed during `check()`. `None` until a
+    /// signature with a legacy/weak algorithm is verified.
+    weak_warning: Option<String>,
+}
+
+impl<'a> VerificationHelper for Helper<'a> {
+    fn get_certs(
+        &mut self,
+        _ids: &[openpgp::KeyHandle],
+    ) -> sequoia_openpgp::Result<Vec<openpgp::Cert>> {
+        // Engine-core knows only the decryption cert. Signer-cert lookup by
+        // `KeyHandle` is the framework's responsibility (Task 8 wires the
+        // keystore). For the round-trip case (signer == decryptor) this
+        // suffices; cross-cert sign-then-encrypt is verified by the framework
+        // layer in Task 8.
+        Ok(vec![self.cert.clone()])
+    }
+
+    fn check(&mut self, structure: MessageStructure) -> sequoia_openpgp::Result<()> {
+        for layer in structure.into_iter() {
+            if let MessageLayer::SignatureGroup { results } = layer {
+                let mut found_good = false;
+                for r in results {
+                    match r {
+                        Ok(good) => {
+                            found_good = true;
+                            // Capture the FIRST weak-algo warning (engine-core
+                            // surface; multiple-weak-algo aggregation lands
+                            // with Task 8's framework wiring).
+                            if self.weak_warning.is_none() {
+                                if let Some(w) = self.pgp_policy.note_weak(good.sig) {
+                                    self.weak_warning = Some(w);
+                                }
+                            }
+                        }
+                        // Surface the first verification failure verbatim.
+                        // A bad embedded signature MUST fail the decrypt.
+                        Err(e) => {
+                            return Err(sequoia_openpgp::Error::from(e).into());
+                        }
+                    }
+                }
+                if !found_good {
+                    return Err(sequoia_openpgp::Error::InvalidArgument(
+                        "no valid signature in group".into(),
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> DecryptionHelper for Helper<'a> {
+    fn decrypt(
+        &mut self,
+        pkesks: &[openpgp::packet::PKESK],
+        _skesks: &[openpgp::packet::SKESK],
+        sym_algo: Option<openpgp::types::SymmetricAlgorithm>,
+        decrypt_fn: &mut dyn FnMut(
+            Option<openpgp::types::SymmetricAlgorithm>,
+            &openpgp::crypto::SessionKey,
+        ) -> bool,
+    ) -> sequoia_openpgp::Result<Option<openpgp::Cert>> {
+        // Resolve the decryption cert's transport-encryption subkey. Use the
+        // read policy (relaxed; admits legacy keys for decrypting old mail).
+        let read_policy = self.pgp_policy.read_policy();
+        let key = self
+            .cert
+            .keys()
+            .unencrypted_secret()
+            .with_policy(read_policy, None)
+            .for_transport_encryption()
+            .next()
+            .ok_or_else(|| {
+                sequoia_openpgp::Error::InvalidArgument(
+                    "no usable transport-encryption subkey on decryption cert".into(),
+                )
+            })?
+            .key()
+            .clone();
+        let mut pair = key.into_keypair()?;
+
+        // Iterate every PKESK; the first one that successfully decrypts to a
+        // session key that `decrypt_fn` accepts wins. For multi-recipient
+        // messages the recipient matching THIS cert's subkey is somewhere in
+        // the list.
+        for pkesk in pkesks {
+            if let Some((algo, sk)) = pkesk.decrypt(&mut pair, sym_algo) {
+                if decrypt_fn(algo, &sk) {
+                    // Returning `None` here means "we don't claim a specific
+                    // intended-recipient cert"; engine-core does not enforce
+                    // the Intended Recipient Fingerprint anti-Surreptitious-
+                    // Forwarding check. That policy decision is the framework's.
+                    return Ok(None);
+                }
+            }
+        }
+        Err(sequoia_openpgp::Error::InvalidArgument(
+            "no PKESK matched the decryption cert's transport subkey".into(),
+        )
+        .into())
+    }
 }
 
 #[cfg(test)]
@@ -425,6 +983,283 @@ mod tests {
         assert!(
             matches!(err, crypto_core::CryptoError::Backend(_)),
             "wrong passphrase must surface as CryptoError::Backend; got: {err}"
+        );
+    }
+
+    // ---- encrypt / decrypt (Task 6) ---------------------------------------
+
+    /// Build a `PgpPolicy` fixture from the framework baseline. The engine's
+    /// `encrypt`/`decrypt` take `&PgpPolicy` (Task 4 bridge between the
+    /// framework policy and Sequoia's `StandardPolicy`).
+    fn pgp_policy() -> crate::policy::PgpPolicy {
+        crate::policy::PgpPolicy::default()
+    }
+
+    fn body_part(id: &str, data: &[u8]) -> crypto_core::Part {
+        crypto_core::Part {
+            id: crypto_core::PartId(id.to_string()),
+            kind: crypto_core::PartKind::Body,
+            data: data.to_vec(),
+        }
+    }
+
+    fn attachment_part(
+        id: &str,
+        filename: &str,
+        mime: &str,
+        content_id: Option<&str>,
+        data: &[u8],
+    ) -> crypto_core::Part {
+        crypto_core::Part {
+            id: crypto_core::PartId(id.to_string()),
+            kind: crypto_core::PartKind::Attachment {
+                filename: filename.to_string(),
+                mime: mime.to_string(),
+                content_id: content_id.map(str::to_string),
+            },
+            data: data.to_vec(),
+        }
+    }
+
+    #[test]
+    fn encrypt_decrypt_round_trip_single_body_part() {
+        let pol = pgp_policy();
+        let cert = gen();
+        let part = body_part("body", b"hi");
+
+        let env = encrypt(
+            std::slice::from_ref(&part),
+            crypto_core::SerializationStrategy::SingleMimeBlob,
+            std::slice::from_ref(&cert),
+            None,
+            &pol,
+        )
+        .expect("encrypt");
+
+        // Shape: exactly one EncryptedPart, at least one KeyPacketRef.
+        assert_eq!(
+            env.parts.len(),
+            1,
+            "SingleMimeBlob must produce exactly one EncryptedPart"
+        );
+        assert!(
+            !env.recipients.is_empty(),
+            "envelope must list at least one recipient"
+        );
+        assert_eq!(env.standard, crypto_core::Standard::OpenPgp);
+        assert_eq!(
+            env.serialization,
+            crypto_core::SerializationStrategy::SingleMimeBlob
+        );
+
+        let (payload, _weak) = decrypt(&env, &cert, &pol).expect("decrypt");
+        assert_eq!(payload.standard, crypto_core::Standard::OpenPgp);
+        assert_eq!(payload.parts.len(), 1, "one part in, one part out");
+        assert_eq!(payload.parts[0].id, part.id, "PartId must round-trip");
+        assert_eq!(payload.parts[0].data, part.data, "data must round-trip");
+        assert!(
+            matches!(payload.parts[0].kind, crypto_core::PartKind::Body),
+            "PartKind::Body must round-trip"
+        );
+    }
+
+    #[test]
+    fn encrypt_decrypt_preserves_multiple_parts_and_attachment_kind() {
+        let pol = pgp_policy();
+        let cert = gen();
+        let parts = vec![
+            body_part("body", b"hello body"),
+            attachment_part(
+                "att-1",
+                "report.pdf",
+                "application/pdf",
+                Some("<cid-1@example.org>"),
+                b"pdf bytes go here",
+            ),
+            attachment_part("att-2", "photo.png", "image/png", None, b"png-bytes"),
+        ];
+
+        let env = encrypt(
+            &parts,
+            crypto_core::SerializationStrategy::SingleMimeBlob,
+            std::slice::from_ref(&cert),
+            None,
+            &pol,
+        )
+        .expect("encrypt");
+
+        let (payload, _weak) = decrypt(&env, &cert, &pol).expect("decrypt");
+        assert_eq!(
+            payload.parts.len(),
+            parts.len(),
+            "part count must round-trip"
+        );
+        for (i, expected) in parts.iter().enumerate() {
+            assert_eq!(
+                payload.parts[i].id, expected.id,
+                "part {i} PartId must round-trip"
+            );
+            assert_eq!(
+                payload.parts[i].data,
+                expected.data,
+                "part {i} data must round-trip"
+            );
+            assert_eq!(
+                payload.parts[i].kind, expected.kind,
+                "part {i} PartKind must round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn encrypt_with_signer_then_decrypt_verifies_embedded_signature() {
+        // Sign-then-encrypt with signer == decryptor (engine-core has only the
+        // decryption cert available; framework-side signer lookup lands in
+        // Task 8). The embedded signature MUST verify on decrypt, otherwise
+        // `decrypt` returns Err.
+        let pol = pgp_policy();
+        let cert = gen();
+        let part = body_part("body", b"signed then encrypted");
+
+        let env = encrypt(
+            std::slice::from_ref(&part),
+            crypto_core::SerializationStrategy::SingleMimeBlob,
+            std::slice::from_ref(&cert),
+            Some(&cert),
+            &pol,
+        )
+        .expect("encrypt with sign_with");
+
+        // Sanity: encryption produced a single ciphertext blob.
+        assert_eq!(env.parts.len(), 1);
+
+        let (payload, _weak) = decrypt(&env, &cert, &pol).expect("decrypt must succeed");
+        assert_eq!(payload.parts.len(), 1);
+        assert_eq!(payload.parts[0].data, part.data);
+    }
+
+    #[test]
+    fn decrypt_tampered_ciphertext_fails() {
+        // If the encrypted blob is mutated, decryption must fail (Sequoia's
+        // SEIP/MDC integrity detection). This is the load-bearing security
+        // property of the decrypt path.
+        let pol = pgp_policy();
+        let cert = gen();
+        let part = body_part("body", b"integrity-protected");
+
+        let mut env = encrypt(
+            std::slice::from_ref(&part),
+            crypto_core::SerializationStrategy::SingleMimeBlob,
+            std::slice::from_ref(&cert),
+            None,
+            &pol,
+        )
+        .expect("encrypt");
+
+        // Flip a byte deep in the ciphertext (avoid the preamble to make sure
+        // we hit the SEIP body, not the PKESK wrap).
+        let ct_len = env.parts[0].ciphertext.len();
+        assert!(ct_len > 8, "ciphertext must be non-trivially long");
+        env.parts[0].ciphertext[ct_len - 1] ^= 0xff;
+
+        let err = decrypt(&env, &cert, &pol).unwrap_err();
+        assert!(
+            matches!(err, crypto_core::CryptoError::Backend(_)),
+            "tampered ciphertext must surface as Backend error; got: {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_multiple_recipients_decrypts_with_either() {
+        // Each recipient cert must be able to decrypt a message encrypted to
+        // both — Sequoia emits one PKESK per recipient inside the single
+        // ciphertext blob.
+        let pol = pgp_policy();
+        let cert_a = gen();
+        let cert_b = gen();
+        let part = body_part("body", b"multi-recipient payload");
+
+        let env = encrypt(
+            std::slice::from_ref(&part),
+            crypto_core::SerializationStrategy::SingleMimeBlob,
+            &[cert_a.clone(), cert_b.clone()],
+            None,
+            &pol,
+        )
+        .expect("encrypt");
+
+        // The informative recipients list must contain both.
+        assert_eq!(
+            env.recipients.len(),
+            2,
+            "recipients list must mirror the input recipient_certs"
+        );
+
+        // Each cert decrypts on its own.
+        let (pa, _w) = decrypt(&env, &cert_a, &pol).expect("cert_a decrypts");
+        assert_eq!(pa.parts[0].data, part.data);
+        let (pb, _w) = decrypt(&env, &cert_b, &pol).expect("cert_b decrypts");
+        assert_eq!(pb.parts[0].data, part.data);
+    }
+
+    #[test]
+    fn encrypt_split_per_part_returns_policy_error() {
+        let pol = pgp_policy();
+        let cert = gen();
+        let part = body_part("body", b"unsupported");
+
+        let err = encrypt(
+            &[part],
+            crypto_core::SerializationStrategy::SplitPerPart,
+            &[cert],
+            None,
+            &pol,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crypto_core::CryptoError::Policy(ref s)
+                if s.contains("SplitPerPart")),
+            "SplitPerPart must surface as Policy error mentioning SplitPerPart; got: {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_empty_recipient_list_returns_policy_error() {
+        let pol = pgp_policy();
+        let part = body_part("body", b"nobody to encrypt to");
+
+        let err = encrypt(
+            &[part],
+            crypto_core::SerializationStrategy::SingleMimeBlob,
+            &[],
+            None,
+            &pol,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crypto_core::CryptoError::Policy(ref s)
+                if s.contains("recipient")),
+            "no-recipients must surface as Policy error mentioning recipient; got: {err}"
+        );
+    }
+
+    #[test]
+    fn encrypt_empty_part_list_returns_policy_error() {
+        let pol = pgp_policy();
+        let cert = gen();
+
+        let err = encrypt(
+            &[],
+            crypto_core::SerializationStrategy::SingleMimeBlob,
+            &[cert],
+            None,
+            &pol,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crypto_core::CryptoError::Policy(ref s)
+                if s.contains("part")),
+            "no-parts must surface as Policy error mentioning part; got: {err}"
         );
     }
 }
