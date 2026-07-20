@@ -39,7 +39,7 @@ export function TaskThreadSidebar({ message, accountId }: TaskThreadSidebarProps
   if (!accountId || !threadId) return null;
 
   return (
-    <div className="border-t border-border bg-card p-3">
+    <div className="border-t border-[var(--border-subtle)] bg-surface-elevated p-3">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium text-foreground">
           <TasksIcon size={16} />
@@ -47,7 +47,7 @@ export function TaskThreadSidebar({ message, accountId }: TaskThreadSidebarProps
         </div>
         <Button
           onPress={() => setDialogOpen(true)}
-          className="inline-flex h-8 items-center gap-1 rounded bg-primary px-2 text-xs text-primary-fg transition-opacity hover:opacity-90"
+          className="inline-flex h-8 items-center gap-1 rounded bg-primary px-2 text-xs text-primary-fg transition-colors hover:bg-[var(--primary-subtle)]"
         >
           <PlusIcon size={14} />
           Add

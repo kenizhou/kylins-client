@@ -45,14 +45,14 @@ export function TaskToolbar({
   onNewTask,
 }: TaskToolbarProps) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-card px-4 py-3">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-b-[var(--border-subtle)] bg-surface px-4 py-3">
       <Tabs selectedKey={filter} onSelectionChange={(key) => onFilterChange(key as TaskFilter)}>
-        <TabList className="flex rounded-lg bg-[var(--surface)] p-1">
+        <TabList className="flex rounded-lg bg-surface-elevated p-1">
           {FILTER_OPTIONS.map((opt) => (
             <Tab
               key={opt.value}
               id={opt.value}
-              className="rounded-md px-3 py-1.5 text-sm text-muted-text outline-none transition-colors hover:text-foreground data-[selected]:bg-card data-[selected]:text-foreground data-[selected]:shadow-sm"
+              className="rounded-md px-3 py-1.5 text-sm text-muted-text outline-none transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground data-[selected]:bg-surface-floating data-[selected]:text-foreground data-[selected]:shadow-sm"
             >
               {opt.label}
             </Tab>
@@ -67,17 +67,17 @@ export function TaskToolbar({
           className="flex items-center gap-2"
         >
           <span className="text-sm text-muted-text">Sort:</span>
-          <Button className="flex h-9 items-center justify-between gap-2 rounded border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary">
+          <Button className="flex h-9 items-center justify-between gap-2 rounded border border-[var(--border-subtle)] bg-surface-elevated px-2 text-sm text-foreground outline-none focus:border-primary">
             <SelectValue />
             <span aria-hidden="true">▼</span>
           </Button>
-          <Popover className="z-[var(--z-popover)] rounded border border-border bg-background shadow-lg">
+          <Popover className="z-[var(--z-popover)] rounded border border-[var(--border-subtle)] bg-surface-elevated shadow-lg">
             <ListBox className="py-1">
               {SORT_OPTIONS.map((opt) => (
                 <ListBoxItem
                   key={opt.value}
                   id={opt.value}
-                  className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover data-[selected=true]:bg-selected"
+                  className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-[var(--primary-subtle)] data-[selected=true]:bg-[var(--primary-muted)]"
                 >
                   {opt.label}
                 </ListBoxItem>

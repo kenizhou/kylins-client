@@ -38,7 +38,9 @@ export function TaskItem({
       onClick={onSelect}
       onDoubleClick={onEdit}
       className={`group relative flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${
-        isSelected ? 'border-primary bg-selected' : 'border-border bg-card hover:border-primary/50'
+        isSelected
+          ? 'border-primary bg-[var(--primary-muted)]'
+          : 'border-[var(--border-subtle)] bg-surface-elevated hover:border-[var(--primary)]/50 hover:bg-[var(--primary-subtle)]'
       }`}
     >
       <Checkbox
@@ -46,7 +48,7 @@ export function TaskItem({
         onChange={onToggle}
         onClick={(e) => e.stopPropagation()}
         aria-label={task.isCompleted ? 'Mark incomplete' : 'Mark complete'}
-        className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border bg-background data-[selected]:border-primary data-[selected]:bg-primary"
+        className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-[var(--border-subtle)] bg-[var(--background)] data-[selected]:border-primary data-[selected]:bg-primary"
       >
         {task.isCompleted && <CheckIcon size={12} className="text-primary-fg" />}
       </Checkbox>
@@ -82,7 +84,7 @@ export function TaskItem({
             {task.tags.map((tag) => (
               <span
                 key={tag}
-                className="rounded-full bg-[var(--surface)] px-2 py-0.5 text-xs text-muted-text"
+                className="rounded-full bg-surface-floating px-2 py-0.5 text-xs text-muted-text"
               >
                 {tag}
               </span>
