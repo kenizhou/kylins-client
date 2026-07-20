@@ -118,6 +118,13 @@
   --chrome: color-mix(in srgb, var(--primary) 4%, var(--series-200));
   --chrome-foreground: var(--foreground);
 
+  /* Glassmorphism chrome surfaces — translucent with a subtle gradient. */
+  --chrome-glass: color-mix(in srgb, var(--chrome) 82%, transparent);
+  --chrome-glass-start: color-mix(in srgb, var(--chrome) 92%, transparent);
+  --chrome-glass-end: color-mix(in srgb, var(--chrome) 72%, transparent);
+  --glass-border: color-mix(in srgb, var(--foreground) 6%, transparent);
+  --glass-shadow: 0 4px 24px -6px color-mix(in srgb, var(--series-950) 8%, transparent);
+
   /* Shared typography */
   --text-overline: 700 11px / 1.2 var(--font-ui);
 
@@ -214,6 +221,13 @@
   /* Chrome surface — darker than surface in both modes to preserve elevation. */
   --chrome: color-mix(in srgb, var(--primary) 5%, var(--series-100));
   --chrome-foreground: var(--foreground);
+
+  /* Glassmorphism chrome surfaces — slightly more translucent in dark mode. */
+  --chrome-glass: color-mix(in srgb, var(--chrome) 78%, transparent);
+  --chrome-glass-start: color-mix(in srgb, var(--chrome) 88%, transparent);
+  --chrome-glass-end: color-mix(in srgb, var(--chrome) 68%, transparent);
+  --glass-border: color-mix(in srgb, var(--foreground) 8%, transparent);
+  --glass-shadow: 0 4px 24px -6px color-mix(in srgb, #000000 28%, transparent);
 }
 
 [data-contrast='high'],
@@ -256,6 +270,13 @@
   --success: #008000;
   --warning: #ff8c00;
   --error: #ff0000;
+
+  /* High contrast disables glassmorphism for readability. */
+  --chrome-glass: var(--chrome);
+  --chrome-glass-start: var(--chrome);
+  --chrome-glass-end: var(--chrome);
+  --glass-border: var(--border);
+  --glass-shadow: none;
 }
 
 [data-contrast='high'].dark {
@@ -297,6 +318,13 @@
   --success: #00ff00;
   --warning: #ffd700;
   --error: #ff6666;
+
+  /* High contrast disables glassmorphism for readability. */
+  --chrome-glass: var(--chrome);
+  --chrome-glass-start: var(--chrome);
+  --chrome-glass-end: var(--chrome);
+  --glass-border: var(--border);
+  --glass-shadow: none;
 }
 
 [data-font-size='small'] {

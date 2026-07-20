@@ -74,7 +74,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-[var(--header-h)] flex items-center pl-2 pr-[148px] bg-[var(--chrome)] select-none"
+      className="relative h-[var(--header-h)] flex items-center pl-2 pr-[148px] glass bg-gradient-to-b from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] border-b border-[var(--glass-border)] shadow-[var(--glass-shadow)] select-none"
       style={dragStyle}
     >
       {/* Left: hamburger + menu bar */}

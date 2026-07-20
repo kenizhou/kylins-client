@@ -64,7 +64,7 @@ export function ToolWindowBar() {
   return (
     <nav
       aria-label="Activity bar"
-      className="flex w-[var(--tool-w)] shrink-0 flex-col items-center justify-between bg-chrome py-2"
+      className="flex w-[var(--tool-w)] shrink-0 flex-col items-center justify-between glass bg-gradient-to-r from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] border-r border-[var(--glass-border)] py-2"
     >
       <ToggleButtonGroup
         selectionMode="single"
