@@ -42,7 +42,7 @@
   --secondary-foreground: var(--series-900);
   --muted: var(--series-100);
   --muted-foreground: var(--series-600);
-  --accent: var(--series-50);
+  --accent: color-mix(in srgb, var(--primary) 5%, var(--series-50));
   --accent-foreground: var(--series-900);
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
@@ -74,12 +74,12 @@
   --surface: var(--series-100);
   --text: var(--series-900);
   --muted-text: var(--series-600);
-  --hover: var(--series-200);
-  --selected: var(--series-200);
+  --hover: color-mix(in srgb, var(--primary) 7%, var(--series-100));
+  --selected: color-mix(in srgb, var(--primary) 13%, var(--series-100));
   --selected-text: var(--text);
   --primary-fg: #ffffff;
 
-  /* Neutral highlight / selection — independent from the accent color. */
+  /* Neutral highlight / selection — kept neutral so it does not fight the primary tint. */
   --highlight: var(--series-100);
   --highlight-text: var(--series-900);
 
@@ -114,8 +114,8 @@
   --z-tooltip: 100;
   --z-toast: 110;
 
-  /* Chrome surface — sits visually above cards. */
-  --chrome: var(--series-200);
+  /* Chrome surface — sits visually above cards with a whisper of the accent hue. */
+  --chrome: color-mix(in srgb, var(--primary) 4%, var(--series-200));
   --chrome-foreground: var(--foreground);
 
   /* Shared typography */
@@ -165,7 +165,7 @@
   --secondary-foreground: var(--series-900);
   --muted: var(--series-200);
   --muted-foreground: var(--series-600);
-  --accent: var(--series-300);
+  --accent: color-mix(in srgb, var(--primary) 6%, var(--series-300));
   --accent-foreground: var(--series-900);
   --destructive: #f87171;
   --destructive-foreground: var(--series-950);
@@ -196,8 +196,8 @@
   --surface: var(--series-200);
   --text: var(--series-900);
   --muted-text: var(--series-600);
-  --hover: var(--series-300);
-  --selected: var(--series-300);
+  --hover: color-mix(in srgb, var(--primary) 8%, var(--series-200));
+  --selected: color-mix(in srgb, var(--primary) 15%, var(--series-200));
   --selected-text: var(--text);
   --primary-fg: var(--series-950);
 
@@ -212,7 +212,7 @@
   --green: #34d399;
 
   /* Chrome surface — darker than surface in both modes to preserve elevation. */
-  --chrome: var(--series-100);
+  --chrome: color-mix(in srgb, var(--primary) 5%, var(--series-100));
   --chrome-foreground: var(--foreground);
 }
 
@@ -234,7 +234,7 @@
   --background: #ffffff;
   --foreground: #000000;
   --surface: #ffffff;
-  --chrome: #f0f0f0;
+  --chrome: color-mix(in srgb, var(--primary) 8%, #f0f0f0);
   --card: #ffffff;
   --muted: #ffffff;
   --muted-foreground: #000000;
@@ -248,8 +248,8 @@
   --primary-foreground: #ffffff;
   --secondary: #ffffff;
   --secondary-foreground: #000000;
-  --hover: #ffff00;
-  --selected: #00ffff;
+  --hover: color-mix(in srgb, var(--primary) 25%, #ffffff);
+  --selected: color-mix(in srgb, var(--primary) 45%, #ffffff);
   --link: #0000ff;
   --link-hover: #000080;
   --destructive: #ff0000;
@@ -275,7 +275,7 @@
   --background: #000000;
   --foreground: #ffffff;
   --surface: #000000;
-  --chrome: #1a1a1a;
+  --chrome: color-mix(in srgb, var(--primary) 12%, #1a1a1a);
   --card: #000000;
   --muted: #000000;
   --muted-foreground: #ffffff;
@@ -289,8 +289,8 @@
   --primary-foreground: #000000;
   --secondary: #000000;
   --secondary-foreground: #ffffff;
-  --hover: #ffff00;
-  --selected: #ff00ff;
+  --hover: color-mix(in srgb, var(--primary) 20%, #000000);
+  --selected: color-mix(in srgb, var(--primary) 35%, #000000);
   --link: #00ffff;
   --link-hover: #80ffff;
   --destructive: #ff6666;

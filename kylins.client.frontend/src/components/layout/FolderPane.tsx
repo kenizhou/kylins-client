@@ -119,7 +119,7 @@ function FolderRow({
         onPress={onClick}
         className={`
           group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left
-          ${active ? 'bg-selected text-selected-text folder-pane-selected-row' : 'text-foreground hover:bg-hover'}
+          ${active ? 'bg-selected text-selected-text' : 'text-foreground hover:bg-hover'}
         `}
       >
         {active && <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />}
@@ -395,11 +395,7 @@ function AccountFolderTree({
         textValue={folder.name}
         className={({ isSelected, isHovered }) =>
           `group relative flex w-full items-center outline-none ${
-            isSelected
-              ? 'bg-selected text-selected-text folder-pane-selected-row'
-              : isHovered
-                ? 'bg-hover'
-                : ''
+            isSelected ? 'bg-selected text-selected-text' : isHovered ? 'bg-hover' : ''
           }`
         }
       >

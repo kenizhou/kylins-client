@@ -191,23 +191,6 @@
   scrollbar-gutter: stable;
 }
 
-/* Extend the selected row background into the scrollbar gutter so the
-   highlight runs all the way to the pane edge. The 6px strip matches the
-   .kylins-auto-scrollbar WebKit scrollbar width. */
-.folder-pane-selected-row {
-  position: relative;
-}
-.folder-pane-selected-row::after {
-  content: '';
-  position: absolute;
-  right: -6px;
-  top: 0;
-  bottom: 0;
-  width: 6px;
-  background-color: inherit;
-  pointer-events: none;
-}
-
 .split-button[data-open='true'] {
   background-color: var(--selected);
   color: var(--selected-text);
