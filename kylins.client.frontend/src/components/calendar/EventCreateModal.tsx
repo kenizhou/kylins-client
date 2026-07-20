@@ -144,7 +144,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
             <h3 className="text-base font-semibold text-foreground">New event</h3>
             <Button
               slot="close"
-              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground"
               aria-label="Close"
             >
               <CloseIcon size={16} />
@@ -279,7 +279,7 @@ export function EventCreateModal({ accountId, onClose, onCreated }: EventCreateM
           <div className="mt-5 flex justify-end gap-2">
             <Button
               slot="close"
-              className="h-11 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-hover"
+              className="h-11 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-[var(--primary-subtle)]"
             >
               Cancel
             </Button>

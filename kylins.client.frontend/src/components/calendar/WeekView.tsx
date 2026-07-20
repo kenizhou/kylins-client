@@ -32,7 +32,7 @@ export function WeekView() {
           <div
             key={k}
             className={`flex min-h-[140px] flex-col border-r border-b border-[var(--border-subtle)] transition-colors ${
-              isToday ? 'bg-[var(--primary-subtle)]' : 'hover:bg-[var(--primary-subtle)]/70'
+              isToday ? 'bg-[var(--primary-subtle)]' : 'hover:bg-[var(--primary-subtle)]'
             }`}
           >
             <div

@@ -40,7 +40,7 @@ export function DayView() {
           >
             <div className="w-24 shrink-0 text-xs text-[var(--muted-text)]">
               {o.allDay ? (
-                <span className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[0.625rem] font-medium text-[var(--highlight-text)]">
+                <span className="rounded bg-[var(--primary-subtle)] px-1.5 py-0.5 text-[0.625rem] font-medium text-[var(--foreground)]">
                   All day
                 </span>
               ) : (

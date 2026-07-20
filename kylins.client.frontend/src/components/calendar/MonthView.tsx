@@ -47,7 +47,7 @@ export function MonthView() {
               className={`min-h-[96px] border-b border-r border-[var(--border-subtle)] p-1 transition-colors ${
                 inMonth
                   ? 'bg-[var(--background)] hover:bg-[var(--primary-subtle)]'
-                  : 'bg-surface-elevated/60'
+                  : 'bg-surface-elevated'
               }`}
             >
               <div

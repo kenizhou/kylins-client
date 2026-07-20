@@ -43,7 +43,7 @@ function ColorDialog({ isOpen, initialColor, onClose, onSelect }: ColorDialogPro
         <div className="flex w-full justify-end gap-2">
           <Button
             onPress={onClose}
-            className="h-11 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-hover"
+            className="h-11 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-[var(--primary-subtle)]"
           >
             Cancel
           </Button>
