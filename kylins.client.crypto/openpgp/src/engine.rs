@@ -619,6 +619,348 @@ pub fn decrypt(
     ))
 }
 
+// =========================================================================
+// sign / verify (Task 7)
+// =========================================================================
+//
+// Detached sign + verify with the framework's `SignatureState` mapping.
+// Inline signing for its own sake is NOT in scope here: Task 6's
+// `encrypt(sign_with = Some)` already produces inline-signed ciphertext
+// (verified on decrypt via [`Helper::check`]); these functions cover the
+// "signature as a standalone artifact" flow (PGP/MIME detached signature
+// parts, signing-only operations).
+//
+// ## `SignatureState` mapping (spec §8)
+//
+// - matching known-signer + `verify_bytes` OK        → `ValidVerified`
+// - NO matching known-signer (filtered by sig issuer) → `UnknownKey`
+// - matching known-signer but `verify_bytes` errors   → `Invalid`
+// - `ValidUnverified` / `Mismatch`                    → not produced here
+//   (receive/trust-slice states)
+//
+// The split between `UnknownKey` and `Invalid` is decided BEFORE invoking
+// `DetachedVerifier`: we pre-filter `known_signers` by the sig packet's
+// issuer fingerprint(s). If no signer matches, we skip verification entirely
+// and return `UnknownKey` — this avoids relying on Sequoia's "No Key" error
+// shape and gives a clean, engine-level state distinction.
+
+/// Detached-sign `payload` with `signer_cert`'s dedicated signing subkey.
+///
+/// Verified Task-1 spike `## detached-sign` shape:
+/// `Signer::new(Message::new(sink), keypair)?.detached().build()?`, then
+/// `write_all(payload)` + `finalize()`. The data is HASHED, not emitted —
+/// `signature` holds ONLY the detached signature packet.
+///
+/// The signing subkey is resolved via [`resolve_signing_keypair`] (same path
+/// the Task 6 inline-sign uses), so the same policy / liveness / revocation
+/// rules apply: an alive, unrevoked, policy-accepted signing subkey with
+/// unencrypted secret material is required.
+///
+/// **Spawn-blocking is Task 8's concern** — this function is synchronous.
+///
+/// # Errors
+///
+/// - [`CryptoError::Policy`]`("encrypt: sign_with cert has no usable signing
+///   subkey")` (shared with [`encrypt`]'s inline-sign path) if `signer_cert`
+///   lacks an alive, unrevoked, policy-accepted signing subkey with
+///   unencrypted secret material.
+/// - [`CryptoError::Backend`] for any Sequoia error (keypair build, signer
+///   builder, write, finalize).
+///
+/// [`CryptoError::Policy`]: crypto_core::CryptoError::Policy
+/// [`CryptoError::Backend`]: crypto_core::CryptoError::Backend
+pub fn sign_detached(
+    payload: &[u8],
+    signer_cert: &openpgp::Cert,
+    pgp_policy: &crate::policy::PgpPolicy,
+) -> CryptoResult<crypto_core::DetachedSignature> {
+    let write_policy = pgp_policy.write_policy();
+    let keypair = resolve_signing_keypair(signer_cert, write_policy)?;
+
+    let mut sig_buf: Vec<u8> = Vec::new();
+    let signer = map_sequoia(Signer::new(Message::new(&mut sig_buf), keypair))?;
+    let mut writer = map_sequoia(signer.detached().build())?;
+    map_err(writer.write_all(payload))?;
+    map_sequoia(writer.finalize())?;
+
+    debug_assert!(
+        !sig_buf.is_empty(),
+        "sign_detached: signature buffer is empty after finalize"
+    );
+
+    Ok(crypto_core::DetachedSignature {
+        standard: Standard::OpenPgp,
+        signer: keymap::cert_to_handle(signer_cert),
+        signature: sig_buf,
+    })
+}
+
+/// Verify a [`DetachedSignature`] over `payload`, mapping the outcome to a
+/// [`SignatureState`] per spec §8.
+///
+/// See the module-level docs above for the full state-mapping table. The
+/// load-bearing decision is `UnknownKey` vs `Invalid`: it is made by
+/// pre-filtering `known_signers` against the signature packet's issuer
+/// fingerprint(s) — if no known signer matches, `UnknownKey` is returned
+/// WITHOUT invoking the verifier. Only when a matching key is available do
+/// we run `DetachedVerifierBuilder::from_bytes(...)?.with_policy(read_policy,
+/// None, helper)?.verify_bytes(payload)?` (the verified `## detached-verify`
+/// shape).
+///
+/// **Weak-algorithm advisory:** [`crate::policy::PgpPolicy::note_weak`] is
+/// called on the parsed `Signature` packet. If it returns a warning:
+/// - on `ValidVerified`: the warning is folded into `failure_reason` as
+///   advisory text (the framework docstring says `failure_reason` is `None`
+///   on success states — engine-core extends this with a weak-algo advisory
+///   because no separate channel exists yet; a cleaner surfacing path lands
+///   with the receive slice's Web-of-Trust wiring). The state STAYS
+///   `ValidVerified` — weak-but-valid is NOT a verification failure.
+/// - on `Invalid`: the warning is appended to the failure reason after a
+///   separator, providing additional context.
+///
+/// `revocation_reason` is always `None` (PGP key revocation handling arrives
+/// with Web-of-Trust in the receive slice).
+///
+/// **Spawn-blocking is Task 8's concern** — this function is synchronous.
+pub fn verify_detached(
+    payload: &[u8],
+    sig: &crypto_core::DetachedSignature,
+    known_signers: &[openpgp::Cert],
+    pgp_policy: &crate::policy::PgpPolicy,
+) -> CryptoResult<crypto_core::VerificationResult> {
+    let read_policy = pgp_policy.read_policy();
+
+    // Parse the signature packet ONCE up front. Two consumers:
+    //   (a) extract issuer fingerprint(s) for the UnknownKey pre-check and
+    //       for the UnknownKey `signer` field;
+    //   (b) feed to `note_weak` for the weak-algo advisory.
+    //
+    // We parse via `PacketParserBuilder::from_bytes(...).build()` + `recurse()`
+    // (the same pattern `policy.rs::sign_fixture_with_hash` uses) rather than
+    // `Signature::from_bytes`: the latter's `Parse` impl dispatches through
+    // `Self::parse(parser)` which we found trips a "Malformed packet: unknown
+    // version" error on a valid v4 Signature emitted by `Signer::detached()`
+    // (the bytes start with `0xc2 0xbd 0x04 ...` = CTB New / Sig tag / len 189
+    // / version 4). `PacketParser` correctly recognizes the same bytes.
+    let sig_packet: openpgp::packet::Signature = parse_signature_packet(&sig.signature)?;
+    let issuer_fps = extract_issuer_fingerprints(&sig_packet);
+
+    // Pre-filter: do any known_signers match the sig's issuer fingerprint(s)?
+    // We compare against EVERY key in the cert (primary + subkeys) because the
+    // signature is typically made by a dedicated SIGNING SUBKEY — the sig
+    // packet's IssuerFingerprint subpacket then carries the subkey's fp, not
+    // the cert primary's fp (which is what `cert.fingerprint()` returns and
+    // what `keymap::cert_to_handle` surfaces). Matching on the primary fp
+    // alone would falsely classify a known signer as UnknownKey.
+    //
+    // Comparison is on `Fingerprint` (not `KeyHandle`) — the sig packet's
+    // IssuerFingerprint subpacket is the strong form (RFC 9580 §5.2.3.28);
+    // matching on it avoids false positives from short-KeyID collisions.
+    let matching: Vec<&openpgp::Cert> = known_signers
+        .iter()
+        .filter(|c| {
+            c.keys().any(|ka| {
+                let ka_fp = ka.key().fingerprint();
+                issuer_fps.iter().any(|fp| fp == &ka_fp)
+            })
+        })
+        .collect();
+
+    if matching.is_empty() {
+        // UnknownKey: build a best-effort signer KeyHandleRef from the sig
+        // packet's issuer fingerprint. `usage = Sign` because this IS a
+        // signing key; `algorithm = "unknown"` because we do not have the
+        // Cert's key material to read the public-key algorithm. The
+        // fingerprint is the load-bearing field for UI trust prompts.
+        let signer_ref = issuer_fps.first().map(|fp| {
+            let hex = fp.to_hex();
+            crypto_core::KeyHandleRef {
+                handle: crypto_core::KeyHandle::Software(crypto_core::KeyId(
+                    format!("openpgp|{}", hex),
+                )),
+                standard: Standard::OpenPgp,
+                fingerprint: crypto_core::Fingerprint::new(hex),
+                usage: crypto_core::KeyUsage::Sign,
+                algorithm: "unknown".to_string(),
+            }
+        });
+        return Ok(crypto_core::VerificationResult {
+            state: crypto_core::SignatureState::UnknownKey,
+            signer: signer_ref,
+            failure_reason: None,
+            revocation_reason: None,
+        });
+    }
+
+    // Matching known-signer available → run the verifier. The helper hands
+    // back the matching subset; `check()` enforces "at least one
+    // GoodChecksum" so tampered data fails fast (mirrors spike-notes pattern).
+    let helper = VerifyHelper {
+        known_signers: matching.iter().map(|c| (*c).clone()).collect(),
+    };
+    let builder = map_sequoia(
+        openpgp::parse::stream::DetachedVerifierBuilder::from_bytes(&sig.signature),
+    )?;
+    let mut verifier = map_sequoia(builder.with_policy(read_policy, None, helper))?;
+
+    // `verify_bytes` runs the hash + comparison; the helper's `check()` is
+    // invoked during this call (Sequoia buffers the signature group until the
+    // data is fully hashed).
+    let verify_outcome = verifier.verify_bytes(payload);
+
+    // Signer handle from the FIRST matching cert (stable choice; multiple
+    // matching certs is the multi-signer case, not in scope here).
+    let signer_handle = keymap::cert_to_handle(matching[0]);
+
+    // Weak-algo advisory is computed regardless of outcome — a tampered
+    // signature over a weak-algo sig packet still surfaces the warning as
+    // extra context.
+    let weak_warning = pgp_policy.note_weak(&sig_packet);
+
+    match verify_outcome {
+        Ok(()) => Ok(crypto_core::VerificationResult {
+            state: crypto_core::SignatureState::ValidVerified,
+            signer: Some(signer_handle),
+            // Advisory: `None` when the sig uses modern algos (the common
+            // case). Engine-core convention — see the docstring above.
+            failure_reason: weak_warning,
+            revocation_reason: None,
+        }),
+        Err(e) => {
+            // Fold the weak-algo warning (if any) into the failure reason as
+            // additional context. The Sequoia error message is primary.
+            let reason = match weak_warning {
+                Some(w) => format!("{}; {}", e, w),
+                None => format!("{}", e),
+            };
+            Ok(crypto_core::VerificationResult {
+                state: crypto_core::SignatureState::Invalid,
+                signer: Some(signer_handle),
+                failure_reason: Some(reason),
+                revocation_reason: None,
+            })
+        }
+    }
+}
+
+/// Parse a single binary Signature packet from `bytes`.
+///
+/// Mirrors the verified pattern in `policy.rs::sign_fixture_with_hash`:
+/// `PacketParserBuilder::from_bytes(...)?.build()?` returns a
+/// `PacketParserResult`; we match out the `Some(parser)` arm and call
+/// `recurse()` to materialize the `Packet`. The packet MUST be a
+/// `Packet::Signature` — anything else is a [`CryptoError::Malformed`].
+///
+/// We use this instead of [`openpgp::packet::Signature::from_bytes`] because
+/// the latter's `Parse` impl dispatches through a `Self::parse` method that
+/// we observed failing with "Malformed packet: unknown version" on a valid
+/// v4 Signature produced by [`Signer::detached`] (verified: bytes start with
+/// `0xc2 0xbd 0x04 ...` = CTB New / Signature tag / length 189 / version 4).
+/// `PacketParser` parses the same bytes correctly. This is a Sequoia 2.4.1
+/// quirk we route around rather than fight.
+fn parse_signature_packet(bytes: &[u8]) -> CryptoResult<openpgp::packet::Signature> {
+    use crypto_core::CryptoError;
+
+    let ppr = map_sequoia(
+        openpgp::parse::PacketParserBuilder::from_bytes(bytes)
+            .and_then(|b| b.build()),
+    )?;
+    let pp = match ppr {
+        openpgp::parse::PacketParserResult::Some(pp) => pp,
+        _ => {
+            return Err(CryptoError::Malformed(
+                "signature packet: empty input".into(),
+            ));
+        }
+    };
+    let (packet, _) = map_sequoia(pp.recurse())?;
+    match packet {
+        openpgp::Packet::Signature(s) => Ok(s),
+        other => Err(CryptoError::Malformed(format!(
+            "signature packet: expected Signature, got {:?}",
+            other.tag()
+        ))),
+    }
+}
+
+/// Extract distinct issuer fingerprints from a parsed `Signature` packet.
+///
+/// Wraps [`openpgp::packet::Signature::get_issuers`], which returns both
+/// `Issuer` (KeyID) and `IssuerFingerprint` subpackets, Fingerprints first.
+/// We keep only the `Fingerprint` variants and de-duplicate by hex so a sig
+/// carrying redundant subpackets yields a clean `Vec<Fingerprint>`.
+fn extract_issuer_fingerprints(
+    sig: &openpgp::packet::Signature,
+) -> Vec<openpgp::Fingerprint> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for kh in sig.get_issuers() {
+        if let openpgp::KeyHandle::Fingerprint(fp) = kh {
+            let hex = fp.to_hex();
+            if seen.insert(hex) {
+                out.push(fp);
+            }
+        }
+    }
+    out
+}
+
+/// `VerificationHelper` for [`verify_detached`].
+///
+/// Holds the pre-filtered matching subset of `known_signers` (the engine has
+/// already established that at least one matches the sig's issuer
+/// fingerprint). `get_certs` hands them all back so Sequoia can resolve the
+/// exact signing subkey by `KeyHandle`. `check` enforces "at least one
+/// `GoodChecksum`" — a tampered payload yields no `GoodChecksum`, so `check`
+/// returns `Err` and `verify_bytes` propagates it as `Err`.
+struct VerifyHelper {
+    known_signers: Vec<openpgp::Cert>,
+}
+
+impl VerificationHelper for VerifyHelper {
+    fn get_certs(
+        &mut self,
+        _ids: &[openpgp::KeyHandle],
+    ) -> sequoia_openpgp::Result<Vec<openpgp::Cert>> {
+        // `_ids` is ignored: the engine has already filtered
+        // `known_signers` to the matching subset. Returning all of them lets
+        // Sequoia pick the right signing subkey by KeyHandle from the sig
+        // packet.
+        Ok(self.known_signers.clone())
+    }
+
+    fn check(
+        &mut self,
+        structure: openpgp::parse::stream::MessageStructure,
+    ) -> sequoia_openpgp::Result<()> {
+        for layer in structure.into_iter() {
+            if let openpgp::parse::stream::MessageLayer::SignatureGroup { results } =
+                layer
+            {
+                let mut found_good = false;
+                for r in results {
+                    match r {
+                        Ok(_good) => found_good = true,
+                        // Surface the first verification failure verbatim.
+                        Err(e) => {
+                            return Err(sequoia_openpgp::Error::from(e).into());
+                        }
+                    }
+                }
+                if !found_good {
+                    return Err(sequoia_openpgp::Error::InvalidArgument(
+                        "no valid signature in group".into(),
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// `DecryptionHelper` + `VerificationHelper` for [`decrypt`].
 ///
 /// Implements BOTH traits (Sequoia requires both for `DecryptorBuilder::
@@ -1260,6 +1602,228 @@ mod tests {
             matches!(err, crypto_core::CryptoError::Policy(ref s)
                 if s.contains("part")),
             "no-parts must surface as Policy error mentioning part; got: {err}"
+        );
+    }
+
+    // ---- sign / verify (Task 7) -------------------------------------------
+    //
+    // NOTE on fingerprint case: `crypto_core::Fingerprint::new()` normalizes
+    // to lowercase, but Sequoia's `Fingerprint::to_hex()` returns UPPERCASE
+    // (see `fingerprint.rs:224`). When comparing a known fixture fp against
+    // `result.signer.fingerprint.as_str()` (which goes through
+    // `keymap::cert_to_handle` → `Fingerprint::new`), use `expect_fp()`
+    // (lowercases) instead of raw `cert.fingerprint().to_hex()`.
+
+    /// Build the EXPECTED framework fingerprint for a cert, matching the
+    /// lowercasing that `keymap::cert_to_handle` applies. Use this in tests
+    /// when asserting against `result.signer.fingerprint.as_str()`.
+    fn expect_fp(cert: &openpgp::Cert) -> String {
+        cert.fingerprint().to_hex().to_ascii_lowercase()
+    }
+
+    /// Same as [`expect_fp`] but for a cert's signing SUBKEY fingerprint (the
+    /// sig packet's IssuerFingerprint subpacket carries the subkey fp, not
+    /// the cert primary's).
+    fn expect_signing_subkey_fp(cert: &openpgp::Cert) -> String {
+        cert.keys()
+            .with_policy(P_, None)
+            .for_signing()
+            .next()
+            .expect("signing subkey exists")
+            .key()
+            .fingerprint()
+            .to_hex()
+            .to_ascii_lowercase()
+    }
+
+    #[test]
+    fn sign_detached_then_verify_round_trips_as_valid_verified() {
+        let pol = pgp_policy();
+        let cert = gen();
+        let payload = b"signed payload";
+
+        let sig = sign_detached(payload, &cert, &pol).expect("sign");
+        // DetachedSignature shape: PGP standard, signer handle echoes the
+        // signing cert's fingerprint, non-empty signature bytes.
+        assert_eq!(sig.standard, Standard::OpenPgp);
+        assert_eq!(sig.signer.fingerprint.as_str(), expect_fp(&cert));
+        assert!(!sig.signature.is_empty());
+
+        let result = verify_detached(payload, &sig, std::slice::from_ref(&cert), &pol)
+            .expect("verify");
+        assert_eq!(
+            result.state,
+            crypto_core::SignatureState::ValidVerified,
+            "sign→verify with matching signer must be ValidVerified; got {:?}",
+            result
+        );
+        let signer = result
+            .signer
+            .as_ref()
+            .expect("ValidVerified must surface a signer handle");
+        assert_eq!(
+            signer.fingerprint.as_str(),
+            expect_fp(&cert),
+            "ValidVerified signer must be the matching known-signer"
+        );
+        assert!(
+            result.revocation_reason.is_none(),
+            "PGP engine-core never sets revocation_reason"
+        );
+        // No failure_reason when valid AND no weak-alga warning (modern fixture:
+        // SHA-256 + EdDSA → note_weak returns None).
+        assert!(
+            result.failure_reason.is_none(),
+            "ValidVerified on modern algos must have no failure_reason; got {:?}",
+            result.failure_reason
+        );
+    }
+
+    #[test]
+    fn verify_detached_tampered_payload_is_invalid() {
+        let pol = pgp_policy();
+        let cert = gen();
+        let payload = b"original payload bytes";
+        let sig = sign_detached(payload, &cert, &pol).expect("sign");
+
+        let tampered = b"tampered payload bytes";
+        let result =
+            verify_detached(tampered, &sig, std::slice::from_ref(&cert), &pol)
+                .expect("verify");
+        assert_eq!(
+            result.state,
+            crypto_core::SignatureState::Invalid,
+            "tampered payload must be Invalid"
+        );
+        assert!(
+            result.failure_reason.is_some(),
+            "Invalid must surface a failure_reason"
+        );
+        // Signer is still the matching known-signer (we identified the right
+        // key — the signature itself just doesn't verify).
+        let signer = result
+            .signer
+            .as_ref()
+            .expect("Invalid still surfaces the identified signer");
+        assert_eq!(signer.fingerprint.as_str(), expect_fp(&cert));
+    }
+
+    #[test]
+    fn verify_detached_with_empty_known_signers_is_unknown_key() {
+        let pol = pgp_policy();
+        let cert = gen();
+        let payload = b"payload";
+        let sig = sign_detached(payload, &cert, &pol).expect("sign");
+
+        let result = verify_detached(payload, &sig, &[], &pol).expect("verify");
+        assert_eq!(
+            result.state,
+            crypto_core::SignatureState::UnknownKey,
+            "no known signers → UnknownKey"
+        );
+        assert!(
+            result.failure_reason.is_none(),
+            "UnknownKey has no failure_reason (no verification attempted)"
+        );
+        // Issuer fingerprint is still derivable from the sig packet → surfaced.
+        // The sig's IssuerFingerprint subpacket carries the SIGNING SUBKEY's
+        // fp (not the cert's primary) — extract it via the same path the
+        // production code uses for cross-checking.
+        let signer = result
+            .signer
+            .as_ref()
+            .expect("UnknownKey surfaces the sig packet's issuer fingerprint");
+        assert_eq!(
+            signer.fingerprint.as_str(),
+            expect_signing_subkey_fp(&cert),
+            "UnknownKey signer fingerprint must be the sig's issuer (signing subkey fp)"
+        );
+    }
+
+    #[test]
+    fn verify_detached_with_mismatched_known_signer_is_unknown_key() {
+        let pol = pgp_policy();
+        let signer_cert = gen();
+        let other_cert = gen(); // distinct signing cert (different fingerprint)
+        let payload = b"payload";
+        let sig = sign_detached(payload, &signer_cert, &pol).expect("sign");
+
+        // Sanity: the two certs are actually distinct (primary fp differs).
+        assert_ne!(
+            signer_cert.fingerprint(),
+            other_cert.fingerprint(),
+            "fixture certs must differ"
+        );
+
+        let result =
+            verify_detached(payload, &sig, std::slice::from_ref(&other_cert), &pol)
+                .expect("verify");
+        assert_eq!(
+            result.state,
+            crypto_core::SignatureState::UnknownKey,
+            "mismatched known_signer → UnknownKey"
+        );
+        // The UnknownKey signer fingerprint is the SIG's issuer (the real
+        // signer's signing SUBKEY fp), NOT the unrelated known-signer's.
+        let signer = result
+            .signer
+            .as_ref()
+            .expect("UnknownKey surfaces the sig packet's issuer");
+        assert_eq!(
+            signer.fingerprint.as_str(),
+            expect_signing_subkey_fp(&signer_cert),
+            "UnknownKey signer fp must come from the sig packet (signing subkey), not the unrelated known-signer"
+        );
+    }
+
+    #[test]
+    fn sign_detached_emits_only_signature_packet_with_default_hash() {
+        // Sanity: signature bytes hold ONLY a detached Signature packet (no
+        // literal data), and the default hash is a modern SHA-2 variant for
+        // the engine's Ed25519 signing subkey under the write policy. Sequoia
+        // actually picks SHA-512 for Ed25519 (per RFC 8032, which recommends
+        // SHA-512 as the Ed25519 hash); both SHA-256 and SHA-512 are
+        // acceptable modern choices that `note_weak` does NOT flag.
+        let pol = pgp_policy();
+        let cert = gen();
+        let sig = sign_detached(b"any payload", &cert, &pol).expect("sign");
+        let parsed = parse_signature_packet(&sig.signature).expect("parse");
+        assert!(
+            matches!(
+                parsed.hash_algo(),
+                openpgp::types::HashAlgorithm::SHA256
+                    | openpgp::types::HashAlgorithm::SHA512
+            ),
+            "default write-policy hash for Ed25519 must be SHA-256 or SHA-512; got {:?}",
+            parsed.hash_algo()
+        );
+        // Cross-check: the policy's weak-algo detector does not flag the sig.
+        assert!(
+            pol.note_weak(&parsed).is_none(),
+            "default-algo sig must not trigger a weak-algo warning"
+        );
+    }
+
+    #[test]
+    fn verify_detached_valid_verified_silences_failure_reason_on_modern_algos() {
+        // Mirrors `sign_detached_then_verify_round_trips_as_valid_verified` but
+        // explicit about the no-weak-warning invariant: a modern-algo sig
+        // produces a fully clean VerificationResult (no failure_reason).
+        let pol = pgp_policy();
+        let cert = gen();
+        let sig = sign_detached(b"clean payload", &cert, &pol).expect("sign");
+        let result = verify_detached(
+            b"clean payload",
+            &sig,
+            std::slice::from_ref(&cert),
+            &pol,
+        )
+        .expect("verify");
+        assert_eq!(result.state, crypto_core::SignatureState::ValidVerified);
+        assert!(
+            result.failure_reason.is_none(),
+            "modern-algo ValidVerified must have None failure_reason; got {:?}",
+            result.failure_reason
         );
     }
 }
