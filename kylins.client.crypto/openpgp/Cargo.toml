@@ -5,6 +5,15 @@ edition = "2021"
 
 [dependencies]
 crypto-core = { path = "../core" }
+# `SecretBox<String>` (re-exported by `crypto_core`) does NOT re-export
+# secrecy's `ExposeSecret` trait, which is required to call
+# `.expose_secret()` on the password the engine's `import(...)` receives.
+# `secrecy` is already a transitive dependency via `crypto-core`, so this
+# declaration does NOT change `Cargo.lock`; it just names the crate so this
+# crate's source can import the trait. Deviation from the Task 5 slice
+# boundary (which nominally lists only `src/engine.rs` + `src/lib.rs`) — see
+# the task-5 report for the rationale.
+secrecy = "0.10"
 # `sequoia-openpgp = "2"` resolves to 2.4.1 (July 2026). We use the pure-Rust
 # `crypto-rust` backend (no system nettle/botan/openssl dependency), which is
 # sufficient for a desktop mail client and keeps the build hermetic. Upstream
