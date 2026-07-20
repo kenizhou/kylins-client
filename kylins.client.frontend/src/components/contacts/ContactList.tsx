@@ -69,7 +69,7 @@ export function ContactList() {
 
   return (
     <div className="flex flex-col h-full min-w-0">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border-subtle)]">
         <SearchField
           value={searchQuery}
           onChange={setSearchQuery}
@@ -80,7 +80,7 @@ export function ContactList() {
             size={14}
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-text)]"
           />
-          <Input className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-14 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/60 focus:border-[var(--primary)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] min-h-11" />
+          <Input className="w-full rounded-md border border-[var(--border-subtle)] bg-surface-elevated pl-8 pr-14 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-text)]/60 focus:border-[var(--primary)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] min-h-11" />
           {searchQuery !== '' && (
             <Button
               aria-label="Clear search"
@@ -119,11 +119,11 @@ export function ContactList() {
                     }}
                     className={`flex items-center gap-3 rounded-lg border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                       active
-                        ? 'border-[var(--primary)] bg-[var(--selected)]'
-                        : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)]'
+                        ? 'border-[var(--primary)] bg-[var(--primary-muted)]'
+                        : 'border-[var(--border-subtle)] bg-surface-elevated hover:bg-[var(--primary-subtle)]'
                     }`}
                   >
-                    <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--secondary)] text-[var(--secondary-foreground)]">
+                    <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-floating text-[var(--secondary-foreground)]">
                       <ContactsIcon size={16} />
                     </span>
                     <div className="flex-1 min-w-0">
@@ -153,8 +153,8 @@ export function ContactList() {
                   }}
                   className={`flex items-center gap-3 rounded-lg border px-3 py-2 min-h-11 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
                     active
-                      ? 'border-[var(--primary)] bg-[var(--selected)]'
-                      : 'border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)]'
+                      ? 'border-[var(--primary)] bg-[var(--primary-muted)]'
+                      : 'border-[var(--border-subtle)] bg-surface-elevated hover:bg-[var(--primary-subtle)]'
                   }`}
                 >
                   <ContactAvatar contact={contact} size={32} />

@@ -54,7 +54,7 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="New group name"
-          className="flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+          className="flex-1 rounded-md border border-[var(--border-subtle)] bg-surface-elevated px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
         />
         <button
           type="submit"
@@ -72,7 +72,7 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
         {groups.map((group) => (
           <li
             key={group.id}
-            className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2"
+            className="flex items-center justify-between gap-2 rounded-md border border-[var(--border-subtle)] bg-surface-elevated px-3 py-2"
           >
             {editingId === group.id ? (
               <div className="flex items-center gap-2 flex-1">
@@ -80,13 +80,13 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                  className="flex-1 rounded-md border border-[var(--border-subtle)] bg-surface-elevated px-2 py-1 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
                   autoFocus
                 />
                 <button
                   type="button"
                   onClick={() => handleRename(group.id)}
-                  className="text-[var(--primary)] hover:opacity-80"
+                  className="rounded p-1 text-[var(--primary)] hover:bg-[var(--primary-subtle)] transition-colors"
                   aria-label="Save"
                 >
                   <CheckIcon size={14} />
@@ -94,7 +94,7 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
                 <button
                   type="button"
                   onClick={() => setEditingId(null)}
-                  className="text-[var(--muted-text)] hover:opacity-80"
+                  className="rounded p-1 text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] transition-colors"
                   aria-label="Cancel"
                 >
                   <CloseIcon size={14} />
@@ -110,7 +110,7 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
                       setEditingId(group.id);
                       setEditName(group.name);
                     }}
-                    className="p-1 text-[var(--muted-text)] hover:text-[var(--foreground)] transition-colors"
+                    className="rounded p-1 text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] transition-colors"
                     aria-label="Rename"
                   >
                     <PencilIcon size={13} />
@@ -118,7 +118,7 @@ export function ContactGroupManager({ onUpdate }: ContactGroupManagerProps) {
                   <button
                     type="button"
                     onClick={() => handleDelete(group)}
-                    className="p-1 text-[var(--destructive)] hover:opacity-80 transition-opacity"
+                    className="rounded p-1 text-[var(--destructive)] hover:bg-[var(--primary-subtle)] transition-colors"
                     aria-label="Delete"
                   >
                     <TrashIcon size={13} />

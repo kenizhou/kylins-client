@@ -28,6 +28,8 @@
   --color-error-foreground: var(--error-foreground);
   --color-error-bg: var(--error-bg);
   --color-error-border: var(--error-border);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

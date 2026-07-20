@@ -69,6 +69,8 @@
   --error-foreground: var(--destructive-foreground);
   --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
   --error-border: color-mix(in srgb, var(--error) 20%, transparent);
+  --warning: #f59e0b;
+  --warning-foreground: var(--series-900);
 
   /* Semantic desktop tokens */
   --surface: var(--series-100);
@@ -235,6 +237,8 @@
   --error-foreground: var(--destructive-foreground);
   --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
   --error-border: color-mix(in srgb, var(--error) 20%, transparent);
+  --warning: #fbbf24;
+  --warning-foreground: var(--series-950);
 
   --surface: var(--series-200);
   --text: var(--series-900);

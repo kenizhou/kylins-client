@@ -287,7 +287,7 @@ export function ContactsPage() {
               }
             }}
             placeholder="name@example.com"
-            className="h-11 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="h-11 w-full rounded-md border border-[var(--border-subtle)] bg-surface-elevated px-3 text-sm text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           />
         </div>
       </Modal>

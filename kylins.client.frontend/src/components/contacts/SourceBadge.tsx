@@ -11,10 +11,10 @@ const SOURCE_LABELS: Record<string, string> = {
 
 const SOURCE_STYLES: Record<string, string> = {
   mail: 'bg-[var(--secondary)] text-[var(--secondary-foreground)]',
-  local: 'bg-[var(--primary)]/10 text-[var(--primary)]',
-  carddav: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-  google_people: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
-  eas_gal: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  local: 'bg-primary-subtle text-primary',
+  carddav: 'bg-[var(--success)]/10 text-[var(--success)]',
+  google_people: 'bg-primary-subtle text-primary',
+  eas_gal: 'bg-[var(--warning)]/10 text-[var(--warning)]',
 };
 
 interface SourceBadgeProps {
