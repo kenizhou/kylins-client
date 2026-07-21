@@ -117,3 +117,16 @@ export function stopAutoSave(): void {
   }
   currentAccountId = null;
 }
+
+/**
+ * Immediately persist the current draft, cancelling any pending debounced
+ * save. Used by the pop-out window's close confirmation ("Save Draft").
+ * Safe to call when auto-save was never started (saveDraftNow no-ops).
+ */
+export async function flushDraftSave(): Promise<void> {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  await saveDraftNow();
+}
