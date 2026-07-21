@@ -150,13 +150,12 @@ const MessageRow = memo(function MessageRow({
       className={`group relative ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
     >
       <div className="flex items-stretch px-1">
-        {/* Left state ribbon */}
-        <span className="flex h-full items-stretch">
-          <span
-            className={`w-[3px] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
-            style={prominent && level ? { backgroundColor: level.color } : undefined}
-          />
-        </span>
+        {/* Left state ribbon — self-stretch fills the row height (a plain
+            h-full child would collapse: the parent's height is content-driven). */}
+        <span
+          className={`w-1 shrink-0 self-stretch rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+          style={prominent && level ? { backgroundColor: level.color } : undefined}
+        />
 
         {/* Main content column: sender / subject / preview + time */}
         <div className="flex-1 min-w-0 px-2 py-0.5">

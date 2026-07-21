@@ -10,7 +10,7 @@ import {
   Delete01Icon,
   Delete02Icon,
   Copy01Icon,
-  Archive01Icon,
+  ArchiveRestoreIcon,
   Move02Icon,
   Tag01Icon,
   FlashIcon,
@@ -252,7 +252,7 @@ export const NotificationIcon = makeIcon(Notification03Icon);
 export const SettingsIcon = makeIcon(Settings01Icon);
 export const UserIcon = makeIcon(UserCircleIcon);
 export const DeleteIcon = makeIcon(Delete01Icon);
-export const ArchiveIcon = makeIcon(Archive01Icon);
+export const ArchiveIcon = makeIcon(ArchiveRestoreIcon);
 export const MoveIcon = makeIcon(Move02Icon);
 export const TagIcon = makeIcon(Tag01Icon);
 export const LightningIcon = makeIcon(FlashIcon);
