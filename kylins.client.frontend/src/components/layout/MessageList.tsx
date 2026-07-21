@@ -166,7 +166,7 @@ const MessageRow = memo(function MessageRow({
             e.stopPropagation();
             void markThreadRead(thread, !thread.isRead);
           }}
-          className={`my-[0.5px] w-1 shrink-0 cursor-pointer self-stretch transition-all duration-fast hover:w-1.5 ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+          className={`relative z-10 my-[0.5px] w-1 shrink-0 cursor-pointer self-stretch transition-all duration-fast hover:w-2.5 ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
           style={prominent && level ? { backgroundColor: level.color } : undefined}
         />
 
