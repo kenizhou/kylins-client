@@ -9,6 +9,8 @@ import { getMessageCryptoResult, openCryptoMessage } from '../../src/services/db
 import type { Thread, DbMessageRow } from '../../src/services/db/threads';
 import type { OpenCryptoResult } from '../../src/services/db/cryptoReceive';
 import { invoke } from '@tauri-apps/api/core';
+import { getFolderByRole } from '../../src/services/db/labels';
+import type { MailFolder } from '../../src/services/mail/folders/folderModel';
 
 // `selectThread` now routes mark-read through the Rust sync engine via
 // `sync_apply_mutation` (the engine owns the durable write + replay). Mock the
@@ -44,6 +46,13 @@ vi.mock('../../src/services/db/cryptoReceive', async () => {
   return { ...actual, openCryptoMessage: vi.fn(), getMessageCryptoResult: vi.fn() };
 });
 
+vi.mock('../../src/services/db/labels', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/db/labels')>(
+    '../../src/services/db/labels',
+  );
+  return { ...actual, getFolderByRole: vi.fn() };
+});
+
 const thread = (over: Partial<Thread> = {}): Thread => ({
   id: 't1',
   accountId: 'a1',
@@ -65,6 +74,8 @@ function reset() {
   useThreadStore.setState({
     threads: [],
     selectedThreadId: null,
+    selectedThreadIds: [],
+    selectionAnchorId: null,
     isLoading: false,
     cursor: null,
     currentQuery: null,
@@ -92,6 +103,7 @@ beforeEach(() => {
   vi.mocked(getMessageCryptoResult).mockReset();
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined as never);
+  vi.mocked(getFolderByRole).mockReset();
 });
 
 describe('threadStore.loadThreads', () => {
@@ -135,7 +147,7 @@ describe('threadStore.loadMore', () => {
 });
 
 describe('threadStore.selectThread', () => {
-  it('loads the latest message + body, bridges to selectedMessage, marks unread read via sync_apply_mutation', async () => {
+  it('loads the latest message + body, bridges to selectedMessage, and does NOT mark read on open', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: false })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
       {
@@ -168,7 +180,46 @@ describe('threadStore.selectThread', () => {
     expect(getMessagesForThread).toHaveBeenCalledWith('a1', 't1');
     expect(getMessageBody).toHaveBeenCalledWith('a1', 'm1');
     expect(useViewStore.getState().selectedMessage?.html).toBe('<p>h</p>');
-    // The durable mark-read now flows through the sync engine (one invoke with
+    // Opening no longer consumes the unread state — that happens on deselect.
+    expect(invoke).not.toHaveBeenCalledWith(
+      'sync_apply_mutation',
+      expect.objectContaining({ op: expect.objectContaining({ type: 'markRead' }) }),
+    );
+    expect(useThreadStore.getState().threads[0]!.isRead).toBe(false);
+  });
+
+  it('marks the PREVIOUS thread read when the selection moves away from it', async () => {
+    const m1Row = {
+      id: 'm1',
+      account_id: 'a1',
+      thread_id: 't1',
+      from_address: 'b@x.com',
+      from_name: 'Bob',
+      to_addresses: 'c@y.com',
+      cc_addresses: null,
+      subject: 'S',
+      snippet: 'sn',
+      date: 100,
+      is_read: 0,
+      is_starred: 0,
+      body_text: 'txt',
+      imap_uid: 4242,
+      imap_folder: 'INBOX',
+    };
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: true })],
+      selectedThreadId: null,
+    });
+    vi.mocked(getMessagesForThread).mockImplementation(async (_acc, id) =>
+      id === 't1' ? [m1Row] : [],
+    );
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    // Open t1 (stays unread), then move to t2 → t1 is consumed as read.
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: false }));
+    await useThreadStore.getState().selectThread(thread({ id: 't2', isRead: true }));
+
+    // The durable mark-read flows through the sync engine (one invoke with
     // a MutationOp), NOT the legacy `db_mark_thread_read` invoke.
     expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
       accountId: 'a1',
@@ -181,8 +232,9 @@ describe('threadStore.selectThread', () => {
         read: true,
       },
     });
-    // optimistic read state
-    expect(useThreadStore.getState().threads[0]!.isRead).toBe(true);
+    expect(useThreadStore.getState().threads.find((t) => t.id === 't1')!.isRead).toBe(true);
+    // The newly opened thread is untouched.
+    expect(useThreadStore.getState().threads.find((t) => t.id === 't2')!.isRead).toBe(true);
   });
 
   it('does NOT invoke sync_apply_mutation when the thread is already read', async () => {
@@ -509,6 +561,83 @@ const messageRow = (over: Partial<DbMessageRow> = {}): DbMessageRow => ({
   ...over,
 });
 
+describe('threadStore.markThreadsRead', () => {
+  it('marks multiple threads read with one op per thread and adjusts counts per thread', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isRead: false }),
+        thread({ id: 't2', isRead: false }),
+        thread({ id: 't3', isRead: true }),
+      ],
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 5 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .markThreadsRead(
+        [
+          thread({ id: 't1', isRead: false }),
+          thread({ id: 't2', isRead: false }),
+          thread({ id: 't3', isRead: true }),
+        ],
+        true,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isRead)).toEqual([true, true, true]);
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(3);
+    // t3 was already read — no op for it.
+    const markReadOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' &&
+          (args as { op: { type: string } }).op.type === 'markRead',
+      );
+    expect(markReadOps).toHaveLength(2);
+    expect(markReadOps[0]?.[1]).toEqual({
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: true,
+      },
+    });
+  });
+
+  it('marks multiple threads unread and increments the count per thread', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 1 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .markThreadsRead(
+        [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+        false,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isRead)).toEqual([false, false]);
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(3);
+  });
+
+  it('is a no-op when every thread already has the target state', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+
+    await useThreadStore.getState().markThreadsRead([thread({ id: 't1', isRead: true })], true);
+
+    expect(getMessagesForThread).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
 describe('threadStore.markThreadRead', () => {
   it('marks a thread read and decrements the folder unread count', async () => {
     useThreadStore.setState({
@@ -635,5 +764,345 @@ describe('threadStore.deleteThread', () => {
         uids: [4242],
       },
     });
+  });
+});
+
+describe('threadStore.setSelection', () => {
+  it('sets the selection ids + anchor and syncs viewStore', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+
+    await useThreadStore.getState().setSelection(['t1', 't2'], 't1');
+
+    const s = useThreadStore.getState();
+    expect(s.selectedThreadIds).toEqual(['t1', 't2']);
+    expect(s.selectionAnchorId).toBe('t1');
+    expect(s.selectedThreadId).toBe('t1');
+    expect(useViewStore.getState().selectedThreadIds).toEqual(['t1', 't2']);
+  });
+
+  it('marks the previous anchor read when the anchor moves', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: true })],
+    });
+    vi.mocked(getMessagesForThread).mockImplementation(async (_acc, id) =>
+      id === 't1' ? [messageRow()] : [],
+    );
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore.getState().setSelection(['t1'], 't1');
+    await useThreadStore.getState().setSelection(['t1', 't2'], 't2');
+
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: true,
+      },
+    });
+    expect(useThreadStore.getState().selectedThreadId).toBe('t2');
+  });
+
+  it('does not reload the body when only the selection (not the anchor) changes', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+
+    await useThreadStore.getState().setSelection(['t1'], 't1');
+    vi.mocked(getMessagesForThread).mockClear();
+    await useThreadStore.getState().setSelection(['t1', 't2'], 't1');
+
+    expect(getMessagesForThread).not.toHaveBeenCalled();
+  });
+
+  it('clears the reading pane when the selection empties', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+
+    await useThreadStore.getState().setSelection(['t1'], 't1');
+    await useThreadStore.getState().setSelection([], null);
+
+    const s = useThreadStore.getState();
+    expect(s.selectedThreadIds).toEqual([]);
+    expect(s.selectionAnchorId).toBeNull();
+    expect(s.selectedThreadId).toBeNull();
+    expect(useViewStore.getState().selectedThreadIds).toEqual([]);
+    expect(useViewStore.getState().selectedMessage).toBeNull();
+  });
+});
+
+describe('threadStore.loadThreads selection reset', () => {
+  it('clears the selection on folder switch', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1' })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1'],
+      selectionAnchorId: 't1',
+    });
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't9' })],
+      nextCursor: null,
+    });
+
+    await useThreadStore.getState().loadThreads('a1', 'sent');
+
+    const s = useThreadStore.getState();
+    expect(s.selectedThreadId).toBeNull();
+    expect(s.selectedThreadIds).toEqual([]);
+    expect(s.selectionAnchorId).toBeNull();
+    expect(useViewStore.getState().selectedThreadIds).toEqual([]);
+  });
+});
+
+describe('threadStore.setThreadsStarred', () => {
+  it('flags multiple threads with one setFlag op per thread', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isStarred: false }),
+        thread({ id: 't2', isStarred: false }),
+        thread({ id: 't3', isStarred: true }),
+      ],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .setThreadsStarred(
+        [
+          thread({ id: 't1', isStarred: false }),
+          thread({ id: 't2', isStarred: false }),
+          thread({ id: 't3', isStarred: true }),
+        ],
+        true,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isStarred)).toEqual([true, true, true]);
+    // t3 was already flagged — no op for it.
+    const flagOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'setFlag',
+      );
+    expect(flagOps).toHaveLength(2);
+    expect(flagOps[0]?.[1]).toEqual({
+      accountId: 'a1',
+      op: {
+        type: 'setFlag',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        flag: '\\Flagged',
+        add: true,
+      },
+    });
+  });
+
+  it('clears flags on multiple threads', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isStarred: true }), thread({ id: 't2', isStarred: true })],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .setThreadsStarred(
+        [thread({ id: 't1', isStarred: true }), thread({ id: 't2', isStarred: true })],
+        false,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isStarred)).toEqual([false, false]);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('threadStore.deleteThreads', () => {
+  it('removes multiple threads, moves the anchor past the removed block, and adjusts counts', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isRead: false }),
+        thread({ id: 't2', isRead: false }),
+        thread({ id: 't3', isRead: true }),
+      ],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1', 't2'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 4 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow({ thread_id: 't3' })]);
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore
+      .getState()
+      .deleteThreads([thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: false })]);
+
+    const s = useThreadStore.getState();
+    expect(s.threads.map((t) => t.id)).toEqual(['t3']);
+    expect(s.selectedThreadId).toBe('t3');
+    expect(s.selectedThreadIds).toEqual(['t3']);
+    expect(s.selectionAnchorId).toBe('t3');
+    expect(useViewStore.getState().selectedMessage?.threadId).toBe('t3');
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(2);
+    const deleteOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'delete',
+      );
+    expect(deleteOps).toHaveLength(2);
+  });
+
+  it('keeps the anchor and prunes the selection when a non-anchor thread is deleted', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1', 't2'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow({ thread_id: 't2' })]);
+
+    await useThreadStore.getState().deleteThreads([thread({ id: 't2', isRead: true })]);
+
+    const s = useThreadStore.getState();
+    expect(s.threads.map((t) => t.id)).toEqual(['t1']);
+    expect(s.selectedThreadId).toBe('t1');
+    expect(s.selectedThreadIds).toEqual(['t1']);
+    // The anchor's body is NOT reloaded — only the delete op fetched messages.
+    expect(getMessagesForThread).toHaveBeenCalledTimes(1);
+    expect(getMessagesForThread).toHaveBeenCalledWith('a1', 't2');
+  });
+
+  it('clears the selection when the last selected thread is deleted', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1'],
+      selectionAnchorId: 't1',
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore.getState().deleteThreads([thread({ id: 't1', isRead: true })]);
+
+    const s = useThreadStore.getState();
+    expect(s.threads).toEqual([]);
+    expect(s.selectedThreadId).toBeNull();
+    expect(s.selectedThreadIds).toEqual([]);
+    expect(useViewStore.getState().selectedMessage).toBeNull();
+    expect(useViewStore.getState().selectedThreadIds).toEqual([]);
+  });
+});
+
+describe('threadStore.moveThreads', () => {
+  it('moves multiple threads with one move op per thread', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isRead: false }),
+        thread({ id: 't2', isRead: false }),
+        thread({ id: 't3', isRead: true }),
+      ],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1', 't2'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      unreadCounts: { a1__inbox: 2 },
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore
+      .getState()
+      .moveThreads(
+        [thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: false })],
+        'archive-id',
+        'Archive',
+      );
+
+    const s = useThreadStore.getState();
+    expect(s.threads.map((t) => t.id)).toEqual(['t3']);
+    expect(s.selectedThreadId).toBe('t3');
+    const moveOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'move',
+      );
+    expect(moveOps).toHaveLength(2);
+    expect(moveOps[0]?.[1]).toEqual({
+      accountId: 'a1',
+      op: {
+        type: 'move',
+        messageIds: ['m1'],
+        srcLabel: 'inbox',
+        dstLabel: 'archive-id',
+        srcFolderPath: 'INBOX',
+        dstFolderPath: 'Archive',
+        uids: [4242],
+      },
+    });
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(0);
+  });
+});
+
+describe('threadStore.moveThreadsToRole', () => {
+  it('resolves the role folder per account and moves the group', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+    vi.mocked(getFolderByRole).mockResolvedValue({
+      id: 'arch',
+      accountId: 'a1',
+      name: 'Archive',
+      remoteId: 'Archive',
+      role: 'archive',
+    } as MailFolder);
+
+    await useThreadStore
+      .getState()
+      .moveThreadsToRole([thread({ id: 't1', isRead: true })], 'archive');
+
+    expect(getFolderByRole).toHaveBeenCalledWith('a1', 'archive');
+    const moveOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'move',
+      );
+    expect(moveOps).toHaveLength(1);
+    expect(moveOps[0]?.[1]).toEqual(
+      expect.objectContaining({
+        op: expect.objectContaining({ type: 'move', dstLabel: 'arch', dstFolderPath: 'Archive' }),
+      }),
+    );
+    expect(useThreadStore.getState().threads).toHaveLength(0);
+  });
+
+  it('logs and skips when the account has no folder for the role', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    useThreadStore.setState({ threads: [thread({ id: 't1' })] });
+    vi.mocked(getFolderByRole).mockResolvedValue(null);
+
+    await useThreadStore.getState().moveThreadsToRole([thread({ id: 't1' })], 'archive');
+
+    expect(useThreadStore.getState().threads).toHaveLength(1);
+    expect(invoke).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 });

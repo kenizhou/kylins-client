@@ -7,16 +7,6 @@
 // The download path uses `sync_fetch_attachment` (returns a cached file path,
 // no base64 over IPC) → `copy_cached_attachment` (std::fs copy to the
 // user-chosen save location, since plugin-fs can't write outside appData).
-//
-// DA-Task 3: when the selected message is encrypted (`isCrypto`), the
-// attachment metadata is sourced from the DECRYPTED inner MIME via
-// `decryptedAttachments` (an `ImapAttachment[]` from `OpenCryptoResult`).
-// The list never calls `db_get_attachments` on the crypto branch (those rows
-// describe the OUTER S/MIME envelope, which is filtered out as a crypto
-// envelope type — useless to the user). Downloads go through
-// `crypto_fetch_attachment` (re-decrypt → write part to cache) instead of
-// `sync_fetch_attachment` (which would fetch the envelope, not the inner
-// part).
 
 import { useEffect, useState } from 'react';
 import { Paperclip } from '@phosphor-icons/react';
@@ -26,11 +16,9 @@ import { Button } from 'react-aria-components';
 import {
   type AttachmentRow,
   fetchAttachment,
-  fetchCryptoAttachment,
   getAttachments,
   referencedCids,
 } from '../../services/db/attachments';
-import type { ImapAttachment } from '../../services/db/cryptoReceive';
 import { formatFileSize } from '../../utils/fileTypeHelpers';
 
 interface AttachmentListProps {
@@ -39,40 +27,9 @@ interface AttachmentListProps {
   /** Body HTML, used to detect which attachments are referenced by `cid:`
    *  inline and should be hidden from this list. */
   bodyHtml: string | null | undefined;
-  /** DA-Task 3: decrypted inner-MIME attachments for an encrypted message.
-   *  When `isCrypto && decryptedAttachments?.length`, the list renders these
-   *  INSTEAD of querying `db_get_attachments` (whose rows describe the outer
-   *  S/MIME envelope, not the user-visible inner parts). */
-  decryptedAttachments?: ImapAttachment[];
-  /** DA-Task 3: true when the selected message was opened through the crypto
-   *  pipeline. Routes downloads to `crypto_fetch_attachment`. */
-  isCrypto?: boolean;
 }
 
-/** Internal normalized shape — the union of `AttachmentRow` (plain path) and
- *  `ImapAttachment` (crypto path). Carries everything the chip + the download
- *  handler need; the two source types map into this at the boundary. */
-interface DisplayedAttachment {
-  /** Stable React key. */
-  key: string;
-  filename: string;
-  mimeType: string;
-  size: number;
-  contentId: string | null;
-  /** Plain-path IMAP part id (`BODY[<part>]` selector); undefined on the
-   *  crypto branch (downloads go by filename + contentId, not partId). */
-  imapPartId?: string | null;
-  /** Crypto branch: the original `ImapAttachment` for re-decrypt download. */
-  crypto?: ImapAttachment;
-}
-
-export function AttachmentList({
-  accountId,
-  messageId,
-  bodyHtml,
-  decryptedAttachments,
-  isCrypto,
-}: AttachmentListProps) {
+export function AttachmentList({ accountId, messageId, bodyHtml }: AttachmentListProps) {
   const [attachments, setAttachments] = useState<AttachmentRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -87,11 +44,6 @@ export function AttachmentList({
   }
 
   useEffect(() => {
-    // DA-Task 3: crypto branch sources its metadata from `decryptedAttachments`
-    // (decrypted inner MIME) — skip the `db_get_attachments` call entirely.
-    // Those rows describe the OUTER S/MIME envelope (`smime.p7m`), which is
-    // useless to the user and filtered out by `CRYPTO_ENVELOPE_TYPES` anyway.
-    if (isCrypto && decryptedAttachments && decryptedAttachments.length > 0) return;
     if (!accountId || !messageId) return;
     let cancelled = false;
     getAttachments(accountId, messageId)
@@ -102,7 +54,7 @@ export function AttachmentList({
     return () => {
       cancelled = true;
     };
-  }, [accountId, messageId, isCrypto, decryptedAttachments]);
+  }, [accountId, messageId]);
 
   // Hide attachments whose content_id is referenced inline by the body.
   const inlineCids = referencedCids(bodyHtml);
@@ -123,33 +75,7 @@ export function AttachmentList({
     'application/x-pkcs7-mime',
     'application/x-pkcs7-signature',
   ]);
-
-  // DA-Task 3: build the displayed list from whichever source is authoritative
-  // for this message kind. The crypto branch maps the snake_case `ImapAttachment`
-  // shape to the internal `DisplayedAttachment`; the plain branch filters the
-  // `AttachmentRow[]` returned by `db_get_attachments`.
-  let displayed: DisplayedAttachment[];
-  if (isCrypto && decryptedAttachments && decryptedAttachments.length > 0) {
-    displayed = decryptedAttachments.map((a) => ({
-      key: a.part_id,
-      filename: a.filename,
-      mimeType: a.mime_type,
-      size: a.size,
-      contentId: a.content_id ?? null,
-      crypto: a,
-    }));
-  } else {
-    displayed = attachments.map((a) => ({
-      key: a.id,
-      filename: a.filename ?? 'attachment',
-      mimeType: a.mimeType ?? '',
-      size: a.size,
-      contentId: a.contentId ?? null,
-      imapPartId: a.imapPartId,
-    }));
-  }
-
-  const visible = displayed.filter((a) => {
+  const visible = attachments.filter((a) => {
     if (a.contentId && inlineCids.has(a.contentId)) return false;
     const mt = (a.mimeType ?? '').toLowerCase();
     if (mt && CRYPTO_ENVELOPE_TYPES.has(mt)) return false;
@@ -157,33 +83,17 @@ export function AttachmentList({
   });
   if (visible.length === 0) return null;
 
-  const handleDownload = async (att: DisplayedAttachment) => {
-    if (!accountId || !messageId) return;
-    const filename = att.filename || 'attachment';
-    setBusy(att.key);
+  const handleDownload = async (att: AttachmentRow) => {
+    if (!att.imapPartId || !accountId || !messageId) return;
+    const filename = att.filename ?? 'attachment';
+    setBusy(att.id);
     try {
       const path = await save({
         defaultPath: filename,
         filters: [{ name: 'All Files', extensions: ['*'] }],
       });
       if (!path) return;
-      let filePath: string;
-      if (isCrypto) {
-        // DA-Task 3: re-decrypt → write part to cache → return path. The
-        // backend resolves the inner part by (filename, contentId), NOT by
-        // IMAP partId (the envelope has only one IMAP part).
-        const cached = await fetchCryptoAttachment(
-          accountId,
-          messageId,
-          att.filename,
-          att.contentId ?? null,
-        );
-        filePath = cached.filePath;
-      } else {
-        if (!att.imapPartId) return;
-        const cached = await fetchAttachment(accountId, messageId, att.imapPartId);
-        filePath = cached.filePath;
-      }
+      const { filePath } = await fetchAttachment(accountId, messageId, att.imapPartId);
       await invoke('copy_cached_attachment', { srcPath: filePath, destPath: path });
     } catch (e) {
       console.error('[attachments] download failed', e);
@@ -196,18 +106,20 @@ export function AttachmentList({
     <div className="mb-3 flex flex-wrap gap-1.5">
       {visible.map((att) => (
         <Button
-          key={att.key}
+          key={att.id}
           onPress={() => void handleDownload(att)}
           isDisabled={busy !== null}
-          aria-label={att.filename}
-          className="group flex max-w-full items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs transition-colors hover:bg-[var(--hover)] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={att.filename ?? 'attachment'}
+          className="group flex max-w-full items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 py-1.5 text-xs shadow-[var(--shadow-sm)] transition-colors hover:border-[var(--border)] hover:bg-[var(--primary-subtle)] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Paperclip size={13} className="shrink-0 text-[var(--muted-text)]" />
-          <span className="max-w-[180px] truncate text-[var(--foreground)]">{att.filename}</span>
+          <Paperclip size={13} className="shrink-0 text-[var(--primary)]" />
+          <span className="max-w-[180px] truncate text-[var(--foreground)]">
+            {att.filename ?? 'attachment'}
+          </span>
           {att.size > 0 && (
             <span className="shrink-0 text-[var(--muted-text)]">{formatFileSize(att.size)}</span>
           )}
-          {busy === att.key && <span className="shrink-0 text-[var(--muted-text)]">…</span>}
+          {busy === att.id && <span className="shrink-0 text-[var(--muted-text)]">…</span>}
         </Button>
       ))}
     </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
+import { render, fireEvent, act } from '@testing-library/react';
 import { FolderPane } from '../../../src/components/layout/FolderPane';
 import { useAccountStore } from '../../../src/stores/accountStore';
 import { useFolderStore } from '../../../src/stores/folderStore';
@@ -95,6 +95,21 @@ describe('FolderPane', () => {
     // Folder levels are collapsed by default; expand Projects to reveal Apollo.
     fireEvent.click(getByLabelText('Expand folder'));
     expect(getByText('Apollo')).toBeInTheDocument();
+  });
+
+  it('re-renders the unread badge immediately when unreadCounts changes', () => {
+    useFolderStore.setState({ unreadCounts: { 'acc-1__inbox': 5 } });
+    const { getByText, queryByText } = render(<FolderPane />);
+    expect(getByText('5')).toBeInTheDocument();
+
+    // Optimistic decrement (threadStore.markThreadRead path) must be reflected
+    // without waiting for a loadLabels() round-trip.
+    act(() => useFolderStore.getState().decrementUnread('acc-1', 'inbox'));
+    expect(getByText('4')).toBeInTheDocument();
+    expect(queryByText('5')).not.toBeInTheDocument();
+
+    act(() => useFolderStore.getState().incrementUnread('acc-1', 'inbox'));
+    expect(getByText('5')).toBeInTheDocument();
   });
 });
 

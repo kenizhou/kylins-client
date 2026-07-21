@@ -7,10 +7,10 @@ import { Separator } from 'react-resizable-panels';
  */
 export function VDivider({ invisible = false }: { invisible?: boolean }) {
   if (invisible) {
-    // 1px transparent divider between FolderPane and MessageList. The
-    // resizable-panels library keeps a ≥10px drag hit region regardless of
-    // visual width, so resizing stays easy.
-    return <Separator className="w-px bg-transparent" />;
+    // 1px transparent divider between FolderPane and MessageList, inset on
+    // the message-list side only so the library's ≥10px drag hit region sits
+    // away from the message-list colorbar without adding left-side space.
+    return <Separator className="mr-2 w-px bg-transparent" />;
   }
   return (
     <Separator className="mx-1 w-1.5 rounded-full bg-[var(--border)] transition-colors hover:bg-[var(--series-300)]" />

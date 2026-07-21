@@ -147,7 +147,7 @@ export function StatusBar() {
   const readingPanePosition = useViewStore((s) => s.readingPanePosition);
 
   return (
-    <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-xs glass bg-gradient-to-t from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] text-[var(--muted-text)] shrink-0">
+    <footer className="h-[var(--status-h)] flex items-center justify-between px-3 text-xs bg-[var(--chrome)] border-t border-[var(--border-subtle)] text-[var(--muted-text)] shrink-0">
       <div className="flex items-center gap-3">
         <SyncStatusIndicator />
         <SendProgressIndicator />

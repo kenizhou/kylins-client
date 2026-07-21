@@ -9,12 +9,7 @@ import { useThreadStore } from '../../stores/threadStore';
 import { useUIStore } from '../../stores/uiStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
-import {
-  fetchAttachment,
-  fetchInlineImages,
-  fetchCryptoInlineImages,
-  getAttachments,
-} from '../../services/db/attachments';
+import { fetchAttachment, fetchInlineImages, getAttachments } from '../../services/db/attachments';
 import { upsertContact } from '../../services/db/contacts';
 import { InlineReply } from '../email/InlineReply';
 import { MessageHeader } from '../../features/viewer/MessageHeader';
@@ -34,13 +29,6 @@ import { IcalHelper, type ParsedEvent } from '../../services/calendar/icalHelper
 
 export function ReadingPane() {
   const message = useViewStore((s) => s.selectedMessage);
-  // DA-Task 3: subscribe to the decrypted-cache entry for the selected
-  // message so AttachmentList + the inline-image effect re-render when the
-  // cache is populated (after selectThread) or evicted (after a trust
-  // decision — handleTrustResolved wipes this entry then re-opens).
-  const decryptedEntry = useViewStore((s) =>
-    s.selectedMessage ? s.decryptedCache[s.selectedMessage.id] : undefined,
-  );
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const accounts = useAccountStore((s) => s.accounts);
   const account = activeAccountId ? (accounts.find((a) => a.id === activeAccountId) ?? null) : null;
@@ -181,12 +169,6 @@ export function ReadingPane() {
   // block, so inline images render without the "Load images" toggle). The map
   // is reset at render time above (on message change); this effect only fetches
   // and calls setState from the async callback (lint-allowed).
-  //
-  // DA-Task 3: when the selected message was decrypted from an S/MIME envelope,
-  // the inline images live in the INNER MIME — `sync_fetch_inline_images` would
-  // fetch the outer envelope (one IMAP part) and find no CID parts. Route to
-  // `crypto_fetch_inline_images` instead, which re-decrypts + walks the inner
-  // MIME. The Blob/objectURL loop below is unchanged.
   useEffect(() => {
     const id = message?.id;
     const acct = activeAccountId;
@@ -209,18 +191,8 @@ export function ReadingPane() {
         cancelled = true;
       };
     }
-    // DA-Task 3: pick the right fetcher. The session cache entry is the
-    // source of truth for "was this message opened through the crypto
-    // pipeline" — `message.isEncrypted` only tells us the message KIND, not
-    // whether we have a decrypted plaintext cached. Falling back to
-    // `!!message.isEncrypted` covers the first-open path (cache not yet
-    // populated when this effect fires for a freshly-decrypted message —
-    // selectThread writes the cache BEFORE setSelectedMessage, but defense
-    // in depth).
-    const isCrypto = decryptedEntry?.isCrypto ?? !!message?.isEncrypted;
     let cancelled = false;
-    const fetcher = isCrypto ? fetchCryptoInlineImages : fetchInlineImages;
-    fetcher(acct, id)
+    fetchInlineImages(acct, id)
       .then(async (parts) => {
         if (cancelled) return;
         const m = new Map<string, string>();
@@ -243,7 +215,7 @@ export function ReadingPane() {
     return () => {
       cancelled = true;
     };
-  }, [message?.id, message?.html, activeAccountId, message?.isEncrypted, decryptedEntry?.isCrypto]);
+  }, [message?.id, message?.html, activeAccountId]);
 
   // Calendar-invite detection: parse any text/calendar attachment whose METHOD
   // is REQUEST and render an RSVP card above the message body.
@@ -283,7 +255,7 @@ export function ReadingPane() {
 
   if (!message) {
     return (
-      <div className="flex h-full flex-col items-center justify-center bg-surface-elevated min-w-0 text-[var(--muted-text)]">
+      <div className="flex h-full flex-col items-center justify-center min-w-0 text-[var(--muted-text)]">
         <div className="text-center">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface-floating)] text-[var(--muted-text)]">
             <MailIcon size={24} />
@@ -349,7 +321,7 @@ export function ReadingPane() {
   const decryptFailed = message.decryptState === 'no-key' || message.decryptState === 'failed';
 
   return (
-    <div className="reading-pane relative flex h-full min-w-0 flex-col bg-surface-elevated border-l border-[var(--border-subtle)] shadow-sm">
+    <div className="reading-pane relative flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)]">
       {prominent && level && <ClassificationBanner level={level} position="top" />}
 
       {isCryptoMessage && (
@@ -457,8 +429,6 @@ export function ReadingPane() {
               accountId={activeAccountId}
               messageId={message.id}
               bodyHtml={message.html}
-              decryptedAttachments={decryptedEntry?.attachments}
-              isCrypto={decryptedEntry?.isCrypto ?? !!message.isEncrypted}
             />
             <div
               style={{

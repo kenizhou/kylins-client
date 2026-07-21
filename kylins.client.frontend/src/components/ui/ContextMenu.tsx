@@ -79,7 +79,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                 onClose();
               }}
               className={({ isFocused, isHovered, isDisabled }) =>
-                `flex w-full items-center gap-2 px-3 min-h-11 text-left text-[13px] focus-visible:outline-none ${
+                `flex w-full items-center gap-2 px-3 min-h-9 text-left text-[13px] focus-visible:outline-none ${
                   isDisabled
                     ? 'cursor-default text-muted-text opacity-50'
                     : item.danger

@@ -36,3 +36,14 @@ export function formatFullDate(isoDate: string): string {
     minute: '2-digit',
   });
 }
+
+/** Format an ISO date string as a short date with minute-precise time (e.g. "Jul 16, 14:32"). */
+export function formatDateTimeMinutes(isoDate: string): string {
+  const date = new Date(isoDate);
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}

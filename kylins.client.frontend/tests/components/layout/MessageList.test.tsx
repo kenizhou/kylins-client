@@ -24,6 +24,7 @@ vi.mock('@tanstack/react-virtual', () => ({
       Array.from({ length: opts.count }, (_, i) => ({ key: String(i), index: i, start: i * 40 })),
     getTotalSize: () => opts.count * 40,
     measureElement: () => {},
+    scrollToIndex: () => {},
   }),
 }));
 
@@ -108,6 +109,8 @@ beforeEach(() => {
   useThreadStore.setState({
     threads: [],
     selectedThreadId: null,
+    selectedThreadIds: [],
+    selectionAnchorId: null,
     isLoading: false,
     cursor: null,
     currentQuery: null,
@@ -225,18 +228,18 @@ describe('MessageList', () => {
       nextCursor: null,
     });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const markThreadRead = vi.spyOn(useThreadStore.getState(), 'markThreadRead');
+    const markThreadsRead = vi.spyOn(useThreadStore.getState(), 'markThreadsRead');
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
 
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Mark as Unread' });
     fireEvent.click(item);
-    expect(markThreadRead).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 't1', isRead: true }),
+    expect(markThreadsRead).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: 't1', isRead: true })],
       false,
     );
-    markThreadRead.mockRestore();
+    markThreadsRead.mockRestore();
   });
 
   it('deletes a thread from the context menu', async () => {
@@ -246,15 +249,15 @@ describe('MessageList', () => {
     });
     vi.mocked(getMessagesForThread).mockResolvedValue([]);
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const deleteThread = vi.spyOn(useThreadStore.getState(), 'deleteThread');
+    const deleteThreads = vi.spyOn(useThreadStore.getState(), 'deleteThreads');
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
 
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Delete' });
     fireEvent.click(item);
-    expect(deleteThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
-    deleteThread.mockRestore();
+    expect(deleteThreads).toHaveBeenCalledWith([expect.objectContaining({ id: 't1' })]);
+    deleteThreads.mockRestore();
   });
 
   it('archives a thread from the context menu', async () => {
@@ -263,9 +266,9 @@ describe('MessageList', () => {
       nextCursor: null,
     });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const archiveThread = vi.spyOn(
+    const archiveThreads = vi.spyOn(
       await import('../../../src/services/mail/actions'),
-      'archiveThread',
+      'archiveThreads',
     );
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
@@ -273,8 +276,8 @@ describe('MessageList', () => {
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Archive' });
     fireEvent.click(item);
-    expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
-    archiveThread.mockRestore();
+    expect(archiveThreads).toHaveBeenCalledWith([expect.objectContaining({ id: 't1' })]);
+    archiveThreads.mockRestore();
   });
 
   it('shows hover quick actions and archives on click', async () => {
@@ -311,15 +314,15 @@ describe('MessageList', () => {
       nextCursor: null,
     });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const toggleThreadStarred = vi.spyOn(useThreadStore.getState(), 'toggleThreadStarred');
+    const setThreadsStarred = vi.spyOn(useThreadStore.getState(), 'setThreadsStarred');
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
 
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Follow Up' });
     fireEvent.click(item);
-    expect(toggleThreadStarred).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
-    toggleThreadStarred.mockRestore();
+    expect(setThreadsStarred).toHaveBeenCalledWith([expect.objectContaining({ id: 't1' })], true);
+    setThreadsStarred.mockRestore();
   });
 
   it('opens the composer in reply mode from the context menu', async () => {
@@ -427,5 +430,265 @@ describe('MessageList', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Unread' }));
     await waitFor(() => expect(loadMore).toHaveBeenCalled());
     loadMore.mockRestore();
+  });
+
+  it('exposes aria-multiselectable on the listbox', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+    expect(screen.getByRole('listbox')).toHaveAttribute('aria-multiselectable', 'true');
+  });
+
+  it('ctrl+click toggles rows in and out of the selection', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' }), thread({ id: 't2', subject: 'World' })],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Hello'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1']));
+
+    fireEvent.click(screen.getByText('World'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+    // The ctrl-clicked-in row becomes the anchor (reading-pane target).
+    expect(useThreadStore.getState().selectedThreadId).toBe('t2');
+    const options = screen.getAllByRole('option');
+    expect(options[0]).toHaveAttribute('aria-selected', 'true');
+    expect(options[1]).toHaveAttribute('aria-selected', 'true');
+
+    // Ctrl+click the anchor again: toggled out, anchor falls back to t1.
+    fireEvent.click(screen.getByText('World'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1']));
+    expect(useThreadStore.getState().selectedThreadId).toBe('t1');
+  });
+
+  it('shift+click selects the range from the anchor', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('One'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1']));
+
+    fireEvent.click(screen.getByText('Three'), { shiftKey: true });
+    await waitFor(() =>
+      expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2', 't3']),
+    );
+    // The anchor does not move on shift+click.
+    expect(useThreadStore.getState().selectionAnchorId).toBe('t1');
+  });
+
+  it('plain click collapses a multi-selection', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.click(screen.getByText('Three'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t3']));
+  });
+
+  it('right-click on a selected row keeps the multi-selection', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' }), thread({ id: 't2', subject: 'World' })],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Hello'));
+    fireEvent.click(screen.getByText('World'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.contextMenu(screen.getByText('World'));
+    expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']);
+    expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeInTheDocument();
+  });
+
+  it('right-click on an unselected row collapses to that row first', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('One'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1']));
+
+    fireEvent.contextMenu(screen.getByText('Three'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t3']));
+  });
+
+  it('ctrl+A selects all loaded threads', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'a', ctrlKey: true });
+
+    await waitFor(() =>
+      expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2', 't3']),
+    );
+    // No prior anchor — falls back to the first row.
+    expect(useThreadStore.getState().selectionAnchorId).toBe('t1');
+  });
+
+  it('shift+arrow extends and shrinks the selection from the anchor', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('One'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1']));
+
+    const listbox = screen.getByRole('listbox');
+    fireEvent.keyDown(listbox, { key: 'ArrowDown', shiftKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.keyDown(listbox, { key: 'ArrowDown', shiftKey: true });
+    await waitFor(() =>
+      expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2', 't3']),
+    );
+    // Anchor fixed; reading pane keeps showing the anchor.
+    expect(useThreadStore.getState().selectionAnchorId).toBe('t1');
+    expect(useThreadStore.getState().selectedThreadId).toBe('t1');
+
+    fireEvent.keyDown(listbox, { key: 'ArrowUp', shiftKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+  });
+
+  it('plain arrow collapses the selection to the next single row', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'ArrowDown' });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t3']));
+  });
+
+  it('shows count labels and applies Delete to the whole multi-selection', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' }), thread({ id: 't2', subject: 'World' })],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Hello'));
+    fireEvent.click(screen.getByText('World'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.contextMenu(screen.getByText('World'));
+    expect(screen.getByRole('menuitem', { name: 'Delete 2 conversations' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Archive 2 conversations' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Mark 2 as Read' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Follow up 2 conversations' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Move 2 conversations…' })).toBeInTheDocument();
+
+    const deleteThreads = vi.spyOn(useThreadStore.getState(), 'deleteThreads');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete 2 conversations' }));
+    expect(deleteThreads).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 't1' }),
+      expect.objectContaining({ id: 't2' }),
+    ]);
+    deleteThreads.mockRestore();
+  });
+
+  it('applies Mark as Unread to the whole multi-selection following the clicked row', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'Hello', isRead: true }),
+        thread({ id: 't2', subject: 'World', isRead: false }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Hello'));
+    fireEvent.click(screen.getByText('World'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.contextMenu(screen.getByText('Hello'));
+    const markThreadsRead = vi.spyOn(useThreadStore.getState(), 'markThreadsRead');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark 2 as Unread' }));
+    expect(markThreadsRead).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 't2' })],
+      false,
+    );
+    markThreadsRead.mockRestore();
   });
 });

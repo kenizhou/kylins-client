@@ -45,18 +45,27 @@ function composerStateToDraftInput(
   };
 }
 
-async function saveDraftNow(): Promise<void> {
+async function saveDraftNow(): Promise<boolean> {
   const state = useComposerStore.getState();
   // Capture the accountId at save time to avoid a mismatch if the user switches
   // accounts during the debounce window.
   const accountId = currentAccountId;
-  if (!state.isOpen || !accountId) return;
+  if (!state.isOpen || !accountId) return true;
 
   const account = useAccountStore.getState().accounts.find((a) => a.id === accountId);
-  if (!account) return;
+  if (!account) return true;
 
   // Don't save empty drafts.
-  if (!state.bodyHtml && !state.subject && state.to.length === 0) return;
+  if (
+    !state.bodyHtml &&
+    !state.subject &&
+    state.to.length === 0 &&
+    state.cc.length === 0 &&
+    state.bcc.length === 0 &&
+    state.replyTo.length === 0 &&
+    state.attachments.length === 0
+  )
+    return true;
 
   state.setIsSaving(true);
 
@@ -67,8 +76,10 @@ async function saveDraftNow(): Promise<void> {
       state.setDraftId(id);
     }
     state.setLastSavedAt(Date.now());
+    return true;
   } catch (err) {
     console.error('Failed to auto-save draft:', err);
+    return false;
   } finally {
     state.setIsSaving(false);
   }
@@ -116,4 +127,20 @@ export function stopAutoSave(): void {
     unsubscribe = null;
   }
   currentAccountId = null;
+}
+
+/**
+ * Immediately persist the current draft, cancelling any pending debounced
+ * save. Used by the pop-out window's close confirmation ("Save Draft").
+ * Safe to call when auto-save was never started (saveDraftNow no-ops).
+ */
+export async function flushDraftSave(): Promise<void> {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  const ok = await saveDraftNow();
+  if (!ok) {
+    throw new Error('Draft save failed');
+  }
 }

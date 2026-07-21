@@ -74,7 +74,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-[var(--header-h)] flex items-center pl-2 pr-[148px] glass bg-gradient-to-b from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] shadow-[var(--glass-shadow),var(--chrome-highlight)] select-none"
+      className="relative z-[var(--z-dropdown)] h-[var(--header-h)] flex items-center pl-2 pr-[148px] glass bg-gradient-to-b from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] shadow-[var(--glass-shadow),var(--chrome-highlight)] select-none"
       style={dragStyle}
     >
       {/* Signature iris hairline along the bottom edge */}

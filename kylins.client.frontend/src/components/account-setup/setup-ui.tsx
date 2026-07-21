@@ -278,11 +278,21 @@ export function SetupShell({ variant, children, announcement, contentRef }: Setu
   const isFullscreen = variant === 'fullscreen';
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
+    <div
+      className={
+        isFullscreen
+          ? 'flex h-full min-h-0 w-full flex-col overflow-hidden bg-background'
+          : 'w-full bg-background'
+      }
+    >
       {isFullscreen && <SetupTitleBar />}
       <main
         ref={contentRef}
-        className="relative flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6 pt-[calc(1.5rem+env(safe-area-inset-top))] pr-[calc(1.5rem+env(safe-area-inset-right))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] pl-[calc(1.5rem+env(safe-area-inset-left))]"
+        className={
+          isFullscreen
+            ? 'relative flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6 pt-[calc(1.5rem+env(safe-area-inset-top))] pr-[calc(1.5rem+env(safe-area-inset-right))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] pl-[calc(1.5rem+env(safe-area-inset-left))]'
+            : 'relative flex items-start justify-center p-6'
+        }
         style={isFullscreen ? dragStyle : undefined}
       >
         {/* Subtle ambient radial wash behind the card */}

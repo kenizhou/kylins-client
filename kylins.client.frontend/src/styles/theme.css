@@ -37,8 +37,10 @@
   --iris-end: oklch(0.72 0.12 220);
   --gradient-iris: linear-gradient(90deg, var(--primary), var(--iris-end));
 
-  /* Semantic color mapping — derived from the neutral series */
-  --background: oklch(0.992 0.002 258);
+  /* Semantic color mapping — derived from the neutral series.
+     Light background sits a touch below pure white so white cards and the
+     reading surface keep clear contrast against the page. */
+  --background: oklch(0.965 0.004 258);
   --foreground: var(--series-900);
 
   --card: #ffffff;
@@ -82,7 +84,7 @@
   --warning-foreground: var(--series-900);
 
   /* Semantic desktop tokens */
-  --surface: var(--series-100);
+  --surface: oklch(0.94 0.007 258);
   --text: var(--series-900);
   --muted-text: var(--series-600);
   --hover: color-mix(in srgb, var(--primary) 7%, var(--series-100));
@@ -105,7 +107,7 @@
   /* Layout sizing */
   --header-h: 56px;
   --ribbon-h: 56px;
-  --tool-w: 52px; /* actively used by ToolWindowBar */
+  --tool-w: 64px; /* actively used by ToolWindowBar */
   --status-h: 36px;
   --drawer-w: 260px;
   --pane-header-h: 32px;
@@ -167,18 +169,16 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
-  /* Glassmorphism chrome surfaces — stronger acrylic with top-light sheen */
-  --chrome-glass: color-mix(in srgb, var(--chrome) 60%, transparent);
-  --chrome-glass-start: color-mix(
-    in srgb,
-    #ffffff 18%,
-    color-mix(in srgb, var(--chrome) 65%, transparent)
-  );
-  --chrome-glass-end: color-mix(in srgb, var(--chrome) 55%, transparent);
+  /* Chrome surfaces — flat in light mode: solid opaque chrome, no blur sheen,
+     no soft shadows. Edges come from borders, not diffuse elevation. (Dark
+     mode overrides these with its glass values below.) */
+  --chrome-glass: var(--chrome);
+  --chrome-glass-start: var(--chrome);
+  --chrome-glass-end: var(--chrome);
   --glass-border: color-mix(in srgb, var(--foreground) 4%, transparent);
-  --glass-shadow: 0 8px 32px -8px color-mix(in srgb, var(--shadow-color) 18%, transparent);
+  --glass-shadow: none;
   /* Top-light sheen composited onto glass chrome bars (TitleBar/ToolWindowBar/StatusBar) */
-  --chrome-highlight: inset 0 1px 0 0 color-mix(in srgb, #ffffff 40%, transparent);
+  --chrome-highlight: none;
 
   /* Shared typography scale */
   --text-overline: 700 11px / 1.25 var(--font-ui);
@@ -200,6 +200,9 @@
   --list-row-selected-bg: var(--selected);
   --ribbon-bg: var(--chrome);
   --ribbon-group-border: var(--border);
+  /* Flat depth: hairline key shadow + faint top-light, no diffuse blur. */
+  --ribbon-elevation:
+    var(--shadow-sm), inset 0 1px 0 0 color-mix(in srgb, #ffffff 50%, transparent);
   --statusbar-bg: var(--chrome);
 }
 
@@ -283,14 +286,16 @@
   --amber: #fbbf24;
   --green: #34d399;
 
-  /* Chrome surface — darker than surface in both modes to preserve elevation. */
-  --chrome: color-mix(in srgb, var(--primary) 5%, var(--series-100));
+  /* Chrome surface — matches the panel tonal family in dark mode: marginally
+     darker than --surface with only a whisper of accent, so bars read as part
+     of the same shell instead of a lighter blue layer. */
+  --chrome: color-mix(in srgb, var(--primary) 3%, var(--series-100));
   --chrome-foreground: var(--foreground);
 
   /* Surface depth tokens — Fluent Acrylic layered surfaces */
   --surface-elevated: color-mix(in srgb, var(--background) 94%, var(--foreground));
   --surface-floating: var(--card);
-  --chrome-tint: color-mix(in srgb, var(--primary) 10%, var(--chrome));
+  --chrome-tint: color-mix(in srgb, var(--primary) 5%, var(--chrome));
 
   /* Accent subtlety tokens */
   --primary-subtle: color-mix(in srgb, var(--primary) 10%, transparent);
@@ -322,17 +327,19 @@
     0 8px 16px -6px color-mix(in srgb, var(--shadow-color) 50%, transparent),
     0 24px 48px -12px color-mix(in srgb, var(--shadow-color) 50%, transparent);
 
-  /* Glassmorphism chrome surfaces — stronger acrylic with top-light sheen */
-  --chrome-glass: color-mix(in srgb, var(--chrome) 55%, transparent);
+  /* Glassmorphism chrome surfaces — dark mode keeps the sheen faint and the
+     opacity high so the bars stay in the panels' tonal range. */
+  --chrome-glass: color-mix(in srgb, var(--chrome) 70%, transparent);
   --chrome-glass-start: color-mix(
     in srgb,
-    #ffffff 9%,
-    color-mix(in srgb, var(--chrome) 60%, transparent)
+    #ffffff 4%,
+    color-mix(in srgb, var(--chrome) 78%, transparent)
   );
-  --chrome-glass-end: color-mix(in srgb, var(--chrome) 48%, transparent);
+  --chrome-glass-end: color-mix(in srgb, var(--chrome) 68%, transparent);
   --glass-border: color-mix(in srgb, var(--foreground) 4%, transparent);
   --glass-shadow: 0 8px 32px -8px color-mix(in srgb, var(--shadow-color) 45%, transparent);
-  --chrome-highlight: inset 0 1px 0 0 color-mix(in srgb, #ffffff 6%, transparent);
+  --chrome-highlight: inset 0 1px 0 0 color-mix(in srgb, #ffffff 4%, transparent);
+  --ribbon-elevation: var(--shadow-sm), inset 0 1px 0 0 color-mix(in srgb, #ffffff 5%, transparent);
 }
 
 [data-contrast='high'],
@@ -384,6 +391,7 @@
   --glass-border: var(--border);
   --glass-shadow: none;
   --chrome-highlight: none;
+  --ribbon-elevation: none;
 
   /* High contrast flattens the signature gradient to solid primary. */
   --gradient-iris: linear-gradient(90deg, var(--primary), var(--primary));
@@ -452,6 +460,7 @@
   --glass-border: var(--border);
   --glass-shadow: none;
   --chrome-highlight: none;
+  --ribbon-elevation: none;
 
   /* High contrast flattens the signature gradient to solid primary. */
   --gradient-iris: linear-gradient(90deg, var(--primary), var(--primary));

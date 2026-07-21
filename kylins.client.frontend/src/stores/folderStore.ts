@@ -20,7 +20,13 @@ import type { MailFolder } from '../services/mail/folders';
 // the labels table, so provider re-syncs can never clobber a user's pins.
 const FAVORITES_KEY = 'folder.favorites';
 
-function favKey(accountId: string, labelId: string): string {
+/**
+ * Composite key for per-folder state (unreadCounts, favorites). Exported so
+ * components can subscribe to the `unreadCounts` map and look counts up
+ * reactively — selecting the `getUnread` ACTION instead never re-renders,
+ * because a store action is a stable function reference.
+ */
+export function favKey(accountId: string, labelId: string): string {
   return `${accountId}__${labelId}`;
 }
 

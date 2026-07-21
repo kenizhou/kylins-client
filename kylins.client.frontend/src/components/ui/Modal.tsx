@@ -62,7 +62,7 @@ export function Modal({
           {({ close }) => (
             <>
               {hasHeader && (
-                <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-subtle)] px-6 py-4">
+                <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-6 py-3.5">
                   <div className="flex items-center gap-3">
                     {Icon && (
                       <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl iris-line text-primary-fg shadow-[var(--shadow-sm)]">
@@ -70,7 +70,7 @@ export function Modal({
                       </span>
                     )}
                     <div>
-                      {title && <h2 className="text-lg font-semibold text-foreground">{title}</h2>}
+                      {title && <h2 className="type-subject text-foreground">{title}</h2>}
                       {subtitle && <p className="type-caption text-muted-text">{subtitle}</p>}
                     </div>
                   </div>

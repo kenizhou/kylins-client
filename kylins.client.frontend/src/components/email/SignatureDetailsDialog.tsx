@@ -163,7 +163,7 @@ export function SignatureDetailsDialog({
         if (!open) onClose();
       }}
       isDismissable={!loading}
-      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-[var(--backdrop)] p-4"
     >
       <RACModal className="w-full max-w-lg rounded-lg border border-[var(--border)] bg-[var(--background)] p-5 shadow-xl outline-none">
         <Dialog
