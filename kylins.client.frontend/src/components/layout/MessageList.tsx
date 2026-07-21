@@ -149,7 +149,7 @@ const MessageRow = memo(function MessageRow({
       }
       className={`group relative ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
     >
-      <div className="flex items-stretch px-1">
+      <div className="flex items-stretch pr-1">
         {/* Left state ribbon — self-stretch fills the row height (a plain
             h-full child would collapse: the parent's height is content-driven). */}
         <span
