@@ -62,6 +62,7 @@ interface ThreadState {
 
   // ---- User-driven thread mutations ----
   markThreadRead: (thread: Thread, read: boolean, messages?: DbMessageRow[]) => Promise<void>;
+  markThreadsRead: (threads: Thread[], read: boolean) => Promise<void>;
   toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
   deleteThread: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
   moveThread: (
@@ -303,27 +304,46 @@ export const useThreadStore = create<ThreadState>((set, get) => {
     // ---- User-driven thread mutations ----
 
     markThreadRead: async (thread, read, messages) => {
-      if (thread.isRead === read) return;
-      const msgs = await getThreadMessages(thread, messages);
+      void messages;
+      await get().markThreadsRead([thread], read);
+    },
+
+    markThreadsRead: async (threadsToMark, read) => {
+      const targets = threadsToMark.filter((t) => t.isRead !== read);
+      if (targets.length === 0) return;
+
+      const msgsById = new Map<string, DbMessageRow[]>();
+      await Promise.all(
+        targets.map(async (t) => {
+          msgsById.set(t.id, await getThreadMessages(t));
+        }),
+      );
+
+      // One batched state update so a virtualized list re-renders once.
+      const ids = new Set(targets.map((t) => t.id));
       set((s) => ({
-        threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: read } : t)),
+        threads: s.threads.map((t) => (ids.has(t.id) ? { ...t, isRead: read } : t)),
       }));
-      void invoke('sync_apply_mutation', {
-        accountId: thread.accountId,
-        op: {
-          type: 'markRead',
-          threadId: thread.id,
-          messageIds: msgs.map((m) => m.id),
-          folderPath: msgs[0]?.imap_folder ?? '',
-          uids: msgs.map((m) => m.imap_uid ?? 0),
-          read,
-        },
-      }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
+
       const labelId = get().currentQuery?.labelId;
-      if (labelId) {
-        const folderStore = useFolderStore.getState();
-        if (read) folderStore.decrementUnread(thread.accountId, labelId);
-        else folderStore.incrementUnread(thread.accountId, labelId);
+      const folderStore = useFolderStore.getState();
+      for (const t of targets) {
+        const msgs = msgsById.get(t.id)!;
+        void invoke('sync_apply_mutation', {
+          accountId: t.accountId,
+          op: {
+            type: 'markRead',
+            threadId: t.id,
+            messageIds: msgs.map((m) => m.id),
+            folderPath: msgs[0]?.imap_folder ?? '',
+            uids: msgs.map((m) => m.imap_uid ?? 0),
+            read,
+          },
+        }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
+        if (labelId) {
+          if (read) folderStore.decrementUnread(t.accountId, labelId);
+          else folderStore.incrementUnread(t.accountId, labelId);
+        }
       }
     },
 

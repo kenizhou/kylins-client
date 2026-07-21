@@ -527,6 +527,83 @@ const messageRow = (over: Partial<DbMessageRow> = {}): DbMessageRow => ({
   ...over,
 });
 
+describe('threadStore.markThreadsRead', () => {
+  it('marks multiple threads read with one op per thread and adjusts counts per thread', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isRead: false }),
+        thread({ id: 't2', isRead: false }),
+        thread({ id: 't3', isRead: true }),
+      ],
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 5 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .markThreadsRead(
+        [
+          thread({ id: 't1', isRead: false }),
+          thread({ id: 't2', isRead: false }),
+          thread({ id: 't3', isRead: true }),
+        ],
+        true,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isRead)).toEqual([true, true, true]);
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(3);
+    // t3 was already read — no op for it.
+    const markReadOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' &&
+          (args as { op: { type: string } }).op.type === 'markRead',
+      );
+    expect(markReadOps).toHaveLength(2);
+    expect(markReadOps[0]?.[1]).toEqual({
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: true,
+      },
+    });
+  });
+
+  it('marks multiple threads unread and increments the count per thread', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 1 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .markThreadsRead(
+        [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+        false,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isRead)).toEqual([false, false]);
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(3);
+  });
+
+  it('is a no-op when every thread already has the target state', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+
+    await useThreadStore.getState().markThreadsRead([thread({ id: 't1', isRead: true })], true);
+
+    expect(getMessagesForThread).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
 describe('threadStore.markThreadRead', () => {
   it('marks a thread read and decrements the folder unread count', async () => {
     useThreadStore.setState({
