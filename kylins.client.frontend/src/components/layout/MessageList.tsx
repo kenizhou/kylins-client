@@ -75,23 +75,22 @@ const DENSITY_ROW_CLASSES = {
 interface QuickActionsProps {
   thread: Thread;
   visible: boolean;
-  selected?: boolean;
 }
 
-function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps) {
+function MessageRowQuickActions({ thread, visible }: QuickActionsProps) {
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
 
   return (
     <span
       data-testid="message-quick-actions"
-      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] p-0.5 shadow-[var(--shadow-md)] backdrop-blur-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'} ${selected ? 'bg-[var(--surface-floating)]' : 'bg-[var(--surface-elevated)]'}`}
+      className={`shrink-0 items-center gap-0.5 group-focus-within:flex ${visible ? 'flex' : 'hidden'}`}
       onClick={(e) => e.stopPropagation()}
     >
       <Button
         type="button"
         aria-label="Archive"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onPress={() => void archiveThread(thread)}
       >
         {/* RAC Button strips `title`; keep the tooltip on the icon wrapper. */}
@@ -102,7 +101,7 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
       <Button
         type="button"
         aria-label="Delete"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onPress={() => void trashThread(thread)}
       >
         <span title="Delete" className="inline-flex items-center justify-center">
@@ -112,7 +111,7 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
       <Button
         type="button"
         aria-label={thread.isStarred ? 'Unflag' : 'Flag'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onPress={() => void toggleThreadStarred(thread)}
       >
         <span
@@ -125,7 +124,7 @@ function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps
       <Button
         type="button"
         aria-label={thread.isRead ? 'Mark unread' : 'Mark read'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         onPress={() => void markThreadRead(thread, !thread.isRead)}
       >
         <span
@@ -220,10 +219,13 @@ const MessageRow = memo(function MessageRow({
                 size={12}
               />
             </div>
-            <span className="shrink-0 text-[11px] tabular-nums text-[var(--muted-text)]">
-              {thread.lastMessageAt != null
-                ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
-                : ''}
+            <span className="flex shrink-0 items-center gap-2">
+              <MessageRowQuickActions thread={thread} visible={isHovered} />
+              <span className="text-[11px] tabular-nums text-[var(--muted-text)]">
+                {thread.lastMessageAt != null
+                  ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
+                  : ''}
+              </span>
             </span>
           </div>
           <div
@@ -254,11 +256,6 @@ const MessageRow = memo(function MessageRow({
           )}
         </div>
       </div>
-      <MessageRowQuickActions
-        thread={thread}
-        visible={isHovered || !!selected}
-        selected={!!selected}
-      />
     </div>
   );
 });
