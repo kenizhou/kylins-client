@@ -228,18 +228,18 @@ describe('MessageList', () => {
       nextCursor: null,
     });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const markThreadRead = vi.spyOn(useThreadStore.getState(), 'markThreadRead');
+    const markThreadsRead = vi.spyOn(useThreadStore.getState(), 'markThreadsRead');
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
 
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Mark as Unread' });
     fireEvent.click(item);
-    expect(markThreadRead).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 't1', isRead: true }),
+    expect(markThreadsRead).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: 't1', isRead: true })],
       false,
     );
-    markThreadRead.mockRestore();
+    markThreadsRead.mockRestore();
   });
 
   it('deletes a thread from the context menu', async () => {
@@ -249,15 +249,15 @@ describe('MessageList', () => {
     });
     vi.mocked(getMessagesForThread).mockResolvedValue([]);
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const deleteThread = vi.spyOn(useThreadStore.getState(), 'deleteThread');
+    const deleteThreads = vi.spyOn(useThreadStore.getState(), 'deleteThreads');
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
 
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Delete' });
     fireEvent.click(item);
-    expect(deleteThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
-    deleteThread.mockRestore();
+    expect(deleteThreads).toHaveBeenCalledWith([expect.objectContaining({ id: 't1' })]);
+    deleteThreads.mockRestore();
   });
 
   it('archives a thread from the context menu', async () => {
@@ -266,9 +266,9 @@ describe('MessageList', () => {
       nextCursor: null,
     });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const archiveThread = vi.spyOn(
+    const archiveThreads = vi.spyOn(
       await import('../../../src/services/mail/actions'),
-      'archiveThread',
+      'archiveThreads',
     );
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
@@ -276,8 +276,8 @@ describe('MessageList', () => {
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Archive' });
     fireEvent.click(item);
-    expect(archiveThread).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
-    archiveThread.mockRestore();
+    expect(archiveThreads).toHaveBeenCalledWith([expect.objectContaining({ id: 't1' })]);
+    archiveThreads.mockRestore();
   });
 
   it('shows hover quick actions and archives on click', async () => {
@@ -314,15 +314,15 @@ describe('MessageList', () => {
       nextCursor: null,
     });
     useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
-    const toggleThreadStarred = vi.spyOn(useThreadStore.getState(), 'toggleThreadStarred');
+    const setThreadsStarred = vi.spyOn(useThreadStore.getState(), 'setThreadsStarred');
     render(<MessageList />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
 
     fireEvent.contextMenu(screen.getByText('Hello'));
     const item = screen.getByRole('menuitem', { name: 'Follow Up' });
     fireEvent.click(item);
-    expect(toggleThreadStarred).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }));
-    toggleThreadStarred.mockRestore();
+    expect(setThreadsStarred).toHaveBeenCalledWith([expect.objectContaining({ id: 't1' })], true);
+    setThreadsStarred.mockRestore();
   });
 
   it('opens the composer in reply mode from the context menu', async () => {
@@ -633,5 +633,62 @@ describe('MessageList', () => {
 
     fireEvent.keyDown(screen.getByRole('listbox'), { key: 'ArrowDown' });
     await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t3']));
+  });
+
+  it('shows count labels and applies Delete to the whole multi-selection', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' }), thread({ id: 't2', subject: 'World' })],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Hello'));
+    fireEvent.click(screen.getByText('World'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.contextMenu(screen.getByText('World'));
+    expect(screen.getByRole('menuitem', { name: 'Delete 2 conversations' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Archive 2 conversations' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Mark 2 as Read' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Follow up 2 conversations' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Move 2 conversations…' })).toBeInTheDocument();
+
+    const deleteThreads = vi.spyOn(useThreadStore.getState(), 'deleteThreads');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete 2 conversations' }));
+    expect(deleteThreads).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 't1' }),
+      expect.objectContaining({ id: 't2' }),
+    ]);
+    deleteThreads.mockRestore();
+  });
+
+  it('applies Mark as Unread to the whole multi-selection following the clicked row', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'Hello', isRead: true }),
+        thread({ id: 't2', subject: 'World', isRead: false }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Hello'));
+    fireEvent.click(screen.getByText('World'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.contextMenu(screen.getByText('Hello'));
+    const markThreadsRead = vi.spyOn(useThreadStore.getState(), 'markThreadsRead');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark 2 as Unread' }));
+    expect(markThreadsRead).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 't2' })],
+      false,
+    );
+    markThreadsRead.mockRestore();
   });
 });

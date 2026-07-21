@@ -40,7 +40,7 @@ import { ContextMenu } from '../ui/ContextMenu';
 import { openComposerForThread } from '../../utils/composerActions';
 import { FolderPickerMenu } from './ribbon/FolderPickerMenu';
 import type { MailFolder } from '../../services/mail/folders/folderModel';
-import { archiveThread, trashThread } from '../../services/mail/actions';
+import { archiveThread, archiveThreads, trashThread } from '../../services/mail/actions';
 
 type MessageState = 'unread' | 'read' | 'flagged' | 'vip';
 
@@ -333,10 +333,10 @@ export function MessageList() {
   const loadMore = useThreadStore((s) => s.loadMore);
   const selectThread = useThreadStore((s) => s.selectThread);
   const setSelection = useThreadStore((s) => s.setSelection);
-  const markThreadRead = useThreadStore((s) => s.markThreadRead);
-  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
-  const deleteThread = useThreadStore((s) => s.deleteThread);
-  const moveThread = useThreadStore((s) => s.moveThread);
+  const markThreadsRead = useThreadStore((s) => s.markThreadsRead);
+  const setThreadsStarred = useThreadStore((s) => s.setThreadsStarred);
+  const deleteThreads = useThreadStore((s) => s.deleteThreads);
+  const moveThreads = useThreadStore((s) => s.moveThreads);
 
   const visibleColumns = useMemo(
     () =>
@@ -475,7 +475,9 @@ export function MessageList() {
     x: number;
     y: number;
   } | null>(null);
-  const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+  const [moveMenu, setMoveMenu] = useState<{ threads: Thread[]; x: number; y: number } | null>(
+    null,
+  );
   const [activeDescendantId, setActiveDescendantId] = useState<string | null>(null);
 
   // Keep the active descendant in sync with the selected thread so screen
@@ -506,7 +508,10 @@ export function MessageList() {
 
   const menuItems = useMemo(() => {
     if (!menu) return [];
-    const account = accounts.find((a) => a.id === menu.thread.accountId) ?? null;
+    const { thread: clicked, targets } = menu;
+    const n = targets.length;
+    const multi = n > 1;
+    const account = accounts.find((a) => a.id === clicked.accountId) ?? null;
     const replyMode = defaultReplyBehavior === 'reply-all' ? 'replyAll' : 'reply';
     return [
       { label: 'Copy', icon: CopyIcon, disabled: true },
@@ -517,7 +522,7 @@ export function MessageList() {
         icon: ReplyIcon,
         onSelect: () => {
           if (!account) return;
-          void openComposerForThread(menu.thread, replyMode, account);
+          void openComposerForThread(clicked, replyMode, account);
         },
       },
       {
@@ -525,7 +530,7 @@ export function MessageList() {
         icon: ReplyAllIcon,
         onSelect: () => {
           if (!account) return;
-          void openComposerForThread(menu.thread, 'replyAll', account);
+          void openComposerForThread(clicked, 'replyAll', account);
         },
       },
       {
@@ -533,46 +538,55 @@ export function MessageList() {
         icon: MailSendIcon,
         onSelect: () => {
           if (!account) return;
-          void openComposerForThread(menu.thread, 'forward', account);
+          void openComposerForThread(clicked, 'forward', account);
         },
       },
       {
-        label: menu.thread.isRead ? 'Mark as Unread' : 'Mark as Read',
+        label: multi
+          ? clicked.isRead
+            ? `Mark ${n} as Unread`
+            : `Mark ${n} as Read`
+          : clicked.isRead
+            ? 'Mark as Unread'
+            : 'Mark as Read',
         icon: MailIcon,
-        onSelect: () => void markThreadRead(menu.thread, !menu.thread.isRead),
+        onSelect: () => void markThreadsRead(targets, !clicked.isRead),
       },
       { separator: true },
       { label: 'Categorize', icon: TagIcon, disabled: true },
       {
-        label: menu.thread.isStarred ? 'Clear Follow Up' : 'Follow Up',
+        label: multi
+          ? clicked.isStarred
+            ? `Clear follow up on ${n} conversations`
+            : `Follow up ${n} conversations`
+          : clicked.isStarred
+            ? 'Clear Follow Up'
+            : 'Follow Up',
         icon: FlagIcon,
-        onSelect: () => void toggleThreadStarred(menu.thread),
+        onSelect: () => void setThreadsStarred(targets, !clicked.isStarred),
       },
       { label: 'Find Related', icon: SearchIcon, disabled: true },
       { label: 'Rules', icon: PreferencesMailRulesIcon, disabled: true },
       { separator: true },
       {
-        label: 'Move',
+        label: multi ? `Move ${n} conversations…` : 'Move',
         icon: MoveIcon,
-        onSelect: () => setMoveMenu({ thread: menu.thread, x: menu.x, y: menu.y }),
+        onSelect: () => setMoveMenu({ threads: targets, x: menu.x, y: menu.y }),
       },
       { label: 'Junk', icon: BellIcon, disabled: true },
       {
-        label: 'Delete',
+        label: multi ? `Delete ${n} conversations` : 'Delete',
         icon: TrashIcon,
         danger: true,
-        onSelect: () => void deleteThread(menu.thread),
+        onSelect: () => void deleteThreads(targets),
       },
       {
-        label: 'Archive',
+        label: multi ? `Archive ${n} conversations` : 'Archive',
         icon: ArchiveIcon,
-        onSelect: () => {
-          if (!menu.thread) return;
-          void archiveThread(menu.thread);
-        },
+        onSelect: () => void archiveThreads(targets),
       },
     ];
-  }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
+  }, [menu, accounts, defaultReplyBehavior, markThreadsRead, setThreadsStarred, deleteThreads]);
 
   return (
     <div className="message-list flex flex-col h-full border-r border-[var(--border-subtle)]">
@@ -757,11 +771,11 @@ export function MessageList() {
       )}
       {moveMenu && (
         <FolderPickerMenu
-          accountId={moveMenu.thread.accountId}
+          accountId={moveMenu.threads[0]?.accountId ?? ''}
           excludeLabelId={selectedFolder?.labelId}
           style={{ position: 'fixed', left: moveMenu.x, top: moveMenu.y, zIndex: 80 }}
           onSelect={(folder: MailFolder) => {
-            void moveThread(moveMenu.thread, folder.id, folder.remoteId ?? folder.name);
+            void moveThreads(moveMenu.threads, folder.id, folder.remoteId ?? folder.name);
             setMoveMenu(null);
           }}
           onClose={() => setMoveMenu(null)}
