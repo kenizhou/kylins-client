@@ -11,8 +11,7 @@ import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
 import { useAutoHideScrollbar } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
-import { getInitials, formatMessageTime } from '../../data/demoMessages';
-import { avatarGradient } from '../../utils/avatarGradient';
+import { formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
 import { isProminent, levelStyle } from '../../features/classification/classificationStyle';
@@ -50,7 +49,7 @@ interface MessageRowProps {
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
   visibleColumns: ColumnDef[];
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
   onDoubleClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
 }
@@ -76,14 +75,14 @@ const RIBBON_HOVER_COLOR: Record<MessageState, string> = {
 
 const DENSITY_ROW_CLASSES = {
   compact: 'min-h-11',
-  normal: 'min-h-11',
-  comfortable: 'min-h-[52px]',
+  normal: 'min-h-12',
+  comfortable: 'min-h-14',
 };
 
 const DENSITY_CONTENT_CLASSES = {
-  compact: 'py-1',
-  normal: 'py-1.5',
-  comfortable: 'py-3',
+  compact: 'py-1 space-y-0.5',
+  normal: 'py-2 space-y-[3px]',
+  comfortable: 'py-3.5 space-y-1',
 };
 
 interface QuickActionsProps {
@@ -192,17 +191,10 @@ const MessageRow = memo(function MessageRow({
 
         {/* Main content column: sender / subject / preview + time */}
         <div className={`flex-1 min-w-0 px-4 ${DENSITY_CONTENT_CLASSES[density]}`}>
-          <div className="flex items-center justify-between gap-2">
+          {/* h-6 pins the sender line so hover-revealed quick actions (h-6)
+              never stretch the row — prevents the 4px hover jitter. */}
+          <div className="flex h-6 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
-                style={{
-                  background: avatarGradient(sender).background,
-                  color: avatarGradient(sender).foreground,
-                }}
-              >
-                {getInitials(sender)}
-              </span>
               <span className={`truncate text-[var(--text)] ${unread ? 'font-semibold' : ''}`}>
                 {sender}
               </span>
@@ -240,12 +232,16 @@ const MessageRow = memo(function MessageRow({
 
         {/* Right metadata indicators */}
         <div className="flex shrink-0 flex-col items-end justify-center gap-1 pr-2">
-          {showFlag && (thread.isStarred || isHovered) && (
+          {showFlag && (
             <button
               type="button"
               title={thread.isStarred ? 'Unflag' : 'Flag'}
               aria-label={thread.isStarred ? 'Flagged' : 'Flag'}
               className={`inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+                // Always mounted (visibility-toggled) so a hover-revealed flag
+                // never changes the row height.
+                thread.isStarred || isHovered ? '' : 'invisible'
+              } ${
                 thread.isStarred
                   ? 'text-[var(--amber)]'
                   : 'text-[var(--muted-text)] hover:text-[var(--amber)]'
@@ -328,12 +324,15 @@ export function MessageList() {
 
   const threads = useThreadStore((s) => s.threads);
   const selectedThreadId = useThreadStore((s) => s.selectedThreadId);
+  const selectedThreadIds = useThreadStore((s) => s.selectedThreadIds);
+  const selectionAnchorId = useThreadStore((s) => s.selectionAnchorId);
   const isLoading = useThreadStore((s) => s.isLoading);
   const cursor = useThreadStore((s) => s.cursor);
   const accounts = useAccountStore((s) => s.accounts);
   const loadThreads = useThreadStore((s) => s.loadThreads);
   const loadMore = useThreadStore((s) => s.loadMore);
   const selectThread = useThreadStore((s) => s.selectThread);
+  const setSelection = useThreadStore((s) => s.setSelection);
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
   const deleteThread = useThreadStore((s) => s.deleteThread);
@@ -379,6 +378,45 @@ export function MessageList() {
     if (result.length === items.length) return items;
     return result;
   }, [items, isInbox, inboxTab]);
+
+  const selectedIdSet = useMemo(() => new Set(selectedThreadIds), [selectedThreadIds]);
+
+  // Thread-id range between two rows over the FILTERED list, skipping group
+  // headers. Falls back to just the target when either end scrolled out of
+  // the loaded pages.
+  const rangeIds = (fromId: string, toId: string): string[] => {
+    const idxOf = (id: string) =>
+      filteredItems.findIndex((it) => it.kind === 'thread' && it.thread.id === id);
+    const a = idxOf(fromId);
+    const b = idxOf(toId);
+    if (a === -1 || b === -1) return [toId];
+    const [lo, hi] = a < b ? [a, b] : [b, a];
+    return filteredItems
+      .slice(lo, hi + 1)
+      .flatMap((it) => (it.kind === 'thread' ? [it.thread.id] : []));
+  };
+
+  const handleRowClick = (t: Thread, e: React.MouseEvent) => {
+    setActiveDescendantId(optionId(t.id));
+    if (e.shiftKey && selectionAnchorId) {
+      void setSelection(rangeIds(selectionAnchorId, t.id), selectionAnchorId);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      const next = new Set(selectedThreadIds);
+      let nextAnchor = selectionAnchorId;
+      if (next.has(t.id)) {
+        next.delete(t.id);
+        if (nextAnchor === t.id) nextAnchor = [...next].at(-1) ?? null;
+      } else {
+        next.add(t.id);
+        nextAnchor = t.id;
+      }
+      void setSelection([...next], nextAnchor);
+      return;
+    }
+    void selectThread(t);
+  };
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollbarClass = useAutoHideScrollbar();
@@ -431,7 +469,12 @@ export function MessageList() {
     if (msg) openViewerWindow(msg);
   };
 
-  const [menu, setMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{
+    thread: Thread;
+    targets: Thread[];
+    x: number;
+    y: number;
+  } | null>(null);
   const [moveMenu, setMoveMenu] = useState<{ thread: Thread; x: number; y: number } | null>(null);
   const [activeDescendantId, setActiveDescendantId] = useState<string | null>(null);
 
@@ -450,7 +493,15 @@ export function MessageList() {
 
   const openContextMenu = (thread: Thread, e: React.MouseEvent) => {
     e.preventDefault();
-    setMenu({ thread, x: e.clientX, y: e.clientY });
+    setActiveDescendantId(optionId(thread.id));
+    // Outlook behavior: right-click on a row inside a multi-selection targets
+    // the whole selection; right-click elsewhere collapses to that row first.
+    const keepSelection = selectedIdSet.has(thread.id) && selectedThreadIds.length > 1;
+    if (!keepSelection) {
+      void selectThread(thread);
+    }
+    const targets = keepSelection ? threads.filter((t) => selectedIdSet.has(t.id)) : [thread];
+    setMenu({ thread, targets, x: e.clientX, y: e.clientY });
   };
 
   const menuItems = useMemo(() => {
@@ -524,7 +575,7 @@ export function MessageList() {
   }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
-    <div className="message-list flex flex-col h-full bg-surface border-r border-[var(--border-subtle)]">
+    <div className="message-list flex flex-col h-full border-r border-[var(--border-subtle)]">
       {conversationView && (
         <div className="px-3 py-1 text-[11px] text-[var(--foreground)] bg-[var(--primary-muted)]">
           Conversation view enabled
@@ -563,6 +614,7 @@ export function MessageList() {
         tabIndex={0}
         role="listbox"
         aria-label="Messages"
+        aria-multiselectable="true"
         aria-busy={isLoading && filteredItems.length === 0 ? true : undefined}
         aria-activedescendant={activeDescendantId ?? undefined}
         className={`flex-1 flex flex-col overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${scrollbarClass}`}
@@ -652,20 +704,17 @@ export function MessageList() {
                   {item.kind === 'group' ? (
                     <div
                       role="presentation"
-                      className="py-1.5 px-3 border-b border-[var(--border-subtle)] bg-[var(--surface)] type-overline text-[var(--muted-text)]"
+                      className="py-1.5 px-3 border-b border-[var(--border-subtle)] type-overline text-[var(--muted-text)]"
                     >
                       {item.label}
                     </div>
                   ) : (
                     <MessageRow
                       thread={item.thread}
-                      selected={selectedThreadId === item.thread.id}
+                      selected={selectedIdSet.has(item.thread.id)}
                       density={density}
                       visibleColumns={visibleColumns}
-                      onClick={() => {
-                        setActiveDescendantId(optionId(item.thread.id));
-                        void selectThread(item.thread);
-                      }}
+                      onClick={(e) => handleRowClick(item.thread, e)}
                       onDoubleClick={() => void handleDoubleClick(item.thread)}
                       onContextMenu={(e) => openContextMenu(item.thread, e)}
                     />
