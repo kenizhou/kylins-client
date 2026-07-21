@@ -113,7 +113,17 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   selectThread: async (thread) => {
+    const previousId = get().selectedThreadId;
     set({ selectedThreadId: setSelectedThread(thread.id) });
+    // Outlook-style read timing: the thread being LEFT is marked read, not the
+    // thread being opened — so the unread styling (colorbar, bold) stays while
+    // reading and is only consumed when the user moves on.
+    if (previousId && previousId !== thread.id) {
+      const previous = get().threads.find((t) => t.id === previousId);
+      if (previous && !previous.isRead) {
+        await get().markThreadRead(previous, true);
+      }
+    }
     try {
       const messages = await getMessagesForThread(thread.accountId, thread.id);
       const latest = messages[messages.length - 1] ?? null;
@@ -221,11 +231,8 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       } else {
         useViewStore.getState().setSelectedMessage(null);
       }
-      // Opening a thread marks it read. Pass already-loaded messages so we don't
-      // fetch them twice.
-      if (!thread.isRead) {
-        await get().markThreadRead(thread, true, messages);
-      }
+      // Note: opening a thread no longer marks it read here — that happens
+      // when the user navigates away (see the top of selectThread).
     } catch (e) {
       console.error('Failed to load thread messages:', e);
     }

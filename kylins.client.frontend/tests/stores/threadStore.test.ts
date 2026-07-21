@@ -135,7 +135,7 @@ describe('threadStore.loadMore', () => {
 });
 
 describe('threadStore.selectThread', () => {
-  it('loads the latest message + body, bridges to selectedMessage, marks unread read via sync_apply_mutation', async () => {
+  it('loads the latest message + body, bridges to selectedMessage, and does NOT mark read on open', async () => {
     useThreadStore.setState({ threads: [thread({ id: 't1', isRead: false })] });
     vi.mocked(getMessagesForThread).mockResolvedValue([
       {
@@ -168,7 +168,46 @@ describe('threadStore.selectThread', () => {
     expect(getMessagesForThread).toHaveBeenCalledWith('a1', 't1');
     expect(getMessageBody).toHaveBeenCalledWith('a1', 'm1');
     expect(useViewStore.getState().selectedMessage?.html).toBe('<p>h</p>');
-    // The durable mark-read now flows through the sync engine (one invoke with
+    // Opening no longer consumes the unread state — that happens on deselect.
+    expect(invoke).not.toHaveBeenCalledWith(
+      'sync_apply_mutation',
+      expect.objectContaining({ op: expect.objectContaining({ type: 'markRead' }) }),
+    );
+    expect(useThreadStore.getState().threads[0]!.isRead).toBe(false);
+  });
+
+  it('marks the PREVIOUS thread read when the selection moves away from it', async () => {
+    const m1Row = {
+      id: 'm1',
+      account_id: 'a1',
+      thread_id: 't1',
+      from_address: 'b@x.com',
+      from_name: 'Bob',
+      to_addresses: 'c@y.com',
+      cc_addresses: null,
+      subject: 'S',
+      snippet: 'sn',
+      date: 100,
+      is_read: 0,
+      is_starred: 0,
+      body_text: 'txt',
+      imap_uid: 4242,
+      imap_folder: 'INBOX',
+    };
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: true })],
+      selectedThreadId: null,
+    });
+    vi.mocked(getMessagesForThread).mockImplementation(async (_acc, id) =>
+      id === 't1' ? [m1Row] : [],
+    );
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    // Open t1 (stays unread), then move to t2 → t1 is consumed as read.
+    await useThreadStore.getState().selectThread(thread({ id: 't1', isRead: false }));
+    await useThreadStore.getState().selectThread(thread({ id: 't2', isRead: true }));
+
+    // The durable mark-read flows through the sync engine (one invoke with
     // a MutationOp), NOT the legacy `db_mark_thread_read` invoke.
     expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
       accountId: 'a1',
@@ -181,8 +220,9 @@ describe('threadStore.selectThread', () => {
         read: true,
       },
     });
-    // optimistic read state
-    expect(useThreadStore.getState().threads[0]!.isRead).toBe(true);
+    expect(useThreadStore.getState().threads.find((t) => t.id === 't1')!.isRead).toBe(true);
+    // The newly opened thread is untouched.
+    expect(useThreadStore.getState().threads.find((t) => t.id === 't2')!.isRead).toBe(true);
   });
 
   it('does NOT invoke sync_apply_mutation when the thread is already read', async () => {

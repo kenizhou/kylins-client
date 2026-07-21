@@ -66,6 +66,14 @@ const RIBBON_COLOR: Record<MessageState, string> = {
   vip: 'bg-[var(--green)]',
 };
 
+/** Right half of the bar: fills with the SAME color as the left half on bar hover. */
+const RIBBON_HOVER_COLOR: Record<MessageState, string> = {
+  unread: 'group-hover/bar:bg-primary',
+  read: 'group-hover/bar:bg-[var(--series-300)]',
+  flagged: 'group-hover/bar:bg-[var(--series-300)]',
+  vip: 'group-hover/bar:bg-[var(--green)]',
+};
+
 const DENSITY_ROW_CLASSES = {
   compact: 'min-h-11',
   normal: 'min-h-11',
@@ -157,8 +165,9 @@ const MessageRow = memo(function MessageRow({
       className={`group relative ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
     >
       <div className="flex items-stretch pr-1">
-        {/* Left state ribbon — click toggles read/unread; self-stretch fills
-            the row height with a hairline gap between adjacent rows. */}
+        {/* Left state ribbon — double-width static hit area: the left half
+            carries the state color, the right half stays transparent and
+            fills with primary on bar hover. Click toggles read/unread. */}
         <button
           type="button"
           aria-label={unread ? 'Mark as read' : 'Mark as unread'}
@@ -166,9 +175,20 @@ const MessageRow = memo(function MessageRow({
             e.stopPropagation();
             void markThreadRead(thread, !thread.isRead);
           }}
-          className={`relative z-10 my-[0.5px] w-1 shrink-0 cursor-pointer self-stretch transition-all duration-fast hover:w-2.5 ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
-          style={prominent && level ? { backgroundColor: level.color } : undefined}
-        />
+          className="group/bar relative z-10 my-[0.5px] flex w-2 shrink-0 cursor-pointer self-stretch"
+          style={
+            prominent && level
+              ? ({ '--bar-prominent': level.color } as React.CSSProperties)
+              : undefined
+          }
+        >
+          <span
+            className={`w-1 ${prominent ? 'bg-[var(--bar-prominent)]' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+          />
+          <span
+            className={`w-1 transition-colors duration-fast ${prominent ? 'group-hover/bar:bg-[var(--bar-prominent)]' : RIBBON_HOVER_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+          />
+        </button>
 
         {/* Main content column: sender / subject / preview + time */}
         <div className={`flex-1 min-w-0 px-4 ${DENSITY_CONTENT_CLASSES[density]}`}>

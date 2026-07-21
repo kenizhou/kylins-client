@@ -110,7 +110,7 @@ function FontFamilySelect({ editor, disabled }: { editor: Editor; disabled?: boo
             <ListBoxItem
               id={option.value}
               textValue={option.label}
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)] data-[selected]:bg-[var(--primary-muted)] data-[selected]:text-[var(--primary)] min-h-11"
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)] data-[selected]:bg-[var(--primary-muted)] data-[selected]:text-[var(--primary)] min-h-9"
               style={{ fontFamily: option.value }}
             >
               {option.label}

@@ -118,7 +118,7 @@ function FolderRow({
       <Button
         onPress={onClick}
         className={`
-          group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left transition-colors duration-fast
+          group relative flex h-9 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left transition-colors duration-fast
           ${active ? 'bg-[var(--primary-muted)] text-[var(--selected-text)]' : 'text-foreground hover:bg-[var(--primary-subtle)]'}
         `}
       >
@@ -190,7 +190,7 @@ function FolderGroup({
     >
       <Button
         slot="trigger"
-        className="group flex h-11 w-full items-center gap-1 px-3 text-left type-overline text-[var(--muted-text)] transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex h-9 w-full items-center gap-1 px-3 text-left type-overline text-[var(--muted-text)] transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {headerContent}
       </Button>
@@ -410,7 +410,7 @@ function AccountFolderTree({
             const unread = getUnread(folder.accountId, folder.id);
             return (
               <div
-                className="flex flex-1 items-center gap-2 h-11 pr-3"
+                className="flex flex-1 items-center gap-2 h-9 pr-3"
                 style={{ paddingLeft: `${8 + (level - 1) * 14}px` }}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -423,7 +423,7 @@ function AccountFolderTree({
                 {hasChildItems ? (
                   <Button
                     slot="chevron"
-                    className="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="group relative flex h-9 w-9 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
                   >
                     {isExpanded ? <ArrowDownIcon size={12} /> : <ArrowRightIcon size={12} />}
