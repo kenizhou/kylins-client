@@ -40,7 +40,8 @@ describe('ComposeRibbon', () => {
     }
     // Toggle icons unified at 17px.
     const encrypt = screen.getByRole('checkbox', { name: /encrypt/i });
-    expect(encrypt.querySelector('svg')?.getAttribute('width')).toBe('17');
+    const wrapper = encrypt.closest('label') ?? encrypt.parentElement!;
+    expect(wrapper.querySelector('svg')?.getAttribute('width')).toBe('17');
     void container;
   });
 
@@ -78,6 +79,7 @@ describe('ComposeRibbon', () => {
     fireEvent.click(screen.getByRole('button', { name: /more/i }));
     fireEvent.click(screen.getByRole('menuitem', { name: /^high$/i }));
     expect(useComposerStore.getState().importance).toBe('high');
+    fireEvent.click(screen.getByRole('button', { name: /more/i }));
     fireEvent.click(screen.getByRole('menuitem', { name: /encrypt/i }));
     expect(useComposerStore.getState().isEncrypted).toBe(true);
   });

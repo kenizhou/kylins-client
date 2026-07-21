@@ -221,7 +221,6 @@ export function ComposeRibbon() {
                   <MenuItem
                     key={option.value}
                     id={option.value}
-                    shouldCloseOnSelect={false}
                     onAction={() => setImportance(option.value)}
                     className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
                   >
