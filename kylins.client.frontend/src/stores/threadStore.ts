@@ -64,6 +64,7 @@ interface ThreadState {
   markThreadRead: (thread: Thread, read: boolean, messages?: DbMessageRow[]) => Promise<void>;
   markThreadsRead: (threads: Thread[], read: boolean) => Promise<void>;
   toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
+  setThreadsStarred: (threads: Thread[], starred: boolean) => Promise<void>;
   deleteThread: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
   moveThread: (
     thread: Thread,
@@ -347,23 +348,40 @@ export const useThreadStore = create<ThreadState>((set, get) => {
       }
     },
 
-    toggleThreadStarred: async (thread, messages) => {
-      const nextStarred = !thread.isStarred;
-      const msgs = await getThreadMessages(thread, messages);
+    toggleThreadStarred: async (thread, _messages) => {
+      await get().setThreadsStarred([thread], !thread.isStarred);
+    },
+
+    setThreadsStarred: async (threadsToFlag, starred) => {
+      const targets = threadsToFlag.filter((t) => t.isStarred !== starred);
+      if (targets.length === 0) return;
+
+      const msgsById = new Map<string, DbMessageRow[]>();
+      await Promise.all(
+        targets.map(async (t) => {
+          msgsById.set(t.id, await getThreadMessages(t));
+        }),
+      );
+
+      const ids = new Set(targets.map((t) => t.id));
       set((s) => ({
-        threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isStarred: nextStarred } : t)),
+        threads: s.threads.map((t) => (ids.has(t.id) ? { ...t, isStarred: starred } : t)),
       }));
-      void invoke('sync_apply_mutation', {
-        accountId: thread.accountId,
-        op: {
-          type: 'setFlag',
-          messageIds: msgs.map((m) => m.id),
-          folderPath: msgs[0]?.imap_folder ?? '',
-          uids: msgs.map((m) => m.imap_uid ?? 0),
-          flag: '\\Flagged',
-          add: nextStarred,
-        },
-      }).catch((e) => console.error('sync_apply_mutation setFlag failed', e));
+
+      for (const t of targets) {
+        const msgs = msgsById.get(t.id)!;
+        void invoke('sync_apply_mutation', {
+          accountId: t.accountId,
+          op: {
+            type: 'setFlag',
+            messageIds: msgs.map((m) => m.id),
+            folderPath: msgs[0]?.imap_folder ?? '',
+            uids: msgs.map((m) => m.imap_uid ?? 0),
+            flag: '\\Flagged',
+            add: starred,
+          },
+        }).catch((e) => console.error('sync_apply_mutation setFlag failed', e));
+      }
     },
 
     deleteThread: async (thread, messages) => {

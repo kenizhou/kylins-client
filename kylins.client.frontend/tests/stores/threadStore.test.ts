@@ -826,3 +826,65 @@ describe('threadStore.loadThreads selection reset', () => {
     expect(useViewStore.getState().selectedThreadIds).toEqual([]);
   });
 });
+
+describe('threadStore.setThreadsStarred', () => {
+  it('flags multiple threads with one setFlag op per thread', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isStarred: false }),
+        thread({ id: 't2', isStarred: false }),
+        thread({ id: 't3', isStarred: true }),
+      ],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .setThreadsStarred(
+        [
+          thread({ id: 't1', isStarred: false }),
+          thread({ id: 't2', isStarred: false }),
+          thread({ id: 't3', isStarred: true }),
+        ],
+        true,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isStarred)).toEqual([true, true, true]);
+    // t3 was already flagged — no op for it.
+    const flagOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'setFlag',
+      );
+    expect(flagOps).toHaveLength(2);
+    expect(flagOps[0]?.[1]).toEqual({
+      accountId: 'a1',
+      op: {
+        type: 'setFlag',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        flag: '\\Flagged',
+        add: true,
+      },
+    });
+  });
+
+  it('clears flags on multiple threads', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isStarred: true }), thread({ id: 't2', isStarred: true })],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore
+      .getState()
+      .setThreadsStarred(
+        [thread({ id: 't1', isStarred: true }), thread({ id: 't2', isStarred: true })],
+        false,
+      );
+
+    expect(useThreadStore.getState().threads.map((t) => t.isStarred)).toEqual([false, false]);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});
