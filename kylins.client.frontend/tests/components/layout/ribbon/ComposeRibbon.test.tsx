@@ -68,7 +68,7 @@ describe('ComposeRibbon', () => {
     expect(screen.getByRole('button', { name: /attach/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /more/i }));
-    expect(screen.getByRole('menuitem', { name: /high/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /high/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /read receipt/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /encrypt/i })).toBeInTheDocument();
   });
@@ -77,7 +77,7 @@ describe('ComposeRibbon', () => {
     ribbonWidth = 500;
     render(<ComposeRibbon />);
     fireEvent.click(screen.getByRole('button', { name: /more/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /^high$/i }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /^high$/i }));
     expect(useComposerStore.getState().importance).toBe('high');
     fireEvent.click(screen.getByRole('button', { name: /more/i }));
     fireEvent.click(screen.getByRole('menuitem', { name: /encrypt/i }));

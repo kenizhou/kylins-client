@@ -4,6 +4,8 @@ import { Composer } from '../../../src/components/composer/Composer';
 import { useComposerStore } from '../../../src/stores/composerStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
 import { usePreferencesStore } from '../../../src/stores/preferencesStore';
+import { useToastStore } from '../../../src/stores/toastStore';
+import { flushDraftSave } from '../../../src/services/composer/draftAutoSave';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
@@ -88,6 +90,7 @@ beforeEach(() => {
   setTitle.mockClear();
   windowClose.mockClear();
   closeRequestedHandler = null;
+  flushDraftSave.mockClear();
 });
 
 describe('Composer default view', () => {
@@ -191,5 +194,33 @@ describe('Composer windowed (pop-out)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Draft' }));
     await waitFor(() => expect(flushDraftSave).toHaveBeenCalled());
     await waitFor(() => expect(windowClose).toHaveBeenCalled());
+  });
+
+  it('intercepts close when only a Cc recipient is present', async () => {
+    useComposerStore.setState({ cc: [{ email: 'c@x.com', name: '' }] });
+    render(<Composer windowed />);
+    const event = { preventDefault: vi.fn() };
+    await act(async () => {
+      await closeRequestedHandler!(event);
+    });
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(screen.getByText('Save this draft?')).toBeInTheDocument();
+  });
+
+  it('Save Draft keeps the window open and toasts when flushDraftSave fails', async () => {
+    vi.mocked(flushDraftSave).mockRejectedValueOnce(new Error('disk full'));
+    const pushSpy = vi.spyOn(useToastStore.getState(), 'push');
+    useComposerStore.setState({ subject: 'Unsaved work' });
+    render(<Composer windowed />);
+    await act(async () => {
+      await closeRequestedHandler!({ preventDefault: vi.fn() });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Draft' }));
+    await waitFor(() => expect(flushDraftSave).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(pushSpy).toHaveBeenCalledWith(expect.stringContaining('Save draft failed'), 'error'),
+    );
+    expect(windowClose).not.toHaveBeenCalled();
+    pushSpy.mockRestore();
   });
 });

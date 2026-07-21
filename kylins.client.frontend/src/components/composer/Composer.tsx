@@ -435,7 +435,14 @@ export function Composer({ windowed = false }: ComposerProps) {
       .onCloseRequested((event) => {
         const state = useComposerStore.getState();
         const bodyEmpty = (editor?.getText().trim() ?? '') === '';
-        const untouched = state.to.length === 0 && state.subject.trim() === '' && bodyEmpty;
+        const untouched =
+          state.to.length === 0 &&
+          state.cc.length === 0 &&
+          state.bcc.length === 0 &&
+          state.replyTo.length === 0 &&
+          state.attachments.length === 0 &&
+          state.subject.trim() === '' &&
+          bodyEmpty;
         if (untouched) return; // empty compose closes without prompting
         event.preventDefault();
         setCloseConfirmOpen(true);

@@ -216,22 +216,31 @@ export function ComposeRibbon() {
               More
             </RibbonButton>
             <Popover className="min-w-[180px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
-              <Menu aria-label="More actions" className="outline-none">
-                {importanceOptions.map((option) => (
+              <Menu
+                aria-label="Importance"
+                selectionMode="single"
+                selectedKeys={new Set([importance])}
+                onSelectionChange={(keys) => {
+                  if (keys === 'all') return;
+                  const key = Array.from(keys)[0];
+                  const option = importanceOptions.find((o) => o.value === key);
+                  if (option) setImportance(option.value);
+                }}
+                items={importanceOptions}
+                className="outline-none"
+              >
+                {(option) => (
                   <MenuItem
-                    key={option.value}
                     id={option.value}
-                    onAction={() => setImportance(option.value)}
-                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)]"
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)] selected:bg-[var(--primary-muted)] selected:text-[var(--foreground)]"
                   >
                     <span className="text-[var(--muted-text)]">{option.icon}</span>
                     <span className="flex-1 whitespace-nowrap">{option.label}</span>
-                    {importance === option.value && (
-                      <CheckIcon size={14} className="text-[var(--primary)]" />
-                    )}
                   </MenuItem>
-                ))}
-                <Separator className="my-1 border-t border-[var(--border-subtle)]" />
+                )}
+              </Menu>
+              <Separator className="my-1 border-t border-[var(--border-subtle)]" />
+              <Menu aria-label="Message options" className="outline-none">
                 <MenuItem
                   id="read-receipt"
                   shouldCloseOnSelect={false}

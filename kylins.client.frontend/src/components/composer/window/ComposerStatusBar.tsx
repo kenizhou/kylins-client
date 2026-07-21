@@ -43,7 +43,7 @@ export function ComposerStatusBar({ editor, wordCount, charCount }: ComposerStat
             title={sendProgress.message}
           >
             <SpinnerIcon size={12} />
-            <span>{sendProgress.message ?? 'Sending…'}</span>
+            <span>{sendProgress.message || 'Sending…'}</span>
           </span>
         )}
       </div>
