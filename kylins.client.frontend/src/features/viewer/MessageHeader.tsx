@@ -79,7 +79,7 @@ export function MessageHeader({
   ];
 
   return (
-    <div className="reading-pane-header border-b border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-5 pt-4 pb-3">
+    <div className="reading-pane-header border-b border-[var(--border-subtle)] px-5 pt-4 pb-3">
       <h1 className="reading-pane-subject min-w-0 text-[20px] font-semibold leading-[1.3] tracking-[-0.01em] text-[var(--text)]">
         {message.subject}
       </h1>

@@ -9,7 +9,7 @@ import {
   ArrowRightIcon,
 } from '../icons';
 import { useAccountStore } from '../../stores/accountStore';
-import { useFolderStore } from '../../stores/folderStore';
+import { useFolderStore, favKey } from '../../stores/folderStore';
 import type { MailFolder } from '../../services/mail/folders';
 import { getFolderIcon } from '../../utils/folderIcons';
 import { buildFolderTree, type FolderTreeNode } from '../../utils/folderTree';
@@ -289,11 +289,17 @@ function AccountFolderTree({
   onCommitInline,
   onCancelInline,
 }: AccountFolderTreeProps) {
-  const getUnread = useFolderStore((s) => s.getUnread);
+  // Subscribe to the counts MAP (new identity on every change) so badge
+  // updates re-render immediately — selecting the `getUnread` action would
+  // never re-render (stable function reference).
+  const unreadCounts = useFolderStore((s) => s.unreadCounts);
 
+  // unreadCounts is a renderItem input (badges), so it must be a dep here:
+  // react-aria's Tree caches rows by item identity, and only fresh item
+  // objects make it re-render a row when just the count changed.
   const items = useMemo(
     () => buildAccountTreeItems(nodes, accountId, inline),
-    [nodes, accountId, inline],
+    [nodes, accountId, inline, unreadCounts],
   );
 
   const selectedKeys = useMemo(() => {
@@ -407,7 +413,7 @@ function AccountFolderTree({
       >
         <TreeItemContent>
           {({ isExpanded, hasChildItems, level, isSelected }) => {
-            const unread = getUnread(folder.accountId, folder.id);
+            const unread = unreadCounts[favKey(folder.accountId, folder.id)] ?? 0;
             return (
               <div
                 className="flex flex-1 items-center gap-2 h-9 pr-3"
@@ -499,7 +505,7 @@ export function FolderPane() {
   const favorites = useFolderStore((s) => s.favorites);
   const selectLabel = useFolderStore((s) => s.selectLabel);
   const toggleFavorite = useFolderStore((s) => s.toggleFavorite);
-  const getUnread = useFolderStore((s) => s.getUnread);
+  const unreadCounts = useFolderStore((s) => s.unreadCounts);
   const createFolder = useFolderStore((s) => s.createFolder);
   const renameFolderAction = useFolderStore((s) => s.renameFolder);
   const deleteFolderAction = useFolderStore((s) => s.deleteFolder);
@@ -542,7 +548,7 @@ export function FolderPane() {
 
   const isSelected = (folder: MailFolder) =>
     selected?.accountId === folder.accountId && selected.labelId === folder.id;
-  const unreadFor = (folder: MailFolder) => getUnread(folder.accountId, folder.id);
+  const unreadFor = (folder: MailFolder) => unreadCounts[favKey(folder.accountId, folder.id)] ?? 0;
   const isFavorite = (folder: MailFolder) => favorites.has(`${folder.accountId}__${folder.id}`);
   const onSelect = (folder: MailFolder) => selectLabel(folder.accountId, folder.id);
   const onToggleFavorite = (folder: MailFolder) => void toggleFavorite(folder.accountId, folder.id);
@@ -645,7 +651,7 @@ export function FolderPane() {
     : [];
 
   return (
-    <div className="flex h-full flex-col rounded-2xl bg-surface border border-[var(--border-subtle)]">
+    <div className="flex h-full flex-col rounded-2xl bg-[var(--card)] border border-[var(--border-subtle)]">
       <div className={`flex-1 folder-pane-scroll ${scrollbarClass}`}>
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-text">

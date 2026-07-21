@@ -255,7 +255,7 @@ export function ReadingPane() {
 
   if (!message) {
     return (
-      <div className="flex h-full flex-col items-center justify-center bg-surface-elevated min-w-0 text-[var(--muted-text)]">
+      <div className="flex h-full flex-col items-center justify-center min-w-0 text-[var(--muted-text)]">
         <div className="text-center">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface-floating)] text-[var(--muted-text)]">
             <MailIcon size={24} />
@@ -321,7 +321,7 @@ export function ReadingPane() {
   const decryptFailed = message.decryptState === 'no-key' || message.decryptState === 'failed';
 
   return (
-    <div className="reading-pane relative flex h-full min-w-0 flex-col bg-surface-elevated border-l border-[var(--border-subtle)] shadow-sm">
+    <div className="reading-pane relative flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)]">
       {prominent && level && <ClassificationBanner level={level} position="top" />}
 
       {isCryptoMessage && (

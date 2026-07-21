@@ -212,6 +212,13 @@
   letter-spacing: -0.02em;
 }
 
+/* Dark mode: heavy saturation amplifies the chrome's accent tint into a
+   visibly bluer cast; keep it gentle so the bars stay in the panel family. */
+.dark .glass {
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
+}
+
 /* High-contrast mode disables backdrop blur to keep edges crisp. */
 [data-contrast='high'] .glass,
 [data-contrast='high'].glass {
