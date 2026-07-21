@@ -154,14 +154,27 @@ pub(crate) fn wrap_encrypted(openpgp_message: &[u8]) -> Vec<u8> {
 /// Build a `multipart/signed` MIME **entity** (Content-Type header + blank +
 /// multipart body) framing a detached OpenPGP signature per RFC 3156 §1.
 ///
-/// `payload` is the body bytes to be signed; `payload_mime` is its
-/// `Content-Type` value (e.g. `"text/plain; charset=utf-8"`). The signed
-/// bytes — what the detached signature covers — are the full part-1 MIME
-/// entity: `Content-Type: <payload_mime>\r\n\r\n<payload>` with exactly
-/// one trailing CRLF. [`ensure_one_trailing_crlf`] canonicalizes the
-/// payload to guarantee this; the canonicalization is idempotent, so
-/// Task 4's caller may safely canonicalize the same bytes before signing
-/// (the signature covers the same byte sequence wrap_signed emits).
+/// # Signed region (read before computing the signature)
+///
+/// - `payload` is the **body bytes only** (no MIME headers); `payload_mime`
+///   is its `Content-Type` value (e.g. `"text/plain; charset=utf-8"`).
+/// - **The detached signature MUST be computed over the exact part-1 MIME
+///   entity bytes that `wrap_signed` emits** — i.e.
+///   `Content-Type: <payload_mime>\r\n\r\n<canonicalized body>` (the
+///   Content-Type header, a blank line, then the body with **exactly one**
+///   trailing CRLF). Signing `payload` alone is WRONG: the resulting
+///   signature will not verify against the part-1 entity `wrap_signed`
+///   emits and will fail Task 7's GnuPG/Thunderbird interop.
+/// - `wrap_signed` applies [`ensure_one_trailing_crlf`] to `payload`
+///   internally (idempotently). A Task 4 caller may therefore either
+///   (a) reproduce the part-1 entity layout above, sign those bytes, then
+///   pass the original `payload` here; or (b) pre-canonicalize `payload`
+///   with [`ensure_one_trailing_crlf`], build the part-1 entity, sign it,
+///   then pass the canonicalized bytes. Both paths produce the same
+///   signature because canonicalization is idempotent — what matters is
+///   that the signature covers the part-1 entity as emitted here
+///   (header + blank line + body with exactly one trailing CRLF), not
+///   the body alone.
 ///
 /// `detached_sig` is the raw detached-signature packet bytes (binary,
 /// produced by `crypto_openpgp::engine::sign_detached`). It is
@@ -452,33 +465,43 @@ mod tests {
         use crypto_core::HashAlgorithm;
 
         // Payload ends with `\r\n\r\n` — must be collapsed to exactly one
-        // CRLF so the signature covers only one terminator.
+        // CRLF so the part-1 entity ends in a single CRLF.
         let payload = b"body\r\n\r\n";
         let entity = super::wrap_signed(payload, "text/plain", &[], HashAlgorithm::Sha512);
 
-        // The second boundary marker terminates part 1. Locate it and verify
-        // the byte just before is `\n` and the byte before THAT is NOT `\n`.
-        let boundary_marker = b"------=_kylins_pgp_signed_0001\r\n";
-        let marker_bytes = boundary_marker;
+        // Slice the part-1 entity directly from the output bytes (NOT via
+        // mail-parser's `raw_part_bytes`, which normalizes trailing CRLFs
+        // via `offset_end` and masks the regression). The part-1 entity is
+        // exactly the bytes between the first and second boundary markers:
+        // `Content-Type: <mime>\r\n\r\n<body>`.
+        let marker = b"------=_kylins_pgp_signed_0001\r\n";
         let first = entity
-            .windows(marker_bytes.len())
-            .position(|w| w == marker_bytes)
+            .windows(marker.len())
+            .position(|w| w == marker)
             .expect("first boundary marker");
         let second_start = first
-            + marker_bytes.len()
-            + entity[first + marker_bytes.len()..]
-                .windows(marker_bytes.len())
-                .position(|w| w == marker_bytes)
+            + marker.len()
+            + entity[first + marker.len()..]
+                .windows(marker.len())
+                .position(|w| w == marker)
                 .expect("second boundary marker");
+        let part1_bytes = &entity[first + marker.len()..second_start];
+
+        // Direct byte comparison: the doubled trailing CRLF MUST be
+        // collapsed to exactly one. If canonicalization is broken (payload
+        // emitted unchanged), `part1_bytes` would end `...body\r\n\r\n`
+        // instead of `...body\r\n` and this comparison fails unambiguously.
+        // The previous position-based `assert_ne!(... - 2 ...)` could not
+        // distinguish those cases — for both correct and broken
+        // canonicalization the byte at `-2` is `\r` (the CR of a CRLF), so
+        // the assertion passed either way and did not pin the invariant
+        // its name describes.
+        let expected_part1 = b"Content-Type: text/plain\r\n\r\nbody\r\n";
         assert_eq!(
-            entity[second_start - 1],
-            b'\n',
-            "part 1 must end with exactly one CRLF"
-        );
-        assert_ne!(
-            entity[second_start - 2],
-            b'\n',
-            "part 1 must NOT end with a doubled CRLF"
+            part1_bytes,
+            expected_part1,
+            "part 1 must be the canonicalized payload entity with the doubled \
+             trailing CRLF collapsed to exactly one"
         );
     }
 
