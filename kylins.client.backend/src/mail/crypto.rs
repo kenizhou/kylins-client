@@ -1954,7 +1954,7 @@ mod tests {
                 .execute(pool.as_ref())
                 .await
                 .expect("flag default signer");
-            get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+            get_default_signing_key(pool.as_ref(), ACCOUNT_ID, crypto_core::Standard::Smime)
                 .await
                 .expect("query default signing key")
         } else {
@@ -3123,9 +3123,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         // Build a clear-signed multipart/signed via apply_crypto (sign-only).
         let draft = SendDraft {
@@ -3254,9 +3258,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         let draft = SendDraft {
             draft_id: "sd1".into(),
@@ -3365,9 +3373,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         // Sign with ACCOUNT_EMAIL (the own-key SAN).
         let draft = SendDraft {
@@ -3726,9 +3738,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         let draft = SendDraft {
             draft_id: "clear-tamper".into(),

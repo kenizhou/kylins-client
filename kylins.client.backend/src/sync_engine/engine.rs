@@ -1030,6 +1030,7 @@ async fn send_op(
         let default_key = match crate::db::crypto_keys::get_default_signing_key(
             &engine.pool,
             account_id,
+            crypto_core::Standard::Smime,
         )
         .await
         {
