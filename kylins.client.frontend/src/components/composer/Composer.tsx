@@ -13,6 +13,7 @@
 //   resolveFromAddress when the viewer lands).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Button, Input, TextField, Checkbox } from 'react-aria-components';
 
@@ -25,6 +26,10 @@ import { ScheduleSendDialog } from './ScheduleSendDialog';
 import { SignatureSelector } from './SignatureSelector';
 import { TemplatePicker } from './TemplatePicker';
 import { FromSelector } from './FromSelector';
+import { ComposerTitleBar } from './window/ComposerTitleBar';
+import { ComposerActionsRow } from './window/ComposerActionsRow';
+import { ComposerStatusBar } from './window/ComposerStatusBar';
+import { CloseConfirmDialog } from './window/CloseConfirmDialog';
 import { ClassificationSelector } from '@/features/composer/ClassificationSelector';
 import { useComposerStore } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
@@ -34,7 +39,7 @@ import { usePreferencesStore } from '@/stores/preferencesStore';
 import { useClassification } from '@/features/classification/useClassification';
 import { sendEmail } from '@/services/composer/send';
 import { deleteDraft } from '@/services/composer/drafts';
-import { startAutoSave, stopAutoSave } from '@/services/composer/draftAutoSave';
+import { startAutoSave, stopAutoSave, flushDraftSave } from '@/services/composer/draftAutoSave';
 import {
   cleanupAttachments,
   stageAttachment,
@@ -67,7 +72,6 @@ import {
   SpinnerIcon,
 } from '../icons';
 import { IconButton } from '@/components/ui/IconButton';
-import { WindowTitleBar } from '@/components/ui/WindowTitleBar';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { CommandRibbon } from '@/components/layout/CommandRibbon';
@@ -157,6 +161,8 @@ export function Composer({ windowed = false }: ComposerProps) {
   const sendProgressActive = useUIStore((s) => s.sendProgress.active);
   const attachmentSeededRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const [wordStats, setWordStats] = useState({ words: 0, chars: 0 });
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [extraHeadersExpanded, setExtraHeadersExpanded] = useState(
     () => alwaysShowCcBcc || cc.length > 0 || bcc.length > 0 || replyTo.length > 0,
@@ -264,11 +270,17 @@ export function Composer({ windowed = false }: ComposerProps) {
     onUpdate: ({ editor: ed }) => {
       useComposerStore.getState().setBodyHtml(ed.getHTML());
 
+      // Live word/character stats for the pop-out status bar.
+      const text = ed.state.doc.textContent;
+      setWordStats({
+        words: text.split(/\s+/).filter(Boolean).length,
+        chars: text.length,
+      });
+
       // Template shortcut expansion (e.g. ";sig" → signature template body).
       const templates = templateShortcutsRef.current;
       if (templates.length === 0) return;
 
-      const text = ed.state.doc.textContent;
       for (const tmpl of templates) {
         if (!tmpl.shortcut) continue;
         if (text.endsWith(tmpl.shortcut)) {
@@ -294,6 +306,14 @@ export function Composer({ windowed = false }: ComposerProps) {
           break;
         }
       }
+    },
+    onCreate: ({ editor: ed }) => {
+      // Seed word stats from the initial editor content (e.g. reopened draft).
+      const text = ed.state.doc.textContent;
+      setWordStats({
+        words: text.split(/\s+/).filter(Boolean).length,
+        chars: text.length,
+      });
     },
     editorProps: {
       attributes: {
@@ -377,7 +397,16 @@ export function Composer({ windowed = false }: ComposerProps) {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, activeAccountId, activeAccount]);
+  }, [isOpen, activeAccountId, activeAccount, mode]);
+
+  const modeLabel =
+    mode === 'reply'
+      ? 'Reply'
+      : mode === 'replyAll'
+        ? 'Reply All'
+        : mode === 'forward'
+          ? 'Forward'
+          : 'New Message';
 
   // Start/stop draft auto-save.
   useEffect(() => {
@@ -385,6 +414,50 @@ export function Composer({ windowed = false }: ComposerProps) {
     startAutoSave(activeAccountId);
     return () => stopAutoSave();
   }, [isOpen, activeAccountId]);
+
+  // Start/stop draft auto-save.
+  useEffect(() => {
+    if (!isOpen || !activeAccountId) return;
+    startAutoSave(activeAccountId);
+    return () => stopAutoSave();
+  }, [isOpen, activeAccountId]);
+
+  // Keep the OS window title (taskbar / alt-tab) in sync with the subject.
+  useEffect(() => {
+    if (!windowed) return;
+    try {
+      void getCurrentWindow().setTitle(subject.trim() || modeLabel);
+    } catch {
+      // Ignore in non-Tauri contexts.
+    }
+  }, [windowed, subject, modeLabel, mode]);
+
+  // Intercept the window close with unsaved content → confirm dialog.
+  useEffect(() => {
+    if (!windowed) return;
+    const win = getCurrentWindow();
+    if (typeof win.onCloseRequested !== 'function') return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void win
+      .onCloseRequested((event) => {
+        const state = useComposerStore.getState();
+        const bodyEmpty = (editor?.getText().trim() ?? '') === '';
+        const untouched = state.to.length === 0 && state.subject.trim() === '' && bodyEmpty;
+        if (untouched) return; // empty compose closes without prompting
+        event.preventDefault();
+        flushSync(() => setCloseConfirmOpen(true));
+      })
+      .then((u) => {
+        if (cancelled) u();
+        else unlisten = u;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [windowed, editor]);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -626,6 +699,7 @@ export function Composer({ windowed = false }: ComposerProps) {
   }, [
     activeAccountId,
     activeAccount,
+    aliases,
     closeComposer,
     closeWindowIfWindowed,
     getFullHtml,
@@ -739,6 +813,20 @@ export function Composer({ windowed = false }: ComposerProps) {
         /* ignore — best-effort */
       }
     }
+    closeComposer();
+    await closeWindowIfWindowed();
+  }, [closeComposer, closeWindowIfWindowed]);
+
+  const handleSaveDraftAndClose = useCallback(async () => {
+    try {
+      await flushDraftSave();
+    } catch (e) {
+      useToastStore
+        .getState()
+        .push(`Save draft failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      return; // keep the window open so the user can retry
+    }
+    stopAutoSave();
     closeComposer();
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
@@ -903,14 +991,6 @@ export function Composer({ windowed = false }: ComposerProps) {
   if (!isOpen) return null;
 
   const isFullpage = windowed || viewMode === 'fullpage';
-  const modeLabel =
-    mode === 'reply'
-      ? 'Reply'
-      : mode === 'replyAll'
-        ? 'Reply All'
-        : mode === 'forward'
-          ? 'Forward'
-          : 'New Message';
   const savedLabel = isSaving ? 'Saving...' : lastSavedAt ? 'Draft saved' : null;
 
   const prominent = isProminent(currentLevel);
@@ -945,7 +1025,16 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       {/* Header */}
       {windowed ? (
-        <WindowTitleBar title={modeLabel} />
+        <>
+          <ComposerTitleBar title={subject.trim() || modeLabel} />
+          <ComposerActionsRow
+            canSend={to.length > 0}
+            sending={sendProgressActive}
+            onSend={() => void handleSendAndCloseWindow()}
+            onDiscard={() => void handleDiscard()}
+            onSchedule={() => setShowSchedule(true)}
+          />
+        </>
       ) : (
         <div className="flex items-center justify-between rounded-t-2xl border-b border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
           <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
@@ -1128,43 +1217,66 @@ export function Composer({ windowed = false }: ComposerProps) {
         <AttachmentPicker />
       </div>
 
-      {/* Footer */}
-      <div className="flex items-center justify-between rounded-b-2xl border-t border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-[var(--muted-foreground)]">
-            {fromEmail ?? activeAccount?.email ?? 'No account'}
+      {/* Footer (inline) / status bar (windowed) */}
+      {windowed ? (
+        <ComposerStatusBar
+          editor={editor}
+          wordCount={wordStats.words}
+          charCount={wordStats.chars}
+        />
+      ) : (
+        <div className="flex items-center justify-between rounded-b-2xl border-t border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-[var(--muted-foreground)]">
+              {fromEmail ?? activeAccount?.email ?? 'No account'}
+            </div>
+            {savedLabel && (
+              <span
+                className={`text-xs italic text-[var(--muted-foreground)] transition-opacity duration-200 ${
+                  isSaving ? 'animate-pulse' : ''
+                }`}
+              >
+                {savedLabel}
+              </span>
+            )}
+            <SignatureSelector />
+            <TemplatePicker editor={editor} />
           </div>
-          {savedLabel && (
-            <span
-              className={`text-xs italic text-[var(--muted-foreground)] transition-opacity duration-200 ${
-                isSaving ? 'animate-pulse' : ''
-              }`}
+          <div className="flex items-center gap-2">
+            <Button
+              onPress={handleDiscard}
+              isDisabled={sendProgressActive}
+              className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
-              {savedLabel}
-            </span>
-          )}
-          <SignatureSelector />
-          <TemplatePicker editor={editor} />
+              Discard
+            </Button>
+            <Button
+              onPress={windowed ? handleSendAndCloseWindow : handleSend}
+              isDisabled={to.length === 0 || sendProgressActive}
+              aria-label={undefined}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] shadow-[var(--shadow-sm)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {sendProgressActive ? <SpinnerIcon size={14} /> : <SendIcon size={14} />}
+              {sendProgressActive ? 'Sending…' : 'Send'}
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            onPress={handleDiscard}
-            isDisabled={sendProgressActive}
-            className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          >
-            Discard
-          </Button>
-          <Button
-            onPress={windowed ? handleSendAndCloseWindow : handleSend}
-            isDisabled={to.length === 0 || sendProgressActive}
-            aria-label={undefined}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] shadow-[var(--shadow-sm)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {sendProgressActive ? <SpinnerIcon size={14} /> : <SendIcon size={14} />}
-            {sendProgressActive ? 'Sending…' : 'Send'}
-          </Button>
-        </div>
-      </div>
+      )}
+
+      {windowed && (
+        <CloseConfirmDialog
+          isOpen={closeConfirmOpen}
+          onSaveDraft={() => {
+            setCloseConfirmOpen(false);
+            void handleSaveDraftAndClose();
+          }}
+          onDiscard={() => {
+            setCloseConfirmOpen(false);
+            void handleDiscard();
+          }}
+          onCancel={() => setCloseConfirmOpen(false)}
+        />
+      )}
 
       {showSchedule && (
         <ScheduleSendDialog onSchedule={handleSchedule} onClose={() => setShowSchedule(false)} />
