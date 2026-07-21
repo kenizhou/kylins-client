@@ -1,0 +1,40 @@
+[package]
+name = "crypto-openpgp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crypto-core = { path = "../core" }
+# `SecretBox<String>` (re-exported by `crypto_core`) does NOT re-export
+# secrecy's `ExposeSecret` trait, which is required to call
+# `.expose_secret()` on the password the engine's `import(...)` receives.
+# `secrecy` is already a transitive dependency via `crypto-core`, so this
+# declaration does NOT change `Cargo.lock`; it just names the crate so this
+# crate's source can import the trait. Deviation from the Task 5 slice
+# boundary (which nominally lists only `src/engine.rs` + `src/lib.rs`) — see
+# the task-5 report for the rationale.
+secrecy = "0.10"
+# `sequoia-openpgp = "2"` resolves to 2.4.1 (July 2026). We use the pure-Rust
+# `crypto-rust` backend (no system nettle/botan/openssl dependency), which is
+# sufficient for a desktop mail client and keeps the build hermetic. Upstream
+# considers RustCrypto experimental and NOT constant-time, so 2.4.1 forces two
+# explicit opt-in feature flags — the build fails with a clear stderr message
+# until each is enabled (Task 1 spike finding, see spike-notes.md):
+#   - `allow-experimental-crypto`: acknowledges RustCrypto is not production-ready.
+#   - `allow-variable-time-crypto`: acknowledges timing side channels (acceptable
+#     here because signature verification runs on local user-supplied data, an
+#     interactive setting per Sequoia's guidance).
+# Do NOT drop these flags without swapping to a constant-time backend
+# (`crypto-nettle` / `crypto-botan` / `crypto-openssl`).
+sequoia-openpgp = { version = "2", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+# Task 9 interop tests isolate gpg/sq state in a temp homedir (`gpg --homedir`,
+# `sq --keystore`) so we never touch the user's real keyring. `tempfile::TempDir`
+# gives us RAII cleanup without bespoke Drop code (smime's `interop_tests.rs`
+# rolls its own; we follow the Task-9 brief here which explicitly asks for the
+# `tempfile` crate).
+tempfile = "3"
