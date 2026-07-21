@@ -22,6 +22,7 @@ import { readComposeWindowParams } from './utils/composeWindow';
 import { readViewerWindowParams } from './utils/viewerWindow';
 import { MessageViewerWindow } from './components/viewer/MessageViewerWindow';
 import { Toaster } from './components/ui/Toaster';
+import { UserIcon } from './components/icons';
 import { isSkinId, DEFAULT_SKIN, type SkinId } from './styles/skins';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useSyncEvents } from './hooks/useSyncEvents';
@@ -36,6 +37,18 @@ async function refreshAccounts(): Promise<void> {
   const refreshed = await getAllAccounts();
   useAccountStore.getState().setAccounts(refreshed);
 }
+
+/** Window-bar title for the account-setup modal, per setup step. */
+const SETUP_STEP_TITLES: Record<string, string> = {
+  pick: 'Add account',
+  gateway: 'Add account',
+  'oauth-pending': 'Sign in',
+  'imap-manual': 'Manual setup',
+  'eas-manual': 'Manual setup',
+  verifying: 'Connecting',
+  welcome: 'Account added',
+  error: 'Connection failed',
+};
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -120,6 +133,7 @@ export default function App() {
   const setReduceMotion = useUIStore((s) => s.setReduceMotion);
   const accountSetupOpen = useUIStore((s) => s.accountSetupOpen);
   const setAccountSetupOpen = useUIStore((s) => s.setAccountSetupOpen);
+  const setupStep = useAccountSetupStore((s) => s.step);
   const accounts = useAccountStore((s) => s.accounts);
   const interfaceLanguage = usePreferencesStore((s) => s.interfaceLanguage);
   useViewSettings();
@@ -354,8 +368,10 @@ export default function App() {
             onClose={handleCloseSetup}
             disableBackdropClose
             size="auto"
-            className="h-[min(90vh,860px)]"
-            contentClassName="bg-[var(--background)] p-6 pt-14"
+            title={SETUP_STEP_TITLES[setupStep] ?? 'Add account'}
+            subtitle="Connect an email account to Kylins"
+            icon={UserIcon}
+            contentClassName="bg-[var(--background)]"
           >
             <AccountSetupFlow variant="modal" onComplete={handleSetupComplete} />
           </Modal>

@@ -19,7 +19,7 @@ export function SegmentedControl<T extends string>({
     <ToggleButtonGroup
       selectionMode="single"
       disallowEmptySelection
-      selectedKeys={[value]}
+      selectedKeys={[`${baseId}-${value}`]}
       onSelectionChange={(keys) => {
         const next = Array.from(keys)[0];
         if (next) onChange(String(next).slice(baseId.length + 1) as T);

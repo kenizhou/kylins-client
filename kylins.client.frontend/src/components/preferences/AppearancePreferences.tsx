@@ -210,7 +210,7 @@ export function AppearancePreferences() {
             </PreferencesSectionCard>
 
             <PreferencesSectionCard title="Color skin" icon={PreferencesAppearanceIcon}>
-              <div className="grid grid-cols-4 sm:grid-cols-8 gap-3">
+              <div className="flex flex-wrap gap-2">
                 {SKINS.map((s) => {
                   const active = skin === s.id;
                   return (
@@ -221,17 +221,19 @@ export function AppearancePreferences() {
                       title={s.name}
                       aria-label={`Select ${s.name} skin`}
                       aria-pressed={active}
-                      className={`group setup-focus-ring flex flex-col items-center gap-1.5 rounded-lg p-2 transition-colors ${
+                      className={`group setup-focus-ring flex w-[72px] flex-col items-center gap-1.5 rounded-xl p-2 transition-colors ${
                         active
-                          ? 'bg-[var(--highlight)] ring-1 ring-[var(--ring)]'
+                          ? 'bg-[var(--primary-muted)] ring-2 ring-[var(--primary)]'
                           : 'hover:bg-[var(--hover)]'
                       }`}
                     >
                       <span
-                        className="h-11 w-11 rounded-full shadow-sm ring-2 ring-white/20"
+                        className={`h-11 w-11 rounded-full shadow-[var(--shadow-sm)] transition-transform ${active ? 'scale-105' : 'group-hover:scale-105'}`}
                         style={{ background: s.swatch }}
                       />
-                      <span className="text-[10px] font-medium text-[var(--muted-text)]">
+                      <span
+                        className={`text-[10px] font-medium ${active ? 'text-[var(--primary)]' : 'text-[var(--muted-text)]'}`}
+                      >
                         {s.name}
                       </span>
                     </button>
