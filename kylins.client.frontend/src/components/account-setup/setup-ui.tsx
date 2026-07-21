@@ -234,30 +234,30 @@ function SetupTitleBar() {
       style={dragStyle}
     >
       <div className="flex items-center" style={noDragStyle}>
-        <button
+        <Button
           type="button"
-          onClick={handleMinimize}
+          onPress={handleMinimize}
           className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
           aria-label="Minimize"
         >
           <MinimizeIcon size={14} />
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          onClick={handleToggleMaximize}
+          onPress={handleToggleMaximize}
           className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
           aria-label={isMaximized ? 'Restore' : 'Maximize'}
         >
           {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          onClick={handleClose}
+          onPress={handleClose}
           className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-destructive hover:text-destructive-foreground"
           aria-label="Close"
         >
           <CloseIcon size={14} />
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -278,11 +278,11 @@ export function SetupShell({ variant, children, announcement, contentRef }: Setu
   const isFullscreen = variant === 'fullscreen';
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
       {isFullscreen && <SetupTitleBar />}
       <main
         ref={contentRef}
-        className="relative flex flex-1 items-start justify-center overflow-y-auto p-6 pt-[calc(1.5rem+env(safe-area-inset-top))] pr-[calc(1.5rem+env(safe-area-inset-right))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] pl-[calc(1.5rem+env(safe-area-inset-left))]"
+        className="relative flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6 pt-[calc(1.5rem+env(safe-area-inset-top))] pr-[calc(1.5rem+env(safe-area-inset-right))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] pl-[calc(1.5rem+env(safe-area-inset-left))]"
         style={isFullscreen ? dragStyle : undefined}
       >
         {/* Subtle ambient radial wash behind the card */}
@@ -290,7 +290,7 @@ export function SetupShell({ variant, children, announcement, contentRef }: Setu
           className="pointer-events-none absolute inset-0 opacity-40"
           style={{
             background:
-              'radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--primary) 12%, transparent), transparent 60%)',
+              'radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--primary) 14%, transparent), transparent 60%), radial-gradient(circle at 85% 15%, color-mix(in srgb, var(--iris-end) 12%, transparent), transparent 55%)',
           }}
         />
         <div className="relative w-full" style={noDragStyle}>
@@ -320,7 +320,7 @@ export function SetupCard({ children, className = '', width = 'md' }: SetupCardP
   const widthClass = width === 'xl' ? 'max-w-4xl' : width === 'lg' ? 'max-w-2xl' : 'max-w-md';
   return (
     <div
-      className={`setup-fade mx-auto w-full ${widthClass} rounded-2xl border border-border/60 bg-card/95 p-6 shadow-2xl shadow-black/[0.06] backdrop-blur-sm sm:p-8 ${className}`}
+      className={`setup-fade mx-auto w-full ${widthClass} rounded-3xl border border-[var(--border-subtle)] bg-card/95 p-6 shadow-[var(--shadow-xl)] backdrop-blur-sm sm:p-8 ${className}`}
     >
       {children}
     </div>
@@ -352,7 +352,9 @@ export function SetupHeader({
     <div className={`mb-8 flex flex-col ${alignClass}`}>
       {!hideMark && (
         <div className={`mb-5 flex ${align === 'center' ? 'justify-center' : 'justify-start'}`}>
-          <KylinsMark className="h-12 w-12 text-primary" />
+          <span className="inline-flex items-center justify-center rounded-2xl p-1.5 iris-line shadow-[var(--shadow-md)]">
+            <KylinsMark className="h-12 w-12 text-[var(--primary-fg)]" />
+          </span>
         </div>
       )}
       {eyebrow && (
@@ -360,9 +362,7 @@ export function SetupHeader({
           {eyebrow}
         </span>
       )}
-      <h1 className="text-balance text-[1.75rem] font-semibold tracking-tight text-foreground sm:text-[2rem]">
-        {title}
-      </h1>
+      <h1 className="type-display text-balance text-foreground">{title}</h1>
       {subtitle && (
         <p className="mt-3 text-balance text-sm leading-relaxed text-muted-text">{subtitle}</p>
       )}
@@ -396,7 +396,8 @@ export function SetupButton({
   const base =
     'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 motion-safe:active:scale-[0.97] motion-safe:hover:-translate-y-px';
   const variantMap = {
-    primary: 'bg-primary text-primary-foreground shadow-md hover:bg-primary/90 hover:shadow-lg',
+    primary:
+      'bg-primary text-primary-foreground shadow-[var(--shadow-sm)] hover:bg-primary/90 hover:shadow-[var(--shadow-md)]',
     secondary:
       'border border-border/80 bg-secondary text-secondary-foreground hover:bg-hover hover:border-border hover:shadow-sm',
     ghost: 'text-muted-text hover:bg-hover hover:text-foreground',
@@ -482,7 +483,7 @@ export function SetupSelect({
         <SelectValue />
         <ArrowRightIcon size={14} className="rotate-90 text-muted-text/70" aria-hidden="true" />
       </Button>
-      <Popover className="min-w-[--trigger-width] rounded-lg border border-border/60 bg-background shadow-xl shadow-black/[0.08]">
+      <Popover className="min-w-[--trigger-width] rounded-lg border border-border/60 bg-background shadow-[var(--shadow-lg)]">
         <ListBox className="py-1 outline-none">
           {options.map((option) => (
             <ListBoxItem
@@ -539,7 +540,7 @@ export function SetupField({
           : children}
       </label>
       {hint && (
-        <span id={hintId} className="text-xs text-muted-text/80">
+        <span id={hintId} className="type-caption text-muted-text/80">
           {hint}
         </span>
       )}
@@ -592,11 +593,11 @@ export function ProviderTile({ name, id, onClick, style }: ProviderTileProps) {
   return (
     <Button
       onPress={onClick}
-      className="setup-stagger-child group relative flex min-h-14 items-center gap-4 overflow-hidden rounded-xl border border-border bg-surface p-4 text-left transition-[colors,transform,shadow] hover:-translate-y-0.5 hover:border-primary hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="setup-stagger-child group relative flex min-h-14 items-center gap-4 overflow-hidden rounded-2xl border border-border bg-surface p-4 text-left transition-[colors,transform,shadow] hover:-translate-y-0.5 hover:border-primary hover:shadow-[var(--shadow-md)] focus-visible:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring"
       style={style}
     >
       <span
-        className="absolute left-0 top-0 h-full w-1"
+        className="absolute left-0 top-0 h-full w-[3px]"
         style={{ backgroundColor: PROVIDER_ACCENT_VARS[id] }}
       />
       <span

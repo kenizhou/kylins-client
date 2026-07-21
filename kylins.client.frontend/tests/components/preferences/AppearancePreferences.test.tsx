@@ -10,7 +10,7 @@ beforeEach(() => {
   useUIStore.setState({
     theme: 'system',
     contrast: 'default',
-    skin: 'slate',
+    skin: 'iris',
     fontSize: 'default',
     serifSubjects: false,
     reduceMotion: false,

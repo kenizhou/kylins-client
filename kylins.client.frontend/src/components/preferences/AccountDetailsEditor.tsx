@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Checkbox } from 'react-aria-components';
 import type { Account } from '../../types';
 import { updateAccount, setDefaultAccount, deleteAccount } from '../../services/accounts';
 import {
@@ -36,8 +37,8 @@ function ReadOnlyField({ label, value }: { label: string; value?: string | numbe
   const display = value === undefined || value === null || value === '' ? '—' : String(value);
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-xs text-[var(--muted-text)]">{label}</span>
-      <span className="text-sm text-[var(--foreground)] font-mono truncate">{display}</span>
+      <span className="type-overline text-[var(--muted-text)]">{label}</span>
+      <span className="text-sm text-[var(--foreground)] tabular-nums truncate">{display}</span>
     </div>
   );
 }
@@ -167,7 +168,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
       <PreferencesSectionCard title="Identity" icon={PreferencesAccountsIcon}>
         <form onSubmit={handleSaveIdentity} className="space-y-3">
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-[var(--muted-text)]">Account label</span>
+            <span className="type-overline text-[var(--muted-text)]">Account label</span>
             <input
               type="text"
               value={accountLabel}
@@ -177,7 +178,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs text-[var(--muted-text)]">Display name</span>
+            <span className="type-overline text-[var(--muted-text)]">Display name</span>
             <input
               type="text"
               value={displayName}
@@ -187,14 +188,14 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
             />
           </label>
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-[var(--muted-text)]">Email address</span>
+            <span className="type-overline text-[var(--muted-text)]">Email address</span>
             <span className="text-sm text-[var(--foreground)]">{account.email}</span>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="submit"
               disabled={isSavingIdentity}
-              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="inline-flex items-center justify-center h-11 px-4 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               {isSavingIdentity ? 'Saving…' : 'Save identity'}
             </button>
@@ -203,15 +204,36 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
       </PreferencesSectionCard>
 
       <PreferencesSectionCard title="Status & Default">
-        <label className="flex min-h-11 items-center gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors">
-          <input
-            type="checkbox"
-            checked={account.isActive}
-            onChange={() => void handleToggleActive()}
-            className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
-          />
-          <span className="text-sm text-[var(--foreground)]">Active (sync enabled)</span>
-        </label>
+        <Checkbox
+          isSelected={account.isActive}
+          onChange={() => void handleToggleActive()}
+          className="flex min-h-11 items-center gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors"
+        >
+          {({ isSelected }) => (
+            <>
+              <div
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                  isSelected
+                    ? 'border-primary bg-primary text-primary-fg'
+                    : 'border-border bg-background'
+                }`}
+              >
+                {isSelected && (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                    <path
+                      d="M1.5 5.5L4 8l4-5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
+              </div>
+              <span className="text-sm text-[var(--foreground)]">Active (sync enabled)</span>
+            </>
+          )}
+        </Checkbox>
         <button
           type="button"
           disabled={account.isDefault}
@@ -240,24 +262,51 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
               <ReadOnlyField label="SMTP port" value={account.smtpPort} />
               <ReadOnlyField label="SMTP security" value={account.smtpSecurity} />
             </div>
-            <label className="flex items-center gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors mt-2">
-              <input
-                type="checkbox"
-                checked={account.acceptInvalidCerts}
-                onChange={async () => {
-                  await updateAccount(account.id, {
-                    acceptInvalidCerts: !account.acceptInvalidCerts,
-                  });
-                  onUpdate();
-                }}
-                className="rounded border-[var(--border)] text-[var(--primary)] accent-[var(--primary)] focus:ring-[var(--ring)]"
-              />
-              <span className="text-sm text-[var(--foreground)]">
-                Accept invalid / self-signed certificates
-              </span>
-            </label>
+            <Checkbox
+              isSelected={account.acceptInvalidCerts}
+              onChange={async () => {
+                await updateAccount(account.id, {
+                  acceptInvalidCerts: !account.acceptInvalidCerts,
+                });
+                onUpdate();
+              }}
+              className="flex items-center gap-3 py-2 cursor-pointer group rounded-md hover:bg-[color-mix(in_oklab,var(--surface),black_4%)] px-2 -mx-2 transition-colors mt-2"
+            >
+              {({ isSelected }) => (
+                <>
+                  <div
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                      isSelected
+                        ? 'border-primary bg-primary text-primary-fg'
+                        : 'border-border bg-background'
+                    }`}
+                  >
+                    {isSelected && (
+                      <svg
+                        width="10"
+                        height="10"
+                        viewBox="0 0 10 10"
+                        fill="none"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M1.5 5.5L4 8l4-5"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </div>
+                  <span className="text-sm text-[var(--foreground)]">
+                    Accept invalid / self-signed certificates
+                  </span>
+                </>
+              )}
+            </Checkbox>
             <label className="flex flex-col gap-1 mt-3">
-              <span className="text-xs text-[var(--muted-text)]">
+              <span className="type-overline text-[var(--muted-text)]">
                 IMAP IDLE re-issue interval (seconds)
               </span>
               <input
@@ -273,7 +322,7 @@ export function AccountDetailsEditor({ account, onUpdate }: AccountDetailsEditor
                 }}
                 className="h-11 w-full sm:w-40 px-3 text-sm rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)] outline-none"
               />
-              <span className="text-xs text-[var(--muted-text)]">
+              <span className="type-caption text-[var(--muted-text)]">
                 How often the IDLE connection is refreshed (default {IDLE_TIMEOUT_DEFAULT_SECS}s,
                 range {IDLE_TIMEOUT_MIN_SECS}–{IDLE_TIMEOUT_MAX_SECS}s). Lower values detect new
                 mail faster on servers like Yahoo that drop IDLE early; higher values reduce server

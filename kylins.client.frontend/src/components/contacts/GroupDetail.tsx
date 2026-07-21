@@ -109,8 +109,8 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-start gap-4 p-5 border-b border-[var(--border)]">
-        <span className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-[var(--secondary)] text-[var(--secondary-foreground)]">
+      <div className="flex items-start gap-4 p-5 border-b border-[var(--border-subtle)]">
+        <span className="inline-flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-surface-elevated text-[var(--secondary-foreground)]">
           <ContactsIcon size={32} />
         </span>
         <div className="flex-1 min-w-0">
@@ -130,7 +130,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                   setName(group.name);
                 }
               }}
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-lg font-semibold text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="w-full rounded-md border border-[var(--border-subtle)] bg-surface-elevated px-3 py-1.5 text-lg font-semibold text-[var(--foreground)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             />
           ) : (
             <h2 className="text-lg font-semibold text-[var(--foreground)] truncate">
@@ -145,7 +145,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                     type="button"
                     onClick={() => void handleRename()}
                     disabled={isLoading}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] hover:opacity-90 transition-opacity focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
                   >
                     <CheckIcon size={13} />
                     Save
@@ -156,7 +156,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                       setIsEditing(false);
                       setName(group.name);
                     }}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                   >
                     <CloseIcon size={13} />
                     Cancel
@@ -167,7 +167,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                   <button
                     type="button"
                     onClick={() => setIsEditing(true)}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
                   >
                     <PencilIcon size={13} />
                     Rename
@@ -176,7 +176,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                     type="button"
                     onClick={() => void handleDelete()}
                     disabled={isLoading}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--destructive)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--destructive)] hover:bg-[var(--primary-subtle)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
                   >
                     <TrashIcon size={13} />
                     Delete
@@ -185,7 +185,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                     type="button"
                     onClick={() => setIsAddMemberOpen(true)}
                     disabled={isLoading}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 min-h-11 min-w-11 text-xs font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
                   >
                     <PlusIcon size={13} />
                     Add member
@@ -198,9 +198,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
       </div>
 
       <div className="flex-1 overflow-y-auto kylins-scrollbar p-5">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-text)] mb-2">
-          Members
-        </h3>
+        <h3 className="type-overline text-[var(--muted-text)] mb-2">Members</h3>
         {members.length === 0 ? (
           <p className="text-sm text-[var(--muted-text)]">No members yet</p>
         ) : (
@@ -231,7 +229,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
           <button
             type="button"
             onClick={() => setIsAddMemberOpen(false)}
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 min-h-11 min-w-11 text-sm font-medium rounded-md border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 min-h-11 min-w-11 text-sm font-medium rounded-lg border border-[var(--border-subtle)] bg-surface-elevated text-[var(--foreground)] hover:bg-[var(--primary-subtle)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
             Cancel
           </button>
@@ -248,7 +246,7 @@ export function GroupDetail({ group, contacts, onUpdate }: GroupDetailProps) {
                     type="button"
                     onClick={() => void handleAddContact(contact.id)}
                     disabled={isLoading}
-                    className="w-full flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 min-h-11 text-left hover:bg-[var(--hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+                    className="w-full flex items-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-surface-elevated px-3 py-2 min-h-11 text-left hover:bg-[var(--primary-subtle)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-50"
                   >
                     <ContactAvatar contact={contact} size={32} />
                     <div className="flex-1 min-w-0">

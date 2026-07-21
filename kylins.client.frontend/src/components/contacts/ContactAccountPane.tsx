@@ -24,12 +24,15 @@ function AccountRow({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`flex w-full min-h-11 items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+      className={`relative flex w-full min-h-11 items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
         active
-          ? 'bg-[var(--selected)] text-[var(--selected-text)]'
-          : 'text-[var(--foreground)] hover:bg-[var(--hover)]'
+          ? 'bg-[var(--primary-muted)] text-[var(--selected-text)]'
+          : 'text-[var(--foreground)] hover:bg-[var(--primary-subtle)]'
       }`}
     >
+      {active && (
+        <span className="absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-r-full iris-line" />
+      )}
       <span className="shrink-0 text-[var(--muted-text)]">{icon}</span>
       <span className="flex-1 truncate">{label}</span>
     </button>
@@ -43,9 +46,7 @@ export function ContactAccountPane({
 }: ContactAccountPaneProps) {
   return (
     <div className="flex h-full flex-col gap-1 overflow-y-auto kylins-scrollbar p-2">
-      <div className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-[var(--muted-text)]">
-        Accounts
-      </div>
+      <div className="px-3 pb-1 type-overline text-[var(--muted-text)]">Accounts</div>
       <AccountRow
         label="All accounts"
         active={selectedAccountId === null}

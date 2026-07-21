@@ -18,7 +18,7 @@ import { TasksPage } from '../tasks/TasksPage';
 
 function MainContent({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-1 flex-col min-w-0 overflow-hidden rounded-lg bg-[var(--surface)] p-2">
+    <div className="flex flex-1 flex-col min-w-0 overflow-hidden bg-[var(--surface)] p-2">
       {children}
     </div>
   );
@@ -36,7 +36,7 @@ export function AppShell() {
   const activeApp = useUIStore((s) => s.activeApp);
 
   return (
-    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--chrome)] text-[var(--foreground)]">
+    <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-[var(--chrome-tint)] text-[var(--foreground)]">
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <ToolWindowBar />

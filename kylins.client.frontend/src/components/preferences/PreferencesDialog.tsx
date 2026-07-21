@@ -66,13 +66,13 @@ export function PreferencesDialog() {
           <span className="text-xs text-muted-text">Changes are applied automatically.</span>
           <Button
             onPress={closePreferences}
-            className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-fg transition-opacity hover:opacity-90"
+            className="rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-fg shadow-[var(--shadow-sm)] transition-opacity hover:opacity-90"
           >
             Done
           </Button>
         </>
       }
-      contentClassName="!overflow-hidden bg-[color-mix(in_oklab,var(--surface),black_2%)]"
+      contentClassName="!overflow-hidden bg-[var(--surface)]"
     >
       <Tabs
         orientation="vertical"
@@ -82,7 +82,7 @@ export function PreferencesDialog() {
       >
         <TabList
           aria-label="Preferences sections"
-          className="flex w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-chrome p-3"
+          className="flex w-56 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-chrome p-3"
         >
           {TABS.map((tab) => {
             const Icon = tab.icon;
@@ -91,15 +91,22 @@ export function PreferencesDialog() {
                 key={tab.id}
                 id={tab.id}
                 className={({ isSelected }) =>
-                  `flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  `relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     isSelected
-                      ? 'bg-selected text-primary'
+                      ? 'bg-[var(--primary-muted)] text-primary'
                       : 'text-muted-text hover:bg-hover hover:text-foreground'
                   }`
                 }
               >
-                <Icon size={18} />
-                <span>{tab.id}</span>
+                {({ isSelected }) => (
+                  <>
+                    {isSelected && (
+                      <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full iris-line" />
+                    )}
+                    <Icon size={18} />
+                    <span>{tab.id}</span>
+                  </>
+                )}
               </Tab>
             );
           })}

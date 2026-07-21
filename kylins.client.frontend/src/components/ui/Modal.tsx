@@ -53,25 +53,25 @@ export function Modal({
       }}
       isDismissable={!disableBackdropClose}
       isKeyboardDismissDisabled={disableBackdropClose}
-      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center bg-[var(--backdrop)] p-4"
     >
       <RACModal
-        className={`relative flex flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl ${SIZE_CLASSES[size]} ${className}`}
+        className={`relative flex flex-col overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-surface shadow-[var(--shadow-xl)] ${SIZE_CLASSES[size]} ${className}`}
       >
         <Dialog aria-label={title || 'Dialog'} className="flex h-full flex-col outline-none">
           {({ close }) => (
             <>
               {hasHeader && (
-                <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-4">
+                <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-subtle)] px-6 py-4">
                   <div className="flex items-center gap-3">
                     {Icon && (
-                      <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-fg">
+                      <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl iris-line text-primary-fg shadow-[var(--shadow-sm)]">
                         <Icon size={20} />
                       </span>
                     )}
                     <div>
                       {title && <h2 className="text-lg font-semibold text-foreground">{title}</h2>}
-                      {subtitle && <p className="text-xs text-muted-text">{subtitle}</p>}
+                      {subtitle && <p className="type-caption text-muted-text">{subtitle}</p>}
                     </div>
                   </div>
                   <button
@@ -101,7 +101,7 @@ export function Modal({
               </div>
 
               {footer && (
-                <div className="flex shrink-0 items-center justify-between border-t border-border bg-[color-mix(in_oklab,var(--surface),black_4%)] px-6 py-3">
+                <div className="flex shrink-0 items-center justify-between border-t border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-6 py-3">
                   {footer}
                 </div>
               )}

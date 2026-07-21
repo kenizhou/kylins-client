@@ -12,15 +12,15 @@ import { Modal } from '@/components/ui/Modal';
 import { InjectedComponentSet } from '@/components/plugins/InjectedComponentSet';
 
 const PRESET_COLORS = [
-  '#ef4444',
-  '#f97316',
-  '#eab308',
-  '#22c55e',
-  '#06b6d4',
-  '#3b82f6',
-  '#8b5cf6',
-  '#ec4899',
-  '#6b7280',
+  '#f0655a',
+  '#f28c4a',
+  '#e5b93b',
+  '#3fbf7f',
+  '#22b8cf',
+  '#5b8def',
+  '#8b7cf6',
+  '#e06ba8',
+  '#7a8199',
 ];
 
 interface ColorDialogProps {
@@ -43,7 +43,7 @@ function ColorDialog({ isOpen, initialColor, onClose, onSelect }: ColorDialogPro
         <div className="flex w-full justify-end gap-2">
           <Button
             onPress={onClose}
-            className="h-11 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-hover"
+            className="h-11 rounded-md px-4 text-sm text-foreground transition-colors hover:bg-[var(--primary-subtle)]"
           >
             Cancel
           </Button>
@@ -64,7 +64,9 @@ function ColorDialog({ isOpen, initialColor, onClose, onSelect }: ColorDialogPro
               type="button"
               onClick={() => setColor(c)}
               className={`h-8 w-8 rounded-full border-2 transition-transform ${
-                color === c ? 'border-[var(--foreground)] scale-110' : 'border-transparent'
+                color === c
+                  ? 'scale-110 border-transparent ring-2 ring-[var(--ring)] ring-offset-2 ring-offset-[var(--surface-floating)]'
+                  : 'border-transparent'
               }`}
               style={{ backgroundColor: c }}
               aria-label={`Select color ${c}`}
@@ -216,7 +218,7 @@ export function CalendarPane() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-1.5">
+      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-3 py-1.5">
         <span className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
           Calendars
         </span>
@@ -226,7 +228,7 @@ export function CalendarPane() {
             onPress={() => setShowNew(true)}
             isDisabled={!activeAccountId}
             aria-label="New calendar"
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground disabled:opacity-40"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--primary)] disabled:opacity-40"
           >
             <PlusIcon size={15} />
           </Button>
@@ -284,7 +286,7 @@ export function CalendarPane() {
                   <div
                     key={cal.id}
                     onContextMenu={(e) => handleContextMenu(e, cal)}
-                    className="group flex items-center gap-2 rounded-md px-1 py-1.5 text-foreground hover:bg-[var(--hover)]"
+                    className="group flex items-center gap-2 rounded-md px-1 py-1.5 text-foreground hover:bg-[var(--primary-subtle)] hover:text-[var(--primary)]"
                   >
                     <Checkbox
                       isSelected={cal.isVisible}
@@ -297,7 +299,7 @@ export function CalendarPane() {
                             className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
                               isSelected
                                 ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)]'
-                                : 'border-[var(--border)] bg-[var(--background)]'
+                                : 'border-[var(--border)] bg-surface-elevated'
                             }`}
                           >
                             {isSelected && <CheckIcon size={10} strokeWidth={3} />}
@@ -328,7 +330,7 @@ export function CalendarPane() {
         })}
       </div>
 
-      <div className="border-t border-[var(--border)] px-3 py-2">
+      <div className="border-t border-[var(--border-subtle)] px-3 py-2">
         <InjectedComponentSet role="calendar:pane:footer" containersRequired={false} />
       </div>
 
@@ -367,7 +369,7 @@ export function CalendarPane() {
       {colorCal && (
         <ColorDialog
           isOpen
-          initialColor={colorCal.color || '#3b82f6'}
+          initialColor={colorCal.color || '#5b8def'}
           onClose={() => setColorCal(null)}
           onSelect={async (color) => {
             await updateCalendar(colorCal.id, { color });

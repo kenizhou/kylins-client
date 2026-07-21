@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { Button } from 'react-aria-components';
 import { useViewStore } from '../../features/view/viewStore';
 import { COLUMN_REGISTRY } from '../../features/view/defaults';
-import type { ColumnDef, MessageListDensity } from '../../features/view/types';
-import type { ClassificationLevel } from '../../features/classification/classificationTypes';
+import type { ColumnDef } from '../../features/view/types';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
@@ -12,6 +12,7 @@ import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
 import { useAutoHideScrollbar } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
 import { getInitials, formatMessageTime } from '../../data/demoMessages';
+import { avatarGradient } from '../../utils/avatarGradient';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
 import { isProminent, levelStyle } from '../../features/classification/classificationStyle';
@@ -59,7 +60,7 @@ function optionId(threadId: string): string {
 }
 
 const RIBBON_COLOR: Record<MessageState, string> = {
-  unread: 'bg-[var(--primary)]',
+  unread: 'iris-line',
   read: 'bg-[var(--border)]',
   flagged: 'bg-[var(--amber)]',
   vip: 'bg-[var(--green)]',
@@ -74,197 +75,72 @@ const DENSITY_ROW_CLASSES = {
 interface QuickActionsProps {
   thread: Thread;
   visible: boolean;
+  selected?: boolean;
 }
 
-function MessageRowQuickActions({ thread, visible }: QuickActionsProps) {
+function MessageRowQuickActions({ thread, visible, selected }: QuickActionsProps) {
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
 
   return (
     <span
       data-testid="message-quick-actions"
-      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-0.5 shadow-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'}`}
+      className={`absolute right-2 top-1/2 z-10 -translate-y-1/2 items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] p-0.5 shadow-[var(--shadow-md)] backdrop-blur-sm group-focus-within:flex ${visible ? 'flex' : 'hidden'} ${selected ? 'bg-[var(--surface-floating)]' : 'bg-[var(--surface-elevated)]'}`}
       onClick={(e) => e.stopPropagation()}
     >
-      <button
+      <Button
         type="button"
         aria-label="Archive"
-        title="Archive"
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void archiveThread(thread)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void archiveThread(thread)}
       >
-        <ArchiveIcon size={14} />
-      </button>
-      <button
+        {/* RAC Button strips `title`; keep the tooltip on the icon wrapper. */}
+        <span title="Archive" className="inline-flex items-center justify-center">
+          <ArchiveIcon size={14} />
+        </span>
+      </Button>
+      <Button
         type="button"
         aria-label="Delete"
-        title="Delete"
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void trashThread(thread)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void trashThread(thread)}
       >
-        <DeleteIcon size={14} />
-      </button>
-      <button
+        <span title="Delete" className="inline-flex items-center justify-center">
+          <DeleteIcon size={14} />
+        </span>
+      </Button>
+      <Button
         type="button"
         aria-label={thread.isStarred ? 'Unflag' : 'Flag'}
-        title={thread.isStarred ? 'Unflag' : 'Flag'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void toggleThreadStarred(thread)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void toggleThreadStarred(thread)}
       >
-        <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
-      </button>
-      <button
+        <span
+          title={thread.isStarred ? 'Unflag' : 'Flag'}
+          className="inline-flex items-center justify-center"
+        >
+          <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
+        </span>
+      </Button>
+      <Button
         type="button"
         aria-label={thread.isRead ? 'Mark unread' : 'Mark read'}
-        title={thread.isRead ? 'Mark unread' : 'Mark read'}
-        className="inline-flex h-7 w-7 items-center justify-center rounded text-[var(--muted-text)] hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onClick={() => void markThreadRead(thread, !thread.isRead)}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        onPress={() => void markThreadRead(thread, !thread.isRead)}
       >
-        <MailIcon size={14} />
-      </button>
+        <span
+          title={thread.isRead ? 'Mark unread' : 'Mark read'}
+          className="inline-flex items-center justify-center"
+        >
+          <MailIcon size={14} />
+        </span>
+      </Button>
     </span>
   );
 }
 
-function cellWidth(col: ColumnDef): React.CSSProperties {
-  if (col.width) return { width: col.width, minWidth: col.width };
-  return { width: 'auto', minWidth: 24 };
-}
-
-function MessageRowCell({
-  col,
-  thread,
-  density,
-  level,
-}: {
-  col: ColumnDef;
-  thread: Thread;
-  density: MessageListDensity;
-  level: ClassificationLevel | undefined;
-}) {
-  const prominent = level ? isProminent(level) : false;
-  const unread = !thread.isRead;
-
-  switch (col.renderer) {
-    case 'threadRibbon':
-      return (
-        <span className="flex h-full items-stretch" style={cellWidth(col)}>
-          <span
-            className={`w-[3px] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
-            style={prominent && level ? { backgroundColor: level.color } : undefined}
-          />
-        </span>
-      );
-    case 'importance':
-      return (
-        <span className="flex items-center justify-center" style={cellWidth(col)}>
-          {thread.isImportant && (
-            <span title="Important" aria-label="Important" className="text-[var(--warning)]">
-              <WarningIcon size={14} />
-            </span>
-          )}
-        </span>
-      );
-    case 'category':
-      return (
-        <span className="flex items-center" style={cellWidth(col)}>
-          {level && (
-            <ClassificationBadge level={level} size={density === 'compact' ? 'xs' : 'sm'} />
-          )}
-        </span>
-      );
-    case 'from': {
-      const sender = thread.fromName ?? thread.fromAddress ?? 'Unknown';
-      return (
-        <span className="flex min-w-0 items-center gap-2" style={cellWidth(col)}>
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--border)] text-[10px] font-bold text-[var(--muted-text)]">
-            {getInitials(sender)}
-          </span>
-          <span className={`truncate ${unread ? 'font-semibold' : ''}`}>{sender}</span>
-          <SecurityChips
-            isEncrypted={thread.isEncrypted}
-            isSigned={thread.isSigned}
-            variant="icon"
-            size={12}
-          />
-        </span>
-      );
-    }
-    case 'subject':
-      return (
-        <span className="flex min-w-0 flex-col justify-center" style={cellWidth(col)}>
-          <span className={`truncate ${unread ? 'font-semibold' : ''}`}>
-            {thread.subject ?? '(no subject)'}
-          </span>
-          {density === 'comfortable' && thread.snippet && (
-            <span className="truncate text-[12px] text-[var(--muted-text)]">{thread.snippet}</span>
-          )}
-        </span>
-      );
-    case 'snippet':
-      return (
-        <span
-          className="flex items-center truncate text-[12px] text-[var(--muted-text)]"
-          style={cellWidth(col)}
-        >
-          {thread.snippet}
-        </span>
-      );
-    case 'received':
-      return (
-        <span
-          className="flex items-center justify-end text-[11px] font-mono text-[var(--muted-text)]"
-          style={cellWidth(col)}
-        >
-          {thread.lastMessageAt != null
-            ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
-            : ''}
-        </span>
-      );
-    case 'size':
-      return (
-        <span
-          className="flex items-center justify-end text-[11px] text-[var(--muted-text)]"
-          style={cellWidth(col)}
-        >
-          —
-        </span>
-      );
-    case 'attachments':
-      return (
-        <span className="flex items-center justify-center" style={cellWidth(col)}>
-          {thread.hasAttachments && (
-            <span
-              title="Has attachments"
-              aria-label="Has attachments"
-              className="text-[var(--muted-text)]"
-            >
-              <AttachmentIcon size={14} />
-            </span>
-          )}
-        </span>
-      );
-    case 'flag':
-      return (
-        <span className="flex items-center justify-center" style={cellWidth(col)}>
-          {thread.isStarred && (
-            <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
-              <FlagIcon size={14} />
-            </span>
-          )}
-        </span>
-      );
-    case 'read':
-      return (
-        <span className="flex items-center justify-center" style={cellWidth(col)}>
-          {!thread.isRead && (
-            <span className="h-2 w-2 rounded-full bg-[var(--primary)]" aria-label="Unread" />
-          )}
-        </span>
-      );
-    default:
-      return null;
-  }
+function visibleColumnIdsSet(visibleColumns: ColumnDef[]): Set<string> {
+  return new Set(visibleColumns.map((c) => c.id));
 }
 
 const MessageRow = memo(function MessageRow({
@@ -278,6 +154,15 @@ const MessageRow = memo(function MessageRow({
   const level = getLevelById(thread.classificationId);
   const prominent = level ? isProminent(level) : false;
   const [isHovered, setIsHovered] = useState(false);
+
+  const sender = thread.fromName ?? thread.fromAddress ?? 'Unknown';
+  const unread = !thread.isRead;
+  const cols = visibleColumnIdsSet(visibleColumns);
+  const showImportance = cols.has('importance');
+  const showCategory = cols.has('category');
+  const showAttachments = cols.has('attachments');
+  const showFlag = cols.has('flag');
+
   return (
     <div
       id={optionId(thread.id)}
@@ -291,20 +176,89 @@ const MessageRow = memo(function MessageRow({
           '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
         } as React.CSSProperties
       }
-      className={`group relative cursor-pointer ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--selected)]' : 'hover:bg-[var(--hover)]'}`}
+      className={`group relative cursor-pointer ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
     >
-      <div className="flex items-stretch gap-1 px-1">
-        {visibleColumns.map((col) => (
-          <div
-            key={col.id}
-            className={`message-list-col-${col.id} flex min-w-0 items-center`}
-            style={cellWidth(col)}
-          >
-            <MessageRowCell col={col} thread={thread} density={density} level={level} />
+      <div className="flex items-stretch px-1">
+        {/* Left state ribbon */}
+        <span className="flex h-full items-stretch">
+          <span
+            className={`w-[3px] rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+            style={prominent && level ? { backgroundColor: level.color } : undefined}
+          />
+        </span>
+
+        {/* Main content column: sender / subject / preview + time */}
+        <div className="flex-1 min-w-0 px-2 py-0.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
+                style={{
+                  background: avatarGradient(sender).background,
+                  color: avatarGradient(sender).foreground,
+                }}
+              >
+                {getInitials(sender)}
+              </span>
+              <span
+                className={`truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
+              >
+                {sender}
+              </span>
+              {showImportance && thread.isImportant && (
+                <span title="Important" aria-label="Important" className="text-[var(--warning)]">
+                  <WarningIcon size={14} />
+                </span>
+              )}
+              {showCategory && level && (
+                <ClassificationBadge level={level} size={density === 'compact' ? 'xs' : 'sm'} />
+              )}
+              <SecurityChips
+                isEncrypted={thread.isEncrypted}
+                isSigned={thread.isSigned}
+                variant="icon"
+                size={12}
+              />
+            </div>
+            <span className="shrink-0 text-[11px] tabular-nums text-[var(--muted-text)]">
+              {thread.lastMessageAt != null
+                ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
+                : ''}
+            </span>
           </div>
-        ))}
+          <div
+            className={`truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
+          >
+            {thread.subject ?? '(no subject)'}
+          </div>
+          {thread.snippet && (
+            <div className="truncate text-[12px] text-[var(--muted-text)]">{thread.snippet}</div>
+          )}
+        </div>
+
+        {/* Right metadata indicators */}
+        <div className="flex shrink-0 flex-col items-end justify-center gap-1 pr-2">
+          {showFlag && thread.isStarred && (
+            <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
+              <FlagIcon size={14} />
+            </span>
+          )}
+          {showAttachments && thread.hasAttachments && (
+            <span
+              title="Has attachments"
+              aria-label="Has attachments"
+              className="text-[var(--muted-text)]"
+            >
+              <AttachmentIcon size={14} />
+            </span>
+          )}
+        </div>
       </div>
-      <MessageRowQuickActions thread={thread} visible={isHovered} />
+      <MessageRowQuickActions
+        thread={thread}
+        visible={isHovered || !!selected}
+        selected={!!selected}
+      />
     </div>
   );
 });
@@ -356,10 +310,10 @@ export function MessageList() {
     [folders, selectedFolder],
   );
   const isInbox = selectedRole === 'inbox';
-  const [focusedTab, setFocusedTab] = useState<'focused' | 'other'>('focused');
+  const [inboxTab, setInboxTab] = useState<'all' | 'unread'>('all');
 
   useEffect(() => {
-    setFocusedTab('focused');
+    setInboxTab('all');
   }, [selectedFolder?.labelId]);
 
   const threads = useThreadStore((s) => s.threads);
@@ -395,7 +349,7 @@ export function MessageList() {
   const items = useMemo(() => buildItems(threads), [threads]);
 
   const filteredItems = useMemo(() => {
-    if (!isInbox) return items;
+    if (!isInbox || inboxTab === 'all') return items;
     const result: ListItem[] = [];
     let pendingGroup: ListItem | null = null;
     for (const item of items) {
@@ -404,9 +358,7 @@ export function MessageList() {
         continue;
       }
       const t = item.thread;
-      const focused = !t.isRead || t.isStarred || t.isImportant;
-      const matches = focusedTab === 'focused' ? focused : !focused;
-      if (matches) {
+      if (!t.isRead) {
         if (pendingGroup) {
           result.push(pendingGroup);
           pendingGroup = null;
@@ -416,7 +368,7 @@ export function MessageList() {
     }
     if (result.length === items.length) return items;
     return result;
-  }, [items, isInbox, focusedTab]);
+  }, [items, isInbox, inboxTab]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollbarClass = useAutoHideScrollbar();
@@ -454,9 +406,9 @@ export function MessageList() {
     }
   }, [nearEnd, cursor, isLoading, loadMore]);
 
-  // If the active Focused/Other tab filter empties out the currently loaded
-  // page but the backend cursor still has more data, keep paginating so the
-  // user isn't stuck on a "No X messages" screen while pages remain.
+  // If the active Unread tab filter empties out the currently loaded page
+  // but the backend cursor still has more data, keep paginating so the user
+  // isn't stuck on an empty screen while pages remain.
   useEffect(() => {
     if (isInbox && filteredItems.length === 0 && items.length > 0 && cursor && !isLoading) {
       void loadMore();
@@ -481,9 +433,9 @@ export function MessageList() {
 
   const showEmpty = !isLoading && filteredItems.length === 0;
   const emptyMessage = isInbox
-    ? focusedTab === 'focused'
-      ? 'No focused messages.'
-      : 'No other messages.'
+    ? inboxTab === 'unread'
+      ? 'No unread messages.'
+      : 'No messages in this folder.'
     : 'No messages in this folder.';
 
   const openContextMenu = (thread: Thread, e: React.MouseEvent) => {
@@ -562,23 +514,9 @@ export function MessageList() {
   }, [menu, accounts, defaultReplyBehavior, markThreadRead, toggleThreadStarred, deleteThread]);
 
   return (
-    <div className="message-list flex flex-col h-full bg-[var(--card)]">
-      {visibleColumns.length > 0 && (
-        <div className="flex items-center gap-1 px-1 py-1.5 border-b border-[var(--border)] text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-text)]">
-          {visibleColumns.map((col) => (
-            <span
-              key={col.id}
-              className={`message-list-col-${col.id} truncate`}
-              style={cellWidth(col)}
-            >
-              {col.label}
-            </span>
-          ))}
-        </div>
-      )}
-
+    <div className="message-list flex flex-col h-full bg-surface border-r border-[var(--border-subtle)]">
       {conversationView && (
-        <div className="px-3 py-1 text-[11px] text-[var(--foreground)] bg-[var(--selected)]">
+        <div className="px-3 py-1 text-[11px] text-[var(--foreground)] bg-[var(--primary-muted)]">
           Conversation view enabled
         </div>
       )}
@@ -587,25 +525,25 @@ export function MessageList() {
         <div
           role="tablist"
           aria-label="Inbox view"
-          className="flex items-center gap-1 border-b border-[var(--border)] px-3 py-1.5"
+          className="flex items-center gap-1 border-b border-[var(--border-subtle)] px-3 py-1.5"
         >
           <button
             type="button"
             role="tab"
-            aria-selected={focusedTab === 'focused'}
-            onClick={() => setFocusedTab('focused')}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${focusedTab === 'focused' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+            aria-selected={inboxTab === 'all'}
+            onClick={() => setInboxTab('all')}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${inboxTab === 'all' ? 'bg-[var(--primary-muted)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--primary-subtle)]'}`}
           >
-            Focused
+            All
           </button>
           <button
             type="button"
             role="tab"
-            aria-selected={focusedTab === 'other'}
-            onClick={() => setFocusedTab('other')}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${focusedTab === 'other' ? 'bg-[var(--selected)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--hover)]'}`}
+            aria-selected={inboxTab === 'unread'}
+            onClick={() => setInboxTab('unread')}
+            className={`rounded px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${inboxTab === 'unread' ? 'bg-[var(--primary-muted)] text-[var(--foreground)]' : 'text-[var(--muted-text)] hover:bg-[var(--primary-subtle)]'}`}
           >
-            Other
+            Unread
           </button>
         </div>
       )}
@@ -704,7 +642,7 @@ export function MessageList() {
                   {item.kind === 'group' ? (
                     <div
                       role="presentation"
-                      className="py-1.5 px-3 border-b border-[var(--border)] font-bold uppercase tracking-[0.04em] text-[var(--muted-text)] text-[11px]"
+                      className="py-1.5 px-3 border-b border-[var(--border-subtle)] bg-[var(--surface)] type-overline text-[var(--muted-text)]"
                     >
                       {item.label}
                     </div>

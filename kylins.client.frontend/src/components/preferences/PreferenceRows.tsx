@@ -53,8 +53,10 @@ export function CheckboxRow({
             )}
           </div>
           <span className="space-y-0.5">
-            <span className="block text-sm text-foreground">{label}</span>
-            {description && <span className="block text-xs text-muted-text">{description}</span>}
+            <span className="block type-body text-foreground">{label}</span>
+            {description && (
+              <span className="block type-caption text-[var(--muted-text)]">{description}</span>
+            )}
           </span>
         </>
       )}
@@ -79,7 +81,7 @@ export function SelectRow({
       onSelectionChange={(key) => onChange(String(key))}
       className="flex flex-col gap-2 py-2 sm:flex-row sm:items-center sm:gap-3"
     >
-      <Label className="text-sm text-foreground">{label}</Label>
+      <Label className="type-body text-foreground">{label}</Label>
       <Button className="flex h-11 w-full items-center justify-between rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-ring sm:w-auto">
         <SelectValue />
         <span aria-hidden="true" className="text-muted-text">
@@ -115,8 +117,8 @@ export function ButtonRow({
   return (
     <div className="flex flex-col justify-between gap-3 py-2 sm:flex-row sm:items-center">
       <div className="space-y-0.5">
-        <span className="text-sm text-foreground">{label}</span>
-        {description && <p className="text-xs text-muted-text">{description}</p>}
+        <span className="type-body text-foreground">{label}</span>
+        {description && <p className="type-caption text-[var(--muted-text)]">{description}</p>}
       </div>
       {children}
     </div>

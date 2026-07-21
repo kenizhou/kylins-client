@@ -118,19 +118,21 @@ function FolderRow({
       <Button
         onPress={onClick}
         className={`
-          group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left
-          ${active ? 'bg-selected text-selected-text folder-pane-selected-row' : 'text-foreground hover:bg-hover'}
+          group relative flex h-11 min-w-0 flex-1 items-center gap-2.5 px-3 pr-2 w-full text-left transition-colors duration-fast
+          ${active ? 'bg-[var(--primary-muted)] text-[var(--selected-text)]' : 'text-foreground hover:bg-[var(--primary-subtle)]'}
         `}
       >
-        {active && <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />}
+        {active && (
+          <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line" />
+        )}
         <span className="shrink-0">{icon}</span>
         <span className="flex-1 truncate text-[13px]">{name}</span>
         {unread > 0 && (
           <span
-            className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
+            className={`rounded-full px-1.5 py-0.5 tabular-nums text-[11px] font-medium ${
               active
                 ? 'bg-primary text-primary-fg'
-                : 'border border-border bg-surface text-foreground'
+                : 'bg-[var(--primary-subtle-solid)] text-primary'
             }`}
           >
             {unread}
@@ -172,7 +174,7 @@ function FolderGroup({
   if (!collapsible) {
     return (
       <div className="pb-2 pt-2 first:pt-3 last:pb-0">
-        <div className="flex w-full items-center gap-1 px-3 pb-1.5 text-left text-xs font-semibold uppercase tracking-wide text-foreground">
+        <div className="flex w-full items-center gap-1 px-3 pb-1.5 text-left type-overline text-[var(--muted-text)]">
           {headerContent}
         </div>
         <div className="space-y-0.5 px-0">{children}</div>
@@ -188,7 +190,7 @@ function FolderGroup({
     >
       <Button
         slot="trigger"
-        className="group flex h-11 w-full items-center gap-1 px-3 text-left text-xs font-semibold uppercase tracking-wide text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group flex h-11 w-full items-center gap-1 px-3 text-left type-overline text-[var(--muted-text)] transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {headerContent}
       </Button>
@@ -394,11 +396,11 @@ function AccountFolderTree({
         id={folder.id}
         textValue={folder.name}
         className={({ isSelected, isHovered }) =>
-          `group relative flex w-full items-center outline-none ${
+          `group relative flex w-full items-center outline-none transition-colors duration-fast ${
             isSelected
-              ? 'bg-selected text-selected-text folder-pane-selected-row'
+              ? 'bg-[var(--primary-muted)] text-[var(--selected-text)]'
               : isHovered
-                ? 'bg-hover'
+                ? 'bg-[var(--primary-subtle)]'
                 : ''
           }`
         }
@@ -416,12 +418,12 @@ function AccountFolderTree({
                 }}
               >
                 {isSelected && (
-                  <span className="absolute bottom-0 left-0 top-0 w-[2px] bg-primary" />
+                  <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line" />
                 )}
                 {hasChildItems ? (
                   <Button
                     slot="chevron"
-                    className="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-text transition-colors hover:bg-[var(--primary-subtle)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
                   >
                     {isExpanded ? <ArrowDownIcon size={12} /> : <ArrowRightIcon size={12} />}
@@ -451,10 +453,10 @@ function AccountFolderTree({
                     <span className="flex-1 truncate text-[13px]">{folder.name}</span>
                     {unread > 0 && (
                       <span
-                        className={`rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
+                        className={`rounded-full px-1.5 py-0.5 tabular-nums text-[11px] font-medium ${
                           isSelected
                             ? 'bg-primary text-primary-fg'
-                            : 'border border-border bg-surface text-foreground'
+                            : 'bg-[var(--primary-subtle-solid)] text-primary'
                         }`}
                       >
                         {unread}
@@ -643,7 +645,7 @@ export function FolderPane() {
     : [];
 
   return (
-    <div className="flex h-full flex-col rounded-xl bg-surface">
+    <div className="flex h-full flex-col rounded-2xl bg-surface border border-[var(--border-subtle)]">
       <div className={`flex-1 folder-pane-scroll ${scrollbarClass}`}>
         {totalFolders === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-text">
@@ -670,7 +672,7 @@ export function FolderPane() {
               </FolderGroup>
             )}
 
-            {favoriteFolders.length > 0 && <div className="mx-3 h-px bg-border" />}
+            {favoriteFolders.length > 0 && <div className="mx-3 h-px bg-[var(--border-subtle)]" />}
 
             {accounts.map((account) => {
               const folders = byAccount[account.id] ?? [];
@@ -736,7 +738,7 @@ export function FolderPane() {
           <>
             <Button
               onPress={() => setDeleteTarget(null)}
-              className="h-11 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-hover"
+              className="h-11 rounded-md px-3 text-sm text-foreground transition-colors hover:bg-[var(--primary-subtle)]"
             >
               Cancel
             </Button>

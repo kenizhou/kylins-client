@@ -80,4 +80,39 @@ describe('theme token alignment', () => {
       expect(themeCss).toContain(`${token}:`);
     }
   });
+
+  it('declares acrylic surface tokens', () => {
+    const acrylicTokens = [
+      '--surface-elevated',
+      '--surface-floating',
+      '--chrome-tint',
+      '--primary-subtle',
+      '--primary-muted',
+      '--border-subtle',
+    ];
+    for (const token of acrylicTokens) {
+      expect(themeCss).toContain(`${token}:`);
+    }
+  });
+
+  it('declares elevation shadow tokens', () => {
+    const shadowTokens = ['--shadow-sm', '--shadow', '--shadow-md', '--shadow-lg', '--shadow-xl'];
+    for (const token of shadowTokens) {
+      expect(themeCss).toContain(`${token}:`);
+    }
+  });
+
+  it('declares motion tokens', () => {
+    const motionTokens = [
+      '--duration-instant',
+      '--duration-fast',
+      '--duration-normal',
+      '--duration-slow',
+      '--ease-out',
+      '--ease-spring',
+    ];
+    for (const token of motionTokens) {
+      expect(themeCss).toContain(`${token}:`);
+    }
+  });
 });

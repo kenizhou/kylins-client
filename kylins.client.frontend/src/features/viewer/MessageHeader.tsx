@@ -15,6 +15,7 @@ import { SecurityChips } from '@/features/classification/components/SecurityChip
 import { IconButton } from '@/components/ui/IconButton';
 import { formatFullDate } from '@/utils/formatDate';
 import { getInitials, formatMessageTime } from '@/data/demoMessages';
+import { avatarGradient } from '@/utils/avatarGradient';
 
 interface MessageHeaderProps {
   message: MailMessage;
@@ -28,42 +29,6 @@ interface MessageHeaderProps {
   onMarkUnread: () => void;
   onAddContact: () => void;
   contactAdded: boolean;
-}
-
-function hashString(str: string): number {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = (h << 5) - h + str.charCodeAt(i);
-    h |= 0;
-  }
-  return Math.abs(h);
-}
-
-function senderGradient(name: string): string {
-  const hue = hashString(name) % 360;
-  return `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 40) % 360} 70% 45%))`;
-}
-
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  s /= 100;
-  l /= 100;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n: number) =>
-    l - a * Math.max(-1, Math.min(((n + h / 30) % 12) - 3, 9 - ((n + h / 30) % 12), 1));
-  return [f(0), f(8), f(4)];
-}
-
-function luminance(r: number, g: number, b: number): number {
-  const values = [r, g, b].map((v) =>
-    v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4),
-  );
-  return 0.2126 * (values[0] ?? 0) + 0.7152 * (values[1] ?? 0) + 0.0722 * (values[2] ?? 0);
-}
-
-function avatarTextColor(name: string): string {
-  const hue = hashString(name) % 360;
-  const [r, g, b] = hslToRgb(hue, 70, 55);
-  return luminance(r, g, b) > 0.55 ? '#0f172a' : '#ffffff';
 }
 
 function formatRecipient(r: { name: string; address: string }): string {
@@ -114,8 +79,8 @@ export function MessageHeader({
   ];
 
   return (
-    <div className="reading-pane-header border-b border-[var(--border)] px-5 pt-4 pb-3">
-      <h1 className="reading-pane-subject min-w-0 text-[22px] font-semibold leading-[1.25] tracking-tight text-[var(--text)]">
+    <div className="reading-pane-header border-b border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-5 pt-4 pb-3">
+      <h1 className="reading-pane-subject min-w-0 text-[20px] font-semibold leading-[1.3] tracking-[-0.01em] text-[var(--text)]">
         {message.subject}
       </h1>
 
@@ -131,36 +96,40 @@ export function MessageHeader({
       <div className="reading-pane-sender-row mt-3 flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-3">
           <div
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold shadow-sm"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold shadow-[var(--shadow-sm)]"
             style={{
-              background: senderGradient(message.from.name),
-              color: avatarTextColor(message.from.name),
+              background: avatarGradient(message.from.name).background,
+              color: avatarGradient(message.from.name).foreground,
             }}
             aria-hidden="true"
           >
             {getInitials(message.from.name)}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              <span className="font-semibold text-[var(--text)]">{message.from.name}</span>
-              <span className="text-sm text-[var(--muted-text)]">{message.from.address}</span>
-              <button
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="truncate font-semibold text-[var(--text)]">{message.from.name}</span>
+              <Button
                 type="button"
-                onClick={onAddContact}
-                className="inline-flex items-center gap-1 rounded bg-[var(--secondary)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--secondary-foreground)] transition-opacity hover:opacity-90"
-                title="Add sender to contacts"
+                onPress={onAddContact}
+                className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-[var(--primary-subtle)] px-2 py-0.5 text-[10px] font-medium text-primary transition-opacity hover:opacity-90"
               >
-                {contactAdded ? 'Saved' : 'Add to contacts'}
-              </button>
+                {/* RAC Button strips `title`; keep the tooltip on a wrapper. */}
+                <span title="Add sender to contacts" className="inline-flex items-center">
+                  {contactAdded ? 'Saved' : 'Add to contacts'}
+                </span>
+              </Button>
+            </div>
+            <div className="mt-0.5 truncate text-sm text-[var(--muted-text)]">
+              {message.from.address}
             </div>
 
-            <button
+            <Button
               type="button"
-              onClick={() => setExpanded((e) => !e)}
+              onPress={() => setExpanded((e) => !e)}
               className="mt-0.5 flex flex-col items-start gap-0.5 text-left text-sm text-[var(--muted-text)] hover:text-[var(--foreground)]"
               aria-expanded={expanded}
             >
-              <span>
+              <span className="whitespace-nowrap">
                 <span className="text-[var(--muted-text)]">To:</span>{' '}
                 <span className="text-[var(--text)]">
                   {recipientSummary(message.to, message.cc)}
@@ -183,7 +152,7 @@ export function MessageHeader({
                   )}
                 </span>
               )}
-            </button>
+            </Button>
 
             <span className="group/tooltip relative mt-0.5 text-xs text-[var(--muted-text)]">
               {formatMessageTime(message.date)}
@@ -232,11 +201,11 @@ export function MessageHeader({
           <DialogTrigger>
             <Button
               aria-label="More actions"
-              className="inline-flex h-8 w-8 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+              className="inline-flex h-8 w-8 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
             >
               <MoreIcon size={18} />
             </Button>
-            <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
+            <Popover className="min-w-[180px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]">
               <Menu
                 aria-label="More actions"
                 items={menuItems}
@@ -246,7 +215,7 @@ export function MessageHeader({
                 {(item) => (
                   <MenuItem
                     id={item.key}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover)] focus-visible:bg-[var(--hover)]"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)]"
                   >
                     {item.icon}
                     <span>{item.label}</span>

@@ -36,7 +36,7 @@ export function UndoSendToast() {
   };
 
   return (
-    <div className="composer-toast fixed bottom-4 left-1/2 z-[var(--z-toast)] -translate-x-1/2 overflow-hidden rounded-lg bg-[var(--foreground)] text-[var(--background)] shadow-lg">
+    <div className="composer-toast glass fixed bottom-4 left-1/2 z-[var(--z-toast)] -translate-x-1/2 overflow-hidden rounded-xl text-[var(--foreground)] shadow-[var(--shadow-lg)]">
       <div className="flex items-center gap-3 px-4 py-2.5">
         <span className="text-sm">Sending email...</span>
         <Button
@@ -47,7 +47,7 @@ export function UndoSendToast() {
         </Button>
       </div>
       <div className="h-0.5 bg-white/20">
-        <div className="composer-countdown h-full rounded-full bg-[var(--primary)]" />
+        <div className="composer-countdown h-full rounded-full iris-line" />
       </div>
     </div>
   );

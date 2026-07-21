@@ -19,7 +19,7 @@ export function Toaster() {
           key={t.id}
           type="button"
           onClick={() => dismiss(t.id)}
-          className={`composer-toast pointer-events-auto rounded-lg px-4 py-2.5 text-sm shadow-lg transition-colors ${
+          className={`composer-toast pointer-events-auto rounded-xl px-4 py-2.5 text-sm shadow-[var(--shadow-lg)] transition-colors ${
             t.type === 'error'
               ? 'bg-[var(--destructive)] text-white'
               : t.type === 'success'

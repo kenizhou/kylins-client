@@ -10,11 +10,14 @@ export function EventCard({ occurrence }: { occurrence: Occurrence }) {
   const accentColor = occurrence.color || 'var(--primary)';
   return (
     <div
-      className="group flex cursor-pointer items-center gap-1 truncate rounded border-l-2 bg-[var(--secondary)] px-1.5 py-1 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
-      style={{ borderLeftColor: accentColor }}
+      className="group flex cursor-pointer items-center gap-1 truncate rounded-md border-l-[3px] px-1.5 py-1 text-xs text-[var(--text)] transition-colors"
+      style={{
+        borderLeftColor: accentColor,
+        backgroundColor: `color-mix(in srgb, ${accentColor} 12%, var(--surface-elevated))`,
+      }}
       title={`${time} — ${title}`}
     >
-      <span className="font-medium text-[var(--muted-text)]">{time}</span>
+      <span className="type-caption tabular-nums text-[var(--muted-text)]">{time}</span>
       <span className="truncate">{title}</span>
     </div>
   );

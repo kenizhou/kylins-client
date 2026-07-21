@@ -19,7 +19,7 @@ export function ViewSettingsDialog({ onClose }: ViewSettingsDialogProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--backdrop)]">
       <div className="w-[480px] max-h-[80vh] flex flex-col bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
           <h2 className="text-base font-semibold text-[var(--foreground)]">View Settings</h2>

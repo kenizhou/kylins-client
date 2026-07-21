@@ -389,7 +389,7 @@ function CategoryMenu({ items, onClose, label }: CategoryMenuProps) {
               <span>{item.label}</span>
               <span className="text-xs text-muted-text">▶</span>
             </MenuItem>
-            <Popover className="rounded-md border border-border bg-surface py-1 shadow-lg">
+            <Popover className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]">
               <Menu aria-label={item.label} className="outline-none">
                 {renderItems(item.items)}
               </Menu>
@@ -482,7 +482,7 @@ export function MenuBar({ variant = 'main' }: MenuBarProps) {
           >
             <Button
               onPress={() => setActiveCategory(isActive ? null : category.label)}
-              className={`h-11 px-3 min-w-11 rounded text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              className={`h-11 px-3 min-w-11 rounded-md text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 isActive ? 'bg-selected text-primary' : 'text-foreground hover:bg-hover'
               }`}
             >
@@ -496,11 +496,11 @@ export function MenuBar({ variant = 'main' }: MenuBarProps) {
                 onMouseLeave={scheduleClose}
               >
                 {category.customContent && category.label === 'View' ? (
-                  <div className="rounded border border-border bg-surface py-1 shadow-lg">
+                  <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]">
                     <ViewMenu />
                   </div>
                 ) : (
-                  <div className="rounded border border-border bg-surface py-1 shadow-lg">
+                  <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]">
                     <CategoryMenu
                       items={category.items as MenuItemData[]}
                       onClose={closeMenu}

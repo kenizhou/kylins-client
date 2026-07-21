@@ -20,7 +20,7 @@ export function ContactsCommandRibbon({
   return (
     <RibbonShell>
       <RibbonGroup>
-        <span className="my-auto flex h-11 items-center gap-2 px-2 text-sm font-semibold text-[var(--text)]">
+        <span className="my-auto flex h-11 items-center gap-2 px-2 type-pane-title text-[var(--text)]">
           <ContactsIcon size={16} />
           Contacts
         </span>
