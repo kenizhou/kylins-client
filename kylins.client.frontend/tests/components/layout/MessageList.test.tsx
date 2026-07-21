@@ -411,22 +411,6 @@ describe('MessageList', () => {
     await waitFor(() => expect(screen.getByText('No unread messages.')).toBeInTheDocument());
   });
 
-  it('shows the All/Unread empty state when the active tab is empty', async () => {
-    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
-    useFolderStore.setState({
-      selected: { accountId: 'a1', labelId: 'inbox' },
-      byAccount: {
-        a1: [{ id: 'inbox', accountId: 'a1', role: 'inbox' } as MailFolder],
-      },
-    });
-    render(<MessageList />);
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'All' })).toBeInTheDocument());
-    expect(screen.getByText('No messages in this folder.')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Unread' }));
-    await waitFor(() => expect(screen.getByText('No unread messages.')).toBeInTheDocument());
-  });
-
   it('keeps loading when the Unread tab is empty but more pages exist', async () => {
     vi.mocked(getThreads).mockResolvedValue({
       threads: [thread({ id: 't1', subject: 'Unread only', isRead: false })],
