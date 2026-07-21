@@ -18,7 +18,7 @@ export const RibbonShell = forwardRef<HTMLElement, RibbonShellProps>(function Ri
       className="mx-1 mt-1 flex min-h-[var(--ribbon-h)] min-w-0 flex-col items-stretch justify-between rounded-xl border border-[var(--border)] bg-[var(--card)] px-2 py-1 shadow-[var(--ribbon-elevation)] md:mx-2 md:mt-2 md:px-3 md:py-1.5"
       aria-label="Command ribbon"
     >
-      <div className="flex min-w-0 flex-wrap items-stretch gap-y-1">{children}</div>
+      <div className="flex min-w-0 flex-nowrap items-stretch overflow-hidden">{children}</div>
     </nav>
   );
 });

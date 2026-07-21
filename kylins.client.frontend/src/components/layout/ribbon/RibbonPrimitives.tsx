@@ -1,6 +1,6 @@
 import { CaretDownIcon } from '../../icons';
 import { forwardRef, type ReactNode } from 'react';
-import { Button, Checkbox } from 'react-aria-components';
+import { Button } from 'react-aria-components';
 
 export interface RibbonGroupProps {
   children: ReactNode;
@@ -67,43 +67,41 @@ export function RibbonToggle({
   disabled,
 }: RibbonToggleProps) {
   return (
-    <Checkbox
-      isSelected={checked}
-      onChange={onChange}
-      isDisabled={disabled}
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
       aria-label={title ?? label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
       className={`flex h-11 items-center gap-1.5 rounded-md px-2 text-xs ${
         disabled
           ? 'cursor-not-allowed opacity-60'
           : 'cursor-pointer hover:bg-[var(--primary-subtle)]'
       }`}
     >
-      {({ isSelected }) => (
-        <>
-          {icon}
-          <span className="flex-1 whitespace-nowrap text-foreground">{label}</span>
-          <div
-            className={`ml-auto flex h-3.5 w-3.5 items-center justify-center rounded-sm border ${
-              isSelected
-                ? 'border-primary bg-primary text-primary-fg'
-                : 'border-[var(--border-subtle)] bg-[var(--surface-floating)]'
-            }`}
-          >
-            {isSelected && (
-              <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                <path
-                  d="M1.5 5.5L4 8l4-5"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            )}
-          </div>
-        </>
-      )}
-    </Checkbox>
+      {icon}
+      <span className="flex-1 whitespace-nowrap text-foreground">{label}</span>
+      <div
+        className={`ml-auto flex h-3.5 w-3.5 items-center justify-center rounded-sm border ${
+          checked
+            ? 'border-primary bg-primary text-primary-fg'
+            : 'border-[var(--border-subtle)] bg-[var(--surface-floating)]'
+        }`}
+      >
+        {checked && (
+          <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <path
+              d="M1.5 5.5L4 8l4-5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+      </div>
+    </button>
   );
 }
 
