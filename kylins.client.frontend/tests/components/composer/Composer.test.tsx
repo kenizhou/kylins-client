@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { Composer } from '../../../src/components/composer/Composer';
 import { useComposerStore } from '../../../src/stores/composerStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
@@ -148,7 +148,9 @@ describe('Composer windowed (pop-out)', () => {
     render(<Composer windowed />);
     expect(closeRequestedHandler).not.toBeNull();
     const event = { preventDefault: vi.fn() };
-    await closeRequestedHandler!(event);
+    await act(async () => {
+      await closeRequestedHandler!(event);
+    });
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(screen.queryByText('Save this draft?')).not.toBeInTheDocument();
   });
@@ -157,7 +159,9 @@ describe('Composer windowed (pop-out)', () => {
     useComposerStore.setState({ subject: 'Unsaved work' });
     render(<Composer windowed />);
     const event = { preventDefault: vi.fn() };
-    await closeRequestedHandler!(event);
+    await act(async () => {
+      await closeRequestedHandler!(event);
+    });
     expect(event.preventDefault).toHaveBeenCalled();
     expect(screen.getByText('Save this draft?')).toBeInTheDocument();
 
@@ -170,7 +174,9 @@ describe('Composer windowed (pop-out)', () => {
   it("Don't Save discards and closes the window", async () => {
     useComposerStore.setState({ subject: 'Unsaved work' });
     render(<Composer windowed />);
-    await closeRequestedHandler!({ preventDefault: vi.fn() });
+    await act(async () => {
+      await closeRequestedHandler!({ preventDefault: vi.fn() });
+    });
     fireEvent.click(screen.getByRole('button', { name: "Don't Save" }));
     await waitFor(() => expect(windowClose).toHaveBeenCalled());
   });
@@ -179,7 +185,9 @@ describe('Composer windowed (pop-out)', () => {
     const { flushDraftSave } = await import('../../../src/services/composer/draftAutoSave');
     useComposerStore.setState({ subject: 'Unsaved work' });
     render(<Composer windowed />);
-    await closeRequestedHandler!({ preventDefault: vi.fn() });
+    await act(async () => {
+      await closeRequestedHandler!({ preventDefault: vi.fn() });
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Save Draft' }));
     await waitFor(() => expect(flushDraftSave).toHaveBeenCalled());
     await waitFor(() => expect(windowClose).toHaveBeenCalled());

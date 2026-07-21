@@ -13,7 +13,6 @@
 //   resolveFromAddress when the viewer lands).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Button, Input, TextField, Checkbox } from 'react-aria-components';
 
@@ -415,13 +414,6 @@ export function Composer({ windowed = false }: ComposerProps) {
     return () => stopAutoSave();
   }, [isOpen, activeAccountId]);
 
-  // Start/stop draft auto-save.
-  useEffect(() => {
-    if (!isOpen || !activeAccountId) return;
-    startAutoSave(activeAccountId);
-    return () => stopAutoSave();
-  }, [isOpen, activeAccountId]);
-
   // Keep the OS window title (taskbar / alt-tab) in sync with the subject.
   useEffect(() => {
     if (!windowed) return;
@@ -430,7 +422,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     } catch {
       // Ignore in non-Tauri contexts.
     }
-  }, [windowed, subject, modeLabel, mode]);
+  }, [windowed, subject, modeLabel]);
 
   // Intercept the window close with unsaved content → confirm dialog.
   useEffect(() => {
@@ -446,7 +438,7 @@ export function Composer({ windowed = false }: ComposerProps) {
         const untouched = state.to.length === 0 && state.subject.trim() === '' && bodyEmpty;
         if (untouched) return; // empty compose closes without prompting
         event.preventDefault();
-        flushSync(() => setCloseConfirmOpen(true));
+        setCloseConfirmOpen(true);
       })
       .then((u) => {
         if (cancelled) u();
