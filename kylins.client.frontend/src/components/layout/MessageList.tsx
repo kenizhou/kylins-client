@@ -586,7 +586,15 @@ export function MessageList() {
         onSelect: () => void archiveThreads(targets),
       },
     ];
-  }, [menu, accounts, defaultReplyBehavior, markThreadsRead, setThreadsStarred, deleteThreads]);
+  }, [
+    menu,
+    accounts,
+    defaultReplyBehavior,
+    markThreadsRead,
+    setThreadsStarred,
+    deleteThreads,
+    archiveThreads,
+  ]);
 
   return (
     <div className="message-list flex flex-col h-full border-r border-[var(--border-subtle)]">
