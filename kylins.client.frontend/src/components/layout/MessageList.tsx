@@ -619,11 +619,33 @@ export function MessageList() {
         aria-activedescendant={activeDescendantId ?? undefined}
         className={`flex-1 flex flex-col overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${scrollbarClass}`}
         onKeyDown={(e) => {
+          // Ctrl/Cmd+A — select every loaded thread (group headers excluded).
+          if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+            e.preventDefault();
+            const allIds = filteredItems.flatMap((it) =>
+              it.kind === 'thread' ? [it.thread.id] : [],
+            );
+            if (allIds.length === 0) return;
+            const anchor =
+              selectionAnchorId && allIds.includes(selectionAnchorId)
+                ? selectionAnchorId
+                : allIds[0]!;
+            setActiveDescendantId(optionId(anchor));
+            void setSelection(allIds, anchor);
+            return;
+          }
+
           if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault();
             const direction = e.key === 'ArrowDown' ? 1 : -1;
+            // In shift mode the moving edge is the active descendant when it
+            // is part of the selection; otherwise the anchor. This lets a
+            // range grow AND shrink around a fixed anchor.
+            const edgeId = activeDescendantId?.replace(/^message-option-/, '') ?? null;
+            const baseId =
+              e.shiftKey && edgeId && selectedIdSet.has(edgeId) ? edgeId : selectedThreadId;
             const currentIndex = filteredItems.findIndex(
-              (i) => i.kind === 'thread' && i.thread.id === selectedThreadId,
+              (i) => i.kind === 'thread' && i.thread.id === baseId,
             );
             function nextThreadIndex(start: number, dir: 1 | -1): number | null {
               let i = start + dir;
@@ -641,7 +663,11 @@ export function MessageList() {
             const nextItem = filteredItems[nextIndex];
             if (!nextItem || nextItem.kind !== 'thread') return;
             setActiveDescendantId(optionId(nextItem.thread.id));
-            void selectThread(nextItem.thread);
+            if (e.shiftKey && selectionAnchorId) {
+              void setSelection(rangeIds(selectionAnchorId, nextItem.thread.id), selectionAnchorId);
+            } else {
+              void selectThread(nextItem.thread);
+            }
             virtualizer.scrollToIndex(nextIndex, { align: 'auto' });
             return;
           }

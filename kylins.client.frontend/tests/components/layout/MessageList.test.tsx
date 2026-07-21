@@ -24,6 +24,7 @@ vi.mock('@tanstack/react-virtual', () => ({
       Array.from({ length: opts.count }, (_, i) => ({ key: String(i), index: i, start: i * 40 })),
     getTotalSize: () => opts.count * 40,
     measureElement: () => {},
+    scrollToIndex: () => {},
   }),
 }));
 
@@ -553,6 +554,84 @@ describe('MessageList', () => {
     await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1']));
 
     fireEvent.contextMenu(screen.getByText('Three'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t3']));
+  });
+
+  it('ctrl+A selects all loaded threads', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'a', ctrlKey: true });
+
+    await waitFor(() =>
+      expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2', 't3']),
+    );
+    // No prior anchor — falls back to the first row.
+    expect(useThreadStore.getState().selectionAnchorId).toBe('t1');
+  });
+
+  it('shift+arrow extends and shrinks the selection from the anchor', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('One'));
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1']));
+
+    const listbox = screen.getByRole('listbox');
+    fireEvent.keyDown(listbox, { key: 'ArrowDown', shiftKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.keyDown(listbox, { key: 'ArrowDown', shiftKey: true });
+    await waitFor(() =>
+      expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2', 't3']),
+    );
+    // Anchor fixed; reading pane keeps showing the anchor.
+    expect(useThreadStore.getState().selectionAnchorId).toBe('t1');
+    expect(useThreadStore.getState().selectedThreadId).toBe('t1');
+
+    fireEvent.keyDown(listbox, { key: 'ArrowUp', shiftKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+  });
+
+  it('plain arrow collapses the selection to the next single row', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'One' }),
+        thread({ id: 't2', subject: 'Two' }),
+        thread({ id: 't3', subject: 'Three' }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'), { ctrlKey: true });
+    await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t1', 't2']));
+
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'ArrowDown' });
     await waitFor(() => expect(useThreadStore.getState().selectedThreadIds).toEqual(['t3']));
   });
 });
