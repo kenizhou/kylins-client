@@ -61,8 +61,8 @@ function optionId(threadId: string): string {
 
 const RIBBON_COLOR: Record<MessageState, string> = {
   unread: 'bg-primary',
-  read: '',
-  flagged: '',
+  read: 'group-hover:bg-[var(--series-300)]',
+  flagged: 'group-hover:bg-[var(--series-300)]',
   vip: 'bg-[var(--green)]',
 };
 
@@ -131,6 +131,7 @@ const MessageRow = memo(function MessageRow({
   const prominent = level ? isProminent(level) : false;
   const [isHovered, setIsHovered] = useState(false);
   const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
+  const markThreadRead = useThreadStore((s) => s.markThreadRead);
 
   const sender = thread.fromName ?? thread.fromAddress ?? 'Unknown';
   const unread = !thread.isRead;
@@ -156,15 +157,21 @@ const MessageRow = memo(function MessageRow({
       className={`group relative ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
     >
       <div className="flex items-stretch pr-1">
-        {/* Left state ribbon — self-stretch fills the row height (a plain
-            h-full child would collapse: the parent's height is content-driven). */}
-        <span
-          className={`w-1 shrink-0 self-stretch rounded-r-[var(--radius-xs)] ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
+        {/* Left state ribbon — click toggles read/unread; self-stretch fills
+            the row height with a hairline gap between adjacent rows. */}
+        <button
+          type="button"
+          aria-label={unread ? 'Mark as read' : 'Mark as unread'}
+          onClick={(e) => {
+            e.stopPropagation();
+            void markThreadRead(thread, !thread.isRead);
+          }}
+          className={`my-[0.5px] w-1 shrink-0 cursor-pointer self-stretch transition-all duration-fast hover:w-1.5 ${prominent ? '' : RIBBON_COLOR[unread ? 'unread' : thread.isStarred ? 'flagged' : thread.isImportant ? 'vip' : 'read']}`}
           style={prominent && level ? { backgroundColor: level.color } : undefined}
         />
 
         {/* Main content column: sender / subject / preview + time */}
-        <div className={`flex-1 min-w-0 px-3 ${DENSITY_CONTENT_CLASSES[density]}`}>
+        <div className={`flex-1 min-w-0 px-4 ${DENSITY_CONTENT_CLASSES[density]}`}>
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <span
