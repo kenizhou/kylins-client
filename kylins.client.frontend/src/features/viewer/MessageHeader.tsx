@@ -93,7 +93,7 @@ export function MessageHeader({
         />
       </div>
 
-      <div className="reading-pane-sender-row mt-3 flex flex-wrap items-start gap-x-3 gap-y-2">
+      <div className="reading-pane-sender-row mt-3 flex items-stretch gap-3">
         <div className="flex min-w-[220px] flex-1 items-start gap-3">
           <div
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold shadow-[var(--shadow-sm)]"
@@ -156,7 +156,7 @@ export function MessageHeader({
           </div>
         </div>
 
-        <div className="reading-pane-actions ml-auto flex shrink-0 flex-col items-end gap-0.5">
+        <div className="reading-pane-actions ml-auto flex shrink-0 flex-col items-end justify-between">
           <div className="flex flex-wrap items-center justify-end gap-1">
             <IconButton
               size="md"
