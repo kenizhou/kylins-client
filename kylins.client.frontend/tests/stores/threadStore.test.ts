@@ -9,6 +9,8 @@ import { getMessageCryptoResult, openCryptoMessage } from '../../src/services/db
 import type { Thread, DbMessageRow } from '../../src/services/db/threads';
 import type { OpenCryptoResult } from '../../src/services/db/cryptoReceive';
 import { invoke } from '@tauri-apps/api/core';
+import { getFolderByRole } from '../../src/services/db/labels';
+import type { MailFolder } from '../../src/services/mail/folders/folderModel';
 
 // `selectThread` now routes mark-read through the Rust sync engine via
 // `sync_apply_mutation` (the engine owns the durable write + replay). Mock the
@@ -42,6 +44,13 @@ vi.mock('../../src/services/db/cryptoReceive', async () => {
     '../../src/services/db/cryptoReceive',
   );
   return { ...actual, openCryptoMessage: vi.fn(), getMessageCryptoResult: vi.fn() };
+});
+
+vi.mock('../../src/services/db/labels', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/db/labels')>(
+    '../../src/services/db/labels',
+  );
+  return { ...actual, getFolderByRole: vi.fn() };
 });
 
 const thread = (over: Partial<Thread> = {}): Thread => ({
@@ -94,6 +103,7 @@ beforeEach(() => {
   vi.mocked(getMessageCryptoResult).mockReset();
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined as never);
+  vi.mocked(getFolderByRole).mockReset();
 });
 
 describe('threadStore.loadThreads', () => {
@@ -964,5 +974,111 @@ describe('threadStore.deleteThreads', () => {
     expect(s.selectedThreadIds).toEqual([]);
     expect(useViewStore.getState().selectedMessage).toBeNull();
     expect(useViewStore.getState().selectedThreadIds).toEqual([]);
+  });
+});
+
+describe('threadStore.moveThreads', () => {
+  it('moves multiple threads with one move op per thread', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isRead: false }),
+        thread({ id: 't2', isRead: false }),
+        thread({ id: 't3', isRead: true }),
+      ],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1', 't2'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({
+      selected: { accountId: 'a1', labelId: 'inbox' },
+      unreadCounts: { a1__inbox: 2 },
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore
+      .getState()
+      .moveThreads(
+        [thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: false })],
+        'archive-id',
+        'Archive',
+      );
+
+    const s = useThreadStore.getState();
+    expect(s.threads.map((t) => t.id)).toEqual(['t3']);
+    expect(s.selectedThreadId).toBe('t3');
+    const moveOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'move',
+      );
+    expect(moveOps).toHaveLength(2);
+    expect(moveOps[0]?.[1]).toEqual({
+      accountId: 'a1',
+      op: {
+        type: 'move',
+        messageIds: ['m1'],
+        srcLabel: 'inbox',
+        dstLabel: 'archive-id',
+        srcFolderPath: 'INBOX',
+        dstFolderPath: 'Archive',
+        uids: [4242],
+      },
+    });
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(0);
+  });
+});
+
+describe('threadStore.moveThreadsToRole', () => {
+  it('resolves the role folder per account and moves the group', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+    vi.mocked(getFolderByRole).mockResolvedValue({
+      id: 'arch',
+      accountId: 'a1',
+      name: 'Archive',
+      remoteId: 'Archive',
+      role: 'archive',
+    } as MailFolder);
+
+    await useThreadStore
+      .getState()
+      .moveThreadsToRole([thread({ id: 't1', isRead: true })], 'archive');
+
+    expect(getFolderByRole).toHaveBeenCalledWith('a1', 'archive');
+    const moveOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'move',
+      );
+    expect(moveOps).toHaveLength(1);
+    expect(moveOps[0]?.[1]).toEqual(
+      expect.objectContaining({
+        op: expect.objectContaining({ type: 'move', dstLabel: 'arch', dstFolderPath: 'Archive' }),
+      }),
+    );
+    expect(useThreadStore.getState().threads).toHaveLength(0);
+  });
+
+  it('logs and skips when the account has no folder for the role', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    useThreadStore.setState({ threads: [thread({ id: 't1' })] });
+    vi.mocked(getFolderByRole).mockResolvedValue(null);
+
+    await useThreadStore.getState().moveThreadsToRole([thread({ id: 't1' })], 'archive');
+
+    expect(useThreadStore.getState().threads).toHaveLength(1);
+    expect(invoke).not.toHaveBeenCalled();
+    err.mockRestore();
   });
 });

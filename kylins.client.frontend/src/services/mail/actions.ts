@@ -13,6 +13,10 @@ export async function archiveThread(thread: Thread, messages?: DbMessageRow[]): 
   await useThreadStore.getState().moveThreadToRole(thread, 'archive', messages);
 }
 
+export async function archiveThreads(threads: Thread[]): Promise<void> {
+  await useThreadStore.getState().moveThreadsToRole(threads, 'archive');
+}
+
 export async function trashThread(thread: Thread, messages?: DbMessageRow[]): Promise<void> {
   await useThreadStore.getState().moveThreadToRole(thread, 'trash', messages);
 }
