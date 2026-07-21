@@ -202,4 +202,50 @@ describe('accounts', () => {
     expect(forwarded.accountLabel).toBe('Work');
     expect(forwarded.setupProviderId).toBe('gmail');
   });
+
+  // ---- OpenPGP Phase 2 Task 1: per-account cryptoMethod round-trip ----
+  //
+  // The Rust Account DTO now serializes `crypto_method` as camelCase
+  // `cryptoMethod` (serde rename_all) with a lowercase variant value. These
+  // tests pin the FE↔BE contract: the wrapper forwards the field as-is, and
+  // the typed value flows through `invoke` unchanged. Task 4's `send_op`
+  // dispatches on the Rust-side `account.crypto_method.standard()`, so any
+  // drift in the wire format here would silently break OpenPGP send.
+
+  it('getAllAccounts passes cryptoMethod through from Rust', async () => {
+    // Rust returns `{ cryptoMethod: 'openpgp' }`; the TS Account interface
+    // types it as `'none' | 'openpgp' | 'smime'`. No FE mapping is needed
+    // (serde rename_all + the typed enum handle the wire format).
+    const acct = makeAccount({ id: 'acc-pgp', cryptoMethod: 'openpgp' });
+    mockInvoke.mockResolvedValueOnce([acct]);
+    const accounts = await getAllAccounts();
+    expect(mockInvoke).toHaveBeenCalledWith('db_get_all_accounts');
+    expect(accounts[0]?.cryptoMethod).toBe('openpgp');
+  });
+
+  it('updateAccount forwards cryptoMethod to db_update_account', async () => {
+    // Round-trip the setter: Partial<Account> picks up cryptoMethod?.
+    // Rust's AccountUpdates deserializes camelCase → snake_case field +
+    // lowercase variant → CryptoMethod::Openpgp. None-don't-touch vs
+    // Some(None)-explicit-clear is a Rust-side concern (covered by the
+    // backend tests); here we only pin the FE forwarding.
+    const updates: AccountUpdates = { cryptoMethod: 'openpgp' };
+    await updateAccount('acc-1', updates);
+    expect(mockInvoke).toHaveBeenCalledWith('db_update_account', { id: 'acc-1', updates });
+    expect((mockInvoke.mock.calls[0]![1] as { updates: AccountUpdates }).updates.cryptoMethod).toBe(
+      'openpgp',
+    );
+  });
+
+  it('updateAccount with cryptoMethod: undefined does not include the field', async () => {
+    // Mirrors the Rust None-don't-touch semantic: omitting cryptoMethod from
+    // the updates payload (undefined) must NOT set the column. JSON.stringify
+    // drops undefined keys, so the Rust side sees no `cryptoMethod` key →
+    // serde(default) → None → don't-touch. (Backend test
+    // `update_crypto_method_none_is_dont_touch` pins the Rust half.)
+    const updates: AccountUpdates = { displayName: 'Rename Only' };
+    await updateAccount('acc-1', updates);
+    const forwarded = (mockInvoke.mock.calls[0]![1] as { updates: AccountUpdates }).updates;
+    expect(forwarded.cryptoMethod).toBeUndefined();
+  });
 });

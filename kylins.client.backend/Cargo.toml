@@ -81,6 +81,12 @@ crypto-core = { path = "../kylins.client.crypto/core" }
 # S/MIME backend (lifecycle ops land in Plan 2 Group B; the dep is wired now so
 # the db-backed KeyStore bridge + future smoke tests can reference it).
 crypto-smime = { path = "../kylins.client.crypto/smime" }
+# OpenPGP backend (Phase 2 SEND slice). Engine-core crate landed on
+# `feat/crypto-openpgp-engine-core` (SEIPDv2→v1 GnuPG-interop fix included).
+# Task 4's `send_op` dispatches to `OpenpgpBackend` when
+# `account.crypto_method == Openpgp`; wiring the dep now lets later tasks in
+# this slice reference it without a Cargo.toml churn.
+crypto-openpgp = { path = "../kylins.client.crypto/openpgp" }
 
 # Error handling for EAS client
 thiserror = "1"
