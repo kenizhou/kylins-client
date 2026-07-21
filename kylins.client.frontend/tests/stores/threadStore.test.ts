@@ -888,3 +888,81 @@ describe('threadStore.setThreadsStarred', () => {
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('threadStore.deleteThreads', () => {
+  it('removes multiple threads, moves the anchor past the removed block, and adjusts counts', async () => {
+    useThreadStore.setState({
+      threads: [
+        thread({ id: 't1', isRead: false }),
+        thread({ id: 't2', isRead: false }),
+        thread({ id: 't3', isRead: true }),
+      ],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1', 't2'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    useFolderStore.setState({ unreadCounts: { a1__inbox: 4 } });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow({ thread_id: 't3' })]);
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore
+      .getState()
+      .deleteThreads([thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: false })]);
+
+    const s = useThreadStore.getState();
+    expect(s.threads.map((t) => t.id)).toEqual(['t3']);
+    expect(s.selectedThreadId).toBe('t3');
+    expect(s.selectedThreadIds).toEqual(['t3']);
+    expect(s.selectionAnchorId).toBe('t3');
+    expect(useViewStore.getState().selectedMessage?.threadId).toBe('t3');
+    expect(useFolderStore.getState().unreadCounts['a1__inbox']).toBe(2);
+    const deleteOps = vi
+      .mocked(invoke)
+      .mock.calls.filter(
+        ([cmd, args]) =>
+          cmd === 'sync_apply_mutation' && (args as { op: { type: string } }).op.type === 'delete',
+      );
+    expect(deleteOps).toHaveLength(2);
+  });
+
+  it('keeps the anchor and prunes the selection when a non-anchor thread is deleted', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1', 't2'],
+      selectionAnchorId: 't1',
+      currentQuery: { accountId: 'a1', labelId: 'inbox' },
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow({ thread_id: 't2' })]);
+
+    await useThreadStore.getState().deleteThreads([thread({ id: 't2', isRead: true })]);
+
+    const s = useThreadStore.getState();
+    expect(s.threads.map((t) => t.id)).toEqual(['t1']);
+    expect(s.selectedThreadId).toBe('t1');
+    expect(s.selectedThreadIds).toEqual(['t1']);
+    // The anchor's body is NOT reloaded — only the delete op fetched messages.
+    expect(getMessagesForThread).toHaveBeenCalledTimes(1);
+    expect(getMessagesForThread).toHaveBeenCalledWith('a1', 't2');
+  });
+
+  it('clears the selection when the last selected thread is deleted', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1'],
+      selectionAnchorId: 't1',
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([messageRow()]);
+
+    await useThreadStore.getState().deleteThreads([thread({ id: 't1', isRead: true })]);
+
+    const s = useThreadStore.getState();
+    expect(s.threads).toEqual([]);
+    expect(s.selectedThreadId).toBeNull();
+    expect(s.selectedThreadIds).toEqual([]);
+    expect(useViewStore.getState().selectedMessage).toBeNull();
+    expect(useViewStore.getState().selectedThreadIds).toEqual([]);
+  });
+});

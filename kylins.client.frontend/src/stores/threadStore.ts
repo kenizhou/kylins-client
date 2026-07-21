@@ -66,6 +66,7 @@ interface ThreadState {
   toggleThreadStarred: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
   setThreadsStarred: (threads: Thread[], starred: boolean) => Promise<void>;
   deleteThread: (thread: Thread, messages?: DbMessageRow[]) => Promise<void>;
+  deleteThreads: (threads: Thread[]) => Promise<void>;
   moveThread: (
     thread: Thread,
     dstLabel: string,
@@ -384,57 +385,80 @@ export const useThreadStore = create<ThreadState>((set, get) => {
       }
     },
 
-    deleteThread: async (thread, messages) => {
+    deleteThread: async (thread, _messages) => {
+      await get().deleteThreads([thread]);
+    },
+
+    deleteThreads: async (threadsToDelete) => {
+      if (threadsToDelete.length === 0) return;
       const state = get();
-      const wasSelected = state.selectedThreadId === thread.id;
-      const idx = state.threads.findIndex((t) => t.id === thread.id);
-      const nextThread =
-        wasSelected && idx !== -1
-          ? (state.threads[idx + 1] ?? state.threads[idx - 1] ?? null)
-          : null;
+      const removedIds = new Set(threadsToDelete.map((t) => t.id));
+      const remaining = state.threads.filter((t) => !removedIds.has(t.id));
+
+      // Anchor re-selection: if the anchor was removed, move to the next
+      // remaining thread after the anchor's old position (falling back to the
+      // previous remaining thread), matching the legacy single-delete behavior.
+      const anchorRemoved =
+        state.selectedThreadId != null && removedIds.has(state.selectedThreadId);
+      let nextAnchorId: string | null = state.selectedThreadId;
+      if (anchorRemoved) {
+        const anchorIdx = state.threads.findIndex((t) => t.id === state.selectedThreadId);
+        nextAnchorId =
+          state.threads.slice(anchorIdx + 1).find((t) => !removedIds.has(t.id))?.id ??
+          state.threads
+            .slice(0, Math.max(anchorIdx, 0))
+            .reverse()
+            .find((t) => !removedIds.has(t.id))?.id ??
+          null;
+      }
+      const nextSelection = nextAnchorId ? [nextAnchorId] : [];
 
       set({
-        threads: state.threads.filter((t) => t.id !== thread.id),
-        selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+        threads: remaining,
+        selectedThreadIds: nextSelection,
+        selectionAnchorId: nextAnchorId,
+        selectedThreadId: nextAnchorId,
       });
-
-      useViewStore
-        .getState()
-        .setSelectedThreadIds(get().selectedThreadId ? [get().selectedThreadId!] : []);
-
-      // If the deleted thread was being read, clear it and move the view to the
-      // next thread. Otherwise, ensure the view store never points at a deleted
-      // thread as a safety net.
-      if (wasSelected) {
-        useViewStore.getState().setSelectedMessage(null);
-        if (nextThread) {
-          await get().selectThread(nextThread);
-        }
-      } else if (useViewStore.getState().selectedMessage?.threadId === thread.id) {
-        useViewStore.getState().setSelectedMessage(null);
-      }
+      useViewStore.getState().setSelectedThreadIds(nextSelection);
 
       const labelId = state.currentQuery?.labelId;
-      if (labelId && !thread.isRead) {
-        useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+      const folderStore = useFolderStore.getState();
+      for (const t of threadsToDelete) {
+        if (labelId && !t.isRead) folderStore.decrementUnread(t.accountId, labelId);
       }
 
-      const msgs = await getThreadMessages(thread, messages);
-      void invoke('sync_apply_mutation', {
-        accountId: thread.accountId,
-        op: {
-          type: 'delete',
-          messageIds: msgs.map((m) => m.id),
-          folderPath: msgs[0]?.imap_folder ?? '',
-          uids: msgs.map((m) => m.imap_uid ?? 0),
-        },
-      }).catch((e) => console.error('sync_apply_mutation delete failed', e));
+      // Repoint the reading pane.
+      if (anchorRemoved) {
+        const next = nextAnchorId ? remaining.find((t) => t.id === nextAnchorId) : undefined;
+        if (next) {
+          await openThreadBody(next);
+        } else {
+          useViewStore.getState().setSelectedMessage(null);
+        }
+      } else if (
+        threadsToDelete.some((t) => t.id === useViewStore.getState().selectedMessage?.threadId)
+      ) {
+        useViewStore.getState().setSelectedMessage(null);
+      }
 
-      // Notify other windows (e.g., standalone message viewers) that this thread
-      // is gone so they can close instead of showing stale content.
-      if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-        const { emit } = await import('@tauri-apps/api/event');
-        void emit('thread:deleted', { accountId: thread.accountId, threadId: thread.id });
+      for (const t of threadsToDelete) {
+        const msgs = await getThreadMessages(t);
+        void invoke('sync_apply_mutation', {
+          accountId: t.accountId,
+          op: {
+            type: 'delete',
+            messageIds: msgs.map((m) => m.id),
+            folderPath: msgs[0]?.imap_folder ?? '',
+            uids: msgs.map((m) => m.imap_uid ?? 0),
+          },
+        }).catch((e) => console.error('sync_apply_mutation delete failed', e));
+
+        // Notify other windows (e.g., standalone message viewers) that this
+        // thread is gone so they can close instead of showing stale content.
+        if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+          const { emit } = await import('@tauri-apps/api/event');
+          void emit('thread:deleted', { accountId: t.accountId, threadId: t.id });
+        }
       }
     },
 
