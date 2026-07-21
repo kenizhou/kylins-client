@@ -62,14 +62,20 @@ function optionId(threadId: string): string {
 const RIBBON_COLOR: Record<MessageState, string> = {
   unread: 'bg-primary',
   read: '',
-  flagged: 'bg-[var(--amber)]',
+  flagged: '',
   vip: 'bg-[var(--green)]',
 };
 
 const DENSITY_ROW_CLASSES = {
-  compact: 'min-h-11 py-1',
-  normal: 'min-h-11 py-1.5',
-  comfortable: 'min-h-[52px] py-3',
+  compact: 'min-h-11',
+  normal: 'min-h-11',
+  comfortable: 'min-h-[52px]',
+};
+
+const DENSITY_CONTENT_CLASSES = {
+  compact: 'py-1',
+  normal: 'py-1.5',
+  comfortable: 'py-3',
 };
 
 interface QuickActionsProps {
@@ -158,7 +164,7 @@ const MessageRow = memo(function MessageRow({
         />
 
         {/* Main content column: sender / subject / preview + time */}
-        <div className="flex-1 min-w-0 px-2 py-0.5">
+        <div className={`flex-1 min-w-0 px-3 ${DENSITY_CONTENT_CLASSES[density]}`}>
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <span
