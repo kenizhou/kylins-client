@@ -97,8 +97,8 @@
   --highlight-text: var(--series-900);
 
   /* Links stay a stable blue so they remain recognizable across skins. */
-  --link: #2563eb;
-  --link-hover: #1d4ed8;
+  --link: #1d4ed8;
+  --link-hover: #1e40af;
 
   /* Status colors */
   --amber: #d97706;

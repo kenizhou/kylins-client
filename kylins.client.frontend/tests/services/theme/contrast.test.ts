@@ -119,14 +119,14 @@ describe('theme.css contrast (WCAG AA)', () => {
       '--background',
       lightBlock,
       'oklch(0.465 0.02 258)',
-      'oklch(0.992 0.002 258)',
+      'oklch(0.965 0.004 258)',
     );
     assertContrast(
       '--muted-text',
       '--surface',
       lightBlock,
       'oklch(0.465 0.02 258)',
-      'oklch(0.965 0.006 258)',
+      'oklch(0.94 0.007 258)',
     );
   });
 
@@ -136,19 +136,19 @@ describe('theme.css contrast (WCAG AA)', () => {
       '--background',
       lightBlock,
       'oklch(0.465 0.02 258)',
-      'oklch(0.992 0.002 258)',
+      'oklch(0.965 0.004 258)',
     );
     assertContrast(
       '--muted-foreground',
       '--surface',
       lightBlock,
       'oklch(0.465 0.02 258)',
-      'oklch(0.965 0.006 258)',
+      'oklch(0.94 0.007 258)',
     );
   });
 
   it('light theme link meets AA on background', () => {
-    assertContrast('--link', '--background', lightBlock, '#2563eb', 'oklch(0.992 0.002 258)');
+    assertContrast('--link', '--background', lightBlock, '#1d4ed8', 'oklch(0.965 0.004 258)');
   });
 
   it('dark theme muted text meets AA on background and surface', () => {
