@@ -13,8 +13,8 @@ import {
 } from '@/components/icons';
 import { SecurityChips } from '@/features/classification/components/SecurityChips';
 import { IconButton } from '@/components/ui/IconButton';
-import { formatFullDate } from '@/utils/formatDate';
-import { getInitials, formatMessageTime } from '@/data/demoMessages';
+import { formatFullDate, formatDateTimeMinutes } from '@/utils/formatDate';
+import { getInitials } from '@/data/demoMessages';
 import { avatarGradient } from '@/utils/avatarGradient';
 
 interface MessageHeaderProps {
@@ -93,8 +93,8 @@ export function MessageHeader({
         />
       </div>
 
-      <div className="reading-pane-sender-row mt-3 flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
+      <div className="reading-pane-sender-row mt-3 flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="flex min-w-[220px] flex-1 items-start gap-3">
           <div
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[13px] font-bold shadow-[var(--shadow-sm)]"
             style={{
@@ -153,78 +153,82 @@ export function MessageHeader({
                 </span>
               )}
             </Button>
-
-            <span className="group/tooltip relative mt-0.5 text-xs text-[var(--muted-text)]">
-              {formatMessageTime(message.date)}
-              <span className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-[var(--foreground)] px-2 py-1 text-[10px] text-[var(--background)] opacity-0 transition-opacity group-hover/tooltip:opacity-100">
-                {formatFullDate(message.date)}
-              </span>
-            </span>
           </div>
         </div>
 
-        <div className="reading-pane-actions mt-0.5 flex flex-wrap items-center gap-1 shrink-0">
-          <IconButton
-            size="md"
-            label="Reply"
-            title="Reply"
-            onClick={onReply}
-            icon={
-              <span className="text-[var(--primary)]">
-                <ReplyFilledIcon size={18} />
-              </span>
-            }
-          />
-          <IconButton
-            size="md"
-            label="Reply all"
-            title="Reply all"
-            onClick={onReplyAll}
-            icon={
-              <span className="text-[var(--primary)]">
-                <ReplyAllFilledIcon size={18} />
-              </span>
-            }
-          />
-          <IconButton
-            size="md"
-            label="Forward"
-            title="Forward"
-            onClick={onForward}
-            icon={
-              <span className="text-[var(--primary)]">
-                <MailSendIcon size={18} />
-              </span>
-            }
-          />
+        <div className="reading-pane-actions ml-auto flex shrink-0 flex-col items-end gap-0.5">
+          <div className="flex flex-wrap items-center justify-end gap-1">
+            <IconButton
+              size="md"
+              label="Reply"
+              title="Reply"
+              className="reading-pane-action-button"
+              onClick={onReply}
+              icon={
+                <span className="text-[var(--primary)]">
+                  <ReplyFilledIcon size={18} />
+                </span>
+              }
+            />
+            <IconButton
+              size="md"
+              label="Reply all"
+              title="Reply all"
+              className="reading-pane-action-button"
+              onClick={onReplyAll}
+              icon={
+                <span className="text-[var(--primary)]">
+                  <ReplyAllFilledIcon size={18} />
+                </span>
+              }
+            />
+            <IconButton
+              size="md"
+              label="Forward"
+              title="Forward"
+              className="reading-pane-action-button"
+              onClick={onForward}
+              icon={
+                <span className="text-[var(--primary)]">
+                  <MailSendIcon size={18} />
+                </span>
+              }
+            />
 
-          <DialogTrigger>
-            <Button
-              aria-label="More actions"
-              className="inline-flex h-8 w-8 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-            >
-              <MoreIcon size={18} />
-            </Button>
-            <Popover className="min-w-[180px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]">
-              <Menu
+            <DialogTrigger>
+              <Button
                 aria-label="More actions"
-                items={menuItems}
-                onAction={(key) => menuItems.find((i) => i.key === key)?.onAction()}
-                className="outline-none"
+                className="inline-flex h-8 w-8 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               >
-                {(item) => (
-                  <MenuItem
-                    id={item.key}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)]"
-                  >
-                    {item.icon}
-                    <span>{item.label}</span>
-                  </MenuItem>
-                )}
-              </Menu>
-            </Popover>
-          </DialogTrigger>
-          {extraActions}
+                <MoreIcon size={18} />
+              </Button>
+              <Popover className="min-w-[180px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]">
+                <Menu
+                  aria-label="More actions"
+                  items={menuItems}
+                  onAction={(key) => menuItems.find((i) => i.key === key)?.onAction()}
+                  className="outline-none"
+                >
+                  {(item) => (
+                    <MenuItem
+                      id={item.key}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)]"
+                    >
+                      {item.icon}
+                      <span>{item.label}</span>
+                    </MenuItem>
+                  )}
+                </Menu>
+              </Popover>
+            </DialogTrigger>
+            {extraActions}
+          </div>
+          <span className="group/tooltip relative whitespace-nowrap type-caption tabular-nums text-[var(--muted-text)]">
+            {formatDateTimeMinutes(message.date)}
+            <span className="pointer-events-none absolute bottom-full right-0 mb-1 whitespace-nowrap rounded bg-[var(--foreground)] px-2 py-1 text-[10px] text-[var(--background)] opacity-0 transition-opacity group-hover/tooltip:opacity-100">
+              {formatFullDate(message.date)}
+            </span>
+          </span>
         </div>
       </div>
     </div>

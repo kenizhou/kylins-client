@@ -2,8 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MessageHeader } from '../../../src/features/viewer/MessageHeader';
 import type { MailMessage } from '../../../src/features/view/viewStore';
-import { formatFullDate } from '../../../src/utils/formatDate';
-import { formatMessageTime } from '../../../src/data/demoMessages';
+import { formatFullDate, formatDateTimeMinutes } from '../../../src/utils/formatDate';
 
 vi.mock('../../../src/services/settings', () => ({
   getSetting: vi.fn(() => Promise.resolve(null)),
@@ -73,7 +72,7 @@ describe('MessageHeader', () => {
     expect(screen.queryByText('Signed')).not.toBeInTheDocument();
   });
 
-  it('shows relative time with a full-date tooltip', () => {
+  it('shows minute-precise time with a full-date tooltip', () => {
     const date = '2026-06-24T13:23:00Z';
     render(
       <MessageHeader
@@ -89,7 +88,7 @@ describe('MessageHeader', () => {
         contactAdded={false}
       />,
     );
-    expect(screen.getByText(formatMessageTime(date))).toBeInTheDocument();
+    expect(screen.getByText(formatDateTimeMinutes(date))).toBeInTheDocument();
     expect(screen.getByText(formatFullDate(date))).toBeInTheDocument();
   });
 });
