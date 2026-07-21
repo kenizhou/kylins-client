@@ -6,7 +6,7 @@
 // bold/italic/underline/strike/link/headings/lists/quote/code/history, so all
 // toggles go through the editor chain.
 
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { Editor } from '@tiptap/react';
 import {
   ToggleButton,
@@ -16,7 +16,11 @@ import {
   ListBox,
   ListBoxItem,
   Button,
+  DialogTrigger,
+  Menu,
+  MenuItem,
 } from 'react-aria-components';
+import { useElementWidth } from '@/hooks/useElementWidth';
 import {
   BoldIcon,
   ItalicIcon,
@@ -35,6 +39,7 @@ import {
   H3Icon,
   UndoIcon,
   RedoIcon,
+  MoreIcon,
 } from '../icons';
 
 interface EditorToolbarProps {
@@ -161,6 +166,10 @@ export function EditorToolbar({
   aiAssistOpen,
 }: EditorToolbarProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const { ref: barRef, width: barWidth } = useElementWidth<HTMLDivElement>();
+  const narrow = barWidth > 0 && barWidth < 900;
+  const compact = barWidth > 0 && barWidth < 640;
 
   if (!editor) return null;
 
@@ -177,7 +186,10 @@ export function EditorToolbar({
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-0.5 border-b border-[var(--border)] bg-[var(--surface)] px-2 py-1">
+    <div
+      ref={barRef}
+      className="mx-1 mt-1 flex flex-nowrap items-center gap-0.5 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] px-2 py-1 shadow-[var(--ribbon-elevation)] md:mx-2"
+    >
       <ToolbarButton
         icon={UndoIcon}
         disabled={!editor.can().undo()}
@@ -195,27 +207,31 @@ export function EditorToolbar({
 
       <ToolbarDivider />
 
-      <ToolbarButton
-        icon={H1Icon}
-        active={editor.isActive('heading', { level: 1 })}
-        onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-        title="Heading 1"
-        aria-label="Heading 1"
-      />
-      <ToolbarButton
-        icon={H2Icon}
-        active={editor.isActive('heading', { level: 2 })}
-        onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-        title="Heading 2"
-        aria-label="Heading 2"
-      />
-      <ToolbarButton
-        icon={H3Icon}
-        active={editor.isActive('heading', { level: 3 })}
-        onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-        title="Heading 3"
-        aria-label="Heading 3"
-      />
+      {!compact && (
+        <>
+          <ToolbarButton
+            icon={H1Icon}
+            active={editor.isActive('heading', { level: 1 })}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+            title="Heading 1"
+            aria-label="Heading 1"
+          />
+          <ToolbarButton
+            icon={H2Icon}
+            active={editor.isActive('heading', { level: 2 })}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+            title="Heading 2"
+            aria-label="Heading 2"
+          />
+          <ToolbarButton
+            icon={H3Icon}
+            active={editor.isActive('heading', { level: 3 })}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+            title="Heading 3"
+            aria-label="Heading 3"
+          />
+        </>
+      )}
       <ToolbarButton
         icon={BoldIcon}
         active={editor.isActive('bold')}
@@ -245,64 +261,72 @@ export function EditorToolbar({
         aria-label="Strikethrough"
       />
 
-      <ToolbarDivider />
+      {!narrow && (
+        <>
+          <ToolbarDivider />
 
-      <ToolbarButton
-        icon={HighlightIcon}
-        active={editor.isActive('highlight')}
-        onClick={() => editor.chain().focus().toggleHighlight().run()}
-        title="Highlight"
-        aria-label="Highlight"
-      />
-      <ColorButton editor={editor} />
-      <FontFamilySelect editor={editor} />
+          <ToolbarButton
+            icon={HighlightIcon}
+            active={editor.isActive('highlight')}
+            onClick={() => editor.chain().focus().toggleHighlight().run()}
+            title="Highlight"
+            aria-label="Highlight"
+          />
+          <ColorButton editor={editor} />
+          <FontFamilySelect editor={editor} />
+        </>
+      )}
 
-      <ToolbarDivider />
+      {!compact && (
+        <>
+          <ToolbarDivider />
 
-      <ToolbarButton
-        icon={BulletListIcon}
-        active={editor.isActive('bulletList')}
-        onClick={() => editor.chain().focus().toggleBulletList().run()}
-        title="Bullet list"
-        aria-label="Bullet list"
-      />
-      <ToolbarButton
-        icon={OrderedListIcon}
-        active={editor.isActive('orderedList')}
-        onClick={() => editor.chain().focus().toggleOrderedList().run()}
-        title="Numbered list"
-        aria-label="Numbered list"
-      />
-      <ToolbarButton
-        icon={QuoteIcon}
-        active={editor.isActive('blockquote')}
-        onClick={() => editor.chain().focus().toggleBlockquote().run()}
-        title="Quote"
-        aria-label="Quote"
-      />
-      <ToolbarButton
-        icon={CodeBlockIcon}
-        active={editor.isActive('codeBlock')}
-        onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-        title="Code block"
-        aria-label="Code block"
-      />
+          <ToolbarButton
+            icon={BulletListIcon}
+            active={editor.isActive('bulletList')}
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            title="Bullet list"
+            aria-label="Bullet list"
+          />
+          <ToolbarButton
+            icon={OrderedListIcon}
+            active={editor.isActive('orderedList')}
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            title="Numbered list"
+            aria-label="Numbered list"
+          />
+          <ToolbarButton
+            icon={QuoteIcon}
+            active={editor.isActive('blockquote')}
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            title="Quote"
+            aria-label="Quote"
+          />
+          <ToolbarButton
+            icon={CodeBlockIcon}
+            active={editor.isActive('codeBlock')}
+            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+            title="Code block"
+            aria-label="Code block"
+          />
 
-      <ToolbarDivider />
+          <ToolbarDivider />
 
-      <ToolbarButton
-        icon={LinkIcon}
-        active={editor.isActive('link')}
-        onClick={() => {
-          if (editor.isActive('link')) {
-            editor.chain().focus().unsetLink().run();
-          } else {
-            onRequestLink();
-          }
-        }}
-        title="Insert link (Ctrl+K)"
-        aria-label="Insert link"
-      />
+          <ToolbarButton
+            icon={LinkIcon}
+            active={editor.isActive('link')}
+            onClick={() => {
+              if (editor.isActive('link')) {
+                editor.chain().focus().unsetLink().run();
+              } else {
+                onRequestLink();
+              }
+            }}
+            title="Insert link (Ctrl+K)"
+            aria-label="Insert link"
+          />
+        </>
+      )}
       <input
         ref={imageInputRef}
         type="file"
@@ -310,12 +334,115 @@ export function EditorToolbar({
         className="hidden"
         onChange={handleImageSelect}
       />
-      <ToolbarButton
-        icon={ImageIcon}
-        onClick={() => imageInputRef.current?.click()}
-        title="Insert image"
-        aria-label="Insert image"
-      />
+      {!compact && (
+        <ToolbarButton
+          icon={ImageIcon}
+          onClick={() => imageInputRef.current?.click()}
+          title="Insert image"
+          aria-label="Insert image"
+        />
+      )}
+
+      {(narrow || compact) && (
+        <DialogTrigger isOpen={overflowOpen} onOpenChange={setOverflowOpen}>
+          <Button
+            aria-label="More formatting"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          >
+            <MoreIcon size={16} />
+          </Button>
+          <Popover className="min-w-[180px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
+            <Menu aria-label="More formatting" className="outline-none">
+              {compact && (
+                <>
+                  <MenuItem
+                    id="h1"
+                    onAction={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Heading 1
+                  </MenuItem>
+                  <MenuItem
+                    id="h2"
+                    onAction={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Heading 2
+                  </MenuItem>
+                  <MenuItem
+                    id="h3"
+                    onAction={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Heading 3
+                  </MenuItem>
+                </>
+              )}
+              {narrow && (
+                <MenuItem
+                  id="highlight"
+                  onAction={() => editor.chain().focus().toggleHighlight().run()}
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                >
+                  Highlight
+                </MenuItem>
+              )}
+              {compact && (
+                <>
+                  <MenuItem
+                    id="bullet-list"
+                    onAction={() => editor.chain().focus().toggleBulletList().run()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Bullet list
+                  </MenuItem>
+                  <MenuItem
+                    id="ordered-list"
+                    onAction={() => editor.chain().focus().toggleOrderedList().run()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Numbered list
+                  </MenuItem>
+                  <MenuItem
+                    id="quote"
+                    onAction={() => editor.chain().focus().toggleBlockquote().run()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Quote
+                  </MenuItem>
+                  <MenuItem
+                    id="code-block"
+                    onAction={() => editor.chain().focus().toggleCodeBlock().run()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Code block
+                  </MenuItem>
+                  <MenuItem
+                    id="link"
+                    onAction={() => {
+                      if (editor.isActive('link')) {
+                        editor.chain().focus().unsetLink().run();
+                      } else {
+                        onRequestLink();
+                      }
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Insert link
+                  </MenuItem>
+                  <MenuItem
+                    id="image"
+                    onAction={() => imageInputRef.current?.click()}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
+                  >
+                    Insert image
+                  </MenuItem>
+                </>
+              )}
+            </Menu>
+          </Popover>
+        </DialogTrigger>
+      )}
 
       <div className="flex-1" />
 
