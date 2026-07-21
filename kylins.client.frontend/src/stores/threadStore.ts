@@ -27,11 +27,6 @@ async function getThreadMessages(
   return messages ?? (await getMessagesForThread(thread.accountId, thread.id));
 }
 
-function setSelectedThread(id: string | null): string | null {
-  useViewStore.getState().setSelectedThreadIds(id ? [id] : []);
-  return id;
-}
-
 interface ThreadQuery {
   accountId: string;
   labelId: string | null;
@@ -40,6 +35,8 @@ interface ThreadQuery {
 interface ThreadState {
   threads: Thread[];
   selectedThreadId: string | null;
+  selectedThreadIds: string[];
+  selectionAnchorId: string | null;
   isLoading: boolean;
   /** Cursor for the next page (null = no more). */
   cursor: ThreadCursor | null;
@@ -48,6 +45,7 @@ interface ThreadState {
   loadThreads: (accountId: string, labelId: string | null) => Promise<void>;
   loadMore: () => Promise<void>;
   selectThread: (thread: Thread) => Promise<void>;
+  setSelection: (ids: string[], anchorId: string | null) => Promise<void>;
   refresh: () => Promise<void>;
 
   /**
@@ -75,55 +73,14 @@ interface ThreadState {
   moveThreadToRole: (thread: Thread, role: FolderRole, messages?: DbMessageRow[]) => Promise<void>;
 }
 
-export const useThreadStore = create<ThreadState>((set, get) => ({
-  threads: [],
-  selectedThreadId: null,
-  isLoading: false,
-  cursor: null,
-  currentQuery: null,
-
-  loadThreads: async (accountId, labelId) => {
-    set({
-      isLoading: true,
-      currentQuery: { accountId, labelId },
-      threads: [],
-      cursor: null,
-    });
-    try {
-      const { threads, nextCursor } = await getThreads(accountId, { labelId });
-      set({ threads, cursor: nextCursor });
-    } finally {
-      set({ isLoading: false });
-    }
-  },
-
-  loadMore: async () => {
-    const { currentQuery, cursor, isLoading } = get();
-    if (!currentQuery || !cursor || isLoading) return;
-    set({ isLoading: true });
-    try {
-      const { threads, nextCursor } = await getThreads(currentQuery.accountId, {
-        labelId: currentQuery.labelId,
-        cursor,
-      });
-      set((s) => ({ threads: [...s.threads, ...threads], cursor: nextCursor }));
-    } finally {
-      set({ isLoading: false });
-    }
-  },
-
-  selectThread: async (thread) => {
-    const previousId = get().selectedThreadId;
-    set({ selectedThreadId: setSelectedThread(thread.id) });
-    // Outlook-style read timing: the thread being LEFT is marked read, not the
-    // thread being opened — so the unread styling (colorbar, bold) stays while
-    // reading and is only consumed when the user moves on.
-    if (previousId && previousId !== thread.id) {
-      const previous = get().threads.find((t) => t.id === previousId);
-      if (previous && !previous.isRead) {
-        await get().markThreadRead(previous, true);
-      }
-    }
+export const useThreadStore = create<ThreadState>((set, get) => {
+  /**
+   * Load the anchor thread's latest message into `viewStore.selectedMessage`.
+   * This is the exact pipeline formerly inlined in `selectThread` (crypto path
+   * with session decryptedCache, plain path with on-demand body fetch). Shared
+   * by setSelection and the bulk mutations that re-anchor the reading pane.
+   */
+  const openThreadBody = async (thread: Thread): Promise<void> => {
     try {
       const messages = await getMessagesForThread(thread.accountId, thread.id);
       const latest = messages[messages.length - 1] ?? null;
@@ -187,7 +144,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
               // Decrypt/verify failure: surface the failure panel + toast. The
               // base MailMessage (from the DB row) still carries isEncrypted /
               // isSigned so the ReadingPane knows it was a crypto message.
-              console.error('[selectThread] crypto open failed:', e);
+              console.error('[openThreadBody] crypto open failed:', e);
               useToastStore
                 .getState()
                 .push(`Decrypt failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
@@ -232,186 +189,287 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         useViewStore.getState().setSelectedMessage(null);
       }
       // Note: opening a thread no longer marks it read here — that happens
-      // when the user navigates away (see the top of selectThread).
+      // when the user navigates away (see setSelection).
     } catch (e) {
       console.error('Failed to load thread messages:', e);
     }
-  },
+  };
 
-  refresh: async () => {
-    const q = get().currentQuery;
-    if (q) await get().loadThreads(q.accountId, q.labelId);
-  },
+  return {
+    threads: [],
+    selectedThreadId: null,
+    selectedThreadIds: [],
+    selectionAnchorId: null,
+    isLoading: false,
+    cursor: null,
+    currentQuery: null,
 
-  patchSnippets: (updates) => {
-    if (updates.length === 0) return;
-    const byId = new Map(updates.map((u) => [u.threadId, u.snippet]));
-    set((s) => ({
-      threads: s.threads.map((t) => (byId.has(t.id) ? { ...t, snippet: byId.get(t.id)! } : t)),
-    }));
-  },
-
-  // ---- User-driven thread mutations ----
-
-  markThreadRead: async (thread, read, messages) => {
-    if (thread.isRead === read) return;
-    const msgs = await getThreadMessages(thread, messages);
-    set((s) => ({
-      threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: read } : t)),
-    }));
-    void invoke('sync_apply_mutation', {
-      accountId: thread.accountId,
-      op: {
-        type: 'markRead',
-        threadId: thread.id,
-        messageIds: msgs.map((m) => m.id),
-        folderPath: msgs[0]?.imap_folder ?? '',
-        uids: msgs.map((m) => m.imap_uid ?? 0),
-        read,
-      },
-    }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
-    const labelId = get().currentQuery?.labelId;
-    if (labelId) {
-      const folderStore = useFolderStore.getState();
-      if (read) folderStore.decrementUnread(thread.accountId, labelId);
-      else folderStore.incrementUnread(thread.accountId, labelId);
-    }
-  },
-
-  toggleThreadStarred: async (thread, messages) => {
-    const nextStarred = !thread.isStarred;
-    const msgs = await getThreadMessages(thread, messages);
-    set((s) => ({
-      threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isStarred: nextStarred } : t)),
-    }));
-    void invoke('sync_apply_mutation', {
-      accountId: thread.accountId,
-      op: {
-        type: 'setFlag',
-        messageIds: msgs.map((m) => m.id),
-        folderPath: msgs[0]?.imap_folder ?? '',
-        uids: msgs.map((m) => m.imap_uid ?? 0),
-        flag: '\\Flagged',
-        add: nextStarred,
-      },
-    }).catch((e) => console.error('sync_apply_mutation setFlag failed', e));
-  },
-
-  deleteThread: async (thread, messages) => {
-    const state = get();
-    const wasSelected = state.selectedThreadId === thread.id;
-    const idx = state.threads.findIndex((t) => t.id === thread.id);
-    const nextThread =
-      wasSelected && idx !== -1 ? (state.threads[idx + 1] ?? state.threads[idx - 1] ?? null) : null;
-
-    set({
-      threads: state.threads.filter((t) => t.id !== thread.id),
-      selectedThreadId: setSelectedThread(
-        nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
-      ),
-    });
-
-    // If the deleted thread was being read, clear it and move the view to the
-    // next thread. Otherwise, ensure the view store never points at a deleted
-    // thread as a safety net.
-    if (wasSelected) {
+    loadThreads: async (accountId, labelId) => {
+      set({
+        isLoading: true,
+        currentQuery: { accountId, labelId },
+        threads: [],
+        cursor: null,
+        selectedThreadId: null,
+        selectedThreadIds: [],
+        selectionAnchorId: null,
+      });
+      useViewStore.getState().setSelectedThreadIds([]);
       useViewStore.getState().setSelectedMessage(null);
-      if (nextThread) {
-        await get().selectThread(nextThread);
+      try {
+        const { threads, nextCursor } = await getThreads(accountId, { labelId });
+        set({ threads, cursor: nextCursor });
+      } finally {
+        set({ isLoading: false });
       }
-    } else if (useViewStore.getState().selectedMessage?.threadId === thread.id) {
-      useViewStore.getState().setSelectedMessage(null);
-    }
+    },
 
-    const labelId = state.currentQuery?.labelId;
-    if (labelId && !thread.isRead) {
-      useFolderStore.getState().decrementUnread(thread.accountId, labelId);
-    }
-
-    const msgs = await getThreadMessages(thread, messages);
-    void invoke('sync_apply_mutation', {
-      accountId: thread.accountId,
-      op: {
-        type: 'delete',
-        messageIds: msgs.map((m) => m.id),
-        folderPath: msgs[0]?.imap_folder ?? '',
-        uids: msgs.map((m) => m.imap_uid ?? 0),
-      },
-    }).catch((e) => console.error('sync_apply_mutation delete failed', e));
-
-    // Notify other windows (e.g., standalone message viewers) that this thread
-    // is gone so they can close instead of showing stale content.
-    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-      const { emit } = await import('@tauri-apps/api/event');
-      void emit('thread:deleted', { accountId: thread.accountId, threadId: thread.id });
-    }
-  },
-
-  moveThread: async (thread, dstLabel, dstFolderPath, messages) => {
-    const state = get();
-    const wasSelected = state.selectedThreadId === thread.id;
-    const idx = state.threads.findIndex((t) => t.id === thread.id);
-    const nextThread =
-      wasSelected && idx !== -1 ? (state.threads[idx + 1] ?? state.threads[idx - 1] ?? null) : null;
-
-    set({
-      threads: state.threads.filter((t) => t.id !== thread.id),
-      selectedThreadId: setSelectedThread(
-        nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
-      ),
-    });
-
-    if (wasSelected) {
-      useViewStore.getState().setSelectedMessage(null);
-      if (nextThread) {
-        await get().selectThread(nextThread);
+    loadMore: async () => {
+      const { currentQuery, cursor, isLoading } = get();
+      if (!currentQuery || !cursor || isLoading) return;
+      set({ isLoading: true });
+      try {
+        const { threads, nextCursor } = await getThreads(currentQuery.accountId, {
+          labelId: currentQuery.labelId,
+          cursor,
+        });
+        set((s) => ({ threads: [...s.threads, ...threads], cursor: nextCursor }));
+      } finally {
+        set({ isLoading: false });
       }
-    } else if (useViewStore.getState().selectedMessage?.threadId === thread.id) {
-      useViewStore.getState().setSelectedMessage(null);
-    }
+    },
 
-    const labelId = state.currentQuery?.labelId;
-    if (labelId && !thread.isRead) {
-      useFolderStore.getState().decrementUnread(thread.accountId, labelId);
-    }
+    selectThread: async (thread) => {
+      if (get().selectedThreadId === thread.id) {
+        await openThreadBody(thread);
+      } else {
+        await get().setSelection([thread.id], thread.id);
+      }
+    },
 
-    const msgs = await getThreadMessages(thread, messages);
+    setSelection: async (ids, anchorId) => {
+      const prevAnchorId = get().selectedThreadId;
+      // Only loaded threads are selectable (Ctrl+A ranges, stale ids after
+      // pagination/filtering are dropped).
+      const validIds = ids.filter((id) => get().threads.some((t) => t.id === id));
+      const nextAnchorId =
+        anchorId && validIds.includes(anchorId)
+          ? anchorId
+          : (validIds[validIds.length - 1] ?? null);
 
-    // Resolve the source label/folder. The folder pane selection is the
-    // authoritative source when it matches the thread's account; otherwise fall
-    // back to the message's IMAP folder path.
-    const selected = useFolderStore.getState().selected;
-    let srcLabel = selected?.accountId === thread.accountId ? selected.labelId : null;
-    const srcFolderPath = msgs[0]?.imap_folder ?? '';
-    if (!srcLabel && srcFolderPath) {
-      const folder = useFolderStore
+      set({
+        selectedThreadIds: validIds,
+        selectionAnchorId: nextAnchorId,
+        selectedThreadId: nextAnchorId,
+      });
+      useViewStore.getState().setSelectedThreadIds(validIds);
+
+      // Outlook-style read timing: the anchor being LEFT is marked read, not the
+      // anchor being opened — so the unread styling (colorbar, bold) stays while
+      // reading and is only consumed when the user moves on.
+      if (prevAnchorId && prevAnchorId !== nextAnchorId) {
+        const previous = get().threads.find((t) => t.id === prevAnchorId);
+        if (previous && !previous.isRead) {
+          await get().markThreadRead(previous, true);
+        }
+      }
+
+      // Selection changed but the reading-pane target didn't — nothing to load.
+      if (nextAnchorId === prevAnchorId) return;
+
+      const anchorThread = nextAnchorId
+        ? get().threads.find((t) => t.id === nextAnchorId)
+        : undefined;
+      if (!anchorThread) {
+        useViewStore.getState().setSelectedMessage(null);
+        return;
+      }
+      await openThreadBody(anchorThread);
+    },
+
+    refresh: async () => {
+      const q = get().currentQuery;
+      if (q) await get().loadThreads(q.accountId, q.labelId);
+    },
+
+    patchSnippets: (updates) => {
+      if (updates.length === 0) return;
+      const byId = new Map(updates.map((u) => [u.threadId, u.snippet]));
+      set((s) => ({
+        threads: s.threads.map((t) => (byId.has(t.id) ? { ...t, snippet: byId.get(t.id)! } : t)),
+      }));
+    },
+
+    // ---- User-driven thread mutations ----
+
+    markThreadRead: async (thread, read, messages) => {
+      if (thread.isRead === read) return;
+      const msgs = await getThreadMessages(thread, messages);
+      set((s) => ({
+        threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isRead: read } : t)),
+      }));
+      void invoke('sync_apply_mutation', {
+        accountId: thread.accountId,
+        op: {
+          type: 'markRead',
+          threadId: thread.id,
+          messageIds: msgs.map((m) => m.id),
+          folderPath: msgs[0]?.imap_folder ?? '',
+          uids: msgs.map((m) => m.imap_uid ?? 0),
+          read,
+        },
+      }).catch((e) => console.error('sync_apply_mutation markRead failed', e));
+      const labelId = get().currentQuery?.labelId;
+      if (labelId) {
+        const folderStore = useFolderStore.getState();
+        if (read) folderStore.decrementUnread(thread.accountId, labelId);
+        else folderStore.incrementUnread(thread.accountId, labelId);
+      }
+    },
+
+    toggleThreadStarred: async (thread, messages) => {
+      const nextStarred = !thread.isStarred;
+      const msgs = await getThreadMessages(thread, messages);
+      set((s) => ({
+        threads: s.threads.map((t) => (t.id === thread.id ? { ...t, isStarred: nextStarred } : t)),
+      }));
+      void invoke('sync_apply_mutation', {
+        accountId: thread.accountId,
+        op: {
+          type: 'setFlag',
+          messageIds: msgs.map((m) => m.id),
+          folderPath: msgs[0]?.imap_folder ?? '',
+          uids: msgs.map((m) => m.imap_uid ?? 0),
+          flag: '\\Flagged',
+          add: nextStarred,
+        },
+      }).catch((e) => console.error('sync_apply_mutation setFlag failed', e));
+    },
+
+    deleteThread: async (thread, messages) => {
+      const state = get();
+      const wasSelected = state.selectedThreadId === thread.id;
+      const idx = state.threads.findIndex((t) => t.id === thread.id);
+      const nextThread =
+        wasSelected && idx !== -1
+          ? (state.threads[idx + 1] ?? state.threads[idx - 1] ?? null)
+          : null;
+
+      set({
+        threads: state.threads.filter((t) => t.id !== thread.id),
+        selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      });
+
+      useViewStore
         .getState()
-        .byAccount[
-          thread.accountId
-        ]?.find((f) => f.remoteId === srcFolderPath || f.name === srcFolderPath);
-      srcLabel = folder?.id ?? null;
-    }
+        .setSelectedThreadIds(get().selectedThreadId ? [get().selectedThreadId!] : []);
 
-    void invoke('sync_apply_mutation', {
-      accountId: thread.accountId,
-      op: {
-        type: 'move',
-        messageIds: msgs.map((m) => m.id),
-        srcLabel: srcLabel ?? '',
-        dstLabel,
-        srcFolderPath,
-        dstFolderPath,
-        uids: msgs.map((m) => m.imap_uid ?? 0),
-      },
-    }).catch((e) => console.error('sync_apply_mutation move failed', e));
-  },
+      // If the deleted thread was being read, clear it and move the view to the
+      // next thread. Otherwise, ensure the view store never points at a deleted
+      // thread as a safety net.
+      if (wasSelected) {
+        useViewStore.getState().setSelectedMessage(null);
+        if (nextThread) {
+          await get().selectThread(nextThread);
+        }
+      } else if (useViewStore.getState().selectedMessage?.threadId === thread.id) {
+        useViewStore.getState().setSelectedMessage(null);
+      }
 
-  moveThreadToRole: async (thread, role, messages) => {
-    const folder = await getFolderByRole(thread.accountId, role);
-    if (!folder) {
-      console.error(`[threadStore] no ${role} folder for account ${thread.accountId}`);
-      return;
-    }
-    await get().moveThread(thread, folder.id, folder.remoteId, messages);
-  },
-}));
+      const labelId = state.currentQuery?.labelId;
+      if (labelId && !thread.isRead) {
+        useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+      }
+
+      const msgs = await getThreadMessages(thread, messages);
+      void invoke('sync_apply_mutation', {
+        accountId: thread.accountId,
+        op: {
+          type: 'delete',
+          messageIds: msgs.map((m) => m.id),
+          folderPath: msgs[0]?.imap_folder ?? '',
+          uids: msgs.map((m) => m.imap_uid ?? 0),
+        },
+      }).catch((e) => console.error('sync_apply_mutation delete failed', e));
+
+      // Notify other windows (e.g., standalone message viewers) that this thread
+      // is gone so they can close instead of showing stale content.
+      if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+        const { emit } = await import('@tauri-apps/api/event');
+        void emit('thread:deleted', { accountId: thread.accountId, threadId: thread.id });
+      }
+    },
+
+    moveThread: async (thread, dstLabel, dstFolderPath, messages) => {
+      const state = get();
+      const wasSelected = state.selectedThreadId === thread.id;
+      const idx = state.threads.findIndex((t) => t.id === thread.id);
+      const nextThread =
+        wasSelected && idx !== -1
+          ? (state.threads[idx + 1] ?? state.threads[idx - 1] ?? null)
+          : null;
+
+      set({
+        threads: state.threads.filter((t) => t.id !== thread.id),
+        selectedThreadId: nextThread?.id ?? (wasSelected ? null : state.selectedThreadId),
+      });
+
+      useViewStore
+        .getState()
+        .setSelectedThreadIds(get().selectedThreadId ? [get().selectedThreadId!] : []);
+
+      if (wasSelected) {
+        useViewStore.getState().setSelectedMessage(null);
+        if (nextThread) {
+          await get().selectThread(nextThread);
+        }
+      } else if (useViewStore.getState().selectedMessage?.threadId === thread.id) {
+        useViewStore.getState().setSelectedMessage(null);
+      }
+
+      const labelId = state.currentQuery?.labelId;
+      if (labelId && !thread.isRead) {
+        useFolderStore.getState().decrementUnread(thread.accountId, labelId);
+      }
+
+      const msgs = await getThreadMessages(thread, messages);
+
+      // Resolve the source label/folder. The folder pane selection is the
+      // authoritative source when it matches the thread's account; otherwise fall
+      // back to the message's IMAP folder path.
+      const selected = useFolderStore.getState().selected;
+      let srcLabel = selected?.accountId === thread.accountId ? selected.labelId : null;
+      const srcFolderPath = msgs[0]?.imap_folder ?? '';
+      if (!srcLabel && srcFolderPath) {
+        const folder = useFolderStore
+          .getState()
+          .byAccount[
+            thread.accountId
+          ]?.find((f) => f.remoteId === srcFolderPath || f.name === srcFolderPath);
+        srcLabel = folder?.id ?? null;
+      }
+
+      void invoke('sync_apply_mutation', {
+        accountId: thread.accountId,
+        op: {
+          type: 'move',
+          messageIds: msgs.map((m) => m.id),
+          srcLabel: srcLabel ?? '',
+          dstLabel,
+          srcFolderPath,
+          dstFolderPath,
+          uids: msgs.map((m) => m.imap_uid ?? 0),
+        },
+      }).catch((e) => console.error('sync_apply_mutation move failed', e));
+    },
+
+    moveThreadToRole: async (thread, role, messages) => {
+      const folder = await getFolderByRole(thread.accountId, role);
+      if (!folder) {
+        console.error(`[threadStore] no ${role} folder for account ${thread.accountId}`);
+        return;
+      }
+      await get().moveThread(thread, folder.id, folder.remoteId, messages);
+    },
+  };
+});

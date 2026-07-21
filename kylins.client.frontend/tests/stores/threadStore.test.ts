@@ -65,6 +65,8 @@ function reset() {
   useThreadStore.setState({
     threads: [],
     selectedThreadId: null,
+    selectedThreadIds: [],
+    selectionAnchorId: null,
     isLoading: false,
     cursor: null,
     currentQuery: null,
@@ -651,5 +653,99 @@ describe('threadStore.deleteThread', () => {
         uids: [4242],
       },
     });
+  });
+});
+
+describe('threadStore.setSelection', () => {
+  it('sets the selection ids + anchor and syncs viewStore', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+
+    await useThreadStore.getState().setSelection(['t1', 't2'], 't1');
+
+    const s = useThreadStore.getState();
+    expect(s.selectedThreadIds).toEqual(['t1', 't2']);
+    expect(s.selectionAnchorId).toBe('t1');
+    expect(s.selectedThreadId).toBe('t1');
+    expect(useViewStore.getState().selectedThreadIds).toEqual(['t1', 't2']);
+  });
+
+  it('marks the previous anchor read when the anchor moves', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: false }), thread({ id: 't2', isRead: true })],
+    });
+    vi.mocked(getMessagesForThread).mockImplementation(async (_acc, id) =>
+      id === 't1' ? [messageRow()] : [],
+    );
+    vi.mocked(getMessageBody).mockResolvedValue(null);
+
+    await useThreadStore.getState().setSelection(['t1'], 't1');
+    await useThreadStore.getState().setSelection(['t1', 't2'], 't2');
+
+    expect(invoke).toHaveBeenCalledWith('sync_apply_mutation', {
+      accountId: 'a1',
+      op: {
+        type: 'markRead',
+        threadId: 't1',
+        messageIds: ['m1'],
+        folderPath: 'INBOX',
+        uids: [4242],
+        read: true,
+      },
+    });
+    expect(useThreadStore.getState().selectedThreadId).toBe('t2');
+  });
+
+  it('does not reload the body when only the selection (not the anchor) changes', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1', isRead: true }), thread({ id: 't2', isRead: true })],
+    });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+
+    await useThreadStore.getState().setSelection(['t1'], 't1');
+    vi.mocked(getMessagesForThread).mockClear();
+    await useThreadStore.getState().setSelection(['t1', 't2'], 't1');
+
+    expect(getMessagesForThread).not.toHaveBeenCalled();
+  });
+
+  it('clears the reading pane when the selection empties', async () => {
+    useThreadStore.setState({ threads: [thread({ id: 't1', isRead: true })] });
+    vi.mocked(getMessagesForThread).mockResolvedValue([]);
+
+    await useThreadStore.getState().setSelection(['t1'], 't1');
+    await useThreadStore.getState().setSelection([], null);
+
+    const s = useThreadStore.getState();
+    expect(s.selectedThreadIds).toEqual([]);
+    expect(s.selectionAnchorId).toBeNull();
+    expect(s.selectedThreadId).toBeNull();
+    expect(useViewStore.getState().selectedThreadIds).toEqual([]);
+    expect(useViewStore.getState().selectedMessage).toBeNull();
+  });
+});
+
+describe('threadStore.loadThreads selection reset', () => {
+  it('clears the selection on folder switch', async () => {
+    useThreadStore.setState({
+      threads: [thread({ id: 't1' })],
+      selectedThreadId: 't1',
+      selectedThreadIds: ['t1'],
+      selectionAnchorId: 't1',
+    });
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't9' })],
+      nextCursor: null,
+    });
+
+    await useThreadStore.getState().loadThreads('a1', 'sent');
+
+    const s = useThreadStore.getState();
+    expect(s.selectedThreadId).toBeNull();
+    expect(s.selectedThreadIds).toEqual([]);
+    expect(s.selectionAnchorId).toBeNull();
+    expect(useViewStore.getState().selectedThreadIds).toEqual([]);
   });
 });
