@@ -78,41 +78,6 @@ interface MenuCategoryData {
   customContent?: boolean;
 }
 
-const EDIT_ITEMS: MenuItemData[] = [
-  { label: 'Undo', commandId: 'edit:undo' },
-  { label: 'Redo', commandId: 'edit:redo' },
-  { type: 'separator' },
-  { label: 'Cut', commandId: 'edit:cut' },
-  { label: 'Copy', commandId: 'edit:copy' },
-  { label: 'Paste', commandId: 'edit:paste' },
-  {
-    label: 'Paste and Match Style',
-    commandId: 'edit:paste-and-match-style',
-    disabled: true,
-  },
-  { type: 'separator' },
-  { label: 'Select All', commandId: 'edit:select-all' },
-  { type: 'separator' },
-  { label: 'Select All Read', disabled: true },
-  { label: 'Select All Unread', disabled: true },
-  { label: 'Select All Starred', disabled: true },
-  { label: 'Select All Untarred', disabled: true },
-  { type: 'separator' },
-  { label: 'Mark All as Read', disabled: true },
-  { type: 'separator' },
-  {
-    label: 'Find',
-    type: 'submenu',
-    items: [
-      { label: 'Find in Mailbox…', disabled: true },
-      { label: 'Find in Thread…', commandId: 'edit:find', disabled: true },
-      { type: 'separator' },
-      { label: 'Find Next', disabled: true },
-      { label: 'Find Previous', disabled: true },
-    ],
-  },
-];
-
 const MAIN_CATEGORIES: MenuCategoryData[] = [
   {
     label: 'File',
@@ -150,10 +115,6 @@ const MAIN_CATEGORIES: MenuCategoryData[] = [
         },
       },
     ],
-  },
-  {
-    label: 'Edit',
-    items: EDIT_ITEMS,
   },
   {
     label: 'View',
