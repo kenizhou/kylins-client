@@ -60,8 +60,8 @@ function optionId(threadId: string): string {
 }
 
 const RIBBON_COLOR: Record<MessageState, string> = {
-  unread: 'iris-line',
-  read: 'bg-[var(--border)]',
+  unread: 'bg-primary',
+  read: '',
   flagged: 'bg-[var(--amber)]',
   vip: 'bg-[var(--green)]',
 };
@@ -78,9 +78,6 @@ interface QuickActionsProps {
 }
 
 function MessageRowQuickActions({ thread, visible }: QuickActionsProps) {
-  const markThreadRead = useThreadStore((s) => s.markThreadRead);
-  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
-
   return (
     <span
       data-testid="message-quick-actions"
@@ -108,32 +105,6 @@ function MessageRowQuickActions({ thread, visible }: QuickActionsProps) {
           <DeleteIcon size={14} />
         </span>
       </Button>
-      <Button
-        type="button"
-        aria-label={thread.isStarred ? 'Unflag' : 'Flag'}
-        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--amber)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onPress={() => void toggleThreadStarred(thread)}
-      >
-        <span
-          title={thread.isStarred ? 'Unflag' : 'Flag'}
-          className="inline-flex items-center justify-center"
-        >
-          <FlagIcon size={14} className={thread.isStarred ? 'text-[var(--amber)]' : ''} />
-        </span>
-      </Button>
-      <Button
-        type="button"
-        aria-label={thread.isRead ? 'Mark unread' : 'Mark read'}
-        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-        onPress={() => void markThreadRead(thread, !thread.isRead)}
-      >
-        <span
-          title={thread.isRead ? 'Mark unread' : 'Mark read'}
-          className="inline-flex items-center justify-center"
-        >
-          <MailIcon size={14} />
-        </span>
-      </Button>
     </span>
   );
 }
@@ -153,6 +124,7 @@ const MessageRow = memo(function MessageRow({
   const level = getLevelById(thread.classificationId);
   const prominent = level ? isProminent(level) : false;
   const [isHovered, setIsHovered] = useState(false);
+  const toggleThreadStarred = useThreadStore((s) => s.toggleThreadStarred);
 
   const sender = thread.fromName ?? thread.fromAddress ?? 'Unknown';
   const unread = !thread.isRead;
@@ -175,7 +147,7 @@ const MessageRow = memo(function MessageRow({
           '--row-tint': prominent && level ? levelStyle(level).tint : undefined,
         } as React.CSSProperties
       }
-      className={`group relative cursor-pointer ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
+      className={`group relative ${DENSITY_ROW_CLASSES[density]} ${prominent && !selected ? 'bg-[var(--row-tint)]' : ''} ${selected ? 'bg-[var(--primary-muted)]' : 'hover:bg-[var(--primary-subtle)]'}`}
     >
       <div className="flex items-stretch px-1">
         {/* Left state ribbon */}
@@ -199,9 +171,7 @@ const MessageRow = memo(function MessageRow({
               >
                 {getInitials(sender)}
               </span>
-              <span
-                className={`truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
-              >
+              <span className={`truncate text-[var(--text)] ${unread ? 'font-semibold' : ''}`}>
                 {sender}
               </span>
               {showImportance && thread.isImportant && (
@@ -228,9 +198,7 @@ const MessageRow = memo(function MessageRow({
               </span>
             </span>
           </div>
-          <div
-            className={`truncate ${unread ? 'font-semibold text-[var(--text)]' : 'text-[var(--muted-text)]'}`}
-          >
+          <div className={`truncate text-[var(--text)] ${unread ? 'font-semibold' : ''}`}>
             {thread.subject ?? '(no subject)'}
           </div>
           {thread.snippet && (
@@ -240,10 +208,23 @@ const MessageRow = memo(function MessageRow({
 
         {/* Right metadata indicators */}
         <div className="flex shrink-0 flex-col items-end justify-center gap-1 pr-2">
-          {showFlag && thread.isStarred && (
-            <span title="Flagged" aria-label="Flagged" className="text-[var(--amber)]">
+          {showFlag && (thread.isStarred || isHovered) && (
+            <button
+              type="button"
+              title={thread.isStarred ? 'Unflag' : 'Flag'}
+              aria-label={thread.isStarred ? 'Flagged' : 'Flag'}
+              className={`inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] ${
+                thread.isStarred
+                  ? 'text-[var(--amber)]'
+                  : 'text-[var(--muted-text)] hover:text-[var(--amber)]'
+              }`}
+              onClick={(e) => {
+                e.stopPropagation();
+                void toggleThreadStarred(thread);
+              }}
+            >
               <FlagIcon size={14} />
-            </span>
+            </button>
           )}
           {showAttachments && thread.hasAttachments && (
             <span
