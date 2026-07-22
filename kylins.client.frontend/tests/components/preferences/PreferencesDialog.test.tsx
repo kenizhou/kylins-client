@@ -10,10 +10,10 @@ beforeEach(() => {
 });
 
 describe('PreferencesDialog', () => {
-  it('renders exactly eight tabs', () => {
+  it('renders exactly nine tabs', () => {
     render(<PreferencesDialog />);
     const tabs = screen.getAllByRole('tab');
-    expect(tabs).toHaveLength(8);
+    expect(tabs).toHaveLength(9);
   });
 
   it('does not contain any coming-soon text', () => {
@@ -21,13 +21,14 @@ describe('PreferencesDialog', () => {
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
   });
 
-  it('labels tabs with General, Accounts, Appearance, Mail, Calendar & Contacts, Shortcuts, Security, About', () => {
+  it('labels tabs with General, Accounts, Appearance, Mail, Signatures, Calendar & Contacts, Shortcuts, Security, About', () => {
     render(<PreferencesDialog />);
     [
       'General',
       'Accounts',
       'Appearance',
       'Mail',
+      'Signatures',
       'Calendar & Contacts',
       'Shortcuts',
       'Security',

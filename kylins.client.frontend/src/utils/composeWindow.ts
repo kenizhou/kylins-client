@@ -185,7 +185,10 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     draftId: params.get('draftId') ?? undefined,
     fromEmail: params.get('fromEmail') ?? undefined,
     accountId: params.get('accountId') ?? undefined,
-    signatureId: params.get('signatureId') ?? undefined,
+    // Three-state: absent = undecided (apply default); 'none' = explicitly no
+    // signature; anything else = that signature id.
+    signatureId:
+      params.get('signatureId') === 'none' ? null : (params.get('signatureId') ?? undefined),
     classificationId: params.get('classificationId') ?? undefined,
     isEncrypted: params.get('isEncrypted') === '1',
     isSigned: params.get('isSigned') === '1',

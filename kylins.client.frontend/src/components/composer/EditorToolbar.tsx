@@ -35,8 +35,6 @@ import {
   LinkIcon,
   ImageIcon,
   H1Icon,
-  H2Icon,
-  H3Icon,
   UndoIcon,
   RedoIcon,
   MoreIcon,
@@ -65,16 +63,19 @@ function ToolbarButton({
   title: string;
   'aria-label'?: string;
 }) {
+  // react-aria ToggleButton doesn't forward `title` — wrap for a native tooltip.
   return (
-    <ToggleButton
-      isSelected={active}
-      onChange={onClick}
-      isDisabled={disabled}
-      aria-label={ariaLabel ?? title}
-      className="flex h-11 w-11 items-center justify-center rounded-md transition-colors data-[selected]:bg-[var(--primary-muted)] data-[selected]:text-[var(--primary)] text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <Icon size={16} />
-    </ToggleButton>
+    <span title={title} className="inline-flex">
+      <ToggleButton
+        isSelected={active}
+        onChange={onClick}
+        isDisabled={disabled}
+        aria-label={ariaLabel ?? title}
+        className="flex h-11 w-11 items-center justify-center rounded-md transition-colors data-[selected]:bg-[var(--primary-muted)] data-[selected]:text-[var(--primary)] text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Icon size={16} />
+      </ToggleButton>
+    </span>
   );
 }
 
@@ -87,6 +88,67 @@ const FONT_OPTIONS = [
   { label: 'Serif', value: 'var(--font-serif)' },
   { label: 'Mono', value: 'var(--font-mono)' },
 ];
+
+const STYLE_OPTIONS = [
+  { label: 'Normal', value: 'paragraph' },
+  { label: 'Heading 1', value: 'h1' },
+  { label: 'Heading 2', value: 'h2' },
+  { label: 'Heading 3', value: 'h3' },
+] as const;
+
+/** Paragraph/heading picker — replaces the old H1/H2/H3 button trio. */
+function StyleSelect({ editor, disabled }: { editor: Editor; disabled?: boolean }) {
+  const current = editor.isActive('heading', { level: 1 })
+    ? 'h1'
+    : editor.isActive('heading', { level: 2 })
+      ? 'h2'
+      : editor.isActive('heading', { level: 3 })
+        ? 'h3'
+        : 'paragraph';
+
+  return (
+    <Select
+      isDisabled={disabled}
+      aria-label="Paragraph style"
+      selectedKey={current}
+      onSelectionChange={(key) => {
+        if (key === 'paragraph') {
+          editor.chain().focus().setParagraph().run();
+        } else {
+          const level = Number(String(key).slice(1)) as 1 | 2 | 3;
+          editor.chain().focus().toggleHeading({ level }).run();
+        }
+      }}
+      className="relative"
+    >
+      <span title="Paragraph style" className="inline-flex">
+        <Button
+          aria-label="Paragraph style"
+          className="flex h-11 min-w-11 items-center gap-1 rounded-md px-1.5 text-xs transition-colors data-[pressed]:bg-[var(--primary-muted)] data-[pressed]:text-[var(--primary)] text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <H1Icon size={15} />
+          <SelectValue className="hidden sm:inline">
+            {({ selectedText }) => <>{selectedText || 'Style'}</>}
+          </SelectValue>
+          <span className="hidden sm:inline text-[10px] opacity-70">▼</span>
+        </Button>
+      </span>
+      <Popover className="min-w-[120px] rounded-lg border border-[var(--border-subtle)] bg-[var(--background)] p-1 shadow-[var(--shadow-lg)]">
+        <ListBox items={STYLE_OPTIONS} className="outline-none" aria-label="Paragraph style">
+          {(option) => (
+            <ListBoxItem
+              id={option.value}
+              textValue={option.label}
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)] data-[selected]:bg-[var(--primary-muted)] data-[selected]:text-[var(--primary)] min-h-9"
+            >
+              {option.label}
+            </ListBoxItem>
+          )}
+        </ListBox>
+      </Popover>
+    </Select>
+  );
+}
 
 function FontFamilySelect({ editor, disabled }: { editor: Editor; disabled?: boolean }) {
   const current = FONT_OPTIONS.find((o) => editor.isActive('textStyle', { fontFamily: o.value }));
@@ -207,31 +269,10 @@ export function EditorToolbar({
 
       <ToolbarDivider />
 
-      {!compact && (
-        <>
-          <ToolbarButton
-            icon={H1Icon}
-            active={editor.isActive('heading', { level: 1 })}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-            title="Heading 1"
-            aria-label="Heading 1"
-          />
-          <ToolbarButton
-            icon={H2Icon}
-            active={editor.isActive('heading', { level: 2 })}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-            title="Heading 2"
-            aria-label="Heading 2"
-          />
-          <ToolbarButton
-            icon={H3Icon}
-            active={editor.isActive('heading', { level: 3 })}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-            title="Heading 3"
-            aria-label="Heading 3"
-          />
-        </>
-      )}
+      <StyleSelect editor={editor} />
+
+      <ToolbarDivider />
+
       <ToolbarButton
         icon={BoldIcon}
         active={editor.isActive('bold')}
@@ -277,24 +318,27 @@ export function EditorToolbar({
         </>
       )}
 
+      <ToolbarDivider />
+
+      <ToolbarButton
+        icon={BulletListIcon}
+        active={editor.isActive('bulletList')}
+        onClick={() => editor.chain().focus().toggleBulletList().run()}
+        title="Bullet list"
+        aria-label="Bullet list"
+      />
+      <ToolbarButton
+        icon={OrderedListIcon}
+        active={editor.isActive('orderedList')}
+        onClick={() => editor.chain().focus().toggleOrderedList().run()}
+        title="Numbered list"
+        aria-label="Numbered list"
+      />
+
       {!compact && (
         <>
           <ToolbarDivider />
 
-          <ToolbarButton
-            icon={BulletListIcon}
-            active={editor.isActive('bulletList')}
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            title="Bullet list"
-            aria-label="Bullet list"
-          />
-          <ToolbarButton
-            icon={OrderedListIcon}
-            active={editor.isActive('orderedList')}
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            title="Numbered list"
-            aria-label="Numbered list"
-          />
           <ToolbarButton
             icon={QuoteIcon}
             active={editor.isActive('blockquote')}
@@ -345,39 +389,16 @@ export function EditorToolbar({
 
       {(narrow || compact) && (
         <DialogTrigger isOpen={overflowOpen} onOpenChange={setOverflowOpen}>
-          <Button
-            aria-label="More formatting"
-            className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-          >
-            <MoreIcon size={16} />
-          </Button>
+          <span title="More formatting" className="inline-flex">
+            <Button
+              aria-label="More formatting"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            >
+              <MoreIcon size={16} />
+            </Button>
+          </span>
           <Popover className="min-w-[180px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-lg">
             <Menu aria-label="More formatting" className="outline-none">
-              {compact && (
-                <>
-                  <MenuItem
-                    id="h1"
-                    onAction={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
-                  >
-                    Heading 1
-                  </MenuItem>
-                  <MenuItem
-                    id="h2"
-                    onAction={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
-                  >
-                    Heading 2
-                  </MenuItem>
-                  <MenuItem
-                    id="h3"
-                    onAction={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
-                  >
-                    Heading 3
-                  </MenuItem>
-                </>
-              )}
               {narrow && (
                 <MenuItem
                   id="highlight"
@@ -389,20 +410,6 @@ export function EditorToolbar({
               )}
               {compact && (
                 <>
-                  <MenuItem
-                    id="bullet-list"
-                    onAction={() => editor.chain().focus().toggleBulletList().run()}
-                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
-                  >
-                    Bullet list
-                  </MenuItem>
-                  <MenuItem
-                    id="ordered-list"
-                    onAction={() => editor.chain().focus().toggleOrderedList().run()}
-                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)]"
-                  >
-                    Numbered list
-                  </MenuItem>
                   <MenuItem
                     id="quote"
                     onAction={() => editor.chain().focus().toggleBlockquote().run()}
@@ -447,14 +454,16 @@ export function EditorToolbar({
       <div className="flex-1" />
 
       {onToggleAiAssist && (
-        <ToggleButton
-          isSelected={aiAssistOpen}
-          onChange={onToggleAiAssist}
-          aria-label="AI Assist"
-          className="flex h-11 min-w-11 items-center gap-1 rounded-md px-2 text-xs transition-colors data-[selected]:bg-[var(--primary-muted)] data-[selected]:font-medium data-[selected]:text-[var(--primary)] text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span>AI</span>
-        </ToggleButton>
+        <span title="AI Assist" className="inline-flex">
+          <ToggleButton
+            isSelected={aiAssistOpen}
+            onChange={onToggleAiAssist}
+            aria-label="AI Assist"
+            className="flex h-11 min-w-11 items-center gap-1 rounded-md px-2 text-xs transition-colors data-[selected]:bg-[var(--primary-muted)] data-[selected]:font-medium data-[selected]:text-[var(--primary)] text-[var(--muted-text)] hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span>AI</span>
+          </ToggleButton>
+        </span>
       )}
     </div>
   );

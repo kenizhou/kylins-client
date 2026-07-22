@@ -5,6 +5,7 @@ import type { ReadingPanePosition, MessageListDensity } from '../../features/vie
 import { setSetting } from '../../services/settings';
 import { SETTING_KEYS } from '../../services/settingsKeys';
 import { themeManager } from '../../services/theme/themeManager';
+import { broadcastAppearanceChange } from '../../services/theme/appearanceSync';
 import { SKINS, DEFAULT_SKIN, type SkinId } from '../../styles/skins';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { CheckboxRow } from './PreferenceRows';
@@ -79,6 +80,7 @@ export function AppearancePreferences() {
       setTheme(value);
       themeManager.applyTheme(value);
       setSetting(SETTING_KEYS.theme, value).catch(() => {});
+      broadcastAppearanceChange('theme', value);
     },
     [setTheme],
   );
@@ -88,6 +90,7 @@ export function AppearancePreferences() {
       setContrast(value);
       themeManager.setContrast(value);
       setSetting(SETTING_KEYS.contrast, value).catch(() => {});
+      broadcastAppearanceChange('contrast', value);
     },
     [setContrast],
   );
@@ -97,6 +100,7 @@ export function AppearancePreferences() {
       setSkin(value);
       themeManager.applySkin(value);
       setSetting(SETTING_KEYS.skin, value).catch(() => {});
+      broadcastAppearanceChange('skin', value);
     },
     [setSkin],
   );
@@ -106,6 +110,7 @@ export function AppearancePreferences() {
       setFontSize(value);
       themeManager.setFontSize(value);
       setSetting(SETTING_KEYS.fontSize, value).catch(() => {});
+      broadcastAppearanceChange('font_size', value);
     },
     [setFontSize],
   );
@@ -115,6 +120,7 @@ export function AppearancePreferences() {
       setSerifSubjects(value);
       themeManager.setSerifSubjects(value);
       setSetting(SETTING_KEYS.serifSubjects, String(value)).catch(() => {});
+      broadcastAppearanceChange('serif_subjects', String(value));
     },
     [setSerifSubjects],
   );
@@ -124,6 +130,7 @@ export function AppearancePreferences() {
       setReduceMotion(value);
       themeManager.setReduceMotion(value);
       setSetting(SETTING_KEYS.reduceMotion, String(value)).catch(() => {});
+      broadcastAppearanceChange('reduce_motion', String(value));
     },
     [setReduceMotion],
   );
@@ -136,26 +143,32 @@ export function AppearancePreferences() {
     setTheme('system');
     themeManager.applyTheme('system');
     setSetting(SETTING_KEYS.theme, 'system').catch(() => {});
+    broadcastAppearanceChange('theme', 'system');
 
     setContrast('default');
     themeManager.setContrast('default');
     setSetting(SETTING_KEYS.contrast, 'default').catch(() => {});
+    broadcastAppearanceChange('contrast', 'default');
 
     setSkin(DEFAULT_SKIN);
     themeManager.applySkin(DEFAULT_SKIN);
     setSetting(SETTING_KEYS.skin, DEFAULT_SKIN).catch(() => {});
+    broadcastAppearanceChange('skin', DEFAULT_SKIN);
 
     setFontSize('default');
     themeManager.setFontSize('default');
     setSetting(SETTING_KEYS.fontSize, 'default').catch(() => {});
+    broadcastAppearanceChange('font_size', 'default');
 
     setSerifSubjects(false);
     themeManager.setSerifSubjects(false);
     setSetting(SETTING_KEYS.serifSubjects, 'false').catch(() => {});
+    broadcastAppearanceChange('serif_subjects', 'false');
 
     setReduceMotion(false);
     themeManager.setReduceMotion(false);
     setSetting(SETTING_KEYS.reduceMotion, 'false').catch(() => {});
+    broadcastAppearanceChange('reduce_motion', 'false');
   }, [
     resetToDefaults,
     setTheme,

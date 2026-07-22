@@ -8,6 +8,7 @@ import { Modal } from './components/ui/Modal';
 import { getSetting } from './services/settings';
 import { getAllAccounts, deleteAccountByEmail } from './services/accounts';
 import { themeManager } from './services/theme/themeManager';
+import { onAppearanceChange } from './services/theme/appearanceSync';
 import { pluginManager } from './services/plugins/pluginManager';
 import { activateBuiltInPlugins } from './services/plugins/builtInPlugins';
 import { useUIStore, type ContrastMode } from './stores/uiStore';
@@ -28,6 +29,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useSyncEvents } from './hooks/useSyncEvents';
 import { useShortcutStore } from './stores/shortcutStore';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -69,8 +71,12 @@ function hydrateBackground(
     serifSubjects: string | null,
     reduceMotion: string | null,
   ) => void,
+  options: { refreshAccountsToo?: boolean } = {},
 ): void {
-  refreshAccounts().catch((err) => console.error('Background account refresh failed:', err));
+  const { refreshAccountsToo = true } = options;
+  if (refreshAccountsToo) {
+    refreshAccounts().catch((err) => console.error('Background account refresh failed:', err));
+  }
 
   Promise.all([
     getSetting('theme'),
@@ -146,6 +152,53 @@ export default function App() {
       (window as unknown as Record<string, unknown>).__deleteAccountByEmail = deleteAccountByEmail;
     }
   }, []);
+
+  // Appearance changes broadcast from any window (e.g. Preferences in the main
+  // window) are re-applied here so pop-out windows (composer, viewer) follow
+  // theme/contrast/skin switches live.
+  useEffect(() => {
+    if (!isTauri) return;
+    return onAppearanceChange(({ key, value }) => {
+      switch (key) {
+        case 'theme':
+          if (value === 'light' || value === 'dark' || value === 'system') {
+            setTheme(value);
+            themeManager.applyTheme(value);
+          }
+          break;
+        case 'contrast': {
+          const resolved: ContrastMode = value === 'high' ? 'high' : 'default';
+          setContrast(resolved);
+          themeManager.setContrast(resolved);
+          break;
+        }
+        case 'skin':
+          if (isSkinId(value)) {
+            setSkin(value);
+            themeManager.applySkin(value);
+          }
+          break;
+        case 'font_size': {
+          const resolved = value === 'small' || value === 'large' ? value : 'default';
+          setFontSize(resolved);
+          themeManager.setFontSize(resolved);
+          break;
+        }
+        case 'serif_subjects': {
+          const enabled = value === 'true';
+          setSerifSubjects(enabled);
+          themeManager.setSerifSubjects(enabled);
+          break;
+        }
+        case 'reduce_motion': {
+          const enabled = value === 'true';
+          setReduceMotion(enabled);
+          themeManager.setReduceMotion(enabled);
+          break;
+        }
+      }
+    });
+  }, [setTheme, setContrast, setSkin, setFontSize, setSerifSubjects, setReduceMotion]);
 
   useEffect(() => {
     isMounted.current = true;
@@ -237,7 +290,8 @@ export default function App() {
             }
 
             // Hydrate everything in the background; don't block the composer UI.
-            hydrateBackground(applyAppearance);
+            // (Accounts were already refreshed above — skip the duplicate read.)
+            hydrateBackground(applyAppearance, { refreshAccountsToo: false });
           } else if (isViewerWindow) {
             // Viewer pop-out window: skip heavy startup. Hydrate the selected
             // message from the URL params and become ready immediately.
@@ -330,6 +384,20 @@ export default function App() {
     setAccountSetupOpen(false);
   }
 
+  // Catch-all: in a composer pop-out, if the composer state closes but the
+  // window somehow survived (e.g. a close path that failed silently), destroy
+  // the window rather than leaving a blank white frame behind.
+  useEffect(() => {
+    if (!isTauri || !isComposeWindow || !ready) return;
+    return useComposerStore.subscribe((s) => {
+      if (!s.isOpen) {
+        getCurrentWindow()
+          .destroy()
+          .catch((err) => console.error('[App] composer catch-all destroy failed:', err));
+      }
+    });
+  }, [ready, isComposeWindow]);
+
   if (error) {
     return (
       <div className="flex h-screen flex-col items-center justify-center bg-[var(--background)] text-[var(--foreground)]">
@@ -356,9 +424,15 @@ export default function App() {
   return (
     <I18nProvider locale={interfaceLanguage === 'automatic' ? undefined : interfaceLanguage}>
       {isComposeWindow ? (
-        <Composer windowed />
+        <>
+          <Composer windowed />
+          <Toaster />
+        </>
       ) : isViewerWindow ? (
-        <MessageViewerWindow message={viewerParams!} />
+        <>
+          <MessageViewerWindow message={viewerParams!} />
+          <Toaster />
+        </>
       ) : (
         <>
           <AppShell />

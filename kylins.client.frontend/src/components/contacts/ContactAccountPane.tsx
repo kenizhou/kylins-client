@@ -31,7 +31,7 @@ function AccountRow({
       }`}
     >
       {active && (
-        <span className="absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-r-full iris-line" />
+        <span className="absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-r-full iris-line-v" />
       )}
       <span className="shrink-0 text-[var(--muted-text)]">{icon}</span>
       <span className="flex-1 truncate">{label}</span>

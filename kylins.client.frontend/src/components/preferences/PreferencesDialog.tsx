@@ -5,6 +5,7 @@ import { ShortcutsPreferences } from './ShortcutsPreferences';
 import { AccountsPreferences } from './AccountsPreferences';
 import { ContactsPreferences } from './ContactsPreferences';
 import { MailPreferences } from './MailPreferences';
+import { SignaturesPreferences } from './SignaturesPreferences';
 import { SecurityPreferences } from './SecurityPreferences';
 import { AboutPreferences } from './AboutPreferences';
 import { Modal } from '../ui/Modal';
@@ -15,6 +16,7 @@ import {
   PreferencesAccountsIcon,
   PreferencesAppearanceIcon,
   PreferencesShortcutsIcon,
+  PreferencesSignaturesIcon,
   SecurityIcon,
   MailIcon,
   ContactsIcon,
@@ -26,6 +28,7 @@ const TABS: { id: PreferenceTab; icon: React.ComponentType<{ size?: number }> }[
   { id: 'Accounts', icon: PreferencesAccountsIcon },
   { id: 'Appearance', icon: PreferencesAppearanceIcon },
   { id: 'Mail', icon: MailIcon },
+  { id: 'Signatures', icon: PreferencesSignaturesIcon },
   { id: 'Calendar & Contacts', icon: ContactsIcon },
   { id: 'Shortcuts', icon: PreferencesShortcutsIcon },
   { id: 'Security', icon: SecurityIcon },
@@ -37,6 +40,7 @@ const TAB_COMPONENTS: Record<PreferenceTab, React.ComponentType> = {
   Accounts: AccountsPreferences,
   Appearance: AppearancePreferences,
   Mail: MailPreferences,
+  Signatures: SignaturesPreferences,
   'Calendar & Contacts': ContactsPreferences,
   Shortcuts: ShortcutsPreferences,
   Security: SecurityPreferences,
@@ -101,7 +105,7 @@ export function PreferencesDialog() {
                 {({ isSelected }) => (
                   <>
                     {isSelected && (
-                      <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full iris-line" />
+                      <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full iris-line-v" />
                     )}
                     <Icon size={18} />
                     <span>{tab.id}</span>

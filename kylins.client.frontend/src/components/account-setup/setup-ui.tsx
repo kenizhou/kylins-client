@@ -230,33 +230,33 @@ function SetupTitleBar() {
 
   return (
     <div
-      className="relative z-50 flex h-12 shrink-0 items-center justify-end border-b border-border bg-surface px-2 select-none"
+      className="relative z-50 flex h-10 shrink-0 items-center justify-end border-b border-border bg-surface px-2 select-none"
       style={dragStyle}
     >
       <div className="flex items-center" style={noDragStyle}>
         <Button
           type="button"
           onPress={handleMinimize}
-          className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+          className="setup-focus-ring inline-flex h-8 w-9 min-h-8 min-w-9 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
           aria-label="Minimize"
         >
-          <MinimizeIcon size={14} />
+          <MinimizeIcon size={18} />
         </Button>
         <Button
           type="button"
           onPress={handleToggleMaximize}
-          className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
+          className="setup-focus-ring inline-flex h-8 w-9 min-h-8 min-w-9 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-hover hover:text-foreground"
           aria-label={isMaximized ? 'Restore' : 'Maximize'}
         >
-          {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
+          {isMaximized ? <RestoreIcon size={18} /> : <MaximizeIcon size={18} />}
         </Button>
         <Button
           type="button"
           onPress={handleClose}
-          className="setup-focus-ring inline-flex h-11 w-11 min-h-11 min-w-11 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-destructive hover:text-destructive-foreground"
+          className="setup-focus-ring inline-flex h-8 w-9 min-h-8 min-w-9 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-destructive hover:text-destructive-foreground"
           aria-label="Close"
         >
-          <CloseIcon size={14} />
+          <CloseIcon size={18} />
         </Button>
       </div>
     </div>
@@ -362,7 +362,7 @@ export function SetupHeader({
     <div className={`mb-8 flex flex-col ${alignClass}`}>
       {!hideMark && (
         <div className={`mb-5 flex ${align === 'center' ? 'justify-center' : 'justify-start'}`}>
-          <span className="inline-flex items-center justify-center rounded-2xl p-1.5 iris-line shadow-[var(--shadow-md)]">
+          <span className="inline-flex items-center justify-center rounded-2xl bg-[var(--primary)] p-1.5 shadow-[var(--shadow-md)]">
             <KylinsMark className="h-12 w-12 text-[var(--primary-fg)]" />
           </span>
         </div>

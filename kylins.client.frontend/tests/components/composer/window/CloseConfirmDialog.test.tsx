@@ -20,16 +20,16 @@ describe('CloseConfirmDialog', () => {
     expect(screen.getByText('Save this draft?')).toBeInTheDocument();
   });
 
-  it('Save Draft invokes onSaveDraft', () => {
+  it('Yes invokes onSaveDraft', () => {
     const props = renderDialog();
-    fireEvent.click(screen.getByRole('button', { name: 'Save Draft' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
     expect(props.onSaveDraft).toHaveBeenCalledTimes(1);
     expect(props.onDiscard).not.toHaveBeenCalled();
   });
 
-  it("Don't Save invokes onDiscard", () => {
+  it('No invokes onDiscard', () => {
     const props = renderDialog();
-    fireEvent.click(screen.getByRole('button', { name: "Don't Save" }));
+    fireEvent.click(screen.getByRole('button', { name: 'No' }));
     expect(props.onDiscard).toHaveBeenCalledTimes(1);
     expect(props.onSaveDraft).not.toHaveBeenCalled();
   });

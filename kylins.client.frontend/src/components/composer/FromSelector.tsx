@@ -2,6 +2,7 @@
 // See ATTRIBUTIONS.md. Adapted for Kylins Client.
 
 import type { SendAsAlias } from '@/services/db/sendAsAliases';
+import { formatIdentity } from '@/features/composer/contacts';
 import {
   Select,
   Label,
@@ -47,7 +48,7 @@ export function FromSelector({ aliases, selectedEmail, onChange }: FromSelectorP
               id={alias.email}
               className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
             >
-              {alias.displayName ? `${alias.displayName} <${alias.email}>` : alias.email}
+              {formatIdentity(alias.displayName, alias.email)}
             </ListBoxItem>
           ))}
         </ListBox>

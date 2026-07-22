@@ -62,6 +62,12 @@ describe('buildForwardQuote', () => {
     expect(out).toContain('Hi there');
   });
 
+  it('wraps the quote in a gmail_quote blockquote (so the signature block can sit above it)', () => {
+    const out = buildForwardQuote(baseMsg);
+    expect(out).toContain('<blockquote class="gmail_quote"');
+    expect(out.trimEnd().endsWith('</blockquote>')).toBe(true);
+  });
+
   it('includes a Cc header line when the message has Cc recipients', () => {
     const out = buildForwardQuote({ ...baseMsg, cc: [{ name: 'Bob', address: 'bob@x.com' }] });
     expect(out).toContain('Cc:');

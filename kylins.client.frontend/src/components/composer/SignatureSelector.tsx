@@ -1,59 +1,41 @@
 // Ported from velo (https://github.com/avihaymenahem/velo) — Apache-2.0.
 // See ATTRIBUTIONS.md. Adapted for Kylins Client.
 //
-// Per-account signature picker. Selecting a signature writes its HTML into the
-// composer store so it is appended to the outgoing message body on send.
+// Signature picker dropdown. Presentational: the parent drives it with the
+// useComposerSignature hook, so `activeId` always reflects the signature node
+// actually in the editor document (correct after swaps, the block's remove
+// button, and undo/redo — Mailspring's currentSignatureIdSlate behavior).
 
-import { useState, useEffect } from 'react';
-import { useComposerStore } from '@/stores/composerStore';
-import { useAccountStore } from '@/stores/accountStore';
-import {
-  getSignaturesForAccount,
-  type DbSignature,
-  CONTEXT_LABELS,
-} from '@/services/db/signatures';
 import { Select, Button, Popover, ListBox, ListBoxItem, SelectValue } from 'react-aria-components';
+import { CONTEXT_LABELS, type DbSignature } from '@/services/db/signatures';
+import { CheckIcon } from '../icons';
 
-export function SignatureSelector() {
-  const activeAccountId = useAccountStore((s) => s.activeAccountId);
-  const isOpen = useComposerStore((s) => s.isOpen);
-  const signatureId = useComposerStore((s) => s.signatureId);
-  const setSignatureHtml = useComposerStore((s) => s.setSignatureHtml);
-  const setSignatureId = useComposerStore((s) => s.setSignatureId);
-  const [signatures, setSignatures] = useState<DbSignature[]>([]);
+interface SignatureSelectorProps {
+  signatures: DbSignature[];
+  /** Id of the signature currently in the editor doc (null = none). */
+  activeId: string | null;
+  /** Swap to the given signature id, or null for "No signature". */
+  onSelect: (id: string | null) => void;
+  /** Disabled while the initial default is being applied (prevents the async
+   *  default application from clobbering a premature user choice). */
+  disabled?: boolean;
+}
 
-  useEffect(() => {
-    if (!isOpen || !activeAccountId) return;
-    let cancelled = false;
-    getSignaturesForAccount(activeAccountId).then((sigs) => {
-      if (!cancelled) setSignatures(sigs);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, activeAccountId]);
-
+export function SignatureSelector({
+  signatures,
+  activeId,
+  onSelect,
+  disabled,
+}: SignatureSelectorProps) {
   if (signatures.length === 0) return null;
-
-  const handleChange = (id: string) => {
-    if (id === '') {
-      setSignatureId(null);
-      setSignatureHtml('');
-      return;
-    }
-    const sig = signatures.find((s) => s.id === id);
-    if (sig) {
-      setSignatureId(sig.id);
-      setSignatureHtml(sig.body_html);
-    }
-  };
 
   return (
     <Select
-      selectedKey={signatureId ?? ''}
-      onSelectionChange={(key) => handleChange(String(key))}
+      selectedKey={activeId ?? ''}
+      onSelectionChange={(key) => onSelect(key === '' ? null : String(key))}
       aria-label="Signature"
-      className="cursor-pointer rounded-lg border border-[var(--border-subtle)] bg-secondary px-1.5 py-0.5 text-[0.625rem] text-muted-text"
+      isDisabled={disabled}
+      className="cursor-pointer rounded-lg border border-[var(--border-subtle)] bg-secondary px-1.5 py-0.5 text-[0.625rem] text-muted-text data-[disabled]:opacity-50 data-[disabled]:cursor-not-allowed"
     >
       <Button className="flex items-center gap-1 outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <SelectValue />
@@ -63,17 +45,31 @@ export function SignatureSelector() {
         <ListBox className="py-1 outline-none">
           <ListBoxItem
             id=""
+            textValue="No signature"
             className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
           >
-            No signature
+            {({ isSelected }) => (
+              <span className="flex items-center justify-between gap-3">
+                No signature
+                {isSelected && <CheckIcon size={14} />}
+              </span>
+            )}
           </ListBoxItem>
           {signatures.map((sig) => (
             <ListBoxItem
               key={sig.id}
               id={sig.id}
+              textValue={`${sig.name} (${CONTEXT_LABELS[sig.context]})`}
               className="cursor-pointer px-3 py-2 text-sm text-foreground outline-none hover:bg-hover selected:bg-selected selected:text-selected-text focus-visible:bg-hover focus-visible:outline-none"
             >
-              {sig.name} ({CONTEXT_LABELS[sig.context]})
+              {({ isSelected }) => (
+                <span className="flex items-center justify-between gap-3">
+                  <span>
+                    {sig.name} ({CONTEXT_LABELS[sig.context]})
+                  </span>
+                  {isSelected && <CheckIcon size={14} />}
+                </span>
+              )}
             </ListBoxItem>
           ))}
         </ListBox>

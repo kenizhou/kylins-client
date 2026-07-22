@@ -62,10 +62,10 @@ export function Modal({
           {({ close }) => (
             <>
               {hasHeader && (
-                <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-6 py-3.5">
+                <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-6 py-2.5">
                   <div className="flex items-center gap-3">
                     {Icon && (
-                      <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl iris-line text-primary-fg shadow-[var(--shadow-sm)]">
+                      <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--primary)] text-primary-fg shadow-[var(--shadow-sm)]">
                         <Icon size={20} />
                       </span>
                     )}

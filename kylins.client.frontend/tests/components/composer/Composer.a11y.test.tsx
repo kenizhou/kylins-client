@@ -66,7 +66,7 @@ describe('Composer accessibility', () => {
 
   it('marks the send button with a clear role and label', () => {
     render(<Composer />);
-    const send = screen.getByRole('button', { name: /send/i });
+    const send = screen.getByRole('button', { name: /^send$/i });
     expect(send).toBeInTheDocument();
   });
 });

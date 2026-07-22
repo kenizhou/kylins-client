@@ -40,7 +40,7 @@ import {
   ArrowShrink01Icon,
   Cancel01Icon,
   Clock01Icon,
-  Attachment01Icon,
+  Attachment02Icon,
   TextBoldIcon,
   TextItalicIcon,
   TextUnderlineIcon,
@@ -78,6 +78,9 @@ import {
   Shield01Icon,
   ShieldCheck as ShieldCheckIconData,
   LockIcon as LockIconData,
+  Award04Icon,
+  PrinterIcon,
+  FloppyDiskIcon,
   EyeIcon as EyeIconData,
   Flag01Icon,
   SquareLock02Icon,
@@ -292,6 +295,9 @@ export const MinusIcon = makeIcon(MinusSignIcon);
 export const ShieldCheckIcon = makeIcon(ShieldCheckIconData);
 export const SecurityIcon = makeIcon(SecurityIconData);
 export const LockIcon = makeIcon(LockIconData);
+// Compose-surface crypto toggles (user-chosen glyphs).
+export const SignIcon = makeIcon(Award04Icon);
+export const EncryptIcon = makeIcon(SquareLock02Icon);
 export const EyeIcon = makeIcon(EyeIconData);
 export const CaretDownIcon = makeIcon(ArrowDown01Icon);
 export const MaximizeIcon = makeIcon(ArrowExpand01Icon);
@@ -299,7 +305,9 @@ export const RestoreIcon = makeIcon(ArrowShrink01Icon);
 export const CloseIcon = makeIcon(Cancel01Icon);
 export const WarningIcon = makeIcon(Alert01Icon);
 export const ClockIcon = makeIcon(Clock01Icon);
-export const AttachmentIcon = makeIcon(Attachment01Icon);
+export const AttachmentIcon = makeIcon(Attachment02Icon);
+export const PrintIcon = makeIcon(PrinterIcon);
+export const SaveIcon = makeIcon(FloppyDiskIcon);
 export const MailAddIcon = makeIcon(MailAdd02Icon);
 export const MailSendIcon = makeIcon(MailSend01Icon);
 

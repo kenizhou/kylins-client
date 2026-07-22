@@ -72,24 +72,24 @@ export function WindowControls({ className }: WindowControlsProps) {
     <div className={`flex items-center gap-0.5 ${className ?? ''}`}>
       <Button
         onPress={handleMinimize}
-        className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+        className="inline-flex h-8 w-10 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
         aria-label="Minimize"
       >
-        <MinimizeIcon size={14} />
+        <MinimizeIcon size={18} />
       </Button>
       <Button
         onPress={handleToggleMaximize}
-        className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+        className="inline-flex h-8 w-10 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
         aria-label={isMaximized ? 'Restore' : 'Maximize'}
       >
-        {isMaximized ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
+        {isMaximized ? <RestoreIcon size={18} /> : <MaximizeIcon size={18} />}
       </Button>
       <Button
         onPress={handleClose}
-        className="inline-flex h-11 w-11 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)] hover:text-[var(--primary-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
+        className="inline-flex h-8 w-10 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)] hover:text-[var(--primary-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40"
         aria-label="Close window"
       >
-        <CloseIcon size={14} />
+        <CloseIcon size={18} />
       </Button>
     </div>
   );

@@ -15,6 +15,7 @@ import Placeholder from '@tiptap/extension-placeholder';
 // TipTap v3 exports Table + TableRow/Cell/Header (and TableKit) all as named
 // exports from @tiptap/extension-table; the per-part packages are just shims.
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { SignatureNode } from './SignatureNode';
 
 /**
  * Build the composer editor extensions. `placeholder` is the only per-surface
@@ -37,5 +38,9 @@ export function buildComposerExtensions(placeholder: string) {
     TableRow,
     TableHeader,
     TableCell,
+    // Dedicated signature block (see SignatureNode.ts). Shared so the modal
+    // composer, inline reply, and preferences signature editor all parse and
+    // serialize the `<signature>` tag the same way.
+    SignatureNode,
   ];
 }

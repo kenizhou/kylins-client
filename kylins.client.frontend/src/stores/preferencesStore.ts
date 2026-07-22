@@ -7,6 +7,7 @@ export type PreferenceTab =
   | 'Accounts'
   | 'Appearance'
   | 'Mail'
+  | 'Signatures'
   | 'Calendar & Contacts'
   | 'Shortcuts'
   | 'Security'
