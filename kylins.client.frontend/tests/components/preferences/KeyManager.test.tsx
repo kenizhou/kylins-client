@@ -1,12 +1,15 @@
-// Task 5 (Plan 4b): KeyManagerSection UI tests.
+// Task 5 (Plan 4b) + Task 6 (OpenPGP): KeyManagerSection UI tests.
 //
-// Verifies the S/MIME key manager section:
-//   - lists keys returned by `listCryptoKeysForAccount`
-//   - Import button → `open()` (plugin-dialog) → `importKeyFromPath(accountId, path)`
-//   - Generate button → `generateKey(accountId, email)` (email from account store)
-//   - Set default button → `setDefaultSigningKey(accountId, 'smime', fingerprint)`
-//   - Delete button (after confirm) → `deleteCryptoKey(accountId, 'smime', fingerprint)`
-//   - Export button → `save()` (plugin-dialog) → `exportPublicToPath(accountId, 'smime', fingerprint, path)`
+// Verifies the key manager section is standard-aware:
+//   - lists keys returned by `listCryptoKeysForAccount(accountId, standard)`
+//   - Import button → `open()` (plugin-dialog) → `importKeyFromPath(accountId, path, passphrase, standard)`
+//   - Generate button → `generateKey(accountId, email, standard)` (email from account store)
+//   - Set default button → `setDefaultSigningKey(accountId, standard, fingerprint)`
+//   - Delete button (after confirm) → `deleteCryptoKey(accountId, standard, fingerprint)`
+//   - Export button → `save()` (plugin-dialog) → `exportPublicToPath(accountId, standard, fingerprint, path)`
+//   - For `openpgp` accounts: `.p12` export button is HIDDEN; import filter
+//     accepts `.asc`/`.key`; card title + empty-state copy mention PGP.
+//   - For `smime`/`none`/undefined accounts: S/MIME behavior (regression).
 //
 // Mirrors AccountsPreferences.test.tsx: relative-path `vi.mock`, real Zustand
 // stores seeded via `setState`, `fireEvent` for clicks, `findByText`/`waitFor`
@@ -79,6 +82,9 @@ describe('KeyManagerSection', () => {
     );
 
     // Seed the account store so `generateKey` can resolve the account email.
+    // `cryptoMethod` is intentionally OMITTED here so the default standard
+    // derivation path (`undefined` → `'smime'`) is exercised by the S/MIME
+    // regression tests. PGP-scoped tests re-seed with `cryptoMethod: 'openpgp'`.
     useAccountStore.setState({
       accounts: [
         {
@@ -136,7 +142,8 @@ describe('KeyManagerSection', () => {
     fireEvent.click(screen.getByRole('button', { name: /import pem/i }));
     await waitFor(() => {
       // PEM path: no passphrase prompt, undefined forwards to Rust `None`.
-      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/cert.pem', undefined);
+      // Standard is `'smime'` because the seed account has no `cryptoMethod`.
+      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/cert.pem', undefined, 'smime');
     });
   });
 
@@ -174,7 +181,12 @@ describe('KeyManagerSection', () => {
     fireEvent.click(screen.getByRole('button', { name: /^OK$/i }));
 
     await waitFor(() => {
-      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/bundle.p12', 'test-secret');
+      expect(importKeyFromPath).toHaveBeenCalledWith(
+        'acct',
+        '/fake/bundle.p12',
+        'test-secret',
+        'smime',
+      );
     });
   });
 
@@ -257,7 +269,7 @@ describe('KeyManagerSection', () => {
 
     // Plain PEM: no prompt; import called with undefined passphrase.
     await waitFor(() => {
-      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/plain.pem', undefined);
+      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/plain.pem', undefined, 'smime');
     });
     expect(screen.queryByPlaceholderText(/bundle passphrase/i)).toBeNull();
   });
@@ -276,7 +288,12 @@ describe('KeyManagerSection', () => {
     // Read failed → skip the prompt and let the backend surface any real
     // error. Import IS attempted with an undefined passphrase.
     await waitFor(() => {
-      expect(importKeyFromPath).toHaveBeenCalledWith('acct', '/fake/strange.crt', undefined);
+      expect(importKeyFromPath).toHaveBeenCalledWith(
+        'acct',
+        '/fake/strange.crt',
+        undefined,
+        'smime',
+      );
     });
     expect(screen.queryByPlaceholderText(/bundle passphrase/i)).toBeNull();
   });
@@ -337,7 +354,7 @@ describe('KeyManagerSection', () => {
     await screen.findByText(/no s\/mime keys yet/i);
     fireEvent.click(screen.getByRole('button', { name: /generate self-signed/i }));
     await waitFor(() => {
-      expect(generateKey).toHaveBeenCalledWith('acct', 'user@example.com');
+      expect(generateKey).toHaveBeenCalledWith('acct', 'user@example.com', 'smime');
     });
   });
 
@@ -517,5 +534,186 @@ describe('KeyManagerSection', () => {
     await Promise.resolve();
     expect(dialog.save).not.toHaveBeenCalled();
     expect(exportP12ToPath).not.toHaveBeenCalled();
+  });
+
+  // ── Task 6: OpenPGP account behavior ───────────────────────────────────────
+  //
+  // When the picked account has `cryptoMethod: 'openpgp'`, the section must:
+  //   - list with `standard: 'openpgp'`
+  //   - generate/import pass `'openpgp'` through to the wrappers
+  //   - hide the `.p12` export button (PGP has no PKCS#12)
+  //   - show PGP-scoped copy (title, empty state, button labels, import filter)
+  //
+  // The S/MIME regression is already covered by every test above (the seed
+  // account has `cryptoMethod: undefined` → default `'smime'`).
+
+  async function renderOpenPGP() {
+    // Re-seed the account store so the picked account is `openpgp`-configured.
+    useAccountStore.setState({
+      accounts: [
+        {
+          id: 'acct',
+          email: 'user@example.com',
+          displayName: 'Tester',
+          provider: 'imap',
+          isActive: true,
+          isDefault: true,
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          cryptoMethod: 'openpgp',
+        },
+      ],
+      activeAccountId: 'acct',
+      defaultAccountId: 'acct',
+    });
+    const { listCryptoKeysForAccount } = await import('../../../src/services/db/cryptoKeys');
+    vi.mocked(listCryptoKeysForAccount).mockResolvedValue([]);
+    await act(async () => {
+      render(<KeyManagerSection accountId="acct" />);
+    });
+  }
+
+  it('PGP account: lists keys with standard="openpgp"', async () => {
+    await renderOpenPGP();
+    const { listCryptoKeysForAccount } = await import('../../../src/services/db/cryptoKeys');
+    await screen.findByText(/no pgp keys yet/i);
+    expect(listCryptoKeysForAccount).toHaveBeenCalledWith('acct', 'openpgp');
+  });
+
+  it('PGP account: import filter includes .asc', async () => {
+    await renderOpenPGP();
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue(null);
+
+    await screen.findByText(/no pgp keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import armored key/i }));
+
+    await waitFor(() => {
+      expect(dialog.open).toHaveBeenCalled();
+    });
+    const call = vi.mocked(dialog.open).mock.calls[0]![0] as {
+      filters: { name: string; extensions: string[] }[];
+    };
+    const allExtensions = call.filters.flatMap((f) => f.extensions);
+    expect(allExtensions).toContain('asc');
+    // The PGP filter set must NOT advertise `.p12`/`.pfx` (S/MIME-only bundle).
+    expect(allExtensions).not.toContain('p12');
+    expect(allExtensions).not.toContain('pfx');
+  });
+
+  it('PGP account: generate calls generateKey with standard="openpgp"', async () => {
+    await renderOpenPGP();
+    const { generateKey } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no pgp keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /generate pgp key/i }));
+    await waitFor(() => {
+      expect(generateKey).toHaveBeenCalledWith('acct', 'user@example.com', 'openpgp');
+    });
+  });
+
+  it('PGP account: import armored .asc passes standard="openpgp" with no passphrase prompt', async () => {
+    await renderOpenPGP();
+    const dialog = await import('@tauri-apps/plugin-dialog');
+    vi.mocked(dialog.open).mockResolvedValue('/fake/pubkey.asc');
+    const { importKeyFromPath } = await import('../../../src/services/db/cryptoKeys');
+
+    await screen.findByText(/no pgp keys yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /import armored key/i }));
+
+    // PGP path skips the encrypted-PEM sniff → straight to importKeyFromPath
+    // with an undefined passphrase + the openpgp standard.
+    await waitFor(() => {
+      expect(importKeyFromPath).toHaveBeenCalledWith(
+        'acct',
+        '/fake/pubkey.asc',
+        undefined,
+        'openpgp',
+      );
+    });
+    expect(screen.queryByPlaceholderText(/bundle passphrase/i)).toBeNull();
+  });
+
+  it('PGP account: .p12 export button is NOT rendered', async () => {
+    await renderOpenPGP();
+    const { listCryptoKeysForAccount } = await import('../../../src/services/db/cryptoKeys');
+    vi.mocked(listCryptoKeysForAccount).mockResolvedValue([
+      makeKey({ fingerprint: 'fpPGP001', hasPrivate: true }),
+    ]);
+    // Re-render by triggering the refresh path: the empty-state -> list swap
+    // happens on the next effect tick. Easier: render again with seeded keys.
+    useAccountStore.setState({
+      accounts: [
+        {
+          id: 'acct',
+          email: 'user@example.com',
+          displayName: 'Tester',
+          provider: 'imap',
+          isActive: true,
+          isDefault: true,
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          cryptoMethod: 'openpgp',
+        },
+      ],
+      activeAccountId: 'acct',
+      defaultAccountId: 'acct',
+    });
+    await act(async () => {
+      render(<KeyManagerSection accountId="acct" />);
+    });
+    await screen.findByText(/fpPGP001/i);
+    // Standard export (DownloadIcon) is still present.
+    expect(screen.getByRole('button', { name: /^Export$/ })).toBeInTheDocument();
+    // The .p12 export button must NOT exist for PGP.
+    expect(screen.queryByRole('button', { name: /export \.p12/i })).toBeNull();
+  });
+
+  it('PGP account: card title + empty state mention PGP', async () => {
+    await renderOpenPGP();
+    expect(await screen.findByText(/your pgp keys/i)).toBeInTheDocument();
+    expect(screen.getByText(/no pgp keys yet/i)).toBeInTheDocument();
+  });
+
+  it('PGP account: set-default + delete pass standard="openpgp"', async () => {
+    useAccountStore.setState({
+      accounts: [
+        {
+          id: 'acct',
+          email: 'user@example.com',
+          displayName: 'Tester',
+          provider: 'imap',
+          isActive: true,
+          isDefault: true,
+          sortOrder: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          cryptoMethod: 'openpgp',
+        },
+      ],
+      activeAccountId: 'acct',
+      defaultAccountId: 'acct',
+    });
+    const { listCryptoKeysForAccount, setDefaultSigningKey, deleteCryptoKey } =
+      await import('../../../src/services/db/cryptoKeys');
+    vi.mocked(listCryptoKeysForAccount).mockResolvedValue([
+      makeKey({ fingerprint: 'fpPGP002', isDefaultSign: false, hasPrivate: true }),
+    ]);
+    await act(async () => {
+      render(<KeyManagerSection accountId="acct" />);
+    });
+    await screen.findByText(/fpPGP002/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /set default/i }));
+    await waitFor(() => {
+      expect(setDefaultSigningKey).toHaveBeenCalledWith('acct', 'openpgp', 'fpPGP002');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /delete/i }));
+    await waitFor(() => {
+      expect(deleteCryptoKey).toHaveBeenCalledWith('acct', 'openpgp', 'fpPGP002');
+    });
   });
 });

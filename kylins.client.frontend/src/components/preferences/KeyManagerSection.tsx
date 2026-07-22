@@ -1,11 +1,26 @@
-// S/MIME key manager section, mounted inside SecurityPreferences.
+// Standard-aware crypto key manager section, mounted inside SecurityPreferences.
 // Mirrors the master/detail pattern of SignaturesPreferences: account picker +
 // list + Default chip + action buttons, all wrapped in a `PreferencesSectionCard`.
 //
+// The managed standard (PGP vs S/MIME) is derived REACTIVELY from the effective
+// account's `cryptoMethod`: `'openpgp'` → `'openpgp'`; `'smime'` → `'smime'`;
+// `'none'`/undefined → `'smime'` (backward-compat default — a `none` account
+// manages S/MIME keys until the user picks PGP via `CryptoMethodSection`).
+//
 // All heavy lifting (PEM parse, cert generate, DER export, default-flag
-// atomic swap) is delegated to the Rust backend via the typed wrappers in
+// atomic swap, OpenPGP armored-key parse, Ed25519/X25519 generate) is
+// delegated to the Rust backend via the typed wrappers in
 // `services/db/cryptoKeys`. The UI layer never sees private key material —
 // only the `hasPrivate` boolean flag is surfaced (e.g. as a small badge).
+//
+// Conditional UI by standard:
+//   - PGP:    import accepts armored `.asc`/`.key`; generate creates a PGP
+//             keypair; the `.p12` export button is HIDDEN (PGP has no PKCS#12);
+//             export-public writes the armored public key; the encrypted-PEM
+//             sniff is skipped (PGP armored keys have no `ENCRYPTED PRIVATE
+//             KEY` PEM label).
+//   - S/MIME: unchanged (PEM/.p12 import, self-signed generate, DER + .p12
+//             export, encrypted-PEM content sniff).
 //
 // `createdAt`/`expiresAt` on `CryptoKeyRow` are STRINGS (unix-seconds from
 // SQLite `strftime('%s','now')`); we format via `Number(row.createdAt) * 1000`
@@ -33,6 +48,7 @@ import {
 import { PassphrasePrompt } from './PassphrasePrompt';
 
 const SMIME = 'smime';
+const OPENPGP = 'openpgp';
 
 interface KeyManagerSectionProps {
   /**
@@ -54,6 +70,19 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
   const [pickedAccountId, setPickedAccountId] = useState<string | null>(activeAccountId);
   const effectiveAccountId = accountIdProp ?? pickedAccountId ?? accounts[0]?.id ?? null;
 
+  // Derive the managed standard REACTIVELY from the effective account's
+  // `cryptoMethod`. The accounts array reference changes whenever the store
+  // mutates (add/remove/update-in-place), so this re-derives on any relevant
+  // change. `'none'`/undefined falls through to `'smime'` (backward-compat
+  // default — see file header). The value is used both as the `standard`
+  // argument to every IPC wrapper AND as the discriminator for the
+  // conditional UI (filters, button labels, `.p12`-export visibility).
+  const effectiveAccount = effectiveAccountId
+    ? accounts.find((a) => a.id === effectiveAccountId)
+    : undefined;
+  const standard = effectiveAccount?.cryptoMethod === OPENPGP ? OPENPGP : SMIME;
+  const isPGP = standard === OPENPGP;
+
   const [keys, setKeys] = useState<CryptoKeyRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -62,12 +91,18 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
   // or an encrypted-PKCS#8 PEM detected by content sniff. The
   // `<PassphrasePrompt>` below renders + owns focus while this is non-null.
   // Cleared on submit (success or cancel) — null means "no prompt open".
+  // NOTE: this is S/MIME-specific — the PGP import path skips both gates
+  // (PGP armored keys carry no `ENCRYPTED PRIVATE KEY` PEM label, and the
+  // OpenPGP engine generates unencrypted keys by default; a passphrase-
+  // protected PGP secret key would surface a backend error, tracked as a
+  // follow-up).
   const [pendingPassphrasePath, setPendingPassphrasePath] = useState<string | null>(null);
 
   // Pending row awaiting an EXPORT passphrase (Plan 3b .p12 export). Set
   // when the user clicks "Export .p12" on a row with `hasPrivate`; the
   // confirm-mode `<PassphrasePrompt>` below renders while this is non-null.
   // Cleared on submit (success or cancel) — null means "no export prompt".
+  // S/MIME-only by design — the `.p12` button is hidden for PGP accounts.
   const [pendingExportP12Row, setPendingExportP12Row] = useState<CryptoKeyRow | null>(null);
 
   useEffect(() => {
@@ -75,7 +110,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoading(true);
-    listCryptoKeysForAccount(effectiveAccountId, SMIME)
+    listCryptoKeysForAccount(effectiveAccountId, standard)
       .then((rows) => {
         if (!cancelled) setKeys(rows);
       })
@@ -88,13 +123,13 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     return () => {
       cancelled = true;
     };
-  }, [effectiveAccountId, pushToast]);
+  }, [effectiveAccountId, standard, pushToast]);
 
   async function refresh() {
     if (!effectiveAccountId) return;
     setIsLoading(true);
     try {
-      const rows = await listCryptoKeysForAccount(effectiveAccountId, SMIME);
+      const rows = await listCryptoKeysForAccount(effectiveAccountId, standard);
       setKeys(rows);
     } catch (err) {
       pushToast(`Failed to list keys: ${formatErr(err)}`, 'error');
@@ -107,10 +142,15 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     if (!effectiveAccountId) return;
     const picked = await openDialog({
       multiple: false,
-      filters: [
-        { name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key', 'txt'] },
-        { name: 'S/MIME bundle', extensions: ['p12', 'pfx'] },
-      ],
+      filters: isPGP
+        ? [
+            { name: 'Armored PGP key', extensions: ['asc', 'key', 'txt'] },
+            { name: 'All files', extensions: ['*'] },
+          ]
+        : [
+            { name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key', 'txt'] },
+            { name: 'S/MIME bundle', extensions: ['p12', 'pfx'] },
+          ],
     });
     // `open` returns `string | string[] | null` depending on options; with
     // `multiple: false` we get `string | null`, but guard for both shapes.
@@ -118,6 +158,16 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     const path = Array.isArray(picked) ? picked[0] : picked;
     if (!path) return;
 
+    // PGP path: skip both passphrase gates. PGP armored keys have no
+    // `.p12`/`.pfx` extension and no `ENCRYPTED PRIVATE KEY` PEM label.
+    // If a secret key happens to be passphrase-protected, the OpenPGP
+    // backend surfaces an error we toast — follow-up covers richer UX.
+    if (isPGP) {
+      await runImport(path, undefined);
+      return;
+    }
+
+    // S/MIME path:
     // `.p12`/`.pfx` are always passphrase-protected → prompt unconditionally.
     if (needsPassphrase(path)) {
       setPendingPassphrasePath(path);
@@ -148,7 +198,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     if (!effectiveAccountId) return;
     setPendingPassphrasePath(null);
     try {
-      await importKeyFromPath(effectiveAccountId, path, passphrase);
+      await importKeyFromPath(effectiveAccountId, path, passphrase, standard);
       pushToast('Key imported', 'success');
       await refresh();
     } catch (err) {
@@ -165,8 +215,8 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
       return;
     }
     try {
-      await generateKey(effectiveAccountId, email);
-      pushToast('Self-signed key generated', 'success');
+      await generateKey(effectiveAccountId, email, standard);
+      pushToast(isPGP ? 'PGP key generated' : 'Self-signed key generated', 'success');
       await refresh();
     } catch (err) {
       pushToast(`Generate failed: ${formatErr(err)}`, 'error');
@@ -176,7 +226,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
   async function onSetDefault(fingerprint: string) {
     if (!effectiveAccountId) return;
     try {
-      await setDefaultSigningKey(effectiveAccountId, SMIME, fingerprint);
+      await setDefaultSigningKey(effectiveAccountId, standard, fingerprint);
       pushToast('Default signing key set', 'success');
       await refresh();
     } catch (err) {
@@ -188,7 +238,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     if (!effectiveAccountId) return;
     if (!window.confirm('Delete this key? This cannot be undone.')) return;
     try {
-      await deleteCryptoKey(effectiveAccountId, SMIME, fingerprint);
+      await deleteCryptoKey(effectiveAccountId, standard, fingerprint);
       pushToast('Key deleted', 'success');
       await refresh();
     } catch (err) {
@@ -199,13 +249,15 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
   async function onExport(fingerprint: string) {
     if (!effectiveAccountId) return;
     const outPath = await saveDialog({
-      defaultPath: 'smime-cert.der',
-      filters: [{ name: 'DER', extensions: ['der'] }],
+      defaultPath: isPGP ? 'pgp-pub.asc' : 'smime-cert.der',
+      filters: isPGP
+        ? [{ name: 'Armored public key', extensions: ['asc'] }]
+        : [{ name: 'DER', extensions: ['der'] }],
     });
     if (!outPath) return;
     try {
-      await exportPublicToPath(effectiveAccountId, SMIME, fingerprint, outPath);
-      pushToast('Certificate exported', 'success');
+      await exportPublicToPath(effectiveAccountId, standard, fingerprint, outPath);
+      pushToast(isPGP ? 'Public key exported' : 'Certificate exported', 'success');
     } catch (err) {
       pushToast(`Export failed: ${formatErr(err)}`, 'error');
     }
@@ -245,7 +297,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
     });
     if (!outPath) return;
     try {
-      await exportP12ToPath(effectiveAccountId, SMIME, row.fingerprint, passphrase, outPath);
+      await exportP12ToPath(effectiveAccountId, standard, row.fingerprint, passphrase, outPath);
       pushToast('Identity exported', 'success');
     } catch (err) {
       pushToast(`Export failed: ${formatErr(err)}`, 'error');
@@ -253,7 +305,10 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
   }
 
   return (
-    <PreferencesSectionCard title="Your S/MIME Keys" icon={ShieldCheckIcon}>
+    <PreferencesSectionCard
+      title={isPGP ? 'Your PGP Keys' : 'Your S/MIME Keys'}
+      icon={ShieldCheckIcon}
+    >
       {/* Account picker — only when no accountId prop was supplied. */}
       {!accountIdProp && (
         <div className="flex flex-col gap-1.5">
@@ -301,7 +356,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
           className="inline-flex items-center gap-1.5 h-11 px-3 text-sm font-medium rounded-lg bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-sm)] hover:opacity-90 transition-opacity disabled:opacity-40"
         >
           <UploadIcon size={14} />
-          Import PEM…
+          {isPGP ? 'Import armored key…' : 'Import PEM…'}
         </button>
         <button
           type="button"
@@ -309,7 +364,7 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
           disabled={!effectiveAccountId}
           className="inline-flex items-center justify-center h-11 px-3 text-sm font-medium rounded-lg border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40"
         >
-          Generate self-signed
+          {isPGP ? 'Generate PGP key' : 'Generate self-signed'}
         </button>
       </div>
 
@@ -318,7 +373,9 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
         <div className="text-sm text-[var(--muted-text)]">Loading…</div>
       ) : keys.length === 0 ? (
         <p className="text-sm text-[var(--muted-text)]">
-          No S/MIME keys yet. Import a PEM cert+key or generate a self-signed one.
+          {isPGP
+            ? 'No PGP keys yet. Import an armored public key or generate a new keypair.'
+            : 'No S/MIME keys yet. Import a PEM cert+key or generate a self-signed one.'}
         </p>
       ) : (
         <ul className="space-y-2">
@@ -365,23 +422,29 @@ export function KeyManagerSection({ accountId: accountIdProp }: KeyManagerSectio
                   type="button"
                   onClick={() => void onExport(k.fingerprint)}
                   className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors"
-                  title="Export certificate"
+                  title={isPGP ? 'Export armored public key' : 'Export certificate'}
                   aria-label="Export"
                 >
                   <DownloadIcon size={14} />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void onExportP12(k)}
-                  disabled={!k.hasPrivate}
-                  className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-                  title={
-                    k.hasPrivate ? 'Export .p12 (cert + private key)' : 'No private key to export'
-                  }
-                  aria-label="Export .p12"
-                >
-                  <LockIcon size={14} />
-                </button>
+                {/* `.p12` export is S/MIME-only — PGP has no PKCS#12 bundle
+                    format (the Rust backend refuses non-smime for p12). Hide
+                    the button entirely for PGP accounts; the public-key
+                    export above handles the PGP equivalent. */}
+                {!isPGP && (
+                  <button
+                    type="button"
+                    onClick={() => void onExportP12(k)}
+                    disabled={!k.hasPrivate}
+                    className="flex h-11 w-11 items-center justify-center rounded text-[var(--muted-text)] hover:text-[var(--foreground)] hover:bg-[var(--hover)] transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                    title={
+                      k.hasPrivate ? 'Export .p12 (cert + private key)' : 'No private key to export'
+                    }
+                    aria-label="Export .p12"
+                  >
+                    <LockIcon size={14} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => void onDelete(k.fingerprint)}

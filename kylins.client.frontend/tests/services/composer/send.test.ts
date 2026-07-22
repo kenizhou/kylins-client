@@ -17,7 +17,16 @@ import type { DraftInput } from '../../../src/services/composer/drafts';
 
 // --- Mocks ---------------------------------------------------------------
 
-const { mockInvoke, mockEmit } = vi.hoisted(() => ({ mockInvoke: vi.fn(), mockEmit: vi.fn() }));
+const { mockInvoke, mockEmit, mockAccounts } = vi.hoisted(() => ({
+  mockInvoke: vi.fn(),
+  mockEmit: vi.fn(),
+  // Holder so individual tests can swap the active account's `cryptoMethod`
+  // (Task 5): the composer now reads `account.cryptoMethod` instead of
+  // hardcoding 'smime'. Tests assert behavior per method.
+  mockAccounts: {
+    current: [{ id: 'acc-1', email: 'alice@example.com', cryptoMethod: 'smime' }],
+  },
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 vi.mock('@tauri-apps/api/event', () => ({ emit: mockEmit }));
 
@@ -37,7 +46,8 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 vi.mock('@/stores/accountStore', () => ({
   useAccountStore: {
     getState: () => ({
-      accounts: [{ id: 'acc-1', email: 'alice@example.com' }],
+      // Read from the hoisted holder so tests can mutate per-case.
+      accounts: mockAccounts.current,
     }),
   },
 }));
@@ -47,6 +57,9 @@ beforeEach(() => {
   mockInvoke.mockResolvedValue(undefined);
   mockEmit.mockReset();
   mockEmit.mockResolvedValue(undefined);
+  // Reset to the historical default: an smime-configured account. Tests that
+  // need a different method reassign `mockAccounts.current` AFTER this reset.
+  mockAccounts.current = [{ id: 'acc-1', email: 'alice@example.com', cryptoMethod: 'smime' }];
 });
 
 // --- Fixtures ------------------------------------------------------------
@@ -217,5 +230,70 @@ describe('composer/send', () => {
     expect(payload.op.draft.cryptoMethod).toBe('smime');
     expect(payload.op.draft.sign).toBe(false);
     expect(payload.op.draft.encrypt).toBe(true);
+  });
+
+  // ---- Task 5: per-account cryptoMethod threading + fail-closed guard ----
+  //
+  // sendEmail now reads the from-account's `cryptoMethod` instead of
+  // hardcoding 'smime'. Three cases:
+  //   1. openpgp account + isEncrypted → draft.cryptoMethod === 'openpgp'
+  //   2. cryptoMethod: 'none' + isEncrypted → fail-closed: no plaintext send,
+  //      no sync_apply_mutation invoke, SendResult.success === false
+  //   3. cryptoMethod unset + isSigned → same fail-closed behavior (treats
+  //      undefined as 'none')
+
+  it("reads account.cryptoMethod === 'openpgp' into the draft (Task 5)", async () => {
+    mockAccounts.current = [{ id: 'acc-1', email: 'alice@example.com', cryptoMethod: 'openpgp' }];
+    const res = await sendEmail(
+      'acc-1',
+      { ...baseInput, isSigned: true, isEncrypted: true },
+      'draft-1',
+    );
+    expect(res.success).toBe(true);
+    const payload = mockInvoke.mock.calls[0]![1] as {
+      op: { draft: { cryptoMethod: string; sign: boolean; encrypt: boolean } };
+    };
+    expect(payload.op.draft.cryptoMethod).toBe('openpgp');
+    expect(payload.op.draft.sign).toBe(true);
+    expect(payload.op.draft.encrypt).toBe(true);
+  });
+
+  it("fails closed when cryptoMethod === 'none' + isEncrypted (no plaintext send)", async () => {
+    // Brief ambiguity resolution: when the user has toggled encrypt/sign on
+    // but the from-account has no crypto method configured, do NOT silently
+    // send plaintext. Return a structured failure (which the composer's
+    // handleSend surfaces via useToastStore) and skip the invoke entirely.
+    mockAccounts.current = [{ id: 'acc-1', email: 'alice@example.com', cryptoMethod: 'none' }];
+    const res = await sendEmail('acc-1', { ...baseInput, isEncrypted: true }, 'draft-1');
+    expect(res.success).toBe(false);
+    expect(res.message).toMatch(/crypto method/i);
+    // Critical: no sync_apply_mutation call → the plaintext draft never
+    // crosses IPC, never lands in the outbox, never gets transmitted.
+    const calls = mockInvoke.mock.calls.map((c) => c[0]);
+    expect(calls).not.toContain('sync_apply_mutation');
+  });
+
+  it("fails closed when cryptoMethod is unset + isSigned (treats undefined as 'none')", async () => {
+    // Same fail-closed path for the sign-only case with an account that has
+    // never had its method picked. Guards against accidental plaintext sign.
+    mockAccounts.current = [{ id: 'acc-1', email: 'alice@example.com' }];
+    const res = await sendEmail('acc-1', { ...baseInput, isSigned: true }, 'draft-1');
+    expect(res.success).toBe(false);
+    expect(res.message).toMatch(/crypto method/i);
+    const calls = mockInvoke.mock.calls.map((c) => c[0]);
+    expect(calls).not.toContain('sync_apply_mutation');
+  });
+
+  it("does NOT fail-closed when toggles are off (cryptoMethod: 'none' + no sign/encrypt → plain send)", async () => {
+    // Sanity: a 'none' account with no crypto intent should send normally —
+    // the guard only fires when a toggle is ON. Otherwise every plaintext
+    // send from a 'none' account would be blocked.
+    mockAccounts.current = [{ id: 'acc-1', email: 'alice@example.com', cryptoMethod: 'none' }];
+    const res = await sendEmail('acc-1', baseInput, 'draft-1');
+    expect(res.success).toBe(true);
+    const payload = mockInvoke.mock.calls[0]![1] as {
+      op: { draft: { cryptoMethod: string } };
+    };
+    expect(payload.op.draft.cryptoMethod).toBe('none');
   });
 });

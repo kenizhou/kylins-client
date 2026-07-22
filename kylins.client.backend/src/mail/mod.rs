@@ -5,4 +5,5 @@ pub mod builder;
 pub mod crypto;
 pub mod crypto_crl;
 pub mod imap;
+pub mod pgp_mime;
 pub mod smtp;

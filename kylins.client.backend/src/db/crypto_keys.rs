@@ -452,20 +452,24 @@ pub struct DefaultKeyRow {
     pub email: Option<String>,
 }
 
-/// The account's default S/MIME signing key, if one is flagged. Phase 1 uses a
-/// single default per account; multiple-standard selection arrives later.
-/// Returns just enough to build a `KeyHandleRef`; callers needing the cert/private
-/// blob follow up with [`get_crypto_key_full`] using the returned fingerprint.
+/// The account's default signing key for `standard`, if one is flagged.
+/// Phase 1 used a single S/MIME default per account; Phase 2 parameterized the
+/// standard so OpenPGP and S/MIME defaults live side-by-side (the setter
+/// [`set_default_signing_key`] already took a `standard` param). Returns just
+/// enough to build a `KeyHandleRef`; callers needing the cert/private blob
+/// follow up with [`get_crypto_key_full`] using the returned fingerprint.
 pub async fn get_default_signing_key(
     pool: &SqlitePool,
     account_id: &str,
+    standard: crypto_core::Standard,
 ) -> Result<Option<DefaultKeyRow>, sqlx::Error> {
     sqlx::query_as::<_, DefaultKeyRow>(
         "SELECT standard, fingerprint, email FROM crypto_keys
-         WHERE account_id = ? AND standard = 'smime' AND is_default_sign = 1
+         WHERE account_id = ? AND standard = ? AND is_default_sign = 1
          LIMIT 1",
     )
     .bind(account_id)
+    .bind(standard.as_str())
     .fetch_optional(pool)
     .await
 }
@@ -755,7 +759,7 @@ mod tests {
         upsert_crypto_key(&pool, &a).await.unwrap();
         upsert_crypto_key(&pool, &b).await.unwrap();
 
-        let got = get_default_signing_key(&pool, "acct")
+        let got = get_default_signing_key(&pool, "acct", crypto_core::Standard::Smime)
             .await
             .unwrap()
             .expect("present");
@@ -769,11 +773,70 @@ mod tests {
         let pool = crate::db::init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "acct2").await;
         assert!(
-            get_default_signing_key(&pool, "acct2")
+            get_default_signing_key(&pool, "acct2", crypto_core::Standard::Smime)
                 .await
                 .unwrap()
                 .is_none(),
             "no default flagged -> None"
+        );
+    }
+
+    /// Task 2 TDD: a PGP default signing key is returned for `Standard::OpenPgp`
+    /// and absent for `Standard::Smime` (no cross-standard leakage). Also
+    /// exercises the S/MIME regression after the signature change.
+    ///
+    /// Sequence:
+    /// 1. `crypto_backend(OpenPgp, pool, acct)` → `Box<dyn CryptoBackend>`
+    /// 2. `backend.generate_key(KeyGenParams { standard: OpenPgp, algorithm:
+    ///    "default", .. })` → `KeyHandleRef` (persisted via `SqliteKeyStore::put`)
+    /// 3. `set_default_signing_key(pool, acct, "openpgp", fp)` — flag it
+    /// 4. `get_default_signing_key(pool, acct, OpenPgp)` → returns the row
+    /// 5. `get_default_signing_key(pool, acct, Smime)` → `None` (no smime key)
+    #[tokio::test]
+    async fn get_default_signing_key_returns_per_standard_default() {
+        use crypto_core::KeyGenParams;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        seed_account(&pool, "pgp-acct").await;
+
+        let backend = crate::db::commands::crypto_backend(
+            crypto_core::Standard::OpenPgp,
+            &pool,
+            "pgp-acct",
+        )
+        .expect("openpgp backend construction");
+        let h = backend
+            .generate_key(KeyGenParams {
+                standard: crypto_core::Standard::OpenPgp,
+                user_id: "pgp-acct@x.com".into(),
+                algorithm: "default".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate openpgp key");
+
+        // Flag the freshly-generated PGP key as the account's OpenPGP default.
+        set_default_signing_key(&pool, "pgp-acct", "openpgp", h.fingerprint.as_str())
+            .await
+            .expect("set default");
+
+        // OpenPgp default must resolve to the freshly-generated row.
+        let got = get_default_signing_key(&pool, "pgp-acct", crypto_core::Standard::OpenPgp)
+            .await
+            .unwrap()
+            .expect("openpgp default present");
+        assert_eq!(got.fingerprint, h.fingerprint.as_str());
+        assert_eq!(got.standard, "openpgp");
+
+        // Smime lookup on the same account must return None (no smime key
+        // exists — per-standard isolation, no leakage).
+        assert!(
+            get_default_signing_key(&pool, "pgp-acct", crypto_core::Standard::Smime)
+                .await
+                .unwrap()
+                .is_none(),
+            "smime default must be absent on a PGP-only account"
         );
     }
 

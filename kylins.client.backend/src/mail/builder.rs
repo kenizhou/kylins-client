@@ -36,15 +36,50 @@ pub struct AttachmentRef {
     pub cid: Option<String>,
 }
 
-/// Per-message crypto intent carried in `SendDraft`. Mirrors the TS union
-/// `'none' | 'smime'` (serde `rename_all = "lowercase"`). Future standards
-/// (openpgp, sm) add variants here.
+/// Per-message crypto intent carried in `SendDraft` and per-account default
+/// stored in `accounts.crypto_method`. Mirrors the TS union
+/// `'none' | 'smime' | 'openpgp'` (serde `rename_all = "lowercase"`). Future
+/// standards (sm) add variants here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CryptoMethod {
     #[default]
     None,
     Smime,
+    Openpgp,
+}
+
+impl CryptoMethod {
+    /// DB column string. Matches `crypto_core::Standard::as_str` for the
+    /// non-None variants (Task 4 dispatches on `standard()` → `Standard`).
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            CryptoMethod::None => "none",
+            CryptoMethod::Smime => "smime",
+            CryptoMethod::Openpgp => "openpgp",
+        }
+    }
+
+    /// Parse the DB column string. Unknown / NULL / empty → `None` (defensive
+    /// against legacy rows or future variants not yet first-class here, e.g.
+    /// `"sm"`).
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "smime" => CryptoMethod::Smime,
+            "openpgp" => CryptoMethod::Openpgp,
+            _ => CryptoMethod::None,
+        }
+    }
+
+    /// Map to the crypto-core `Standard` dispatch enum. `None` → `None` (no
+    /// crypto backend selected); the other variants map 1:1.
+    pub fn standard(self) -> Option<crypto_core::Standard> {
+        match self {
+            CryptoMethod::None => None,
+            CryptoMethod::Smime => Some(crypto_core::Standard::Smime),
+            CryptoMethod::Openpgp => Some(crypto_core::Standard::OpenPgp),
+        }
+    }
 }
 
 /// Structured draft crossing IPC as JSON. The frontend (`buildSendDraft`)

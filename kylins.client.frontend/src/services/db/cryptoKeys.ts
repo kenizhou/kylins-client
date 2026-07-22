@@ -47,9 +47,19 @@ export function getCryptoKey(standard: string, fingerprint: string): Promise<Cry
   return invoke<CryptoKeyRow | null>('db_get_crypto_key', { standard, fingerprint });
 }
 
-/** Generate a fresh soft key/cert for `(accountId, email)`. Returns the new row. */
-export function generateKey(accountId: string, email: string): Promise<CryptoKeyRow> {
-  return invoke<CryptoKeyRow>('crypto_generate_key', { accountId, email });
+/**
+ * Generate a fresh soft key/cert for `(accountId, email)` under `standard`.
+ * Returns the new row. `standard` is forwarded to the Rust
+ * `crypto_generate_key` command (`'smime'` → self-signed cert + PKCS#8
+ * private key; `'openpgp'` → Ed25519/X25519 keypair via the `"default"`
+ * algorithm sentinel — see Task 2's `crypto_backend` factory).
+ */
+export function generateKey(
+  accountId: string,
+  email: string,
+  standard: string,
+): Promise<CryptoKeyRow> {
+  return invoke<CryptoKeyRow>('crypto_generate_key', { accountId, email, standard });
 }
 
 /**
@@ -61,16 +71,24 @@ export function generateKey(accountId: string, email: string): Promise<CryptoKey
  * bundles. `undefined` deserializes to Rust `None` (Tauri IPC is local
  * same-process — the passphrase is wrapped in a zeroizing `SecretBox` at
  * the `import_key` boundary on the Rust side, never logged nor persisted).
+ *
+ * `standard` selects the backend: `'smime'` parses PEM/DER/PKCS#12 via
+ * `SmimeBackend::import_key`; `'openpgp'` accepts ASCII-armored OR binary
+ * key blobs via `OpenpgpBackend::import_key` (content-sniffed by the
+ * engine-core). It is the LAST positional arg so pre-Task-6 call sites
+ * that didn't need it can simply append the literal.
  */
 export function importKeyFromPath(
   accountId: string,
   path: string,
-  passphrase?: string,
+  passphrase: string | undefined,
+  standard: string,
 ): Promise<CryptoKeyRow> {
   return invoke<CryptoKeyRow>('crypto_import_key_from_path', {
     accountId,
     path,
     passphrase,
+    standard,
   });
 }
 

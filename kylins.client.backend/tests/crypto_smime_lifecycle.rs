@@ -284,7 +284,7 @@ async fn crypto_generate_key_inner_persists_row_with_private() {
     let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
     seed_account_with(&pool, "acct-gen", "gen@kylins.com").await;
 
-    let row = crypto_generate_key_inner(&pool, "acct-gen", "gen@kylins.com")
+    let row = crypto_generate_key_inner(&pool, "acct-gen", Standard::Smime, "gen@kylins.com")
         .await
         .expect("generate_key_inner");
 
@@ -310,7 +310,7 @@ async fn crypto_export_public_to_path_inner_writes_parseable_cert() {
     let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
     seed_account_with(&pool, "acct-exp", "exp@kylins.com").await;
 
-    let row = crypto_generate_key_inner(&pool, "acct-exp", "exp@kylins.com")
+    let row = crypto_generate_key_inner(&pool, "acct-exp", Standard::Smime, "exp@kylins.com")
         .await
         .expect("generate_key_inner");
 
@@ -363,7 +363,7 @@ async fn crypto_import_key_from_path_inner_round_trips_pem_bundle() {
     let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
     seed_account_with(&pool, "acct-A", "alice@kylins.com").await;
 
-    let row_a = crypto_generate_key_inner(&pool, "acct-A", "alice@kylins.com")
+    let row_a = crypto_generate_key_inner(&pool, "acct-A", Standard::Smime, "alice@kylins.com")
         .await
         .expect("generate_key_inner in acct-A");
 
@@ -399,9 +399,15 @@ async fn crypto_import_key_from_path_inner_round_trips_pem_bundle() {
 
     // --- Import the PEM into a FRESH account (acct-B). -----------------------
     seed_account_with(&pool, "acct-B", "bob@kylins.com").await;
-    let row_b = crypto_import_key_from_path_inner(&pool, "acct-B", pem_path.to_str().unwrap(), None)
-        .await
-        .expect("import_key_from_path_inner");
+    let row_b = crypto_import_key_from_path_inner(
+        &pool,
+        "acct-B",
+        Standard::Smime,
+        pem_path.to_str().unwrap(),
+        None,
+    )
+    .await
+    .expect("import_key_from_path_inner");
 
     assert_eq!(row_b.standard, "smime");
     assert_eq!(
@@ -503,7 +509,7 @@ async fn crypto_import_key_from_path_inner_round_trips_p12_with_passphrase() {
     let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
     seed_account_with(&pool, "acct-P12A", "p12a@kylins.com").await;
 
-    let row_a = crypto_generate_key_inner(&pool, "acct-P12A", "p12a@kylins.com")
+    let row_a = crypto_generate_key_inner(&pool, "acct-P12A", Standard::Smime, "p12a@kylins.com")
         .await
         .expect("generate_key_inner in acct-P12A");
 
@@ -558,6 +564,7 @@ async fn crypto_import_key_from_path_inner_round_trips_p12_with_passphrase() {
     let row_b = crypto_import_key_from_path_inner(
         &pool,
         "acct-P12B",
+        Standard::Smime,
         p12_path.to_str().unwrap(),
         Some("test-secret".to_string()),
     )
@@ -604,7 +611,7 @@ async fn crypto_import_key_from_path_inner_wrong_passphrase_is_user_error() {
     let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
     seed_account_with(&pool, "acct-WP12A", "wp12a@kylins.com").await;
 
-    let row_a = crypto_generate_key_inner(&pool, "acct-WP12A", "wp12a@kylins.com")
+    let row_a = crypto_generate_key_inner(&pool, "acct-WP12A", Standard::Smime, "wp12a@kylins.com")
         .await
         .expect("generate_key_inner");
 
@@ -658,6 +665,7 @@ async fn crypto_import_key_from_path_inner_wrong_passphrase_is_user_error() {
     let err = crypto_import_key_from_path_inner(
         &pool,
         "acct-WP12B",
+        Standard::Smime,
         p12_path.to_str().unwrap(),
         Some("wrong-secret".to_string()),
     )
@@ -699,7 +707,7 @@ async fn crypto_export_p12_to_path_writes_pfx() {
     seed_account_with(&pool, "acct-EXP12-A", "exp12a@kylins.com").await;
 
     // Generate a key in acct-A — the identity we'll export.
-    let row_a = crypto_generate_key_inner(&pool, "acct-EXP12-A", "exp12a@kylins.com")
+    let row_a = crypto_generate_key_inner(&pool, "acct-EXP12-A", Standard::Smime, "exp12a@kylins.com")
         .await
         .expect("generate_key_inner in acct-EXP12-A");
     assert!(
@@ -731,6 +739,7 @@ async fn crypto_export_p12_to_path_writes_pfx() {
     let row_b = crypto_import_key_from_path_inner(
         &pool,
         "acct-EXP12-B",
+        Standard::Smime,
         p12_path.to_str().unwrap(),
         Some("export-test-pass".to_string()),
     )
@@ -759,7 +768,7 @@ async fn crypto_export_p12_to_path_empty_passphrase_is_user_error() {
     let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
     seed_account_with(&pool, "acct-EXP12-NP", "exp12np@kylins.com").await;
 
-    let row = crypto_generate_key_inner(&pool, "acct-EXP12-NP", "exp12np@kylins.com")
+    let row = crypto_generate_key_inner(&pool, "acct-EXP12-NP", Standard::Smime, "exp12np@kylins.com")
         .await
         .expect("generate_key_inner");
 

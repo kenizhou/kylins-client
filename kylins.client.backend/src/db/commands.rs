@@ -1345,14 +1345,54 @@ pub async fn db_remove_collected_key(pool: State<'_, SqlitePool>, id: i64) -> Re
 // is set, but no private bytes ever cross the IPC boundary (private reads go
 // through `get_crypto_key_full`, which is deliberately NOT exposed as a command).
 
-use crypto_core::{CryptoBackend, CryptoPolicy, KeyGenParams, KeyHandle, KeyId, Standard};
+use crypto_core::{CryptoBackend, CryptoError, CryptoPolicy, KeyGenParams, KeyHandle, KeyId, Standard};
+use crypto_openpgp::OpenpgpBackend;
 use crypto_smime::SmimeBackend;
 
 use crate::keystore_bridge::SqliteKeyStore;
 
-/// Build a per-call `SmimeBackend` bound to `account_id`, mirroring the
-/// `send_op` construction at `engine.rs:1011`. `SqlitePool::clone` is a cheap
-/// `Arc` bump; the outer `Arc<SqliteKeyStore>` coerces to `Arc<dyn KeyStore>`.
+/// Build a per-call `CryptoBackend` for `standard`, bound to `account_id`,
+/// mirroring the `send_op` construction at `engine.rs:1011`. `SqlitePool::clone`
+/// is a cheap `Arc` bump; the outer `Arc<SqliteKeyStore>` coerces to
+/// `Arc<dyn KeyStore>`. Dispatch:
+/// - `Smime` → `SmimeBackend` (existing Phase-1 behavior, unchanged).
+/// - `OpenPgp` → `OpenpgpBackend` (Phase 2 engine-core; same trait surface for
+///   `generate_key` / `import_key` / `export_public`).
+/// - `Sm` → `Err(UnsupportedStandard)` (SM not implemented yet).
+///
+/// Returns `Box<dyn CryptoBackend>` so callers can be standard-agnostic. Ops
+/// that need SmimeBackend-specific methods (`import_key_with_chain` for
+/// `.p12`/chain-bundle import, `export_p12` for PKCS#12 export) construct the
+/// concrete `SmimeBackend` directly — those paths are S/MIME-only by design
+/// (PGP has no `.p12`).
+pub(crate) fn crypto_backend(
+    standard: Standard,
+    pool: &SqlitePool,
+    account_id: &str,
+) -> std::result::Result<Box<dyn CryptoBackend>, CryptoError> {
+    let ks: std::sync::Arc<dyn crypto_core::KeyStore> = std::sync::Arc::new(SqliteKeyStore::new(
+        std::sync::Arc::new(pool.clone()),
+        account_id,
+    ));
+    let policy = CryptoPolicy::default_baseline();
+    Ok(match standard {
+        Standard::Smime => Box::new(SmimeBackend::new(ks, policy)),
+        Standard::OpenPgp => Box::new(OpenpgpBackend::new(ks, policy)),
+        Standard::Sm => {
+            return Err(CryptoError::UnsupportedStandard(
+                "sm not implemented".into(),
+            ))
+        }
+    })
+}
+
+/// Build a per-call `SmimeBackend` bound to `account_id`. Used ONLY by the two
+/// S/MIME-specific IPC paths that need SmimeBackend's concrete
+/// `import_key_with_chain` (`.p12` chain-bundle import) or `export_p12`
+/// (PKCS#12 export) — those methods are not on the `CryptoBackend` trait, so
+/// the type-erased [`crypto_backend`] factory cannot reach them. PGP has no
+/// `.p12` equivalent; those commands dispatch on `standard` and refuse non-Smime
+/// before reaching here.
 fn smime_backend(pool: &SqlitePool, account_id: &str) -> SmimeBackend {
     SmimeBackend::new(
         std::sync::Arc::new(SqliteKeyStore::new(
@@ -1363,20 +1403,39 @@ fn smime_backend(pool: &SqlitePool, account_id: &str) -> SmimeBackend {
     )
 }
 
-/// Generate a self-signed S/MIME cert + PKCS#8 private key, persisting both to
+/// Generate a self-signed cert / OpenPGP key + private key, persisting both to
 /// `crypto_keys` (private blob encrypted at rest via `encrypt_with_aad`).
+/// Dispatches to the standard's backend via [`crypto_backend`]:
+/// - `Smime` → self-signed ECDSA-P256 cert + PKCS#8 private key.
+/// - `OpenPgp` → Ed25519 primary + X25519 transport-encryption subkey + Ed25519
+///   signing subkey (engine-core's default shape — the `algorithm` field is
+///   ignored beyond the `"default"` sentinel).
+///
 /// Returns the PUBLIC row only — `has_private: true`, no private bytes.
 pub async fn crypto_generate_key_inner(
     pool: &SqlitePool,
     account_id: &str,
+    standard: Standard,
     email: &str,
 ) -> Result<CryptoKeyRow, String> {
-    let backend = smime_backend(pool, account_id);
+    // `algorithm` is standard-specific: Smime picks ECDSA-P256 (Phase-1 default);
+    // OpenPgp REQUIRES the literal "default" sentinel (OpenpgpBackend rejects
+    // any other value with a Policy error — engine-core ships only the
+    // Ed25519/X25519 key shape).
+    let algorithm = match standard {
+        Standard::Smime => "ECDSA-P256",
+        Standard::OpenPgp => "default",
+        Standard::Sm => {
+            return Err(CryptoError::UnsupportedStandard("sm not implemented".to_string())
+                .to_string());
+        }
+    };
+    let backend = crypto_backend(standard, pool, account_id).map_err(|e| e.to_string())?;
     let h = backend
         .generate_key(KeyGenParams {
-            standard: Standard::Smime,
+            standard,
             user_id: email.into(),
-            algorithm: "ECDSA-P256".into(),
+            algorithm: algorithm.into(),
             passphrase: None,
         })
         .await
@@ -1400,6 +1459,7 @@ pub async fn crypto_generate_key_inner(
 pub async fn crypto_import_key_from_path_inner(
     pool: &SqlitePool,
     account_id: &str,
+    standard: Standard,
     path: &str,
     passphrase: Option<String>,
 ) -> Result<CryptoKeyRow, String> {
@@ -1407,29 +1467,44 @@ pub async fn crypto_import_key_from_path_inner(
     // Wrap at the IPC boundary: the incoming `String` becomes a zeroizing
     // `SecretBox<String>` for the scope of `import_key` only.
     let pass = passphrase.map(|p| crypto_core::SecretBox::new(Box::new(p)));
-    let backend = smime_backend(pool, account_id);
-    // Use `import_key_with_chain` (NOT the trait `import_key`) so the `.p12`
-    // arm's intermediate CA cert DERs are returned to the backend for direct
-    // INSERT with `key_type='intermediate'`. Persisting them through the
-    // trait `import_key` would drop them on the floor; persisting through
-    // `SqliteKeyStore::put` would hardcode `key_type='cert'` (the known quirk)
-    // and pollute the trust-anchor candidate set — a trust overreach.
-    let (h, intermediate_ders) = backend
-        .import_key_with_chain(&bytes, pass)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Dispatch on standard. The Smime arm needs the concrete `SmimeBackend`
+    // because `.p12`/chain-bundle import returns intermediate CA cert DERs that
+    // must be persisted separately (the trait `import_key` would drop them).
+    // The OpenPgp arm uses the trait method: a PGP key blob carries no chain.
+    let h = if standard == Standard::Smime {
+        let backend = smime_backend(pool, account_id);
+        // Use `import_key_with_chain` (NOT the trait `import_key`) so the `.p12`
+        // arm's intermediate CA cert DERs are returned to the backend for direct
+        // INSERT with `key_type='intermediate'`. Persisting them through the
+        // trait `import_key` would drop them on the floor; persisting through
+        // `SqliteKeyStore::put` would hardcode `key_type='cert'` (the known
+        // quirk) and pollute the trust-anchor candidate set — a trust overreach.
+        let (h, intermediate_ders) = backend
+            .import_key_with_chain(&bytes, pass)
+            .await
+            .map_err(|e| e.to_string())?;
 
-    // Persist each returned intermediate via a direct INSERT. Failures here
-    // are logged + skipped (one bad intermediate must not fail the leaf
-    // import — the spec's "skip JUST that cert" failure mode); the leaf is
-    // already persisted by `import_key_with_chain`'s internal `persist_imported`.
-    for inter_der in &intermediate_ders {
-        if let Err(e) = crypto_keys::upsert_intermediate_cert(pool, account_id, inter_der).await {
-            log::warn!(
-                "[crypto] failed to persist .p12 intermediate for account {account_id}: {e}"
-            );
+        // Persist each returned intermediate via a direct INSERT. Failures here
+        // are logged + skipped (one bad intermediate must not fail the leaf
+        // import — the spec's "skip JUST that cert" failure mode); the leaf is
+        // already persisted by `import_key_with_chain`'s internal
+        // `persist_imported`.
+        for inter_der in &intermediate_ders {
+            if let Err(e) = crypto_keys::upsert_intermediate_cert(pool, account_id, inter_der).await
+            {
+                log::warn!(
+                    "[crypto] failed to persist .p12 intermediate for account {account_id}: {e}"
+                );
+            }
         }
-    }
+        h
+    } else {
+        let backend = crypto_backend(standard, pool, account_id).map_err(|e| e.to_string())?;
+        backend
+            .import_key(&bytes, pass)
+            .await
+            .map_err(|e| e.to_string())?
+    };
 
     crypto_keys::get_crypto_key_public(pool, h.standard.as_str(), h.fingerprint.as_str())
         .await?
@@ -1446,7 +1521,10 @@ pub async fn crypto_export_public_to_path_inner(
     fingerprint: &str,
     out_path: &str,
 ) -> Result<(), String> {
-    let backend = smime_backend(pool, account_id);
+    let parsed: Standard = standard
+        .parse()
+        .map_err(|e: CryptoError| format!("invalid standard '{standard}': {e}"))?;
+    let backend = crypto_backend(parsed, pool, account_id).map_err(|e| e.to_string())?;
     // The KeyId encoding matches `SqliteKeyStore::encode_key_id` so the
     // backend's `export_public` → `keystore.get` resolves the row.
     let handle = KeyHandle::Software(KeyId(format!("{standard}|{fingerprint}")));
@@ -1458,27 +1536,44 @@ pub async fn crypto_export_public_to_path_inner(
     Ok(())
 }
 
-/// Tauri wrapper for [`crypto_generate_key_inner`].
+/// Tauri wrapper for [`crypto_generate_key_inner`]. `standard` is optional to
+/// preserve the Phase-1 call shape (`{ accountId, email }`): when omitted it
+/// defaults to `"smime"` so existing S/MIME callers (frontend
+/// `generateKey(accountId, email)`) continue working unchanged. Phase 2's
+/// KeyManager UI will pass `"openpgp"` to generate a PGP key pair.
 #[tauri::command]
 pub async fn crypto_generate_key(
     pool: State<'_, SqlitePool>,
     account_id: String,
     email: String,
+    standard: Option<String>,
 ) -> Result<CryptoKeyRow, String> {
-    crypto_generate_key_inner(&pool, &account_id, &email).await
+    let std_str = standard.as_deref().unwrap_or("smime");
+    let parsed: Standard = std_str
+        .parse()
+        .map_err(|e: CryptoError| format!("invalid standard '{std_str}': {e}"))?;
+    crypto_generate_key_inner(&pool, &account_id, parsed, &email).await
 }
 
 /// Tauri wrapper for [`crypto_import_key_from_path_inner`]. The optional
 /// `passphrase` (camelCased `passphrase` from the frontend) is forwarded
-/// verbatim — `None`/`undefined` deserializes to `None`.
+/// verbatim — `None`/`undefined` deserializes to `None`. `standard` is optional
+/// for the same reason as [`crypto_generate_key`]: absent → `"smime"` so
+/// Phase-1 callers (`importKeyFromPath(accountId, path, passphrase?)`) continue
+/// to work unchanged.
 #[tauri::command]
 pub async fn crypto_import_key_from_path(
     pool: State<'_, SqlitePool>,
     account_id: String,
     path: String,
     passphrase: Option<String>,
+    standard: Option<String>,
 ) -> Result<CryptoKeyRow, String> {
-    crypto_import_key_from_path_inner(&pool, &account_id, &path, passphrase).await
+    let std_str = standard.as_deref().unwrap_or("smime");
+    let parsed: Standard = std_str
+        .parse()
+        .map_err(|e: CryptoError| format!("invalid standard '{std_str}': {e}"))?;
+    crypto_import_key_from_path_inner(&pool, &account_id, parsed, &path, passphrase).await
 }
 
 /// Tauri wrapper for [`crypto_export_public_to_path_inner`].
@@ -1519,6 +1614,13 @@ pub async fn crypto_export_p12_to_path_inner(
     passphrase: Option<String>,
     out_path: &str,
 ) -> Result<(), String> {
+    // PKCS#12 (.p12/.pfx) is an S/MIME-only bundle format. PGP keys have no
+    // .p12 representation; refuse clearly rather than produce garbage.
+    if standard != "smime" {
+        return Err(format!(
+            "p12 export is S/MIME-only (requested standard: '{standard}')"
+        ));
+    }
     // Wrap at the IPC boundary: the incoming `String` becomes a zeroizing
     // `SecretBox<String>` for the scope of `export_p12` only (mirrors the
     // import side's `crypto_import_key_from_path_inner`).

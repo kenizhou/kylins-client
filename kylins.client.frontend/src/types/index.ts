@@ -79,6 +79,13 @@ export interface Account {
   // attachments are packaged when signing/encrypting. Stored as a string so
   // unknown/future values don't break the row. See CryptoGranularitySection.
   cryptoGranularity?: string;
+  // Per-account crypto standard default (OpenPGP Phase 2 Task 1). Set by the
+  // KeyManager UI; read by the composer to pre-select Sign/Encrypt + by
+  // `send_op` (Task 4) to dispatch between `OpenpgpBackend` and `SmimeBackend`.
+  // Matches the Rust `CryptoMethod` enum serde (`rename_all = "lowercase"`).
+  // `'sm'` is intentionally NOT in this union — it is not yet a first-class
+  // per-account method (only none/openpgp/smime are dispatchable today).
+  cryptoMethod?: 'none' | 'openpgp' | 'smime';
 }
 
 export interface DbAccountRow {

@@ -2,6 +2,7 @@ import { PreferencesTabLayout } from './PreferencesTabLayout';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { KeyManagerSection } from './KeyManagerSection';
 import { TrustedCasSection } from './TrustedCasSection';
+import { CryptoMethodSection } from './CryptoMethodSection';
 import { CryptoGranularitySection } from './CryptoGranularitySection';
 import { ClassificationSection } from './ClassificationSection';
 import { usePreferencesStore } from '../../stores/preferencesStore';
@@ -34,6 +35,10 @@ export function SecurityPreferences() {
           card-in-card. */}
       <KeyManagerSection />
       <TrustedCasSection />
+
+      <PreferencesSectionCard title="Crypto method" icon={ShieldCheckIcon}>
+        <CryptoMethodSection />
+      </PreferencesSectionCard>
 
       <PreferencesSectionCard title="Encryption granularity" icon={ShieldCheckIcon}>
         <CryptoGranularitySection />

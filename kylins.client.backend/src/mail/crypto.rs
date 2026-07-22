@@ -29,9 +29,9 @@ use base64::Engine;
 
 use cms::content_info::ContentInfo;
 use crypto_core::{
-    CryptoBackend, DecryptOp, EncryptOp, EncryptedEnvelope, EncryptedPart, Fingerprint, KeyHandle,
-    KeyHandleRef, KeyId, KeyStore, KeyUsage, Part, PartId, PartKind, SerializationStrategy, SignOp,
-    SignatureState, SignedEnvelope, Standard, TrustState,
+    CryptoBackend, DecryptOp, EncryptOp, EncryptedEnvelope, EncryptedPart, Fingerprint, HashAlgorithm,
+    KeyHandle, KeyHandleRef, KeyId, KeyStore, KeyUsage, Part, PartId, PartKind, SerializationStrategy,
+    SignOp, SignatureState, SignedEnvelope, Standard, TrustState,
 };
 use crypto_smime::SmimeBackend;
 use der::{Decode, Encode};
@@ -46,7 +46,7 @@ use crate::db::message_crypto_results::{
 };
 use crate::db::trust_decisions::get_latest_trust_decision;
 use crate::keystore_bridge::SqliteKeyStore;
-use crate::mail::builder::{CryptoMethod, SendDraft};
+use crate::mail::builder::SendDraft;
 use crate::mail::crypto_crl::fetch_crl_cached;
 use crate::mail::imap::client::extract_attachments;
 use crate::mail::imap::types::ImapAttachment;
@@ -77,6 +77,11 @@ pub(crate) struct EntityBytes(pub Vec<u8>);
 #[derive(Debug)]
 pub enum CryptoSendError {
     NoSigningKey,
+    /// Fail-closed: no recipient cert/key resolved for the email. The inner
+    /// String is a fully-formatted, standard-aware message (e.g.
+    /// `"no S/MIME cert for recipient bob@x.com"` or
+    /// `"no OpenPGP key for recipient bob@x.com"`) — the Display impl emits
+    /// it verbatim so callers can match on the standard-specific phrase.
     MissingRecipientCert(String),
     /// A recipient cert was found in the keystore but failed chain validation
     /// (expired, wrong-issuer, missing EKU/SAN, or no anchor could be loaded
@@ -88,10 +93,11 @@ pub enum CryptoSendError {
 impl std::fmt::Display for CryptoSendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoSigningKey => write!(f, "no default S/MIME signing key for the account"),
-            Self::MissingRecipientCert(e) => write!(f, "no S/MIME cert for recipient {e}"),
+            Self::NoSigningKey => write!(f, "no default signing key for the account"),
+            // Inner String is already a fully-formatted, standard-aware message.
+            Self::MissingRecipientCert(e) => write!(f, "{e}"),
             Self::InvalidRecipientCert(e) => {
-                write!(f, "invalid S/MIME recipient cert: {e}")
+                write!(f, "invalid recipient cert: {e}")
             }
             Self::Backend(e) => write!(f, "crypto backend: {e}"),
             Self::Mime(s) => write!(f, "mime: {s}"),
@@ -1312,28 +1318,48 @@ fn parse_plaintext_mime(
     (body_html, body_text, attachments)
 }
 
-/// Apply S/MIME sign/encrypt to a built MIME message. Returns the wrapped bytes
-/// (or the input unchanged when `crypto_method != Smime` or neither flag set).
+/// Apply sign/encrypt to a built MIME message under the supplied `standard`.
+/// Returns the wrapped bytes (or the input unchanged when neither `sign` nor
+/// `encrypt` is set — standard-selection is the caller's job; send_op gates on
+/// `account.crypto_method.standard()`).
 ///
-/// - `sign`   → clear-sign `multipart/signed` over the body entity.
-/// - `encrypt` → `application/pkcs7-mime; smime-type=enveloped-data` over the
-///   (possibly signed) body entity; the sender (`account_email`) is added as a
-///   recipient (encrypt-to-self).
-/// - sign + encrypt → inner clear-sign, outer enveloped.
+/// The single `&dyn CryptoBackend` code path dispatches encrypt/sign via the
+/// trait; the per-standard difference is only in the MIME WRAPPING of the
+/// backend's output bytes:
+/// - **S/MIME** encrypt → `application/pkcs7-mime; smime-type=enveloped-data`
+///   via [`wrap_enveloped`]; sign → `multipart/signed` via
+///   [`wrap_multipart_signed`] (Thunderbird-faithful, unchanged by Task 4).
+/// - **OpenPGP** encrypt → `multipart/encrypted;
+///   protocol="application/pgp-encrypted"` via
+///   [`pgp_mime::wrap_encrypted`] (RFC 3156 §2); sign →
+///   `multipart/signed; protocol="application/pgp-signature"` via
+///   [`pgp_mime::wrap_signed`] (RFC 3156 §1).
 ///
-/// Fail-closed on missing OR invalid recipient certs: any To/Cc/Bcc (or the
-/// sender) whose cert `find_by_email` cannot resolve produces
-/// `MissingRecipientCert`; any resolved recipient cert that does NOT chain to
-/// a configured trust anchor for `account_id` (or is expired / missing the
-/// S/MIME BR leaf shape) produces `InvalidRecipientCert`. In both cases no
-/// ciphertext is emitted — `backend.encrypt` is never reached.
+/// - `sign`   → detached-sign the body entity and wrap as `multipart/signed`.
+/// - `encrypt` → encrypt the (possibly signed) body entity; the sender
+///   (`account_email`) is added as a recipient (encrypt-to-self).
+/// - sign + encrypt → `EncryptOp.sign_with = signer` (the backend composes
+///   sign-over-plaintext-then-encrypt internally — S/MIME: opaque SignedData
+///   inside EnvelopedData; PGP: inline-signed ciphertext).
 ///
-/// `pool` + `account_id` are used to resolve the trust-anchor set (option (c)
-/// for the G4 "corporate-PKI intermediates" landmine — every `key_type='cert'`
-/// row for the account acts as a candidate anchor, Thunderbird-equivalent).
+/// Fail-closed on missing OR invalid recipient certs/keys: any To/Cc/Bcc (or
+/// the sender) whose key `find_by_email` cannot resolve produces
+/// `MissingRecipientCert`; under S/MIME, any resolved recipient cert that does
+/// NOT chain to a configured trust anchor for `account_id` (or is expired /
+/// missing the S/MIME BR leaf shape) produces `InvalidRecipientCert`. PGP
+/// inherits the missing-recipient fail-closed but NOT the cert-chain
+/// validation — PGP uses Web-of-Trust, deferred to a later slice. In all
+/// failure cases no ciphertext is emitted — `backend.encrypt` is never
+/// reached.
+///
+/// `pool` + `account_id` are used to resolve the trust-anchor set for the
+/// S/MIME cert-chain gate (option (c) for the G4 "corporate-PKI intermediates"
+/// landmine — every `key_type='cert'` row for the account acts as a candidate
+/// anchor, Thunderbird-equivalent).
 #[allow(clippy::too_many_arguments)] // orchestrator surface; bundling adds ceremony without clarity
 pub(crate) async fn apply_crypto(
-    backend: &SmimeBackend,
+    backend: &dyn CryptoBackend,
+    standard: Standard,
     keystore: &SqliteKeyStore,
     mime: &[u8],
     draft: &SendDraft,
@@ -1342,16 +1368,16 @@ pub(crate) async fn apply_crypto(
     pool: &SqlitePool,
     account_id: &str,
 ) -> Result<Vec<u8>, CryptoSendError> {
-    if draft.crypto_method != CryptoMethod::Smime || (!draft.sign && !draft.encrypt) {
+    if !draft.sign && !draft.encrypt {
         return Ok(mime.to_vec());
     }
 
     let (outer, mut entity) = split_message(mime)?;
 
     // Resolve the signing key up-front. Used by BOTH the encrypt-with-sign arm
-    // (opaque SignedData inside EnvelopedData — Thunderbird-style
-    // sign-then-encrypt) and the sign-only clear-sign arm below. `None` when
-    // not signing.
+    // (opaque SignedData inside EnvelopedData for S/MIME — Thunderbird-style
+    // sign-then-encrypt; inline-signed ciphertext for PGP) and the sign-only
+    // detached-sign arm below. `None` when not signing.
     //
     // CRITICAL: when BOTH sign + encrypt we must NOT clear-sign-then-encrypt.
     // Clear-signing wraps the body in a `multipart/signed` MIME entity; the
@@ -1374,7 +1400,7 @@ pub(crate) async fn apply_crypto(
     // --- encrypt ---
     if draft.encrypt {
         // Recipient set = sender (encrypt-to-self) + To/Cc/Bcc. Dedup is the
-        // keystore's job (duplicate handles are harmless to the cms builder).
+        // keystore's job (duplicate handles are harmless to the backend).
         let recipient_emails: Vec<String> = std::iter::once(account_email.to_string())
             .chain(draft.to.iter().map(|a| a.email.clone()))
             .chain(draft.cc.iter().map(|a| a.email.clone()))
@@ -1383,19 +1409,19 @@ pub(crate) async fn apply_crypto(
         let mut recipients = Vec::with_capacity(recipient_emails.len());
         for email in &recipient_emails {
             let handles = keystore
-                .find_by_email(Standard::Smime, email)
+                .find_by_email(standard, email)
                 .await
                 .map_err(CryptoSendError::Backend)?;
             let h = handles
                 .first()
                 .cloned()
-                .ok_or_else(|| CryptoSendError::MissingRecipientCert(email.clone()))?;
+                .ok_or_else(|| CryptoSendError::MissingRecipientCert(missing_recipient_msg(standard, email)))?;
             recipients.push(h);
         }
-        // Fail-closed: validate every recipient cert BEFORE `backend.encrypt`.
-        // Closes the Plan 4a "unvalidated recipient cert" carry-forward: an
-        // expired/wrong-issuer/wrong-EKU recipient cert would otherwise produce
-        // ciphertext that the recipient can never decrypt. Resolution:
+        // Fail-closed: S/MIME-only cert-chain validation. Closes the Plan 4a
+        // "unvalidated recipient cert" carry-forward: an expired / wrong-issuer
+        // / wrong-EKU recipient cert would otherwise produce ciphertext that
+        // the recipient can never decrypt. Resolution:
         //   1. Resolve each recipient `KeyHandleRef` → its cert DER via
         //      `backend.export_public` (reads `public_data` from the keystore).
         //   2. Resolve the account's trust-anchor set (option (c) for the G4
@@ -1404,28 +1430,36 @@ pub(crate) async fn apply_crypto(
         //      a candidate anchor; Thunderbird-equivalent).
         //   3. `validate_recipient_certs` runs the same chain validator as the
         //      receive side (`crypto_smime::validate_signer_chain` under the
-        //      `KylinsSmimeProfile`). On the first failure → `InvalidRecipientCert`
-        //      and `apply_crypto` returns (no ciphertext produced). The
-        //      existing `send_op` failure-emit path (engine.rs:1086-1108)
-        //      surfaces it as `SendResultEvent{success:false}` + `Err`.
-        let mut recipient_cert_ders = Vec::with_capacity(recipients.len());
-        for h in &recipients {
-            let der = backend
-                .export_public(&h.handle)
+        //      `KylinsSmimeProfile`). On the first failure →
+        //      `InvalidRecipientCert` and `apply_crypto` returns (no ciphertext
+        //      produced). The existing `send_op` failure-emit path surfaces it
+        //      as `SendResultEvent{success:false}` + `Err`.
+        //
+        // PGP does NOT run this gate: PGP uses Web-of-Trust (deferred to a
+        // later slice), and `find_by_email` already guarantees the recipient
+        // key is present (sufficient for PGP encrypt). Running cert-chain
+        // validation on PGP keys would be a type error (PGP keys are not X.509
+        // certs) and is skipped entirely.
+        if standard == Standard::Smime {
+            let mut recipient_cert_ders = Vec::with_capacity(recipients.len());
+            for h in &recipients {
+                let der = backend
+                    .export_public(&h.handle)
+                    .await
+                    .map_err(CryptoSendError::Backend)?;
+                recipient_cert_ders.push(der);
+            }
+            let trust_anchor_ders = list_trust_anchor_certs(pool, account_id)
                 .await
-                .map_err(CryptoSendError::Backend)?;
-            recipient_cert_ders.push(der);
+                .map_err(CryptoSendError::InvalidRecipientCert)?;
+            let now_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            validate_recipient_certs(&recipient_cert_ders, &trust_anchor_ders, now_unix)
+                .await
+                .map_err(CryptoSendError::InvalidRecipientCert)?;
         }
-        let trust_anchor_ders = list_trust_anchor_certs(pool, account_id)
-            .await
-            .map_err(CryptoSendError::InvalidRecipientCert)?;
-        let now_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        validate_recipient_certs(&recipient_cert_ders, &trust_anchor_ders, now_unix)
-            .await
-            .map_err(CryptoSendError::InvalidRecipientCert)?;
         let env = backend
             .encrypt(EncryptOp {
                 parts: &[Part {
@@ -1436,40 +1470,116 @@ pub(crate) async fn apply_crypto(
                 serialization: SerializationStrategy::SingleMimeBlob,
                 recipients: &recipients,
                 // `sign_with` = the resolved signer when `draft.sign` → opaque
-                // SignedData inside EnvelopedData (sign-then-encrypt). `None`
-                // → encrypt-only.
+                // SignedData inside EnvelopedData (S/MIME sign-then-encrypt)
+                // or inline-signed ciphertext (PGP). `None` → encrypt-only.
                 sign_with: signer.clone(),
             })
             .await?;
-        let enveloped_der = env
+        let envelope_bytes = env
             .parts
             .first()
             .expect("encrypt returns exactly one part")
             .ciphertext
             .clone();
-        let wrapped_entity = wrap_enveloped(&enveloped_der, "enveloped-data");
+        // Standard-branched MIME wrapping of the encrypted blob.
+        // - S/MIME → `application/pkcs7-mime; smime-type=enveloped-data` (CMS
+        //   DER, base64-wrapped) — unchanged from the original S/MIME-only
+        //   implementation.
+        // - PGP → `multipart/encrypted; protocol="application/pgp-encrypted"`
+        //   (RFC 3156 §2). The OpenpgpBackend fills `parts[0].ciphertext`
+        //   with the full OpenPGP message (PKESKs + SEIP data).
+        let wrapped_entity = match standard {
+            Standard::Smime => wrap_enveloped(&envelope_bytes, "enveloped-data"),
+            Standard::OpenPgp => crate::mail::pgp_mime::wrap_encrypted(&envelope_bytes),
+            Standard::Sm => {
+                return Err(CryptoSendError::Backend(crypto_core::CryptoError::UnsupportedStandard(
+                    "sm not implemented".into(),
+                )))
+            }
+        };
         // Final message = outer headers (no entity Content-Type) + the wrapped
-        // entity (which carries its own application/pkcs7-mime Content-Type).
+        // entity (which carries its own Content-Type).
         let mut out = outer.headers.into_bytes();
         out.extend_from_slice(b"\r\n");
         out.extend_from_slice(&wrapped_entity);
         return Ok(out);
     }
 
-    // --- sign-only (clear-sign) ---
+    // --- sign-only (detached sign) ---
     // Reached only when `draft.sign && !draft.encrypt` (the encrypt branch
-    // above returns). Produces a `multipart/signed` MIME entity — the standard
-    // clear-signed S/MIME shape (Thunderbird-interoperable).
+    // above returns). Produces a `multipart/signed` MIME entity.
     if let Some(signer) = signer {
-        let part1 = ensure_one_trailing_crlf(&entity.0);
-        let signed = backend
-            .sign(SignOp {
-                payload: &part1,
-                signing_key: signer,
-                detached: true,
-            })
-            .await?;
-        entity.0 = wrap_multipart_signed(&part1, &signed.signature.signature);
+        match standard {
+            Standard::Smime => {
+                // S/MIME: sign the WHOLE part-1 entity (Content-Type + blank +
+                // body, with exactly one trailing CRLF) and wrap via
+                // `wrap_multipart_signed` — byte-exact S/MIME clear-sign shape
+                // (Thunderbird-interoperable, unchanged from the original
+                // implementation).
+                let part1 = ensure_one_trailing_crlf(&entity.0);
+                let signed = backend
+                    .sign(SignOp {
+                        payload: &part1,
+                        signing_key: signer,
+                        detached: true,
+                    })
+                    .await?;
+                entity.0 = wrap_multipart_signed(&part1, &signed.signature.signature);
+            }
+            Standard::OpenPgp => {
+                // PGP: `pgp_mime::wrap_signed` takes `(payload_body,
+                // payload_mime, detached_sig, hash)` SEPARATELY (vs S/MIME's
+                // whole-entity slice) because it reconstructs the part-1
+                // entity internally as `Content-Type: {mime}\r\n\r\n{canonicalized
+                // body}`. The detached signature MUST be computed over the
+                // EXACT part-1 entity `wrap_signed` emits (see pgp_mime.rs's
+                // `# Signed region` doc) — so we split the entity into its
+                // Content-Type value + body, canonicalize the body, rebuild
+                // the part-1 entity bytes, sign THAT, then hand the body +
+                // mime + sig to `wrap_signed` (which re-canonicalizes
+                // idempotently + reconstructs the same part-1).
+                let (content_type_value, body_bytes) = split_entity_for_pgp_signed(&entity.0)?;
+                let body_canonical = ensure_one_trailing_crlf(&body_bytes);
+                let part1_entity = build_pgp_signed_region(&content_type_value, &body_canonical);
+                let signed = backend
+                    .sign(SignOp {
+                        payload: &part1_entity,
+                        signing_key: signer,
+                        detached: true,
+                    })
+                    .await?;
+                // micalg scope: Ed25519-only (RFC 8032 → SHA-512).
+                //
+                // The hardcoded `HashAlgorithm::Sha512` is CORRECT for every
+                // key `engine::generate` produces (Ed25519; Sequoia picks
+                // SHA-512 for Ed25519 per RFC 8032), and Task 7's GnuPG /
+                // Thunderbird interop validated it. BUT the framework's
+                // `SignedEnvelope` does not surface the signature's actual
+                // `hash_algo`, so we cannot read it back here. PGP keys
+                // IMPORTED via `crypto_import_key_from_path` (RSA-3072,
+                // Ed448, …) may default to a different hash (e.g. SHA-256 for
+                // RSA); for those the hardcoded `Sha512` would emit an
+                // incorrect `micalg=pgp-sha512` and strict verifiers would
+                // reject the signature. Until the framework change lands,
+                // PGP signing here is effectively scoped to Ed25519 signers.
+                //
+                // TODO(follow-up): parse `hash_algo` from the signature
+                // packet once `SignedEnvelope` exposes it (or scope a
+                // framework change to surface the sig's hash). See
+                // `pgp_mime::micalg_name`'s "Current scope" doc for details.
+                entity.0 = crate::mail::pgp_mime::wrap_signed(
+                    &body_canonical,
+                    &content_type_value,
+                    &signed.signature.signature,
+                    HashAlgorithm::Sha512,
+                );
+            }
+            Standard::Sm => {
+                return Err(CryptoSendError::Backend(crypto_core::CryptoError::UnsupportedStandard(
+                    "sm not implemented".into(),
+                )));
+            }
+        }
     }
 
     // sign-only: outer headers + the multipart/signed entity (its own Content-Type).
@@ -1477,6 +1587,90 @@ pub(crate) async fn apply_crypto(
     out.extend_from_slice(b"\r\n");
     out.extend_from_slice(&entity.0);
     Ok(out)
+}
+
+/// Build the standard-aware "no {standard} cert/key for recipient {email}"
+/// message carried by [`CryptoSendError::MissingRecipientCert`]. Phrasing
+/// preserves the S/MIME-specific phrase "no S/MIME cert for recipient" the
+/// existing engine.rs + crypto.rs tests assert on; PGP uses the parallel
+/// "no OpenPGP key for recipient" wording.
+fn missing_recipient_msg(standard: Standard, email: &str) -> String {
+    let noun = match standard {
+        Standard::Smime => "S/MIME cert",
+        Standard::OpenPgp => "OpenPGP key",
+        Standard::Sm => "SM cert",
+    };
+    format!("no {noun} for recipient {email}")
+}
+
+/// Split a body MIME entity into `(content_type_value, body_bytes)` for the
+/// PGP sign-only path. `pgp_mime::wrap_signed` takes these SEPARATELY (vs the
+/// S/MIME `wrap_multipart_signed` which takes the whole part-1 entity as one
+/// slice), because it reconstructs the part-1 entity internally as
+/// `Content-Type: {mime}\r\n\r\n{canonicalized body}`.
+///
+/// The Content-Type value may be folded across continuation lines (RFC 5322
+/// §2.2.3: a line starting with space/tab continues the previous header);
+/// folding is unfolded by concatenating continuation lines (whitespace trimmed
+/// from the join). The body is everything after the blank-line separator.
+///
+/// Other entity headers (Content-Transfer-Encoding, Content-Disposition, etc.)
+/// are NOT preserved in the PGP signed part-1 — `pgp_mime::wrap_signed`
+/// re-emits only `Content-Type`. This is fine for the common send-path shapes
+/// (text/plain, text/html, multipart/alternative); if a future draft shape
+/// carries a load-bearing non-CT entity header, revisit this helper + the PGP
+/// sign path.
+fn split_entity_for_pgp_signed(entity: &[u8]) -> Result<(String, Vec<u8>), CryptoSendError> {
+    let s = std::str::from_utf8(entity)
+        .map_err(|e| CryptoSendError::Mime(format!("entity not utf-8: {e}")))?;
+    let blank = s
+        .find("\r\n\r\n")
+        .ok_or_else(|| CryptoSendError::Mime("entity has no header/body blank line".into()))?;
+    let header_block = &s[..blank];
+    let body = s.as_bytes()[blank + 4..].to_vec();
+
+    // Walk header lines; unfold RFC 5322 continuations (lines starting with
+    // space/tab) into the previous header's value. Track the Content-Type
+    // value as we go.
+    let mut content_type_value: Option<String> = None;
+    let mut in_content_type = false;
+    for line in header_block.split("\r\n") {
+        let is_continuation = line.starts_with(' ') || line.starts_with('\t');
+        if is_continuation {
+            if in_content_type {
+                if let Some(ref mut ct) = content_type_value {
+                    // Unfold: per RFC 5322 §2.2.3 the CRLF + leading WSP is
+                    // removed; we trim leading whitespace and concatenate.
+                    ct.push_str(line.trim_start());
+                }
+            }
+            // Continuations of non-CT headers are ignored.
+        } else {
+            // New header line. Check if it starts a Content-Type.
+            if let Some(rest) = line.strip_prefix("Content-Type:").or_else(|| line.strip_prefix("content-type:")) {
+                in_content_type = true;
+                content_type_value = Some(rest.trim().to_string());
+            } else {
+                in_content_type = false;
+            }
+        }
+    }
+    let content_type_value = content_type_value.ok_or_else(|| {
+        CryptoSendError::Mime("entity has no Content-Type header (required for PGP sign)".into())
+    })?;
+    Ok((content_type_value, body))
+}
+
+/// Build the exact part-1 entity bytes that `pgp_mime::wrap_signed` emits,
+/// for signing. Mirrors the layout documented in `pgp_mime.rs`:
+/// `Content-Type: {content_type_value}\r\n\r\n{body_canonical}` where
+/// `body_canonical` is the body with exactly one trailing CRLF (caller
+/// pre-canonicalizes). The signature computed over these bytes will verify
+/// against the part-1 region `wrap_signed` reconstructs.
+fn build_pgp_signed_region(content_type_value: &str, body_canonical: &[u8]) -> Vec<u8> {
+    let mut out = format!("Content-Type: {content_type_value}\r\n\r\n").into_bytes();
+    out.extend_from_slice(body_canonical);
+    out
 }
 
 /// Validate recipient certs before encrypting (Plan 4a carry-forward, closed
@@ -1538,17 +1732,34 @@ pub async fn validate_recipient_certs(
 /// `SqliteKeyStore`'s canonical `"standard|fingerprint"` encoding (so a later
 /// `backend.sign(... signing_key: this ...)` resolves via `keystore.get`).
 ///
-/// Mirrors [`SqliteKeyStore::encode_key_id`]. `algorithm` is fixed to
-/// `ECDSA-P256` (the only signing algorithm `SmimeBackend::sign` currently
-/// supports); a future P-384/Ed25519 arm will dispatch on `DefaultKeyRow`'s
-/// algorithm column once it carries one.
+/// Mirrors [`SqliteKeyStore::encode_key_id`]. Standard-aware since Task 4:
+/// the `row.standard` string ("smime" / "openpgp" / "sm") drives both the
+/// `KeyId` prefix, the `Standard` enum value, and the algorithm label.
+/// `algorithm` is fixed per standard: S/MIME → `ECDSA-P256` (the only signing
+/// algorithm `SmimeBackend::sign` currently supports), PGP → `default` (the
+/// engine-core sentinel for the Ed25519 primary + signing subkey shape); a
+/// future P-384/RSA arm will dispatch on `DefaultKeyRow`'s algorithm column
+/// once it carries one.
 fn key_handle_ref(row: &DefaultKeyRow) -> KeyHandleRef {
+    let standard = match row.standard.as_str() {
+        "smime" => Standard::Smime,
+        "openpgp" => Standard::OpenPgp,
+        "sm" => Standard::Sm,
+        // Defensive default — a row with an unknown standard will fail the
+        // downstream keystore.get lookup cleanly rather than panic here.
+        _ => Standard::Smime,
+    };
+    let algorithm: &'static str = match standard {
+        Standard::Smime => "ECDSA-P256",
+        Standard::OpenPgp => "default",
+        Standard::Sm => "unknown",
+    };
     KeyHandleRef {
         handle: KeyHandle::Software(KeyId(format!("{}|{}", row.standard, row.fingerprint))),
-        standard: Standard::Smime,
+        standard,
         fingerprint: Fingerprint::new(&row.fingerprint),
         usage: KeyUsage::SignAndEncrypt,
-        algorithm: "ECDSA-P256".into(),
+        algorithm: algorithm.into(),
     }
 }
 
@@ -1804,14 +2015,15 @@ mod tests {
     use tempfile::TempDir;
 
     use crypto_core::{CryptoPolicy, KeyGenParams};
+    use crypto_core::DetachedSignature;
     use der::Encode;
-    use mail_parser::MimeHeaders;
+    use mail_parser::{MimeHeaders, PartType};
     use sha2::Digest;
 
     use crate::db::crypto_keys::get_default_signing_key;
     use crate::db::init_db;
     use crate::mail::builder::{
-        build_mime, build_mime_with_granularity, AddressSpec, AttachmentRef,
+        build_mime, build_mime_with_granularity, AddressSpec, AttachmentRef, CryptoMethod,
     };
     use crypto_core::EncryptionGranularity;
 
@@ -1954,7 +2166,7 @@ mod tests {
                 .execute(pool.as_ref())
                 .await
                 .expect("flag default signer");
-            get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
+            get_default_signing_key(pool.as_ref(), ACCOUNT_ID, crypto_core::Standard::Smime)
                 .await
                 .expect("query default signing key")
         } else {
@@ -2141,6 +2353,7 @@ mod tests {
 
         let out = apply_crypto(
             &h.backend,
+            Standard::Smime,
             h.keystore.as_ref(),
             &mime,
             &draft,
@@ -2196,6 +2409,7 @@ mod tests {
         seed_anchor_from_account(h.pool.as_ref(), ACCOUNT_ID, "acct-rcpt-0").await;
         let out = apply_crypto(
             &h.backend,
+            Standard::Smime,
             h.keystore.as_ref(),
             &mime,
             &draft,
@@ -2242,6 +2456,7 @@ mod tests {
         seed_anchor_from_account(pool.as_ref(), ACCOUNT_ID, "acct-rcpt-0").await;
         let out = apply_crypto(
             &h.backend,
+            Standard::Smime,
             h.keystore.as_ref(),
             &mime,
             &draft,
@@ -2318,6 +2533,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let err = apply_crypto(
             &h.backend,
+            Standard::Smime,
             h.keystore.as_ref(),
             &mime,
             &draft,
@@ -2362,6 +2578,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let err = apply_crypto(
             &h.backend,
+            Standard::Smime,
             h.keystore.as_ref(),
             &mime,
             &draft,
@@ -2413,6 +2630,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let out = apply_crypto(
             &h.backend,
+            Standard::Smime,
             h.keystore.as_ref(),
             &mime,
             &draft,
@@ -2445,6 +2663,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let out = apply_crypto(
             &h.backend,
+            Standard::Smime,
             h.keystore.as_ref(),
             &mime,
             &draft,
@@ -2806,6 +3025,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -3123,9 +3343,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         // Build a clear-signed multipart/signed via apply_crypto (sign-only).
         let draft = SendDraft {
@@ -3141,6 +3365,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -3254,9 +3479,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         let draft = SendDraft {
             draft_id: "sd1".into(),
@@ -3271,6 +3500,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -3365,9 +3595,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         // Sign with ACCOUNT_EMAIL (the own-key SAN).
         let draft = SendDraft {
@@ -3383,6 +3617,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -3726,9 +3961,13 @@ mod tests {
             .execute(pool.as_ref())
             .await
             .expect("flag default signer");
-        let signer_row = crate::db::crypto_keys::get_default_signing_key(pool.as_ref(), ACCOUNT_ID)
-            .await
-            .expect("query default signing key");
+        let signer_row = crate::db::crypto_keys::get_default_signing_key(
+            pool.as_ref(),
+            ACCOUNT_ID,
+            crypto_core::Standard::Smime,
+        )
+        .await
+        .expect("query default signing key");
 
         let draft = SendDraft {
             draft_id: "clear-tamper".into(),
@@ -3743,6 +3982,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -4105,6 +4345,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -4235,6 +4476,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -4342,6 +4584,7 @@ mod tests {
         let mime = build_mime(&draft).await.expect("build_mime");
         let wrapped = apply_crypto(
             &h.backend,
+            Standard::Smime,
             &SqliteKeyStore::new(pool.clone(), ACCOUNT_ID),
             &mime,
             &draft,
@@ -4412,6 +4655,997 @@ mod tests {
             bytes,
             b"\x89PNG\r\n\x1a\nfake-png-bytes".as_slice(),
             "cached inline bytes must equal the original image"
+        );
+    }
+
+    // ---- crypto-openpgp Task 4: PGP apply_crypto integration tests ----
+    //
+    // Mirrors the S/MIME apply_crypto harness patterns above but exercises
+    // the OpenPgp path: dispatch via `&dyn CryptoBackend`, PGP/MIME wrapping
+    // via `pgp_mime::wrap_encrypted` / `wrap_signed`, and the per-standard
+    // recipient-validation gate (no cert-chain check for PGP). Round-trip
+    // through the backend's decrypt/verify proves the output is well-formed
+    // and recoverable, not just structurally correct.
+    //
+    // The four cases mirror the brief's Task 4 Step 5 TDD:
+    //   (a) encrypt → PGP/MIME multipart/encrypted, decrypt round-trip
+    //   (b) sign-only → PGP/MIME multipart/signed, detached-sig verify
+    //   (c) sign+encrypt → decrypt yields plaintext + embedded sig verifies
+    //   (d) missing recipient → fail-closed (Err, no plaintext)
+    // The S/MIME regression is the existing `apply_crypto_*` suite above.
+
+    /// OpenPGP test harness: temp DB + the account's own Ed25519 key (signer +
+    /// encrypt-to-self) generated via the Task 2 factory backend. The backend
+    /// is `Box<dyn CryptoBackend>` — exactly what send_op constructs at send
+    /// time, so this exercises the real dispatch path. `extra_recipient_emails`
+    /// seeds extra PGP recipient keys under their own accounts so
+    /// `find_by_email(OpenPgp, …)` resolves them.
+    struct OpenpgpHarness {
+        backend: Box<dyn CryptoBackend>,
+        /// The account's own key handle (signer + encrypt-to-self recipient).
+        /// Retained so sign + decrypt round-trips can construct
+        /// `SignedEnvelope` / `DecryptOp` without re-resolving.
+        own_key: KeyHandleRef,
+        #[allow(dead_code)]
+        pool: Arc<SqlitePool>,
+        account_email: String,
+        signer_row: Option<DefaultKeyRow>,
+        #[allow(dead_code)]
+        _tmp: TempDir,
+    }
+
+    async fn make_openpgp_harness(
+        flag_default_signer: bool,
+        extra_recipient_emails: &[&str],
+    ) -> OpenpgpHarness {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pool = Arc::new(init_db(tmp.path()).await.expect("init_db"));
+        seed_account(&pool, ACCOUNT_ID, ACCOUNT_EMAIL).await;
+
+        // Build via the Task 2 factory (same path send_op uses).
+        let backend = crate::db::commands::crypto_backend(
+            Standard::OpenPgp,
+            pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .expect("crypto_backend OpenPgp");
+
+        // The account's own key — signer + encrypt-to-self.
+        let own_key = backend
+            .generate_key(KeyGenParams {
+                standard: Standard::OpenPgp,
+                user_id: ACCOUNT_EMAIL.into(),
+                algorithm: "default".into(),
+                passphrase: None,
+            })
+            .await
+            .expect("generate own OpenPGP key");
+
+        let signer_row = if flag_default_signer {
+            sqlx::query("UPDATE crypto_keys SET is_default_sign = 1 WHERE fingerprint = ?")
+                .bind(own_key.fingerprint.as_str())
+                .execute(pool.as_ref())
+                .await
+                .expect("flag default signer");
+            get_default_signing_key(pool.as_ref(), ACCOUNT_ID, Standard::OpenPgp)
+                .await
+                .expect("query default signing key")
+        } else {
+            None
+        };
+
+        // Extra recipients — each under its own account (the keystore's `put`
+        // resolves email via the account row, so find_by_email matches).
+        for (i, email) in extra_recipient_emails.iter().enumerate() {
+            let acct = format!("acct-pgp-rcpt-{i}");
+            seed_account(&pool, &acct, email).await;
+            let rcpt_backend = crate::db::commands::crypto_backend(
+                Standard::OpenPgp,
+                pool.as_ref(),
+                &acct,
+            )
+            .expect("crypto_backend recipient");
+            rcpt_backend
+                .generate_key(KeyGenParams {
+                    standard: Standard::OpenPgp,
+                    user_id: (*email).into(),
+                    algorithm: "default".into(),
+                    passphrase: None,
+                })
+                .await
+                .expect("generate recipient OpenPGP key");
+        }
+
+        OpenpgpHarness {
+            backend,
+            own_key,
+            pool,
+            account_email: ACCOUNT_EMAIL.into(),
+            signer_row,
+            _tmp: tmp,
+        }
+    }
+
+    /// Parse `bytes` as a multipart MIME entity and return `(root_subtype,
+    /// child_part_indices, parser)`. Panics if the root is not multipart.
+    /// Mirrors `pgp_mime::tests::parse_multipart`.
+    fn parse_pgp_multipart(
+        bytes: &[u8],
+    ) -> (String, Vec<usize>, mail_parser::Message<'_>) {
+        let parsed = mail_parser::MessageParser::default()
+            .parse(bytes)
+            .expect("output must parse as MIME");
+        let root = parsed.parts.first().expect("root part exists");
+        let ct = root.content_type().expect("Content-Type present");
+        let full = match ct.subtype() {
+            Some(sub) => format!("{}/{}", ct.ctype(), sub).to_lowercase(),
+            None => ct.ctype().to_lowercase(),
+        };
+        let kids: Vec<usize> = match &root.body {
+            PartType::Multipart(ids) => ids.to_vec(),
+            _ => panic!("root must be multipart, got {:?}", root.body),
+        };
+        (full, kids, parsed)
+    }
+
+    /// Decode a binary part body (base64-decoded by mail-parser) to bytes.
+    /// Mirrors `pgp_mime::tests::decode_binary_part`.
+    fn decode_binary_part(parsed: &mail_parser::Message<'_>, idx: usize) -> Vec<u8> {
+        let p = &parsed.parts[idx];
+        match &p.body {
+            PartType::Binary(d) | PartType::InlineBinary(d) => d.as_ref().to_vec(),
+            PartType::Text(t) => {
+                let collapsed: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+                base64::engine::general_purpose::STANDARD
+                    .decode(collapsed.as_bytes())
+                    .expect("base64 decode")
+            }
+            _ => panic!("part {idx} must be Binary/InlineBinary/Text, got {:?}", p.body),
+        }
+    }
+
+    /// (a) Encrypt-only: openpgp account, encrypt to self (encrypt-to-self)
+    /// → apply_crypto returns PGP/MIME `multipart/encrypted` bytes whose
+    /// OpenPGP message round-trips through `backend.decrypt`.
+    #[tokio::test]
+    async fn apply_crypto_openpgp_encrypt_round_trips() {
+        let h = make_openpgp_harness(false, &[]).await;
+        let draft = SendDraft {
+            draft_id: "pgp-enc-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![], // encrypt-to-self only — no external recipients
+            subject: "PGP Secret".into(),
+            text_body: Some("plain OpenPGP body".into()),
+            crypto_method: CryptoMethod::Openpgp,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let out = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            None,
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto PGP encrypt");
+
+        // Structure: multipart/encrypted with the RFC 3156 §2 protocol.
+        let (full, kids, parsed) = parse_pgp_multipart(&out);
+        assert_eq!(full, "multipart/encrypted");
+        assert_eq!(kids.len(), 2, "multipart/encrypted must have 2 parts");
+        let root_ct = parsed
+            .parts
+            .first()
+            .expect("root")
+            .content_type()
+            .expect("Content-Type");
+        assert_eq!(
+            root_ct.attribute("protocol"),
+            Some("application/pgp-encrypted")
+        );
+
+        // Part 2 carries the OpenPGP message (base64-transported).
+        let openpgp_msg = decode_binary_part(&parsed, kids[1]);
+        assert!(!openpgp_msg.is_empty(), "OpenPGP message bytes non-empty");
+
+        // Round-trip through the backend's decrypt.
+        let env = EncryptedEnvelope {
+            standard: Standard::OpenPgp,
+            serialization: SerializationStrategy::SingleMimeBlob,
+            parts: vec![EncryptedPart {
+                id: PartId("body".into()),
+                kind: PartKind::Body,
+                ciphertext: openpgp_msg,
+                signature: None,
+            }],
+            recipients: Vec::new(),
+        };
+        let payload = h
+            .backend
+            .decrypt(crypto_core::DecryptOp {
+                decryption_key: h.own_key.clone(),
+                envelope: &env,
+            })
+            .await
+            .expect("decrypt round-trip");
+        // The recovered plaintext is the framed body entity (frame_parts +
+        // the entity bytes apply_crypto encrypted). Assert it round-tripped
+        // and carries our PartId.
+        assert_eq!(payload.standard, Standard::OpenPgp);
+        assert_eq!(payload.parts.len(), 1);
+        assert_eq!(payload.parts[0].id, PartId("body".into()));
+        // The decrypted data is the body entity apply_crypto encrypted — must
+        // contain the original body text somewhere in the bytes.
+        let plaintext_str = String::from_utf8_lossy(&payload.parts[0].data);
+        assert!(
+            plaintext_str.contains("plain OpenPGP body"),
+            "decrypted plaintext must contain the original body; got: {plaintext_str}"
+        );
+    }
+
+    /// (b) Sign-only: detached-sign over the body entity → PGP/MIME
+    /// `multipart/signed` whose detached signature verifies via
+    /// `backend.verify`. Pins the PGP signed-region invariance (the signature
+    /// covers the exact part-1 entity `wrap_signed` emits).
+    #[tokio::test]
+    async fn apply_crypto_openpgp_sign_only_verifies() {
+        let h = make_openpgp_harness(true, &[]).await;
+        let signer_row = h.signer_row.as_ref().expect("signer flagged");
+        let draft = SendDraft {
+            draft_id: "pgp-sign-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![addr("bob@kylins.com")],
+            subject: "PGP Signed".into(),
+            text_body: Some("signed body".into()),
+            crypto_method: CryptoMethod::Openpgp,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let out = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            Some(signer_row),
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto PGP sign");
+
+        // Structure: multipart/signed with the RFC 3156 §1 protocol + micalg.
+        let (full, kids, parsed) = parse_pgp_multipart(&out);
+        assert_eq!(full, "multipart/signed");
+        assert_eq!(kids.len(), 2, "multipart/signed must have 2 parts");
+        let root_ct = parsed
+            .parts
+            .first()
+            .expect("root")
+            .content_type()
+            .expect("Content-Type");
+        assert_eq!(
+            root_ct.attribute("protocol"),
+            Some("application/pgp-signature")
+        );
+        // micalg=pgp-sha512 (engine-core's Ed25519 default hash).
+        assert_eq!(root_ct.attribute("micalg"), Some("pgp-sha512"));
+
+        // Extract part-1 (the signed region) and part-2 (the detached sig).
+        // The signed-region bytes are exactly what `backend.verify` must be
+        // given as `payload` to recompute + compare the signature hash.
+        let part1 = &parsed.parts[kids[0]];
+        // Reconstruct the canonical part-1 entity bytes (Content-Type + blank
+        // + body) that `pgp_mime::wrap_signed` emits and the signature
+        // covers. mail-parser splits headers from body; re-assemble via the
+        // raw offsets when available, else fall back to re-encoding via the
+        // typed content-type + body text.
+        let part1_ct = part1.content_type().expect("part-1 Content-Type");
+        let part1_mime = match (part1_ct.ctype(), part1_ct.subtype()) {
+            (c, Some(s)) => {
+                let mut base = format!("{c}/{s}");
+                // Carry parameters (charset etc.) so the reconstructed CT
+                // matches what was emitted.
+                for attr in ["charset"] {
+                    if let Some(v) = part1_ct.attribute(attr) {
+                        base.push_str(&format!("; {attr}=\"{v}\""));
+                    }
+                }
+                base
+            }
+            (c, None) => c.to_string(),
+        };
+        let part1_body: Vec<u8> = match &part1.body {
+            PartType::Text(t) => t.as_bytes().to_vec(),
+            PartType::Binary(d) | PartType::InlineBinary(d) => d.as_ref().to_vec(),
+            _ => panic!("unexpected part-1 body shape: {:?}", part1.body),
+        };
+        // Apply the same one-trailing-CRLF canonicalization wrap_signed applies.
+        let part1_canonical = ensure_one_trailing_crlf(&part1_body);
+        let signed_region =
+            build_pgp_signed_region(&part1_mime, &part1_canonical);
+
+        let sig_bytes = decode_binary_part(&parsed, kids[1]);
+
+        // Verify via the backend trait method. The signer handle is our own key.
+        let signed_env = SignedEnvelope {
+            standard: Standard::OpenPgp,
+            payload: signed_region,
+            signature: DetachedSignature {
+                standard: Standard::OpenPgp,
+                signer: h.own_key.clone(),
+                signature: sig_bytes,
+            },
+        };
+        let result = h
+            .backend
+            .verify(crypto_core::VerifyOp {
+                signed: &signed_env,
+            })
+            .await
+            .expect("verify call");
+        assert!(
+            matches!(result.state, crypto_core::SignatureState::ValidVerified),
+            "detached PGP signature must verify as ValidVerified; got {:?}",
+            result
+        );
+    }
+
+    /// (c) Sign + encrypt: PGP inline-signed-then-encrypted (the OpenPGP
+    /// backend composes sign-over-plaintext inside the ciphertext stream
+    /// via `EncryptOp.sign_with`). Decrypt yields the plaintext AND the
+    /// embedded signature verifies (decrypt fails on a bad embedded sig,
+    /// per Sequoia's `VerificationHelper::check`).
+    #[tokio::test]
+    async fn apply_crypto_openpgp_sign_and_encrypt_round_trips() {
+        let h = make_openpgp_harness(true, &[]).await;
+        let signer_row = h.signer_row.as_ref().expect("signer flagged");
+        let draft = SendDraft {
+            draft_id: "pgp-signenc-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![],
+            subject: "PGP Signed+Encrypted".into(),
+            text_body: Some("signed and encrypted body".into()),
+            crypto_method: CryptoMethod::Openpgp,
+            sign: true,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let out = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            Some(signer_row),
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto PGP sign+encrypt");
+
+        // Outer is multipart/encrypted (RFC 3156 §2).
+        let (full, kids, parsed) = parse_pgp_multipart(&out);
+        assert_eq!(full, "multipart/encrypted");
+        assert_eq!(kids.len(), 2);
+
+        let openpgp_msg = decode_binary_part(&parsed, kids[1]);
+        let env = EncryptedEnvelope {
+            standard: Standard::OpenPgp,
+            serialization: SerializationStrategy::SingleMimeBlob,
+            parts: vec![EncryptedPart {
+                id: PartId("body".into()),
+                kind: PartKind::Body,
+                ciphertext: openpgp_msg,
+                signature: None,
+            }],
+            recipients: Vec::new(),
+        };
+        // Decrypt succeeds ONLY if the embedded signature verifies (Sequoia's
+        // Helper::check returns Err on a bad embedded sig, which surfaces as
+        // a Backend error). So a successful decrypt IS the embedded-sig
+        // verification proof.
+        let payload = h
+            .backend
+            .decrypt(crypto_core::DecryptOp {
+                decryption_key: h.own_key.clone(),
+                envelope: &env,
+            })
+            .await
+            .expect("decrypt must succeed — embedded sig verifies");
+        assert_eq!(payload.standard, Standard::OpenPgp);
+        assert_eq!(payload.parts.len(), 1);
+        let plaintext_str = String::from_utf8_lossy(&payload.parts[0].data);
+        assert!(
+            plaintext_str.contains("signed and encrypted body"),
+            "decrypted plaintext must contain the original body; got: {plaintext_str}"
+        );
+    }
+
+    /// (d) Fail-closed: openpgp account, encrypt requested, a To recipient
+    /// with NO PGP key in the keystore → `apply_crypto` returns
+    /// `Err(MissingRecipientCert)` and NO plaintext MIME is produced.
+    #[tokio::test]
+    async fn apply_crypto_openpgp_missing_recipient_fails_closed() {
+        let h = make_openpgp_harness(false, &[]).await;
+        // `nobody@kylins.com` has NO seeded key.
+        let draft = SendDraft {
+            draft_id: "pgp-missing-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![addr("nobody@kylins.com")],
+            subject: "PGP Missing Recipient".into(),
+            text_body: Some("body".into()),
+            crypto_method: CryptoMethod::Openpgp,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let err = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            None,
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect_err("missing recipient must fail-closed");
+        assert!(
+            matches!(err, CryptoSendError::MissingRecipientCert(ref msg)
+                     if msg.contains("nobody@kylins.com")
+                        && msg.contains("OpenPGP key")),
+            "expected MissingRecipientCert with the PGP-standard phrasing for nobody; got {err:?}"
+        );
+    }
+
+    // =====================================================================
+    // Task 7: cross-impl send-side interop (gpg) — the EXIT GATE.
+    // =====================================================================
+    //
+    // Proves a PGP/MIME message produced by the full send path
+    // (`apply_crypto` → `pgp_mime::wrap_*`) is accepted by a real GnuPG
+    // (`gpg`): the OpenPGP message inside multipart/encrypted decrypts to
+    // the original body, and the detached signature inside multipart/signed
+    // verifies. Mirrors the engine-core interop
+    // (`kylins.client.crypto/openpgp/tests/interop.rs`) but exercises the
+    // FULL PGP/MIME wire output through the send path (vs the engine-core's
+    // raw-OpenPGP-message-level interop).
+    //
+    // The CLI discovery + temp-homedir + MSYS2-path-conversion helpers
+    // below are ported one-for-one from
+    // `crypto-openpgp/tests/interop.rs`. They are copied locally (rather
+    // than imported) because (a) the engine-core's interop test is an
+    // integration-test binary (not a `pub mod`) and (b) `apply_crypto` is
+    // `pub(crate)`, so the send-side interop MUST live inside this crate's
+    // own test module.
+
+    /// Returns true iff `cmd --version` spawns and exits 0. Ported from
+    /// `crypto-openpgp/tests/interop.rs::have` (renamed with `interop_`
+    /// prefix to avoid colliding with any future same-named helper in this
+    /// module).
+    fn interop_have(cmd: &str) -> bool {
+        std::process::Command::new(cmd)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Skip-guard for every interop test. Returns `true` when neither `gpg`
+    /// nor `sq` is on PATH so CI/dev boxes without the tooling stay green.
+    /// Ported from `interop.rs::skip_no_cli`. On this dev box gpg 2.4.9 IS
+    /// available, so the interop tests actually RUN here (vs skip).
+    fn interop_skip_no_cli() -> bool {
+        if !interop_have("gpg") && !interop_have("sq") {
+            eprintln!("skipping: no gpg/sq on PATH");
+            return true;
+        }
+        false
+    }
+
+    /// RAII temp directory for `gpg --homedir`. Ported from
+    /// `interop.rs::TempHome`. `tempfile::TempDir` deletes the dir on drop,
+    /// so the CLI's keyring/trustdb state is fully isolated from the user's
+    /// real keyring and torn down when the test exits.
+    struct InteropTempHome(tempfile::TempDir);
+
+    impl InteropTempHome {
+        fn new() -> Self {
+            Self(tempfile::tempdir().expect("tempdir"))
+        }
+        fn join(&self, name: &str) -> std::path::PathBuf {
+            self.0.path().join(name)
+        }
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+
+    /// Convert a filesystem path to the form `gpg` expects on the command
+    /// line. On Windows we may be running against the Git-for-Windows
+    /// (MSYS2) build of `gpg`, whose runtime does NOT recognize `C:\...`
+    /// as an absolute path in argv — it treats it as relative and joins
+    /// with the cwd, mangling it. Converting to MSYS2 form (`/c/...`) is
+    /// safe for both MSYS2-gpg and native Windows gpg (gpg4win).
+    /// Ported from `interop.rs::cli_path_arg` (gpg branch only).
+    fn interop_cli_path_arg(p: &std::path::Path) -> String {
+        let raw = p.to_str().expect("path is utf8");
+        #[cfg(windows)]
+        {
+            let bytes = raw.as_bytes();
+            if bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+                let drive = (bytes[0] as char).to_ascii_lowercase();
+                let rest = raw[2..].replace('\\', "/");
+                return format!("/{drive}{rest}");
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = raw;
+        }
+        raw.replace('\\', "/")
+    }
+
+    /// Build a `gpg` Command rooted at the temp homedir (`--batch --yes
+    /// --pinentry-mode loopback --quiet --no-tty` make the CLI
+    /// non-interactive even when prompting would normally occur). Ported
+    /// from `interop.rs::cli_base` (gpg branch).
+    fn interop_gpg_base(td: &InteropTempHome) -> std::process::Command {
+        let mut c = std::process::Command::new("gpg");
+        let homedir = interop_cli_path_arg(td.path());
+        c.args([
+            "--homedir",
+            &homedir,
+            "--batch",
+            "--yes",
+            "--pinentry-mode",
+            "loopback",
+            "--quiet",
+            "--no-tty",
+        ]);
+        c
+    }
+
+    /// Pipe `input` to `cmd`'s stdin, run, assert success. Ported from
+    /// `interop.rs::pipe_in`.
+    fn interop_pipe_in(cmd: &mut std::process::Command, input: &[u8], label: &str) {
+        use std::io::Write;
+        use std::process::Stdio;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .unwrap_or_else(|e| panic!("{label}: spawn: {e}"));
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin piped")
+            .write_all(input)
+            .unwrap_or_else(|e| panic!("{label}: write stdin: {e}"));
+        drop(child.stdin.take());
+        let out = child
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("{label}: wait: {e}"));
+        if !out.status.success() {
+            panic!(
+                "{label}: exit {}\nstdout: {}\nstderr: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+    }
+
+    /// Run `cmd`, capture stdout/stderr. Returns the raw Output +
+    /// stringified stdout/stderr for caller inspection. Unlike
+    /// `interop.rs::run_assert` (which panics on non-zero exit), this does
+    /// NOT panic — the caller decides what success means. We need this
+    /// because `gpg --verify` on an unknown-trust signer exits non-zero
+    /// even with a Good signature, and we want to inspect the status
+    /// before asserting.
+    fn interop_run_capture(
+        cmd: &mut std::process::Command,
+        label: &str,
+    ) -> (std::process::Output, String, String) {
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("{label}: spawn failed: {e}"));
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out, stdout, stderr)
+    }
+
+    /// Import `cert_bytes` (armored TPK or TSK) into the temp gpg keyring.
+    /// Ported from `interop.rs::cli_import` (gpg branch).
+    fn interop_gpg_import(td: &InteropTempHome, cert_bytes: &[u8]) {
+        let mut cmd = interop_gpg_base(td);
+        cmd.args(["--import"]);
+        interop_pipe_in(&mut cmd, cert_bytes, "gpg --import");
+    }
+
+    /// Re-fetch the account's Cert from the backend's `SqliteKeyStore` and
+    /// return the ASCII-armored TSK (PRIVATE KEY BLOCK). The `CryptoBackend`
+    /// trait exposes NO secret-export method (security boundary: secret
+    /// material never leaves the backend's keystore in production), so we
+    /// reach into the same `SqliteKeyStore` the backend uses and round-trip
+    /// the binary TSK via Sequoia's `Cert::as_tsk().armored().serialize(...)`
+    /// — exactly what `crypto-openpgp/tests/interop.rs::armored_secret` does
+    /// for the engine-core interop. TEST-ONLY path; production code MUST
+    /// NOT expose secret material this way.
+    async fn interop_armored_secret(
+        pool: Arc<SqlitePool>,
+        account_id: &str,
+        handle: &crypto_core::KeyHandle,
+    ) -> Vec<u8> {
+        use secrecy::ExposeSecret;
+        use sequoia_openpgp::serialize::Marshal;
+        let ks = SqliteKeyStore::new(pool, account_id);
+        let stored = ks
+            .get(handle)
+            .await
+            .expect("SqliteKeyStore.get own key")
+            .expect("own key present");
+        let private_bytes = stored
+            .private_data
+            .as_ref()
+            .expect("own key has private material")
+            .expose_secret()
+            .as_slice();
+        let certs = crypto_openpgp::keymap::parse_certs(private_bytes)
+            .expect("parse_certs own key TSK");
+        let cert = certs
+            .into_iter()
+            .next()
+            .expect("exactly one cert in TSK blob");
+        let mut buf = Vec::new();
+        cert.as_tsk()
+            .armored()
+            .serialize(&mut buf)
+            .expect("armored TSK serialize");
+        buf
+    }
+
+    /// Re-fetch the account's Cert and return the ASCII-armored PUBLIC KEY
+    /// BLOCK (safe to import into a verify-only temp keyring). Mirrors
+    /// `OpenpgpBackend::export_public` but works off a raw `KeyHandle` so
+    /// the test does not need a `&dyn CryptoBackend` reference.
+    async fn interop_armored_public(
+        pool: Arc<SqlitePool>,
+        account_id: &str,
+        handle: &crypto_core::KeyHandle,
+    ) -> Vec<u8> {
+        let ks = SqliteKeyStore::new(pool, account_id);
+        let stored = ks
+            .get(handle)
+            .await
+            .expect("SqliteKeyStore.get own key (public)")
+            .expect("own key present (public)");
+        let certs = crypto_openpgp::keymap::parse_certs(&stored.public_data)
+            .expect("parse_certs own key public");
+        let cert = certs.into_iter().next().expect("public cert");
+        crypto_openpgp::engine::export_armored_public(&cert)
+            .expect("engine::export_armored_public")
+    }
+
+    // -----------------------------------------------------------------
+    // Test A: sign+encrypt → GnuPG decrypts the OpenPGP message
+    // -----------------------------------------------------------------
+    //
+    // The full send-side proof: a PGP/MIME message produced by our
+    // `apply_crypto` (openpgp account, sign=true, encrypt=true) is fed to
+    // GnuPG. We parse the multipart/encrypted MIME ourselves (using the
+    // project's `mail-parser` crate — the same MIME handling the receive
+    // path uses), extract part 2 (the OpenPGP message, base64-transported
+    // per `pgp_mime.rs`'s decision), base64-decode it to get the raw
+    // binary OpenPGP message, and hand that to `gpg --decrypt` in a temp
+    // keyring seeded with our cert's armored TSK.
+    //
+    // gpg --decrypt does NOT itself parse MIME — but it handles BOTH
+    // armored AND binary OpenPGP messages natively. So once we extract
+    // the binary OpenPGP message bytes from the MIME, gpg can decrypt
+    // them. The meaningful send-side proof here is: (a) our RFC 3156
+    // multipart/encrypted framing PARSES with mail-parser; (b) the
+    // OpenPGP message bytes inside are well-formed enough for a DIFFERENT
+    // impl (gpg) to decrypt; (c) when the OpenPGP message carries an
+    // embedded signature, gpg reports it.
+    //
+    // **If GnuPG rejects the OpenPGP message bytes, that's a real
+    // finding.** The suspected risk areas flagged in Tasks 3+4 are:
+    //   1. The base64-transport decision in `pgp_mime.rs` — BUT NOTE:
+    //      base64 is a MIME-LAYER concern; the OpenPGP message bytes
+    //      themselves are independent of how they were transported, so a
+    //      gpg rejection would point at a Sequoia→gpg wire-format mismatch
+    //      in the OpenPGP message itself (e.g. SEIPDv2 vs SEIPDv1 — which
+    //      the engine-core's `engine::generate` SEIPDv1-only fix already
+    //      addresses).
+    //   2. The hardcoded `micalg=pgp-sha512` (Task 4) — only relevant to
+    //      multipart/signed, exercised by Test B below.
+    #[tokio::test]
+    async fn openpgp_send_interop_sign_and_encrypt_gpg_decrypts() {
+        if interop_skip_no_cli() {
+            return;
+        }
+        let h = make_openpgp_harness(true, &[]).await;
+        let signer_row = h.signer_row.as_ref().expect("signer flagged");
+        let body_text = "gpg-decrypt-me-cross-impl";
+        let draft = SendDraft {
+            draft_id: "pgp-interop-sigenc-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![], // encrypt-to-self only — no external recipients
+            subject: "PGP Interop Sign+Encrypt".into(),
+            text_body: Some(body_text.into()),
+            crypto_method: CryptoMethod::Openpgp,
+            sign: true,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let out = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            Some(signer_row),
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto PGP sign+encrypt (interop)");
+
+        // RFC 3156 §2 conformance: multipart/encrypted;
+        // protocol="application/pgp-encrypted"; two parts.
+        let (full, kids, parsed) = parse_pgp_multipart(&out);
+        assert_eq!(full, "multipart/encrypted");
+        assert_eq!(kids.len(), 2, "multipart/encrypted must have 2 parts");
+        let root_ct = parsed
+            .parts
+            .first()
+            .expect("root")
+            .content_type()
+            .expect("Content-Type");
+        assert_eq!(
+            root_ct.attribute("protocol"),
+            Some("application/pgp-encrypted")
+        );
+
+        // Extract the raw OpenPGP message from part 2 (base64-decoded).
+        // mail-parser auto-decodes base64-transported parts, so
+        // decode_binary_part yields the raw binary OpenPGP message bytes.
+        let openpgp_msg = decode_binary_part(&parsed, kids[1]);
+        assert!(
+            !openpgp_msg.is_empty(),
+            "OpenPGP message bytes must be non-empty"
+        );
+
+        // Stand up gpg's temp keyring + seed with our Cert's armored TSK
+        // so gpg can decrypt (TSK contains the private decryption subkey)
+        // AND verify the embedded signature (TSK also contains the public
+        // signing subkey).
+        let td = InteropTempHome::new();
+        let sec_armored =
+            interop_armored_secret(h.pool.clone(), ACCOUNT_ID, &h.own_key.handle).await;
+        assert!(
+            std::str::from_utf8(&sec_armored)
+                .unwrap()
+                .contains("BEGIN PGP PRIVATE KEY BLOCK"),
+            "armored TSK must be a PRIVATE KEY BLOCK"
+        );
+        interop_gpg_import(&td, &sec_armored);
+
+        // gpg --decrypt. Feed the binary OpenPGP message via a file arg
+        // (not stdin) so the recovered plaintext lands in --output and
+        // the signature status lands on stderr.
+        let in_path = td.join("pgp-msg.bin");
+        std::fs::write(&in_path, &openpgp_msg).expect("write OpenPGP message");
+        let out_path = td.join("recovered.txt");
+        let in_arg = interop_cli_path_arg(&in_path);
+        let out_arg = interop_cli_path_arg(&out_path);
+        let mut cmd = interop_gpg_base(&td);
+        cmd.args(["--decrypt", "--output", &out_arg, &in_arg]);
+        // Capture (not assert) — gpg's exit code on an embedded signature
+        // by a key with no established trust is non-zero even when the
+        // signature itself is Good. We inspect stderr for the
+        // load-bearing signal.
+        let (out_obj, _stdout, stderr) = interop_run_capture(&mut cmd, "gpg --decrypt");
+        eprintln!("gpg --decrypt exit={:?}\nstderr:\n{stderr}", out_obj.status);
+        // Hard fail if gpg's exit code is 2 (no valid OpenPGP data) — that
+        // means the OpenPGP message is unparseable.
+        assert_ne!(
+            out_obj.status.code(),
+            Some(2),
+            "gpg --decrypt exited 2 (no valid OpenPGP data); the OpenPGP message is \
+             malformed; stderr:\n{stderr}"
+        );
+        // The recovered plaintext MUST exist + contain the original body
+        // text. The engine wraps the body entity in `frame_parts` (a
+        // binary self-describing header), so gpg's decrypted output is
+        // `frame_parts(body_entity)` — `from_utf8_lossy` is defensive but
+        // the body_text substring survives intact (it is ASCII).
+        let recovered = std::fs::read(&out_path).expect("read recovered plaintext");
+        let recovered_str = String::from_utf8_lossy(&recovered);
+        assert!(
+            recovered_str.contains(body_text),
+            "gpg must recover the original body text '{body_text}'; got: {recovered_str}"
+        );
+        // Per the brief: "if gpg reports a signature, assert it verifies."
+        // gpg's stderr will mention "signature" if it processed an
+        // embedded sig packet. When it does, it MUST be Good (not BAD).
+        if stderr.to_lowercase().contains("signature") {
+            assert!(
+                stderr.contains("Good signature"),
+                "gpg reported a signature but it did NOT verify as Good; \
+                 this is a real cross-impl finding; stderr:\n{stderr}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Test B: sign-only → GnuPG verifies the detached signature
+    // -----------------------------------------------------------------
+    //
+    // Build a PGP/MIME multipart/signed via `apply_crypto` (openpgp
+    // account, sign=true, encrypt=false). Extract part 1 (the signed body
+    // entity) + part 2 (the detached signature), reconstruct the part-1
+    // entity bytes EXACTLY as `pgp_mime::wrap_signed` emits them, then
+    // feed `gpg --verify <sig> <part1>`.
+    //
+    // The part-1 bytes MUST match what the signature covered at sign
+    // time. `wrap_signed` emits part 1 as
+    // `Content-Type: {mime}\r\n\r\n{canonicalized body}` (one trailing
+    // CRLF). We reconstruct via `build_pgp_signed_region` (the same
+    // helper `apply_crypto` uses internally) so the bytes are
+    // byte-exact. This is also the pattern `apply_crypto_openpgp_sign_only_verifies`
+    // (the engine-core round-trip) uses.
+    //
+    // **If gpg reports a BAD signature, that's a real finding** — the
+    // suspected risk area is the hardcoded `micalg=pgp-sha512` (Task 4)
+    // not matching the actual signature hash. The engine-core's Ed25519
+    // default IS SHA-512 (per RFC 8032), so this should match; the test
+    // pins it.
+    #[tokio::test]
+    async fn openpgp_send_interop_sign_only_gpg_verifies() {
+        if interop_skip_no_cli() {
+            return;
+        }
+        let h = make_openpgp_harness(true, &[]).await;
+        let signer_row = h.signer_row.as_ref().expect("signer flagged");
+        let body_text = "verify-me-cross-impl";
+        let draft = SendDraft {
+            draft_id: "pgp-interop-sig-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![], // no recipients needed for sign-only
+            subject: "PGP Interop Sign-only".into(),
+            text_body: Some(body_text.into()),
+            crypto_method: CryptoMethod::Openpgp,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let out = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            Some(signer_row),
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto PGP sign-only (interop)");
+
+        // RFC 3156 §1 conformance: multipart/signed;
+        // protocol="application/pgp-signature"; micalg=pgp-sha512.
+        let (full, kids, parsed) = parse_pgp_multipart(&out);
+        assert_eq!(full, "multipart/signed");
+        assert_eq!(kids.len(), 2, "multipart/signed must have 2 parts");
+        let root_ct = parsed
+            .parts
+            .first()
+            .expect("root")
+            .content_type()
+            .expect("Content-Type");
+        assert_eq!(
+            root_ct.attribute("protocol"),
+            Some("application/pgp-signature")
+        );
+        assert_eq!(
+            root_ct.attribute("micalg"),
+            Some("pgp-sha512"),
+            "micalg must be pgp-sha512 (Ed25519 default hash)"
+        );
+
+        // Reconstruct the part-1 entity EXACTLY as `wrap_signed` emits
+        // it. Mirrors `apply_crypto_openpgp_sign_only_verifies`.
+        let part1 = &parsed.parts[kids[0]];
+        let part1_ct = part1.content_type().expect("part-1 Content-Type");
+        let part1_mime = match (part1_ct.ctype(), part1_ct.subtype()) {
+            (c, Some(s)) => {
+                let mut base = format!("{c}/{s}");
+                for attr in ["charset"] {
+                    if let Some(v) = part1_ct.attribute(attr) {
+                        base.push_str(&format!("; {attr}=\"{v}\""));
+                    }
+                }
+                base
+            }
+            (c, None) => c.to_string(),
+        };
+        let part1_body: Vec<u8> = match &part1.body {
+            PartType::Text(t) => t.as_bytes().to_vec(),
+            PartType::Binary(d) | PartType::InlineBinary(d) => d.as_ref().to_vec(),
+            ref other => panic!("unexpected part-1 body shape: {other:?}"),
+        };
+        let part1_canonical = ensure_one_trailing_crlf(&part1_body);
+        let signed_region = build_pgp_signed_region(&part1_mime, &part1_canonical);
+        // Detached signature is in part 2 (base64-decoded).
+        let sig_bytes = decode_binary_part(&parsed, kids[1]);
+        assert!(
+            !sig_bytes.is_empty(),
+            "detached signature bytes must be non-empty"
+        );
+
+        // gpg --verify needs the signer's PUBLIC cert in its keyring.
+        let td = InteropTempHome::new();
+        let pub_armored =
+            interop_armored_public(h.pool.clone(), ACCOUNT_ID, &h.own_key.handle).await;
+        assert!(
+            std::str::from_utf8(&pub_armored)
+                .unwrap()
+                .contains("BEGIN PGP PUBLIC KEY BLOCK"),
+            "armored public must be a PUBLIC KEY BLOCK"
+        );
+        interop_gpg_import(&td, &pub_armored);
+
+        // Feed the detached signature + signed-region bytes to
+        // `gpg --verify <sig> <data>`. gpg auto-detects binary OR armored
+        // sigs, so binary sig bytes from `engine::sign_detached` are fine.
+        let sig_path = td.join("sig.bin");
+        std::fs::write(&sig_path, &sig_bytes).expect("write sig");
+        let payload_path = td.join("signed-region.bin");
+        std::fs::write(&payload_path, &signed_region).expect("write signed region");
+        let sig_arg = interop_cli_path_arg(&sig_path);
+        let payload_arg = interop_cli_path_arg(&payload_path);
+        let mut cmd = interop_gpg_base(&td);
+        cmd.args(["--verify", &sig_arg, &payload_arg]);
+        let (out_obj, _stdout, stderr) = interop_run_capture(&mut cmd, "gpg --verify");
+        eprintln!("gpg --verify exit={:?}\nstderr:\n{stderr}", out_obj.status);
+        // Hard fail if gpg's exit code is 2 (no valid OpenPGP data) —
+        // that means the detached signature is unparseable as an OpenPGP
+        // signature packet.
+        assert_ne!(
+            out_obj.status.code(),
+            Some(2),
+            "gpg --verify exited 2 (no valid OpenPGP data); the detached signature is \
+             malformed; stderr:\n{stderr}"
+        );
+        // The load-bearing assertion: gpg's stderr MUST report
+        // "Good signature". A BAD signature would print "BAD signature"
+        // and indicate a real cross-impl wire-format mismatch.
+        assert!(
+            stderr.contains("Good signature"),
+            "gpg must report a Good signature; a BAD signature indicates a real \
+             cross-impl wire-format mismatch (check micalg + signed-region byte-exactness); \
+             stderr:\n{stderr}"
         );
     }
 }

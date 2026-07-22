@@ -60,8 +60,11 @@ export interface SendDraft {
   attachments?: AttachmentRef[];
   inlineImages?: AttachmentRef[];
   extraHeaders?: Array<[string, string]>;
-  /** Per-message crypto intent. Plan 4a honors 'smime'; 'none' = plain MIME. */
-  cryptoMethod: 'none' | 'smime';
+  /**
+   * Per-message crypto intent. Task 4 dispatches: 'smime' → CMS,
+   * 'openpgp' → PGP/MIME, 'none' = plain MIME.
+   */
+  cryptoMethod: 'none' | 'openpgp' | 'smime';
   sign: boolean;
   encrypt: boolean;
 }

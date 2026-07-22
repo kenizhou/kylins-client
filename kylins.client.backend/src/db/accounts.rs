@@ -25,6 +25,7 @@ use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::crypto::{decrypt, encrypt};
+use crate::mail::builder::CryptoMethod;
 
 /// An account row, with secret fields decrypted.
 ///
@@ -109,6 +110,14 @@ pub struct Account {
     /// Per-account encryption granularity (§11.4.1). NULL = app default (WholeMessage).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_granularity: Option<String>,
+    /// Per-account crypto standard default (OpenPGP Phase 2 Task 1). Loaded
+    /// from `accounts.crypto_method` (TEXT, DEFAULT 'none'); sent over IPC as
+    /// camelCase `cryptoMethod`. Task 4's `send_op` dispatches to
+    /// `OpenpgpBackend` vs `SmimeBackend` via `account.crypto_method.standard()`.
+    /// `None` here is the enum variant, not the SQL NULL — `from_db_str`
+    /// collapses NULL / unknown / 'none' to `CryptoMethod::None`.
+    #[serde(default)]
+    pub crypto_method: CryptoMethod,
 }
 
 /// Input for [`create`]. Mirrors the TypeScript `CreateAccountInput`
@@ -260,6 +269,12 @@ pub struct AccountUpdates {
     /// Per-account encryption granularity — see [`Account::crypto_granularity`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_granularity: Option<String>,
+    /// Per-account crypto standard default — see [`Account::crypto_method`].
+    /// `None` (the default) is don't-touch; `Some(CryptoMethod::None)` explicitly
+    /// clears the column back to 'none'. Mirrors the granularity setter's
+    /// None-don't-touch semantic, but typed (Task 4 dispatches on the result).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_method: Option<CryptoMethod>,
 }
 
 /// Map a raw row to an [`Account`], decrypting the four secret fields.
@@ -316,6 +331,16 @@ fn row_to_account(row: &SqliteRow) -> Result<Account, String> {
         eas_user_agent: row.try_get("eas_user_agent").ok().flatten(),
         auth_type: row.try_get("auth_type").ok().flatten(),
         crypto_granularity: row.try_get("crypto_granularity").ok().flatten(),
+        // The DB column has DEFAULT 'none' but be defensive against legacy
+        // NULLs or future variants. `from_db_str` collapses any unknown value
+        // (including NULL→"" via sqlx-sqlite's quirk) to `CryptoMethod::None`.
+        crypto_method: CryptoMethod::from_db_str(
+            row.try_get::<Option<String>, _>("crypto_method")
+                .ok()
+                .flatten()
+                .as_deref()
+                .unwrap_or("none"),
+        ),
     })
 }
 
@@ -632,6 +657,12 @@ pub async fn update(pool: &SqlitePool, id: &str, updates: AccountUpdates) -> Res
     push_str!("eas_user_agent", updates.eas_user_agent);
     push_str!("auth_type", updates.auth_type);
     push_str!("crypto_granularity", updates.crypto_granularity);
+    // `push_str!` encodes None=don't-touch, Some=SET; map the typed enum to its
+    // DB string at the SQL boundary so the macro sees Option<String>.
+    push_str!(
+        "crypto_method",
+        updates.crypto_method.map(|m| m.as_db_str().to_string())
+    );
 
     // Always stamp updated_at.
     sets.push("updated_at = ?".to_string());
@@ -1179,6 +1210,200 @@ mod tests {
             g.as_deref(),
             Some("body_inline_merged_attachments"),
             "crypto_granularity: None must be don't-touch, not clear"
+        );
+    }
+
+    // ---- OpenPGP Phase 2 Task 1: per-account crypto_method round-trip ----
+    //
+    // Pins the load + update path for `accounts.crypto_method`. The column
+    // already existed (migration 20260710000001) but had zero readers before
+    // this task. Task 4's `send_op` will dispatch on
+    // `account.crypto_method.standard()` to pick `OpenpgpBackend` vs
+    // `SmimeBackend`, so the round-trip must be exact for every variant.
+
+    #[tokio::test]
+    async fn fresh_account_loads_crypto_method_none() {
+        // The column has DEFAULT 'none' but we also accept NULL defensively.
+        // For a fresh insert that doesn't name the column, SQLite applies the
+        // DEFAULT → row_to_account must read 'none' → CryptoMethod::None.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, email, created_at) VALUES ('acct-cm', 'm@x', '0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let acct = crate::db::accounts::get_by_id(&pool, "acct-cm")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            acct.crypto_method,
+            crate::mail::builder::CryptoMethod::None,
+            "fresh account must load as CryptoMethod::None"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_crypto_method_round_trips_openpgp_smime_none() {
+        // The core contract: every variant must round-trip through the typed
+        // AccountUpdates → SQL → Account path. Task 4 dispatches on the result.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, email, created_at) VALUES ('acct-rt', 'm@x', '0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        use crate::mail::builder::CryptoMethod;
+
+        // openpgp
+        crate::db::accounts::update(
+            &pool,
+            "acct-rt",
+            crate::db::accounts::AccountUpdates {
+                crypto_method: Some(CryptoMethod::Openpgp),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let acct = crate::db::accounts::get_by_id(&pool, "acct-rt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            acct.crypto_method,
+            CryptoMethod::Openpgp,
+            "openpgp must round-trip"
+        );
+        // Dispatch helper works (Task 4 will rely on this).
+        assert_eq!(
+            acct.crypto_method.standard(),
+            Some(crypto_core::Standard::OpenPgp)
+        );
+
+        // smime
+        crate::db::accounts::update(
+            &pool,
+            "acct-rt",
+            crate::db::accounts::AccountUpdates {
+                crypto_method: Some(CryptoMethod::Smime),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let acct = crate::db::accounts::get_by_id(&pool, "acct-rt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acct.crypto_method, CryptoMethod::Smime, "smime must round-trip");
+        assert_eq!(
+            acct.crypto_method.standard(),
+            Some(crypto_core::Standard::Smime)
+        );
+
+        // none (explicit clear)
+        crate::db::accounts::update(
+            &pool,
+            "acct-rt",
+            crate::db::accounts::AccountUpdates {
+                crypto_method: Some(CryptoMethod::None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let acct = crate::db::accounts::get_by_id(&pool, "acct-rt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            acct.crypto_method,
+            CryptoMethod::None,
+            "explicit None must round-trip"
+        );
+        assert_eq!(acct.crypto_method.standard(), None);
+    }
+
+    #[tokio::test]
+    async fn update_crypto_method_none_is_dont_touch() {
+        // Mirrors `update_crypto_granularity_none_is_dont_touch`: a missing
+        // `crypto_method` in AccountUpdates (Rust `None`) must NOT clear the
+        // existing value. This is the load-bearing distinction between
+        // `None` (don't-touch) and `Some(CryptoMethod::None)` (explicit clear),
+        // which the previous test covers.
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::db::init_db(tmp.path()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, email, created_at) VALUES ('acct-nt', 'm@x', '0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        use crate::mail::builder::CryptoMethod;
+
+        // Set Openpgp first.
+        crate::db::accounts::update(
+            &pool,
+            "acct-nt",
+            crate::db::accounts::AccountUpdates {
+                crypto_method: Some(CryptoMethod::Openpgp),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // Update a DIFFERENT field with crypto_method: None — must NOT clear Openpgp.
+        crate::db::accounts::update(
+            &pool,
+            "acct-nt",
+            crate::db::accounts::AccountUpdates {
+                account_label: Some("renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let acct = crate::db::accounts::get_by_id(&pool, "acct-nt")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            acct.crypto_method,
+            CryptoMethod::Openpgp,
+            "crypto_method: None must be don't-touch, not clear"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_serializes_crypto_method_to_camel_case_json() {
+        // Pins the IPC contract: `crypto_method: CryptoMethod::Openpgp` must
+        // serialize as `"cryptoMethod": "openpgp"` so the frontend Account
+        // interface (which types it as `'none' | 'openpgp' | 'smime'`) reads it
+        // without any manual mapping.
+        use crate::mail::builder::CryptoMethod;
+        let account = Account {
+            id: "id1".into(),
+            email: "e@x.com".into(),
+            provider: "imap".into(),
+            crypto_method: CryptoMethod::Openpgp,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&account).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(
+            obj.get("cryptoMethod").and_then(|v| v.as_str()),
+            Some("openpgp"),
+            "crypto_method must serialize as camelCase cryptoMethod with lowercase variant"
         );
     }
 }
