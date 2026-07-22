@@ -5095,4 +5095,542 @@ mod tests {
             "expected MissingRecipientCert with the PGP-standard phrasing for nobody; got {err:?}"
         );
     }
+
+    // =====================================================================
+    // Task 7: cross-impl send-side interop (gpg) — the EXIT GATE.
+    // =====================================================================
+    //
+    // Proves a PGP/MIME message produced by the full send path
+    // (`apply_crypto` → `pgp_mime::wrap_*`) is accepted by a real GnuPG
+    // (`gpg`): the OpenPGP message inside multipart/encrypted decrypts to
+    // the original body, and the detached signature inside multipart/signed
+    // verifies. Mirrors the engine-core interop
+    // (`kylins.client.crypto/openpgp/tests/interop.rs`) but exercises the
+    // FULL PGP/MIME wire output through the send path (vs the engine-core's
+    // raw-OpenPGP-message-level interop).
+    //
+    // The CLI discovery + temp-homedir + MSYS2-path-conversion helpers
+    // below are ported one-for-one from
+    // `crypto-openpgp/tests/interop.rs`. They are copied locally (rather
+    // than imported) because (a) the engine-core's interop test is an
+    // integration-test binary (not a `pub mod`) and (b) `apply_crypto` is
+    // `pub(crate)`, so the send-side interop MUST live inside this crate's
+    // own test module.
+
+    /// Returns true iff `cmd --version` spawns and exits 0. Ported from
+    /// `crypto-openpgp/tests/interop.rs::have` (renamed with `interop_`
+    /// prefix to avoid colliding with any future same-named helper in this
+    /// module).
+    fn interop_have(cmd: &str) -> bool {
+        std::process::Command::new(cmd)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Skip-guard for every interop test. Returns `true` when neither `gpg`
+    /// nor `sq` is on PATH so CI/dev boxes without the tooling stay green.
+    /// Ported from `interop.rs::skip_no_cli`. On this dev box gpg 2.4.9 IS
+    /// available, so the interop tests actually RUN here (vs skip).
+    fn interop_skip_no_cli() -> bool {
+        if !interop_have("gpg") && !interop_have("sq") {
+            eprintln!("skipping: no gpg/sq on PATH");
+            return true;
+        }
+        false
+    }
+
+    /// RAII temp directory for `gpg --homedir`. Ported from
+    /// `interop.rs::TempHome`. `tempfile::TempDir` deletes the dir on drop,
+    /// so the CLI's keyring/trustdb state is fully isolated from the user's
+    /// real keyring and torn down when the test exits.
+    struct InteropTempHome(tempfile::TempDir);
+
+    impl InteropTempHome {
+        fn new() -> Self {
+            Self(tempfile::tempdir().expect("tempdir"))
+        }
+        fn join(&self, name: &str) -> std::path::PathBuf {
+            self.0.path().join(name)
+        }
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+
+    /// Convert a filesystem path to the form `gpg` expects on the command
+    /// line. On Windows we may be running against the Git-for-Windows
+    /// (MSYS2) build of `gpg`, whose runtime does NOT recognize `C:\...`
+    /// as an absolute path in argv — it treats it as relative and joins
+    /// with the cwd, mangling it. Converting to MSYS2 form (`/c/...`) is
+    /// safe for both MSYS2-gpg and native Windows gpg (gpg4win).
+    /// Ported from `interop.rs::cli_path_arg` (gpg branch only).
+    fn interop_cli_path_arg(p: &std::path::Path) -> String {
+        let raw = p.to_str().expect("path is utf8");
+        #[cfg(windows)]
+        {
+            let bytes = raw.as_bytes();
+            if bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+                let drive = (bytes[0] as char).to_ascii_lowercase();
+                let rest = raw[2..].replace('\\', "/");
+                return format!("/{drive}{rest}");
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = raw;
+        }
+        raw.replace('\\', "/")
+    }
+
+    /// Build a `gpg` Command rooted at the temp homedir (`--batch --yes
+    /// --pinentry-mode loopback --quiet --no-tty` make the CLI
+    /// non-interactive even when prompting would normally occur). Ported
+    /// from `interop.rs::cli_base` (gpg branch).
+    fn interop_gpg_base(td: &InteropTempHome) -> std::process::Command {
+        let mut c = std::process::Command::new("gpg");
+        let homedir = interop_cli_path_arg(td.path());
+        c.args([
+            "--homedir",
+            &homedir,
+            "--batch",
+            "--yes",
+            "--pinentry-mode",
+            "loopback",
+            "--quiet",
+            "--no-tty",
+        ]);
+        c
+    }
+
+    /// Pipe `input` to `cmd`'s stdin, run, assert success. Ported from
+    /// `interop.rs::pipe_in`.
+    fn interop_pipe_in(cmd: &mut std::process::Command, input: &[u8], label: &str) {
+        use std::io::Write;
+        use std::process::Stdio;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .unwrap_or_else(|e| panic!("{label}: spawn: {e}"));
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin piped")
+            .write_all(input)
+            .unwrap_or_else(|e| panic!("{label}: write stdin: {e}"));
+        drop(child.stdin.take());
+        let out = child
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("{label}: wait: {e}"));
+        if !out.status.success() {
+            panic!(
+                "{label}: exit {}\nstdout: {}\nstderr: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+        }
+    }
+
+    /// Run `cmd`, capture stdout/stderr. Returns the raw Output +
+    /// stringified stdout/stderr for caller inspection. Unlike
+    /// `interop.rs::run_assert` (which panics on non-zero exit), this does
+    /// NOT panic — the caller decides what success means. We need this
+    /// because `gpg --verify` on an unknown-trust signer exits non-zero
+    /// even with a Good signature, and we want to inspect the status
+    /// before asserting.
+    fn interop_run_capture(
+        cmd: &mut std::process::Command,
+        label: &str,
+    ) -> (std::process::Output, String, String) {
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("{label}: spawn failed: {e}"));
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out, stdout, stderr)
+    }
+
+    /// Import `cert_bytes` (armored TPK or TSK) into the temp gpg keyring.
+    /// Ported from `interop.rs::cli_import` (gpg branch).
+    fn interop_gpg_import(td: &InteropTempHome, cert_bytes: &[u8]) {
+        let mut cmd = interop_gpg_base(td);
+        cmd.args(["--import"]);
+        interop_pipe_in(&mut cmd, cert_bytes, "gpg --import");
+    }
+
+    /// Re-fetch the account's Cert from the backend's `SqliteKeyStore` and
+    /// return the ASCII-armored TSK (PRIVATE KEY BLOCK). The `CryptoBackend`
+    /// trait exposes NO secret-export method (security boundary: secret
+    /// material never leaves the backend's keystore in production), so we
+    /// reach into the same `SqliteKeyStore` the backend uses and round-trip
+    /// the binary TSK via Sequoia's `Cert::as_tsk().armored().serialize(...)`
+    /// — exactly what `crypto-openpgp/tests/interop.rs::armored_secret` does
+    /// for the engine-core interop. TEST-ONLY path; production code MUST
+    /// NOT expose secret material this way.
+    async fn interop_armored_secret(
+        pool: Arc<SqlitePool>,
+        account_id: &str,
+        handle: &crypto_core::KeyHandle,
+    ) -> Vec<u8> {
+        use secrecy::ExposeSecret;
+        use sequoia_openpgp::serialize::Marshal;
+        let ks = SqliteKeyStore::new(pool, account_id);
+        let stored = ks
+            .get(handle)
+            .await
+            .expect("SqliteKeyStore.get own key")
+            .expect("own key present");
+        let private_bytes = stored
+            .private_data
+            .as_ref()
+            .expect("own key has private material")
+            .expose_secret()
+            .as_slice();
+        let certs = crypto_openpgp::keymap::parse_certs(private_bytes)
+            .expect("parse_certs own key TSK");
+        let cert = certs
+            .into_iter()
+            .next()
+            .expect("exactly one cert in TSK blob");
+        let mut buf = Vec::new();
+        cert.as_tsk()
+            .armored()
+            .serialize(&mut buf)
+            .expect("armored TSK serialize");
+        buf
+    }
+
+    /// Re-fetch the account's Cert and return the ASCII-armored PUBLIC KEY
+    /// BLOCK (safe to import into a verify-only temp keyring). Mirrors
+    /// `OpenpgpBackend::export_public` but works off a raw `KeyHandle` so
+    /// the test does not need a `&dyn CryptoBackend` reference.
+    async fn interop_armored_public(
+        pool: Arc<SqlitePool>,
+        account_id: &str,
+        handle: &crypto_core::KeyHandle,
+    ) -> Vec<u8> {
+        let ks = SqliteKeyStore::new(pool, account_id);
+        let stored = ks
+            .get(handle)
+            .await
+            .expect("SqliteKeyStore.get own key (public)")
+            .expect("own key present (public)");
+        let certs = crypto_openpgp::keymap::parse_certs(&stored.public_data)
+            .expect("parse_certs own key public");
+        let cert = certs.into_iter().next().expect("public cert");
+        crypto_openpgp::engine::export_armored_public(&cert)
+            .expect("engine::export_armored_public")
+    }
+
+    // -----------------------------------------------------------------
+    // Test A: sign+encrypt → GnuPG decrypts the OpenPGP message
+    // -----------------------------------------------------------------
+    //
+    // The full send-side proof: a PGP/MIME message produced by our
+    // `apply_crypto` (openpgp account, sign=true, encrypt=true) is fed to
+    // GnuPG. We parse the multipart/encrypted MIME ourselves (using the
+    // project's `mail-parser` crate — the same MIME handling the receive
+    // path uses), extract part 2 (the OpenPGP message, base64-transported
+    // per `pgp_mime.rs`'s decision), base64-decode it to get the raw
+    // binary OpenPGP message, and hand that to `gpg --decrypt` in a temp
+    // keyring seeded with our cert's armored TSK.
+    //
+    // gpg --decrypt does NOT itself parse MIME — but it handles BOTH
+    // armored AND binary OpenPGP messages natively. So once we extract
+    // the binary OpenPGP message bytes from the MIME, gpg can decrypt
+    // them. The meaningful send-side proof here is: (a) our RFC 3156
+    // multipart/encrypted framing PARSES with mail-parser; (b) the
+    // OpenPGP message bytes inside are well-formed enough for a DIFFERENT
+    // impl (gpg) to decrypt; (c) when the OpenPGP message carries an
+    // embedded signature, gpg reports it.
+    //
+    // **If GnuPG rejects the OpenPGP message bytes, that's a real
+    // finding.** The suspected risk areas flagged in Tasks 3+4 are:
+    //   1. The base64-transport decision in `pgp_mime.rs` — BUT NOTE:
+    //      base64 is a MIME-LAYER concern; the OpenPGP message bytes
+    //      themselves are independent of how they were transported, so a
+    //      gpg rejection would point at a Sequoia→gpg wire-format mismatch
+    //      in the OpenPGP message itself (e.g. SEIPDv2 vs SEIPDv1 — which
+    //      the engine-core's `engine::generate` SEIPDv1-only fix already
+    //      addresses).
+    //   2. The hardcoded `micalg=pgp-sha512` (Task 4) — only relevant to
+    //      multipart/signed, exercised by Test B below.
+    #[tokio::test]
+    async fn openpgp_send_interop_sign_and_encrypt_gpg_decrypts() {
+        if interop_skip_no_cli() {
+            return;
+        }
+        let h = make_openpgp_harness(true, &[]).await;
+        let signer_row = h.signer_row.as_ref().expect("signer flagged");
+        let body_text = "gpg-decrypt-me-cross-impl";
+        let draft = SendDraft {
+            draft_id: "pgp-interop-sigenc-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![], // encrypt-to-self only — no external recipients
+            subject: "PGP Interop Sign+Encrypt".into(),
+            text_body: Some(body_text.into()),
+            crypto_method: CryptoMethod::Openpgp,
+            sign: true,
+            encrypt: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let out = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            Some(signer_row),
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto PGP sign+encrypt (interop)");
+
+        // RFC 3156 §2 conformance: multipart/encrypted;
+        // protocol="application/pgp-encrypted"; two parts.
+        let (full, kids, parsed) = parse_pgp_multipart(&out);
+        assert_eq!(full, "multipart/encrypted");
+        assert_eq!(kids.len(), 2, "multipart/encrypted must have 2 parts");
+        let root_ct = parsed
+            .parts
+            .first()
+            .expect("root")
+            .content_type()
+            .expect("Content-Type");
+        assert_eq!(
+            root_ct.attribute("protocol"),
+            Some("application/pgp-encrypted")
+        );
+
+        // Extract the raw OpenPGP message from part 2 (base64-decoded).
+        // mail-parser auto-decodes base64-transported parts, so
+        // decode_binary_part yields the raw binary OpenPGP message bytes.
+        let openpgp_msg = decode_binary_part(&parsed, kids[1]);
+        assert!(
+            !openpgp_msg.is_empty(),
+            "OpenPGP message bytes must be non-empty"
+        );
+
+        // Stand up gpg's temp keyring + seed with our Cert's armored TSK
+        // so gpg can decrypt (TSK contains the private decryption subkey)
+        // AND verify the embedded signature (TSK also contains the public
+        // signing subkey).
+        let td = InteropTempHome::new();
+        let sec_armored =
+            interop_armored_secret(h.pool.clone(), ACCOUNT_ID, &h.own_key.handle).await;
+        assert!(
+            std::str::from_utf8(&sec_armored)
+                .unwrap()
+                .contains("BEGIN PGP PRIVATE KEY BLOCK"),
+            "armored TSK must be a PRIVATE KEY BLOCK"
+        );
+        interop_gpg_import(&td, &sec_armored);
+
+        // gpg --decrypt. Feed the binary OpenPGP message via a file arg
+        // (not stdin) so the recovered plaintext lands in --output and
+        // the signature status lands on stderr.
+        let in_path = td.join("pgp-msg.bin");
+        std::fs::write(&in_path, &openpgp_msg).expect("write OpenPGP message");
+        let out_path = td.join("recovered.txt");
+        let in_arg = interop_cli_path_arg(&in_path);
+        let out_arg = interop_cli_path_arg(&out_path);
+        let mut cmd = interop_gpg_base(&td);
+        cmd.args(["--decrypt", "--output", &out_arg, &in_arg]);
+        // Capture (not assert) — gpg's exit code on an embedded signature
+        // by a key with no established trust is non-zero even when the
+        // signature itself is Good. We inspect stderr for the
+        // load-bearing signal.
+        let (out_obj, _stdout, stderr) = interop_run_capture(&mut cmd, "gpg --decrypt");
+        eprintln!("gpg --decrypt exit={:?}\nstderr:\n{stderr}", out_obj.status);
+        // Hard fail if gpg's exit code is 2 (no valid OpenPGP data) — that
+        // means the OpenPGP message is unparseable.
+        assert_ne!(
+            out_obj.status.code(),
+            Some(2),
+            "gpg --decrypt exited 2 (no valid OpenPGP data); the OpenPGP message is \
+             malformed; stderr:\n{stderr}"
+        );
+        // The recovered plaintext MUST exist + contain the original body
+        // text. The engine wraps the body entity in `frame_parts` (a
+        // binary self-describing header), so gpg's decrypted output is
+        // `frame_parts(body_entity)` — `from_utf8_lossy` is defensive but
+        // the body_text substring survives intact (it is ASCII).
+        let recovered = std::fs::read(&out_path).expect("read recovered plaintext");
+        let recovered_str = String::from_utf8_lossy(&recovered);
+        assert!(
+            recovered_str.contains(body_text),
+            "gpg must recover the original body text '{body_text}'; got: {recovered_str}"
+        );
+        // Per the brief: "if gpg reports a signature, assert it verifies."
+        // gpg's stderr will mention "signature" if it processed an
+        // embedded sig packet. When it does, it MUST be Good (not BAD).
+        if stderr.to_lowercase().contains("signature") {
+            assert!(
+                stderr.contains("Good signature"),
+                "gpg reported a signature but it did NOT verify as Good; \
+                 this is a real cross-impl finding; stderr:\n{stderr}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Test B: sign-only → GnuPG verifies the detached signature
+    // -----------------------------------------------------------------
+    //
+    // Build a PGP/MIME multipart/signed via `apply_crypto` (openpgp
+    // account, sign=true, encrypt=false). Extract part 1 (the signed body
+    // entity) + part 2 (the detached signature), reconstruct the part-1
+    // entity bytes EXACTLY as `pgp_mime::wrap_signed` emits them, then
+    // feed `gpg --verify <sig> <part1>`.
+    //
+    // The part-1 bytes MUST match what the signature covered at sign
+    // time. `wrap_signed` emits part 1 as
+    // `Content-Type: {mime}\r\n\r\n{canonicalized body}` (one trailing
+    // CRLF). We reconstruct via `build_pgp_signed_region` (the same
+    // helper `apply_crypto` uses internally) so the bytes are
+    // byte-exact. This is also the pattern `apply_crypto_openpgp_sign_only_verifies`
+    // (the engine-core round-trip) uses.
+    //
+    // **If gpg reports a BAD signature, that's a real finding** — the
+    // suspected risk area is the hardcoded `micalg=pgp-sha512` (Task 4)
+    // not matching the actual signature hash. The engine-core's Ed25519
+    // default IS SHA-512 (per RFC 8032), so this should match; the test
+    // pins it.
+    #[tokio::test]
+    async fn openpgp_send_interop_sign_only_gpg_verifies() {
+        if interop_skip_no_cli() {
+            return;
+        }
+        let h = make_openpgp_harness(true, &[]).await;
+        let signer_row = h.signer_row.as_ref().expect("signer flagged");
+        let body_text = "verify-me-cross-impl";
+        let draft = SendDraft {
+            draft_id: "pgp-interop-sig-1".into(),
+            from: addr("alice@kylins.com"),
+            to: vec![], // no recipients needed for sign-only
+            subject: "PGP Interop Sign-only".into(),
+            text_body: Some(body_text.into()),
+            crypto_method: CryptoMethod::Openpgp,
+            sign: true,
+            ..Default::default()
+        };
+        let mime = build_mime(&draft).await.expect("build_mime");
+        let out = apply_crypto(
+            h.backend.as_ref(),
+            Standard::OpenPgp,
+            &SqliteKeyStore::new(h.pool.clone(), ACCOUNT_ID),
+            &mime,
+            &draft,
+            &h.account_email,
+            Some(signer_row),
+            h.pool.as_ref(),
+            ACCOUNT_ID,
+        )
+        .await
+        .expect("apply_crypto PGP sign-only (interop)");
+
+        // RFC 3156 §1 conformance: multipart/signed;
+        // protocol="application/pgp-signature"; micalg=pgp-sha512.
+        let (full, kids, parsed) = parse_pgp_multipart(&out);
+        assert_eq!(full, "multipart/signed");
+        assert_eq!(kids.len(), 2, "multipart/signed must have 2 parts");
+        let root_ct = parsed
+            .parts
+            .first()
+            .expect("root")
+            .content_type()
+            .expect("Content-Type");
+        assert_eq!(
+            root_ct.attribute("protocol"),
+            Some("application/pgp-signature")
+        );
+        assert_eq!(
+            root_ct.attribute("micalg"),
+            Some("pgp-sha512"),
+            "micalg must be pgp-sha512 (Ed25519 default hash)"
+        );
+
+        // Reconstruct the part-1 entity EXACTLY as `wrap_signed` emits
+        // it. Mirrors `apply_crypto_openpgp_sign_only_verifies`.
+        let part1 = &parsed.parts[kids[0]];
+        let part1_ct = part1.content_type().expect("part-1 Content-Type");
+        let part1_mime = match (part1_ct.ctype(), part1_ct.subtype()) {
+            (c, Some(s)) => {
+                let mut base = format!("{c}/{s}");
+                for attr in ["charset"] {
+                    if let Some(v) = part1_ct.attribute(attr) {
+                        base.push_str(&format!("; {attr}=\"{v}\""));
+                    }
+                }
+                base
+            }
+            (c, None) => c.to_string(),
+        };
+        let part1_body: Vec<u8> = match &part1.body {
+            PartType::Text(t) => t.as_bytes().to_vec(),
+            PartType::Binary(d) | PartType::InlineBinary(d) => d.as_ref().to_vec(),
+            ref other => panic!("unexpected part-1 body shape: {other:?}"),
+        };
+        let part1_canonical = ensure_one_trailing_crlf(&part1_body);
+        let signed_region = build_pgp_signed_region(&part1_mime, &part1_canonical);
+        // Detached signature is in part 2 (base64-decoded).
+        let sig_bytes = decode_binary_part(&parsed, kids[1]);
+        assert!(
+            !sig_bytes.is_empty(),
+            "detached signature bytes must be non-empty"
+        );
+
+        // gpg --verify needs the signer's PUBLIC cert in its keyring.
+        let td = InteropTempHome::new();
+        let pub_armored =
+            interop_armored_public(h.pool.clone(), ACCOUNT_ID, &h.own_key.handle).await;
+        assert!(
+            std::str::from_utf8(&pub_armored)
+                .unwrap()
+                .contains("BEGIN PGP PUBLIC KEY BLOCK"),
+            "armored public must be a PUBLIC KEY BLOCK"
+        );
+        interop_gpg_import(&td, &pub_armored);
+
+        // Feed the detached signature + signed-region bytes to
+        // `gpg --verify <sig> <data>`. gpg auto-detects binary OR armored
+        // sigs, so binary sig bytes from `engine::sign_detached` are fine.
+        let sig_path = td.join("sig.bin");
+        std::fs::write(&sig_path, &sig_bytes).expect("write sig");
+        let payload_path = td.join("signed-region.bin");
+        std::fs::write(&payload_path, &signed_region).expect("write signed region");
+        let sig_arg = interop_cli_path_arg(&sig_path);
+        let payload_arg = interop_cli_path_arg(&payload_path);
+        let mut cmd = interop_gpg_base(&td);
+        cmd.args(["--verify", &sig_arg, &payload_arg]);
+        let (out_obj, _stdout, stderr) = interop_run_capture(&mut cmd, "gpg --verify");
+        eprintln!("gpg --verify exit={:?}\nstderr:\n{stderr}", out_obj.status);
+        // Hard fail if gpg's exit code is 2 (no valid OpenPGP data) —
+        // that means the detached signature is unparseable as an OpenPGP
+        // signature packet.
+        assert_ne!(
+            out_obj.status.code(),
+            Some(2),
+            "gpg --verify exited 2 (no valid OpenPGP data); the detached signature is \
+             malformed; stderr:\n{stderr}"
+        );
+        // The load-bearing assertion: gpg's stderr MUST report
+        // "Good signature". A BAD signature would print "BAD signature"
+        // and indicate a real cross-impl wire-format mismatch.
+        assert!(
+            stderr.contains("Good signature"),
+            "gpg must report a Good signature; a BAD signature indicates a real \
+             cross-impl wire-format mismatch (check micalg + signed-region byte-exactness); \
+             stderr:\n{stderr}"
+        );
+    }
 }

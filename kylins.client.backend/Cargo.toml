@@ -130,6 +130,13 @@ sha2 = "0.11"
 # intermediate, without duplicating the x509-cert 0.3 builder stack. NOT part
 # of crypto-smime's public API; release builds of crypto-smime exclude it.
 crypto-smime = { path = "../kylins.client.crypto/smime", features = ["testing"] }
+# Task 7 send-side PGP/MIME interop (gpg): the interop test re-fetches the
+# backend-persisted Cert and re-serializes it as an armored TSK for
+# `gpg --import`. That round-trip needs Sequoia's `Cert::as_tsk().armored()
+# .serialize(...)` (the `Marshal` trait) + the `openpgp::Cert` type, which are
+# NOT re-exported by `crypto-openpgp`. Version + features MUST match
+# crypto-openpgp's declaration so Cargo unifies on a single crate build.
+sequoia-openpgp = { version = "2", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_UI_Shell"] }
