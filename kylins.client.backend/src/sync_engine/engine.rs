@@ -1031,12 +1031,50 @@ async fn send_op(
             .unwrap_or_default();
         match crypto_method.standard() {
             None => {
-                // No crypto configured on the account. Defensive no-op: emit
-                // the original MIME unchanged (mirrors the prior behavior when
-                // draft.crypto_method was None or unrecognized).
+                // No crypto configured on the account. If the draft actually
+                // requested sign/encrypt, we MUST fail-closed — spec
+                // §Security-invariants #3: `crypto_method='none'` means "no
+                // crypto (the toggles are inert/disabled)", NOT "send anyway."
+                // The frontend (services/composer/send.ts) guards this too,
+                // but a replayed queued op, a buggy caller, or a future code
+                // path bypassing that guard must NOT silently emit plaintext.
+                // Mirrors the `apply_crypto` Err arm below: emit a failure
+                // SendResultEvent AND return Err so the replay worker marks
+                // the op failed (no plaintext reaches transport).
+                if draft.sign || draft.encrypt {
+                    let msg = format!(
+                        "account has no crypto method configured but the draft \
+                         requested sign/encrypt; set a crypto method (PGP or S/MIME) \
+                         in Preferences (crypto_method={:?})",
+                        crypto_method_str
+                    );
+                    log::warn!(
+                        "[send] {account_id} draft_id={} {msg} \
+                         (fail-closed — src.send NOT called)",
+                        draft.draft_id
+                    );
+                    log::info!(
+                        "[send] {account_id} emit sync:send-result success=false draft_id={}",
+                        draft.draft_id
+                    );
+                    engine.sink.emit_send_result(SendResultEvent {
+                        account_id: account_id.into(),
+                        draft_id: draft.draft_id.clone(),
+                        success: false,
+                        error: Some(msg.clone()),
+                    });
+                    return Err(crate::sync_engine::SourceError::Other(msg));
+                }
+                // Defensive fallback: no crypto requested AND no crypto
+                // configured → legitimate unencrypted send, emit plaintext
+                // unchanged. (Currently unreachable: the enclosing
+                // `if draft.sign || draft.encrypt` gate at the top of this
+                // block means the None arm is only entered when a toggle IS
+                // set; kept explicit so a future refactor of the outer gate
+                // cannot regress the invariant above.)
                 log::warn!(
-                    "[send] {account_id} draft_id={} sign/encrypt requested but \
-                     account crypto_method is {:?}; sending plain MIME",
+                    "[send] {account_id} draft_id={} plain send; account \
+                     crypto_method is {:?}",
                     draft.draft_id,
                     crypto_method_str
                 );
@@ -3943,6 +3981,86 @@ mod tests {
         assert!(
             err_msg.contains("no S/MIME cert for recipient"),
             "event error string must carry the missing-recipient detail; got: {err_msg}"
+        );
+    }
+
+    /// Final-review Fix 1: when `account.crypto_method` is `None`/unset (no
+    /// crypto configured) but the draft requests `sign` or `encrypt`,
+    /// `send_op` MUST fail-closed — emit a `SendResultEvent{success=false}`
+    /// AND return `Err(SourceError::Other)` — and MUST NOT call `src.send`
+    /// (no plaintext leak). Spec §Security-invariants #3: crypto_method='none'
+    /// means "no crypto (toggles inert)", NOT "send anyway." The frontend
+    /// guards this too, but a replayed queued op or buggy caller bypassing
+    /// that guard must not silently emit plaintext.
+    ///
+    /// RED (before Fix 1): the None arm logged warn + returned the plaintext
+    /// `mime` unchanged → `send_op` returned `Ok(())`, `src.send` was called
+    /// with plaintext, and no failure event was emitted.
+    /// GREEN (after Fix 1): the None arm fail-closes exactly like the
+    /// `apply_crypto` Err path — `Err` + failure event + no transport call.
+    #[tokio::test]
+    async fn send_op_none_crypto_method_with_sign_requested_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_db(tmp.path()).await.unwrap();
+        // seed_account leaves `crypto_method` at its DEFAULT 'none' (the
+        // accounts schema sets DEFAULT 'none'); we deliberately do NOT call
+        // `set_account_crypto_method` here. No crypto key seeding either —
+        // the None arm must fire before any key/backend lookup.
+        seed_account(&pool, "a").await;
+
+        let sink = Arc::new(TestSink::new());
+        let engine = SyncEngine::with_data_dir(
+            pool.clone(),
+            sink.clone(),
+            tmp.path().to_path_buf(),
+        );
+        let src = MockSource::new(vec![], vec![]).with_caps(eas_caps());
+
+        let mut draft = t8_draft("none-crypto-sign-1");
+        draft.sign = true;
+        // draft.crypto_method left at default (None) — the ACCOUNT column is
+        // the dispatch source per Task 4, and it's 'none'.
+
+        let err = send_op(&engine, "a", &src, &draft)
+            .await
+            .expect_err("none crypto_method + sign requested must fail-closed");
+        assert!(
+            err.to_string().contains("no crypto method configured"),
+            "expected the no-crypto-method fail-closed message, got: {err}"
+        );
+
+        // Fail-closed: src.send was NEVER called (no plaintext leak).
+        assert!(
+            last_send_bytes(&src).is_none(),
+            "must NOT call src.send when crypto_method is None + sign/encrypt requested (plaintext leak)"
+        );
+        assert!(
+            src.recorded_calls().is_empty(),
+            "no source mutation calls should be recorded on fail-closed; got {:?}",
+            src.recorded_calls()
+        );
+
+        // The failure was surfaced via sync:send-result so the frontend can
+        // render an immediate error banner (independent of mark_failed).
+        let evts = sink.send_results.lock().unwrap().clone();
+        assert_eq!(
+            evts.len(),
+            1,
+            "exactly one send-result event on fail-closed; got {evts:?}"
+        );
+        assert!(!evts[0].success, "fail-closed must emit success=false");
+        assert_eq!(evts[0].draft_id, "none-crypto-sign-1");
+        let err_msg = evts[0]
+            .error
+            .as_deref()
+            .expect("failure event must carry error=Some(..)");
+        assert!(
+            err_msg.contains("no crypto method configured"),
+            "event error must carry the no-crypto-method detail; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("Preferences"),
+            "event error must point the user at Preferences; got: {err_msg}"
         );
     }
 }

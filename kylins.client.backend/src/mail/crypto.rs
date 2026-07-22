@@ -1548,10 +1548,25 @@ pub(crate) async fn apply_crypto(
                         detached: true,
                     })
                     .await?;
-                // Engine-core's default Ed25519 hash is SHA-512 (Sequoia picks
-                // SHA-512 for Ed25519 per RFC 8032). `SignedEnvelope` does not
-                // expose the actual signature hash algorithm, so the engine
-                // default is used. → `micalg=pgp-sha512`.
+                // micalg scope: Ed25519-only (RFC 8032 → SHA-512).
+                //
+                // The hardcoded `HashAlgorithm::Sha512` is CORRECT for every
+                // key `engine::generate` produces (Ed25519; Sequoia picks
+                // SHA-512 for Ed25519 per RFC 8032), and Task 7's GnuPG /
+                // Thunderbird interop validated it. BUT the framework's
+                // `SignedEnvelope` does not surface the signature's actual
+                // `hash_algo`, so we cannot read it back here. PGP keys
+                // IMPORTED via `crypto_import_key_from_path` (RSA-3072,
+                // Ed448, …) may default to a different hash (e.g. SHA-256 for
+                // RSA); for those the hardcoded `Sha512` would emit an
+                // incorrect `micalg=pgp-sha512` and strict verifiers would
+                // reject the signature. Until the framework change lands,
+                // PGP signing here is effectively scoped to Ed25519 signers.
+                //
+                // TODO(follow-up): parse `hash_algo` from the signature
+                // packet once `SignedEnvelope` exposes it (or scope a
+                // framework change to surface the sig's hash). See
+                // `pgp_mime::micalg_name`'s "Current scope" doc for details.
                 entity.0 = crate::mail::pgp_mime::wrap_signed(
                     &body_canonical,
                     &content_type_value,

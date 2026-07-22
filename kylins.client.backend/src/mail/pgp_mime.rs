@@ -81,6 +81,32 @@ const SIGNED_BOUNDARY: &str = "----=_kylins_pgp_signed_0001";
 /// The framework [`HashAlgorithm`] does NOT include SHA-1 (banned for
 /// signatures under the default baseline policy) — so this match is total
 /// over the framework's hash set.
+///
+/// # Caller responsibility — `micalg` MUST match the signature's actual hash
+///
+/// The `micalg` parameter is **caller-supplied** (via [`wrap_signed`]'s
+/// `hash` argument). RFC 3156 §1 requires `micalg` to name the hash the
+/// detached signature was actually computed with; a mismatch causes strict
+/// PGP/MIME verifiers (Thunderbird, some Enigmail configs) to reject the
+/// signature as malformed. This helper does NOT validate that the caller's
+/// `hash` matches the signature packet — it only spells the symbol.
+///
+/// ## Current scope: Ed25519 signers (SHA-512)
+///
+/// The send path in [`crate::mail::crypto`] currently passes
+/// [`HashAlgorithm::Sha512`] unconditionally because the engine-core's
+/// `engine::generate` only produces Ed25519 signing keys, and Sequoia picks
+/// SHA-512 as Ed25519's hash per RFC 8032. So every key the engine generates
+/// is correct under the hardcoded `Sha512`, and Task 7's GnuPG/Thunderbird
+/// interop validated it.
+///
+/// **Imported non-Ed25519 signing keys are out of scope.** Keys imported via
+/// `crypto_import_key_from_path` (RSA-3072, Ed448, etc.) whose `Signer`
+/// defaults pick a different hash (e.g. SHA-256 for RSA) would produce a
+/// signature whose actual hash does NOT match the hardcoded `micalg=pgp-sha512`,
+/// and strict verifiers would reject it. Until the framework's
+/// `SignedEnvelope` surfaces the signature's `hash_algo` (follow-up), PGP
+/// signing via this path is effectively scoped to Ed25519 signers.
 fn micalg_name(hash: HashAlgorithm) -> &'static str {
     match hash {
         HashAlgorithm::Sha256 => "pgp-sha256",
@@ -185,6 +211,17 @@ pub(crate) fn wrap_encrypted(openpgp_message: &[u8]) -> Vec<u8> {
 /// `hash` is the signature's hash algorithm; it becomes the `micalg`
 /// parameter value (`pgp-<name>`) per RFC 3156 §1 + RFC 4880 §9.4 (see
 /// [`micalg_name`] for the exact spellings).
+///
+/// **Caller invariant — `hash` MUST match the hash the detached signature was
+/// actually computed with.** `wrap_signed` does NOT parse the signature packet
+/// to verify this; it trusts the caller. A mismatch (e.g. passing `Sha512`
+/// when the signer used SHA-256) produces an incorrect `micalg` that strict
+/// PGP/MIME verifiers (Thunderbird, some Enigmail configs) reject. The current
+/// send path ([`crate::mail::crypto`]) passes `Sha512` because the engine only
+/// generates Ed25519 keys (SHA-512 per RFC 8032); **imported non-Ed25519
+/// signing keys (RSA, Ed448, …) may use a different hash and are out of scope
+/// until the framework surfaces the sig's `hash_algo`** — see
+/// [`micalg_name`]'s "Current scope" section for the full limitation.
 ///
 /// Layout (RFC 3156 §1):
 /// ```text
