@@ -977,122 +977,166 @@ async fn send_op(
         }
     };
 
-    // ---- Plan 4a Task 6: S/MIME sign/encrypt wrapping ----
+    // ---- Plan 4a Task 6 + crypto-openpgp Task 4: per-standard sign/encrypt
+    // wrapping ----
     //
-    // If the draft carries `crypto_method=Smime` + sign/encrypt, wrap the MIME
-    // via `apply_crypto` before transport. The wrapped bytes (multipart/signed
-    // or application/pkcs7-mime enveloped-data) flow to BOTH `src.send` (below)
-    // AND the Sent-folder `src.append` (reused later) — the variable shadowing
-    // below is what makes the reuse automatic. Fail-closed: a `CryptoSendError`
-    // emits `sync:send-result{success:false}` AND returns `Err` so the replay
-    // worker marks the op failed (no plaintext fallback, no retry of a crypto
-    // error that won't resolve on retry).
+    // If sign/encrypt is requested, dispatch to the account's configured
+    // `crypto_method` backend (S/MIME → SmimeBackend → application/pkcs7-mime;
+    // OpenPGP → OpenpgpBackend → PGP/MIME multipart/{encrypted,signed}) and
+    // wrap the MIME via `apply_crypto` before transport. The wrapped bytes
+    // flow to BOTH `src.send` (below) AND the Sent-folder `src.append` (reused
+    // later) — the variable shadowing below is what makes the reuse automatic.
+    // Fail-closed: a `CryptoSendError` emits `sync:send-result{success:false}`
+    // AND returns `Err` so the replay worker marks the op failed (no plaintext
+    // fallback, no retry of a crypto error that won't resolve on retry).
+    //
+    // Account-level gating replaces the prior draft-level `matches!(draft.
+    // crypto_method, Smime)` check (Task 4): the account's `crypto_method`
+    // column drives dispatch via the Task 1 `CryptoMethod::from_db_str` +
+    // `standard()` helpers, and Task 2's `crypto_backend(standard, pool,
+    // account_id)` factory produces the `Box<dyn CryptoBackend>`. The draft's
+    // `sign` / `encrypt` toggles remain the per-message crypto intent.
     //
     // `SqliteKeyStore` is NOT `Clone` (its `account_id: String` field has no
     // cheap clone-path) but its constructor is cheap (`Arc<SqlitePool>` handle
-    // bump + `String` clone), so we construct TWO stores from the same pool —
-    // one moved into `Arc<dyn KeyStore>` for the backend, one borrowed by
-    // `apply_crypto` for its own `find_by_email` recipient lookups. The
-    // backend's internal `Arc<dyn KeyStore>` and the lookup store share the
-    // same SQLite handle, so both see the same key rows.
-    let mime = if matches!(draft.crypto_method, crate::mail::builder::CryptoMethod::Smime)
-        && (draft.sign || draft.encrypt)
-    {
-        let account_email: String = match sqlx::query_scalar("SELECT email FROM accounts WHERE id = ?")
-            .bind(account_id)
-            .fetch_one(&engine.pool)
-            .await
-        {
-            Ok(email) => email,
-            Err(e) => {
-                let msg = format!("lookup account email: {e}");
-                log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
-                engine.sink.emit_send_result(SendResultEvent {
-                    account_id: account_id.into(),
-                    draft_id: draft.draft_id.clone(),
-                    success: false,
-                    error: Some(msg.clone()),
-                });
-                return Err(crate::sync_engine::SourceError::Other(msg));
-            }
-        };
-        let pool_arc = std::sync::Arc::new(engine.pool.clone());
-        let keystore_for_backend = crate::keystore_bridge::SqliteKeyStore::new(
-            std::sync::Arc::clone(&pool_arc),
-            account_id,
-        );
-        let keystore_for_lookup =
-            crate::keystore_bridge::SqliteKeyStore::new(pool_arc, account_id);
-        let backend = crypto_smime::SmimeBackend::new(
-            std::sync::Arc::new(keystore_for_backend),
-            crypto_core::CryptoPolicy::default_baseline(),
-        );
-        let default_key = match crate::db::crypto_keys::get_default_signing_key(
-            &engine.pool,
-            account_id,
-            crypto_core::Standard::Smime,
-        )
-        .await
-        {
-            Ok(row) => row,
-            Err(e) => {
-                let msg = format!("lookup default signing key: {e}");
-                log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
-                engine.sink.emit_send_result(SendResultEvent {
-                    account_id: account_id.into(),
-                    draft_id: draft.draft_id.clone(),
-                    success: false,
-                    error: Some(msg.clone()),
-                });
-                return Err(crate::sync_engine::SourceError::Other(msg));
-            }
-        };
-        match crate::mail::crypto::apply_crypto(
-            &backend,
-            &keystore_for_lookup,
-            &mime,
-            draft,
-            &account_email,
-            default_key.as_ref(),
-            &engine.pool,
-            account_id,
-        )
-        .await
-        {
-            Ok(wrapped) => {
-                log::info!(
-                    "[send] apply_crypto OK draft_id={} wrapped {} -> {} bytes \
-                     (sign={} encrypt={})",
-                    draft.draft_id,
-                    mime.len(),
-                    wrapped.len(),
-                    draft.sign,
-                    draft.encrypt
-                );
-                wrapped
-            }
-            Err(e) => {
-                // Permanent crypto error — surface immediately, no plaintext
-                // fallback. The replay worker will `mark_failed` on the Err
-                // return; emitting the send-result first lets the frontend
-                // show an error banner without waiting for the next round.
-                let msg = e.to_string();
+    // bump + `String` clone). The factory builds its OWN internal keystore
+    // (consumed into the backend); we construct a SECOND lookup store from
+    // the same pool — borrowed by `apply_crypto` for its own `find_by_email`
+    // recipient lookups. Both stores share the same SQLite handle, so both see
+    // the same key rows.
+    let mime = if draft.sign || draft.encrypt {
+        // Load the account's email + crypto_method in one round-trip.
+        let (account_email, crypto_method_str): (String, Option<String>) =
+            match sqlx::query_as("SELECT email, crypto_method FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&engine.pool)
+                .await
+            {
+                Ok(row) => row,
+                Err(e) => {
+                    let msg = format!("lookup account email + crypto_method: {e}");
+                    log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
+                    engine.sink.emit_send_result(SendResultEvent {
+                        account_id: account_id.into(),
+                        draft_id: draft.draft_id.clone(),
+                        success: false,
+                        error: Some(msg.clone()),
+                    });
+                    return Err(crate::sync_engine::SourceError::Other(msg));
+                }
+            };
+        let crypto_method = crypto_method_str
+            .as_deref()
+            .map(crate::mail::builder::CryptoMethod::from_db_str)
+            .unwrap_or_default();
+        match crypto_method.standard() {
+            None => {
+                // No crypto configured on the account. Defensive no-op: emit
+                // the original MIME unchanged (mirrors the prior behavior when
+                // draft.crypto_method was None or unrecognized).
                 log::warn!(
-                    "[send] apply_crypto ERR draft_id={}: {msg} \
-                     (fail-closed — src.send NOT called)",
-                    draft.draft_id
+                    "[send] {account_id} draft_id={} sign/encrypt requested but \
+                     account crypto_method is {:?}; sending plain MIME",
+                    draft.draft_id,
+                    crypto_method_str
                 );
-                log::info!(
-                    "[send] {account_id} emit sync:send-result success=false draft_id={}",
-                    draft.draft_id
-                );
-                engine.sink.emit_send_result(SendResultEvent {
-                    account_id: account_id.into(),
-                    draft_id: draft.draft_id.clone(),
-                    success: false,
-                    error: Some(msg.clone()),
-                });
-                return Err(crate::sync_engine::SourceError::Other(msg));
+                mime
+            }
+            Some(standard) => {
+                // Build the per-standard backend via the Task 2 factory.
+                let backend = match crate::db::commands::crypto_backend(
+                    standard,
+                    &engine.pool,
+                    account_id,
+                ) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let msg = format!("crypto_backend build: {e}");
+                        log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
+                        engine.sink.emit_send_result(SendResultEvent {
+                            account_id: account_id.into(),
+                            draft_id: draft.draft_id.clone(),
+                            success: false,
+                            error: Some(msg.clone()),
+                        });
+                        return Err(crate::sync_engine::SourceError::Other(msg));
+                    }
+                };
+                // Separate lookup keystore (the factory's keystore is owned by
+                // the backend; this one is for apply_crypto's `find_by_email`).
+                let pool_arc = std::sync::Arc::new(engine.pool.clone());
+                let keystore_for_lookup =
+                    crate::keystore_bridge::SqliteKeyStore::new(pool_arc, account_id);
+                let default_key = match crate::db::crypto_keys::get_default_signing_key(
+                    &engine.pool,
+                    account_id,
+                    standard,
+                )
+                .await
+                {
+                    Ok(row) => row,
+                    Err(e) => {
+                        let msg = format!("lookup default signing key: {e}");
+                        log::warn!("[send] {account_id} draft_id={} {msg}", draft.draft_id);
+                        engine.sink.emit_send_result(SendResultEvent {
+                            account_id: account_id.into(),
+                            draft_id: draft.draft_id.clone(),
+                            success: false,
+                            error: Some(msg.clone()),
+                        });
+                        return Err(crate::sync_engine::SourceError::Other(msg));
+                    }
+                };
+                match crate::mail::crypto::apply_crypto(
+                    backend.as_ref(),
+                    standard,
+                    &keystore_for_lookup,
+                    &mime,
+                    draft,
+                    &account_email,
+                    default_key.as_ref(),
+                    &engine.pool,
+                    account_id,
+                )
+                .await
+                {
+                    Ok(wrapped) => {
+                        log::info!(
+                            "[send] apply_crypto OK draft_id={} wrapped {} -> {} bytes \
+                             (sign={} encrypt={}, standard={})",
+                            draft.draft_id,
+                            mime.len(),
+                            wrapped.len(),
+                            draft.sign,
+                            draft.encrypt,
+                            standard
+                        );
+                        wrapped
+                    }
+                    Err(e) => {
+                        // Permanent crypto error — surface immediately, no plaintext
+                        // fallback. The replay worker will `mark_failed` on the Err
+                        // return; emitting the send-result first lets the frontend
+                        // show an error banner without waiting for the next round.
+                        let msg = e.to_string();
+                        log::warn!(
+                            "[send] apply_crypto ERR draft_id={}: {msg} \
+                             (fail-closed — src.send NOT called)",
+                            draft.draft_id
+                        );
+                        log::info!(
+                            "[send] {account_id} emit sync:send-result success=false draft_id={}",
+                            draft.draft_id
+                        );
+                        engine.sink.emit_send_result(SendResultEvent {
+                            account_id: account_id.into(),
+                            draft_id: draft.draft_id.clone(),
+                            success: false,
+                            error: Some(msg.clone()),
+                        });
+                        return Err(crate::sync_engine::SourceError::Other(msg));
+                    }
+                }
             }
         }
     } else {
@@ -3635,6 +3679,21 @@ mod tests {
     use crypto_core::{CryptoBackend, CryptoPolicy, KeyGenParams, Standard};
     use crypto_smime::SmimeBackend;
 
+    /// Mark `account_id`'s `crypto_method` column so the Task 4 send_op
+    /// dispatch (which reads the ACCOUNT's crypto_method, not the draft's)
+    /// routes through `apply_crypto` under `standard`. The send_op tests
+    /// historically set `draft.crypto_method = Smime` only; Task 4 moves the
+    /// gating to the account row, so tests that exercise crypto-dispatch must
+    /// also set the account column.
+    async fn set_account_crypto_method(pool: &SqlitePool, account_id: &str, method: CryptoMethod) {
+        sqlx::query("UPDATE accounts SET crypto_method = ? WHERE id = ?")
+            .bind(method.as_db_str())
+            .bind(account_id)
+            .execute(pool)
+            .await
+            .expect("set account crypto_method");
+    }
+
     /// Generate an S/MIME keypair for an existing account and (optionally)
     /// flag it as the account's default signing key. Mirrors the seed pattern
     /// in `mail/crypto.rs` Task 5 tests: the keygen `user_id` is the account's
@@ -3734,6 +3793,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pool = init_db(tmp.path()).await.unwrap();
         seed_account(&pool, "a").await; // email: a@x.com
+        set_account_crypto_method(&pool, "a", CryptoMethod::Smime).await;
         seed_smime_key_for_account(&pool, "a", true).await; // default-flagged signer
 
         let sink = Arc::new(TestSink::new());
@@ -3775,6 +3835,7 @@ mod tests {
         let pool = init_db(tmp.path()).await.unwrap();
         // Sender account a@x.com — own cert resolves for encrypt-to-self.
         seed_account(&pool, "a").await;
+        set_account_crypto_method(&pool, "a", CryptoMethod::Smime).await;
         seed_smime_key_for_account(&pool, "a", false).await;
         // Recipient account b@x.com — own cert under its own account row so
         // `find_by_email` (no account filter) locates it.
@@ -3827,6 +3888,7 @@ mod tests {
         // nobody@x.com has NO seeded cert → apply_crypto returns
         // MissingRecipientCert and send_op must fail-closed.
         seed_account(&pool, "a").await;
+        set_account_crypto_method(&pool, "a", CryptoMethod::Smime).await;
         seed_smime_key_for_account(&pool, "a", false).await;
 
         let sink = Arc::new(TestSink::new());
