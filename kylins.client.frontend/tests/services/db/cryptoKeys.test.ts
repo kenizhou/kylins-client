@@ -40,17 +40,33 @@ describe('cryptoKeys service wrappers', () => {
     });
   });
 
-  it('generateKey invokes crypto_generate_key', async () => {
+  it('generateKey invokes crypto_generate_key forwarding standard=smime', async () => {
     vi.mocked(invoke).mockResolvedValue({
       id: 'x',
       standard: 'smime',
       fingerprint: 'fp',
       hasPrivate: true,
     });
-    await generateKey('acct', 'owner@k');
+    await generateKey('acct', 'owner@k', 'smime');
     expect(invoke).toHaveBeenCalledWith('crypto_generate_key', {
       accountId: 'acct',
       email: 'owner@k',
+      standard: 'smime',
+    });
+  });
+
+  it('generateKey forwards standard=openpgp to the same command', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      id: 'x',
+      standard: 'openpgp',
+      fingerprint: 'fp',
+      hasPrivate: true,
+    });
+    await generateKey('acct', 'owner@k', 'openpgp');
+    expect(invoke).toHaveBeenCalledWith('crypto_generate_key', {
+      accountId: 'acct',
+      email: 'owner@k',
+      standard: 'openpgp',
     });
   });
 
@@ -61,11 +77,12 @@ describe('cryptoKeys service wrappers', () => {
       fingerprint: 'fp',
       hasPrivate: true,
     });
-    await importKeyFromPath('acct', '/path/to/key.p12', 'secret');
+    await importKeyFromPath('acct', '/path/to/key.p12', 'secret', 'smime');
     expect(invoke).toHaveBeenCalledWith('crypto_import_key_from_path', {
       accountId: 'acct',
       path: '/path/to/key.p12',
       passphrase: 'secret',
+      standard: 'smime',
     });
   });
 
@@ -76,11 +93,12 @@ describe('cryptoKeys service wrappers', () => {
       fingerprint: 'fp',
       hasPrivate: true,
     });
-    await importKeyFromPath('acct', '/path/to/key.pem');
+    await importKeyFromPath('acct', '/path/to/key.pem', undefined, 'smime');
     expect(invoke).toHaveBeenCalledWith('crypto_import_key_from_path', {
       accountId: 'acct',
       path: '/path/to/key.pem',
       passphrase: undefined,
+      standard: 'smime',
     });
   });
 
