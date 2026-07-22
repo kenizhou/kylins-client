@@ -2,6 +2,7 @@ import { PreferencesTabLayout } from './PreferencesTabLayout';
 import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { KeyManagerSection } from './KeyManagerSection';
 import { TrustedCasSection } from './TrustedCasSection';
+import { CryptoMethodSection } from './CryptoMethodSection';
 import { CryptoGranularitySection } from './CryptoGranularitySection';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { CheckboxRow } from './PreferenceRows';
@@ -32,6 +33,10 @@ export function SecurityPreferences() {
 
       <PreferencesSectionCard title="Trusted CAs" icon={ShieldCheckIcon}>
         <TrustedCasSection />
+      </PreferencesSectionCard>
+
+      <PreferencesSectionCard title="Crypto method" icon={ShieldCheckIcon}>
+        <CryptoMethodSection />
       </PreferencesSectionCard>
 
       <PreferencesSectionCard title="Encryption granularity" icon={ShieldCheckIcon}>

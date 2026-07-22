@@ -74,13 +74,38 @@ export async function sendEmail(
 
   const sendDraftId = stagingDraftId ?? newDraftId();
   console.log('[send-fe] sendEmail buildSendDraft start sendDraftId=', sendDraftId);
-  // Plan 4b Task 1: thread DraftInput.isEncrypted/isSigned → buildSendDraft's
-  // 5th `crypto` arg so the backend SendDraft carries the user's crypto intent
-  // (Plan 4a's apply_crypto then produces real S/MIME). When neither toggle is
-  // set we pass `undefined` and buildSendDraft applies its 'none'/false defaults.
+
+  // Task 5: fail-closed guard. If the user toggled Sign/Encrypt ON but the
+  // from-account has no crypto method configured (cryptoMethod === 'none' or
+  // unset), DO NOT silently send plaintext. The brief was internally
+  // inconsistent on this point ("omit crypto" vs "no plaintext send"); we
+  // resolve in favor of fail-closed, matching the backend's Task 4 philosophy
+  // (send_op blocks on a missing recipient key). The composer's `handleSend`
+  // surfaces `SendResult.message` via `useToastStore.push(..., 'error')`, so
+  // the user sees an actionable prompt to set a method in Preferences. No
+  // `sync_apply_mutation` invoke fires — the plaintext draft never crosses
+  // IPC, never enters the outbox, never gets transmitted.
+  const accountMethod = account.cryptoMethod ?? 'none';
+  if ((input.isEncrypted || input.isSigned) && accountMethod === 'none') {
+    setProgress({ active: false });
+    return {
+      success: false,
+      message:
+        'Set a crypto method (PGP or S/MIME) for this account in Security → Preferences before sending encrypted or signed mail.',
+    };
+  }
+
+  // Plan 4b Task 1 + Task 5: thread DraftInput.isEncrypted/isSigned →
+  // buildSendDraft's 5th `crypto` arg so the backend SendDraft carries the
+  // user's crypto intent. Task 5 change: the method now comes from the account
+  // (`account.cryptoMethod`) instead of a hardcoded `'smime'` literal, so an
+  // OpenPGP account produces PGP/MIME and an S/MIME account produces CMS
+  // (Task 4 dispatches on this at send time). After the guard above,
+  // `accountMethod` is guaranteed 'openpgp' or 'smime' whenever a toggle is
+  // on, so we never send crypto intent with method 'none'.
   const crypto: SendCryptoOptions | undefined =
     input.isEncrypted || input.isSigned
-      ? { cryptoMethod: 'smime', sign: !!input.isSigned, encrypt: !!input.isEncrypted }
+      ? { cryptoMethod: accountMethod, sign: !!input.isSigned, encrypt: !!input.isEncrypted }
       : undefined;
   let draft;
   try {

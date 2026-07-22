@@ -40,7 +40,7 @@ import { extractInlineImages, htmlToPlainText } from '@/utils/emailBuilder';
  * through to the backend `SendDraft` so the send path can act on them.
  */
 export interface SendCryptoOptions {
-  cryptoMethod?: 'none' | 'smime';
+  cryptoMethod?: 'none' | 'openpgp' | 'smime';
   sign?: boolean;
   encrypt?: boolean;
 }
