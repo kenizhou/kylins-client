@@ -4,7 +4,7 @@
 // autocompletes from the contacts DB. This replaces the string-based
 // AddressInput for the composer surfaces.
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, type ReactNode } from 'react';
 import { searchContacts, type DbContact } from '@/services/db/contacts';
 import {
   parseRecipients,
@@ -23,6 +23,8 @@ interface RecipientFieldProps {
   placeholder?: string;
   moveTargets?: { label: string; target: MoveTarget }[];
   onMove?: (recipient: Recipient, target: MoveTarget) => void;
+  /** Optional content pinned to the right edge of the row (e.g. Cc/Bcc toggles). */
+  trailing?: ReactNode;
 }
 
 export function RecipientField({
@@ -32,6 +34,7 @@ export function RecipientField({
   placeholder = 'Add recipients…',
   moveTargets,
   onMove,
+  trailing,
 }: RecipientFieldProps) {
   const [inputValue, setInputValue] = useState('');
   const [suggestions, setSuggestions] = useState<DbContact[]>([]);
@@ -299,6 +302,7 @@ export function RecipientField({
           </div>
         )}
       </div>
+      {trailing}
     </div>
   );
 }

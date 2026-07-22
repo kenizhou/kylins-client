@@ -90,6 +90,7 @@ export function EmailRenderer({
   // Sanitize once (viewer config) — reused for content + blocked-image detection.
   const sanitizedBody = useMemo(() => (html ? sanitizeForViewer(html) : null), [html]);
   const isPlainText = !sanitizedBody;
+  const htmlDark = isDark && !isPlainText;
 
   const bodyHtml = useMemo(() => {
     let body = sanitizedBody;
@@ -129,7 +130,6 @@ export function EmailRenderer({
     observerRef.current?.disconnect();
 
     const plainTextDark = isDark && isPlainText;
-    const htmlDark = isDark && !isPlainText;
 
     doc.open();
     doc.write(`<!DOCTYPE html>
@@ -141,7 +141,10 @@ export function EmailRenderer({
       font-family: "Inter Variable", "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", Roboto, Arial, sans-serif;
       font-size: ${14 * zoom}px; line-height: 1.6;
       color: ${plainTextDark ? '#dadce5' : '#343746'};
-      background: ${htmlDark ? '#f8f8fa' : 'transparent'};
+      // Dark mode: the frame is inverted (see iframe style), so this light
+      // warm-gray becomes a dark slate (~#2b2f3a) that matches the app's
+      // "never pure black" dark palette instead of inverting to pure black.
+      background: ${htmlDark ? '#d4d0c5' : 'transparent'};
       word-wrap: break-word; overflow-wrap: break-word; overflow: hidden;
     }
     img { max-width: 100%; height: auto; }
@@ -149,6 +152,11 @@ export function EmailRenderer({
     blockquote { border-left: 3px solid ${plainTextDark ? '#585d6f' : '#d0d3e0'}; margin: 8px 0; padding: 4px 12px; color: ${plainTextDark ? '#a8adc0' : '#757a8f'}; }
     pre { overflow-x: auto; }
     table { max-width: 100%; }
+    ${
+      // In dark mode the whole iframe is inverted (see the iframe style attr);
+      // re-invert media so photos/videos keep their natural colors.
+      htmlDark ? 'img, video { filter: invert(1) hue-rotate(180deg) !important; }' : ''
+    }
   </style>
 </head>
 <body>${bodyHtml}</body>
@@ -255,7 +263,12 @@ export function EmailRenderer({
         ref={iframeRef}
         sandbox="allow-same-origin"
         className={`w-full border-0 ${isDark && !isPlainText ? 'rounded-md' : ''}`}
-        style={{ overflow: 'hidden' }}
+        style={{
+          overflow: 'hidden',
+          // Dark mode: HTML emails are authored for a light page, so invert the
+          // frame (media inside is re-inverted via the doc-level CSS above).
+          filter: htmlDark ? 'invert(1) hue-rotate(180deg)' : undefined,
+        }}
         title="Email content"
       />
       {pendingLink && (

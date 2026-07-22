@@ -94,7 +94,7 @@ export function ToolWindowBar() {
             {({ isSelected }) => (
               <>
                 {isSelected && (
-                  <span className="absolute bottom-2 left-0 top-2 w-[3px] rounded-r-full iris-line" />
+                  <span className="absolute bottom-2 left-0 top-2 w-[3px] rounded-r-full iris-line-v" />
                 )}
                 {tool.icon}
                 {tool.id === 'tasks' && incompleteTaskCount > 0 && (
@@ -134,7 +134,7 @@ export function ToolWindowBar() {
               {({ isSelected }) => (
                 <>
                   {isSelected && (
-                    <span className="absolute bottom-2 left-0 top-2 w-[3px] rounded-r-full iris-line" />
+                    <span className="absolute bottom-2 left-0 top-2 w-[3px] rounded-r-full iris-line-v" />
                   )}
                   {tool.icon}
                 </>

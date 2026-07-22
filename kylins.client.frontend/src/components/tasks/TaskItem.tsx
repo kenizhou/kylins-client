@@ -44,7 +44,7 @@ export function TaskItem({
       }`}
     >
       {isSelected && (
-        <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full iris-line" />
+        <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full iris-line-v" />
       )}
       <Checkbox
         isSelected={task.isCompleted}

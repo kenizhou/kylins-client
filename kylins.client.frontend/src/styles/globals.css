@@ -185,6 +185,13 @@
   background-image: var(--gradient-iris);
 }
 
+/* Selection-indicator bars (activity bar / folder pane / task items) — solid
+   primary; the horizontal iris gradient would show its gray end stop on the
+   right half of a 3px-wide bar. */
+@utility iris-line-v {
+  background-color: var(--primary);
+}
+
 /* Shared typography scale utilities */
 @utility type-overline {
   font: var(--text-overline);
@@ -228,7 +235,9 @@
 
 /* High-contrast mode flattens the signature gradient to solid primary. */
 [data-contrast='high'] .iris-line,
-[data-contrast='high'].iris-line {
+[data-contrast='high'].iris-line,
+[data-contrast='high'] .iris-line-v,
+[data-contrast='high'].iris-line-v {
   background-image: none;
   background-color: var(--primary);
 }

@@ -75,7 +75,9 @@ export function buildReplyQuote(message: QuoteableMessage): string {
   );
 }
 
-/** Forward quote: "Forwarded Message" header block + body, wrapped in gmail_quote. */
+/** Forward quote: "Forwarded Message" header block + body, wrapped in a
+ *  gmail_quote blockquote (a single ProseMirror blockquote node, like the
+ *  reply quote, so the signature block can be placed above it). */
 export function buildForwardQuote(message: QuoteableMessage, cidMap?: Map<string, string>): string {
   const prepared = prepareBodyForQuoting(message, cidMap);
   const header = (label: string, value: string) =>
@@ -83,7 +85,9 @@ export function buildForwardQuote(message: QuoteableMessage, cidMap?: Map<string
 
   const lines: string[] = [];
   lines.push('<br/>');
-  lines.push('<div class="gmail_quote">');
+  lines.push(
+    '<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex;">',
+  );
   lines.push('<br/>---------- Forwarded Message ---------<br/><br/>');
   lines.push(header('From', formatRecipient(toRecipient(message.from))));
   lines.push(header('Subject', message.subject));
@@ -95,6 +99,6 @@ export function buildForwardQuote(message: QuoteableMessage, cidMap?: Map<string
   lines.push('<br/>');
   lines.push(prepared);
   lines.push('<br/>');
-  lines.push('</div>');
+  lines.push('</blockquote>');
   return lines.join('');
 }

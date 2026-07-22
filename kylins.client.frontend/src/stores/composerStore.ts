@@ -82,8 +82,17 @@ export interface ComposerState {
   isSaving: boolean;
   fromEmail: string | null;
   viewMode: ComposerViewMode;
-  signatureHtml: string;
-  signatureId: string | null;
+  /**
+   * Id of the signature currently in the editor document. Only a persistence
+   * mirror (drafts / scheduled sends / pop-out) — the source of truth is the
+   * `signature` node in the TipTap doc, managed by useComposerSignature.
+   *
+   * Three-state: `undefined` = fresh compose (apply the account default),
+   * `null` = explicitly no signature (user removed it), `string` = that
+   * signature. The distinction matters on restore: a draft saved after the
+   * user removed the signature must not get the default re-added.
+   */
+  signatureId: string | null | undefined;
   classificationId: string | null;
   isEncrypted: boolean;
   isSigned: boolean;
@@ -157,8 +166,7 @@ export interface ComposerState {
   setIsSaving: (saving: boolean) => void;
   setFromEmail: (fromEmail: string | null) => void;
   setViewMode: (mode: ComposerViewMode) => void;
-  setSignatureHtml: (signatureHtml: string) => void;
-  setSignatureId: (id: string | null) => void;
+  setSignatureId: (id: string | null | undefined) => void;
   setClassificationId: (id: string | null) => void;
   setIsEncrypted: (value: boolean) => void;
   setIsSigned: (value: boolean) => void;
@@ -197,8 +205,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   fromEmail: null,
   lastSavedAt: null,
   isSaving: false,
-  signatureHtml: '',
-  signatureId: null,
+  signatureId: undefined,
   classificationId: null,
   isEncrypted: false,
   isSigned: false,
@@ -240,8 +247,8 @@ export const useComposerStore = create<ComposerState>((set) => ({
       attachments: [],
       lastSavedAt: null,
       isSaving: false,
-      signatureHtml: '',
-      signatureId: opts?.signatureId ?? null,
+      // NOTE: no `?? null` — undefined is meaningful (apply default on open).
+      signatureId: opts?.signatureId,
       classificationId: opts?.classificationId ?? null,
       isEncrypted: opts?.isEncrypted ?? false,
       isSigned: opts?.isSigned ?? false,
@@ -277,7 +284,6 @@ export const useComposerStore = create<ComposerState>((set) => ({
       attachments: [],
       lastSavedAt: null,
       isSaving: false,
-      signatureHtml: '',
       signatureId: null,
       classificationId: null,
       isEncrypted: false,
@@ -315,7 +321,6 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setIsSaving: (isSaving) => set({ isSaving }),
   setFromEmail: (fromEmail) => set({ fromEmail }),
   setViewMode: (viewMode) => set({ viewMode }),
-  setSignatureHtml: (signatureHtml) => set({ signatureHtml }),
   setSignatureId: (signatureId) => set({ signatureId }),
   setClassificationId: (classificationId) => set({ classificationId }),
   setIsEncrypted: (isEncrypted) => set({ isEncrypted }),

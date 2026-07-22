@@ -32,22 +32,23 @@ export function ClassificationSelector() {
         const level = levels.find((l) => l.id === key);
         if (level) handleSelect(level);
       }}
-      className="relative flex items-center gap-2"
+      className="relative flex w-full items-center"
     >
+      {/* Slim full-width banner: doubles as the classification indicator for
+          the whole header area and as the level picker trigger. */}
       <Button
-        className="flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex h-7 w-full items-center gap-1.5 px-3 text-xs font-medium transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         style={{
-          borderColor: currentLevel.color,
           color: currentLevel.color,
-          backgroundColor: `${currentLevel.color}15`,
+          backgroundColor: `${currentLevel.color}12`,
         }}
-        aria-label="Classification"
+        aria-label={`Classification: ${currentLevel.name}`}
       >
         <ClassificationIcon icon={currentLevel.icon} size={13} />
         <SelectValue>
           {() => <span className="whitespace-nowrap">{currentLevel.name}</span>}
         </SelectValue>
-        <span className="text-[10px] opacity-70">▼</span>
+        <span className="ml-auto text-[10px] opacity-70">▼</span>
       </Button>
       <Popover className="min-w-[180px] rounded-md border border-[var(--border)] bg-[var(--background)] py-1 shadow-lg">
         <ListBox items={levels} className="outline-none" aria-label="Classification">

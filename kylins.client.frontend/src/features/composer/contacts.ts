@@ -151,6 +151,19 @@ export function formatRecipient(r: Recipient): string {
   return `${name} <${email}>`;
 }
 
+/**
+ * Format a send-as identity for display: just `email` when there is no
+ * distinct display name or the provider echoed the address back as the name
+ * (compared case-insensitively); otherwise `Name <email>`. Display-only —
+ * for RFC serialization use formatRecipient.
+ */
+export function formatIdentity(displayName: string | null | undefined, email: string): string {
+  const addr = email.trim();
+  const name = (displayName ?? '').trim();
+  if (!name || eqEmail(name, addr)) return addr;
+  return `${name} <${addr}>`;
+}
+
 /** Format a list of Recipients as a list of RFC address strings. */
 export function formatRecipients(rs: Recipient[]): string[] {
   return rs.map(formatRecipient);

@@ -31,10 +31,11 @@ import {
   participantsForReplyAll,
 } from '@/features/composer/recipientsForReply';
 import { subjectWithPrefix } from '@/features/composer/subjectPrefix';
-import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { resolveFromForReply } from '@/features/composer/fromResolution';
+import { useComposerSignature } from '@/features/composer/useComposerSignature';
+import { getActiveSignatureId } from '@/features/composer/signatureCommands';
+import { SignatureSelector } from '@/components/composer/SignatureSelector';
 import type { Recipient } from '@/features/composer/contacts';
-import { getDefaultSignature, type SignatureContext } from '@/services/db/signatures';
 import {
   getAliasesForAccount,
   mapDbAlias,
@@ -121,24 +122,17 @@ export function InlineReply({
     subjectWithPrefix(message.subject, isForward ? 'Fwd:' : 'Re:'),
   );
 
-  const [signature, setSignature] = useState<{ id: string; html: string } | null>(null);
   const [dbAliases, setDbAliases] = useState<SendAsAlias[]>([]);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [status, setStatus] = useState<SendStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const signatureContext: SignatureContext = mode === 'forward' ? 'forward' : 'reply';
-
-  // Load the account's default signature + send-as aliases (for smart-From).
+  // Load the account's send-as aliases (for smart-From).
   useEffect(() => {
     if (!accountId) return;
     let cancelled = false;
-    Promise.all([
-      getDefaultSignature(accountId, signatureContext),
-      getAliasesForAccount(accountId),
-    ]).then(([sig, aliases]) => {
+    getAliasesForAccount(accountId).then((aliases) => {
       if (cancelled) return;
-      setSignature(sig ? { id: sig.id, html: sig.body_html } : null);
       setDbAliases(aliases.map(mapDbAlias));
     });
     return () => {
@@ -253,9 +247,8 @@ export function InlineReply({
     return resolveFromForReply(message, merged, defaultAlias).email;
   }, [accounts, accountId, accountEmail, dbAliases, message]);
 
-  // Seed the editor with the quoted original; place the signature above the
-  // quote once it loads. useEditor reads `content` only at mount, so signature
-  // arrival is pushed via setContent (guarded so it runs once per signature).
+  // Seed the editor with the quoted original; the signature is a dedicated
+  // block applied by the shared hook below (document is the source of truth).
   const baseQuote = useMemo(
     () => (isForward ? buildForwardQuote(message) : buildReplyQuote(message)),
     [isForward, message],
@@ -272,19 +265,12 @@ export function InlineReply({
       },
     },
   });
-  const lastSigIdRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (!editor) return;
-    const sigId = signature?.id ?? 'none';
-    if (lastSigIdRef.current === sigId) return;
-    const prev = lastSigIdRef.current;
-    lastSigIdRef.current = sigId;
-    // Initial mount with no signature: the editor already holds baseQuote.
-    if (prev === undefined && signature === null) return;
-    const seeded = applySignatureAboveQuote(editor.getHTML(), signature);
-    // emitUpdate: false so this programmatic seed doesn't loop back through onUpdate.
-    editor.commands.setContent(seeded, { emitUpdate: false });
-  }, [editor, signature]);
+
+  // Signature block: loads the account default for reply/forward, swaps it as
+  // a dedicated editor block when the user picks another. The document is the
+  // source of truth — send/pop-out read signature.activeId directly.
+  const signature = useComposerSignature(editor, accountId, mode);
+  const { setSignature } = signature;
 
   // Forward inline images: fetch Content-ID parts and rewrite the quoted body
   // so inline images render as data URLs. The send pipeline converts them back
@@ -308,8 +294,13 @@ export function InlineReply({
         for (const p of parts) {
           cidMap.set(p.contentId, await cachedImageToDataUrl(p.filePath, p.mimeType));
         }
-        const html = applySignatureAboveQuote(buildForwardQuote(message, cidMap), signature);
+        const html = buildForwardQuote(message, cidMap);
+        // Read the active signature from the doc (not a closure variable) so a
+        // signature change made while the images loaded is preserved; then
+        // re-apply it after setContent rebuilds the quote.
+        const sigIdToRestore = editor ? getActiveSignatureId(editor.state.doc) : null;
         editor?.commands.setContent(html, { emitUpdate: false });
+        if (sigIdToRestore) setSignature(sigIdToRestore);
       } catch (err) {
         console.error('[InlineReply] failed to seed inline images', err);
       }
@@ -318,7 +309,7 @@ export function InlineReply({
     return () => {
       cancelled = true;
     };
-  }, [isForward, accountId, message.messageId, message, editor, signature]);
+  }, [isForward, accountId, message.messageId, message, editor, setSignature]);
 
   // Smart-From: pick the alias the message was addressed to (Mailspring
   // _fromContactForReply). Falls back to the account address.
@@ -354,6 +345,7 @@ export function InlineReply({
         classificationId: message.classificationId,
         isEncrypted: message.isEncrypted,
         isSigned: message.isSigned,
+        signatureId: signature.activeId,
         attachments:
           attachments.length > 0
             ? attachments.map((a) => ({
@@ -390,6 +382,7 @@ export function InlineReply({
     isForward,
     onSent,
     stagingDraftId,
+    signature.activeId,
   ]);
 
   // Pop out to the full modal composer (Mailspring-style), carrying the inline
@@ -407,7 +400,9 @@ export function InlineReply({
       threadId: message.threadId ?? null,
       inReplyToMessageId: isForward ? null : (message.messageId ?? null),
       fromEmail: fromEmail ?? accountEmail ?? undefined,
-      signatureId: signature?.id ?? null,
+      // Three-state: null = explicitly removed (pop-out must not re-add the
+      // default); undefined = hook not ready yet (pop-out applies default).
+      signatureId: signature.ready ? signature.activeId : undefined,
       classificationId: message.classificationId,
       isEncrypted: message.isEncrypted,
       isSigned: message.isSigned,
@@ -430,6 +425,8 @@ export function InlineReply({
     fromEmail,
     accountEmail,
     onClose,
+    signature.ready,
+    signature.activeId,
   ]);
 
   const sentLabel = isForward ? 'Forward sent.' : 'Reply sent.';
@@ -586,6 +583,12 @@ export function InlineReply({
           >
             <PopOutIcon size={14} />
           </Button>
+          <SignatureSelector
+            signatures={signature.signatures}
+            activeId={signature.activeId}
+            onSelect={signature.setSignature}
+            disabled={!signature.ready}
+          />
           <div className="min-h-4 text-xs">
             {status === 'error' && errorMsg && (
               <span className="text-[var(--destructive)]">{errorMsg}</span>

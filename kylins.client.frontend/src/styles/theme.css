@@ -105,7 +105,7 @@
   --green: #059669;
 
   /* Layout sizing */
-  --header-h: 56px;
+  --header-h: 44px;
   --ribbon-h: 56px;
   --tool-w: 64px; /* actively used by ToolWindowBar */
   --status-h: 36px;

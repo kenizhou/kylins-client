@@ -3,6 +3,7 @@ import { PreferencesSectionCard } from './PreferencesSectionCard';
 import { KeyManagerSection } from './KeyManagerSection';
 import { TrustedCasSection } from './TrustedCasSection';
 import { CryptoGranularitySection } from './CryptoGranularitySection';
+import { ClassificationSection } from './ClassificationSection';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { CheckboxRow } from './PreferenceRows';
 import { SecurityIcon, ShieldCheckIcon } from '../icons';
@@ -26,13 +27,13 @@ export function SecurityPreferences() {
         </div>
       </PreferencesSectionCard>
 
-      <PreferencesSectionCard title="S/MIME Keys" icon={ShieldCheckIcon}>
-        <KeyManagerSection />
-      </PreferencesSectionCard>
+      <ClassificationSection />
 
-      <PreferencesSectionCard title="Trusted CAs" icon={ShieldCheckIcon}>
-        <TrustedCasSection />
-      </PreferencesSectionCard>
+      {/* KeyManagerSection and TrustedCasSection render their own
+          PreferencesSectionCard internally — wrapping them again would nest
+          card-in-card. */}
+      <KeyManagerSection />
+      <TrustedCasSection />
 
       <PreferencesSectionCard title="Encryption granularity" icon={ShieldCheckIcon}>
         <CryptoGranularitySection />

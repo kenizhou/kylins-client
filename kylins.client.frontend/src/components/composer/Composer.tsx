@@ -22,11 +22,11 @@ import { buildComposerExtensions } from '@/features/composer/editorExtensions';
 import { EditorToolbar } from './EditorToolbar';
 import { AttachmentPicker } from './AttachmentPicker';
 import { ScheduleSendDialog } from './ScheduleSendDialog';
-import { SignatureSelector } from './SignatureSelector';
-import { TemplatePicker } from './TemplatePicker';
+import { DateTimePickerDialog } from './DateTimePickerDialog';
 import { FromSelector } from './FromSelector';
 import { ComposerTitleBar } from './window/ComposerTitleBar';
 import { ComposerActionsRow } from './window/ComposerActionsRow';
+import { DiscardConfirmDialog } from './window/DiscardConfirmDialog';
 import { ComposerStatusBar } from './window/ComposerStatusBar';
 import { CloseConfirmDialog } from './window/CloseConfirmDialog';
 import { ClassificationSelector } from '@/features/composer/ClassificationSelector';
@@ -48,7 +48,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { upsertContact } from '@/services/db/contacts';
 import { insertScheduledEmail } from '@/services/db/scheduledEmails';
-import { getDefaultSignature, signatureContextForComposerMode } from '@/services/db/signatures';
 import {
   getAliasesForAccount,
   mapDbAlias,
@@ -57,23 +56,13 @@ import {
 } from '@/services/db/sendAsAliases';
 import { getTemplatesForAccount, type DbTemplate } from '@/services/db/templates';
 import { interpolateVariables } from '@/utils/templateVariables';
-import { formatRecipients } from '@/features/composer/contacts';
+import { formatIdentity, formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
-import { applySignatureAboveQuote } from '@/features/composer/signaturePlacement';
 import { getAttachments, fetchAttachment } from '@/services/db/attachments';
-import {
-  MaximizeIcon,
-  RestoreIcon,
-  PopOutIcon,
-  PlusIcon,
-  CloseIcon,
-  SendIcon,
-  SpinnerIcon,
-} from '../icons';
+import { MaximizeIcon, RestoreIcon, PopOutIcon, PlusIcon, CloseIcon } from '../icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CommandRibbon } from '@/components/layout/CommandRibbon';
 import { ClassificationWatermark } from '@/features/classification/components/ClassificationWatermark';
 import { isProminent } from '@/features/classification/classificationStyle';
 import { WindowErrorBoundary } from '@/components/ui/WindowErrorBoundary';
@@ -120,8 +109,6 @@ export function Composer({ windowed = false }: ComposerProps) {
   const subject = useComposerStore((s) => s.subject);
   const fromEmail = useComposerStore((s) => s.fromEmail);
   const viewMode = useComposerStore((s) => s.viewMode);
-  const signatureHtml = useComposerStore((s) => s.signatureHtml);
-  const signatureId = useComposerStore((s) => s.signatureId);
   const classificationId = useComposerStore((s) => s.classificationId);
   const isSaving = useComposerStore((s) => s.isSaving);
   const lastSavedAt = useComposerStore((s) => s.lastSavedAt);
@@ -160,16 +147,16 @@ export function Composer({ windowed = false }: ComposerProps) {
   const sendProgressActive = useUIStore((s) => s.sendProgress.active);
   const attachmentSeededRef = useRef(false);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [showDateTimePicker, setShowDateTimePicker] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [wordStats, setWordStats] = useState({ words: 0, chars: 0 });
   const [showLinkDialog, setShowLinkDialog] = useState(false);
-  const [extraHeadersExpanded, setExtraHeadersExpanded] = useState(
-    () => alwaysShowCcBcc || cc.length > 0 || bcc.length > 0 || replyTo.length > 0,
-  );
-  const showExtraHeaders = extraHeadersExpanded || alwaysShowCcBcc;
-  const showCc = showExtraHeaders || cc.length > 0;
-  const showBcc = showExtraHeaders || bcc.length > 0;
-  const showReplyTo = showExtraHeaders || replyTo.length > 0;
+  // Cc and Bcc expand independently (toggled from links on the To row).
+  const [ccExpanded, setCcExpanded] = useState(() => cc.length > 0);
+  const [bccExpanded, setBccExpanded] = useState(() => bcc.length > 0);
+  const showCc = alwaysShowCcBcc || ccExpanded || cc.length > 0;
+  const showBcc = alwaysShowCcBcc || bccExpanded || bcc.length > 0;
   const [isDragging, setIsDragging] = useState(false);
   const [aliases, setAliases] = useState<SendAsAlias[]>([]);
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
@@ -337,46 +324,21 @@ export function Composer({ windowed = false }: ComposerProps) {
     },
   });
 
-  // Place the account signature above the quoted original (or at the end for a
-  // new compose). useEditor reads `content` only at mount, so when the signature
-  // loads — or the user picks a different one — we push it into the editor via
-  // setContent. Guarded by lastSigIdRef so it runs once per signature and never
-  // clobbers the user's typing on unrelated renders.
-  const lastSigIdRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (!editor) return;
-    const sigId = signatureId ?? 'none';
-    if (lastSigIdRef.current === sigId) return;
-    const prev = lastSigIdRef.current;
-    lastSigIdRef.current = sigId;
-    // Skip the very first run before a signature has loaded — the editor was
-    // already seeded with bodyHtml at mount (which carries a signature already
-    // when popped out of the inline composer).
-    if (prev === undefined && signatureId === null) return;
-    const sig = signatureHtml ? { id: signatureId ?? 'sig', html: signatureHtml } : null;
-    editor.commands.setContent(applySignatureAboveQuote(editor.getHTML(), sig), {
-      emitUpdate: false,
-    });
-  }, [editor, signatureId, signatureHtml]);
+  // The signature is a dedicated editor block managed by ComposerStatusBar's
+  // useComposerSignature hook (document is the source of truth); the store
+  // only mirrors signatureId for send/draft/schedule/pop-out persistence.
 
-  // Load signature, aliases, and templates when the composer opens.
+  // Load aliases and templates when the composer opens.
   useEffect(() => {
     if (!isOpen || !activeAccountId || !activeAccount) return;
     let cancelled = false;
 
     Promise.all([
-      getDefaultSignature(activeAccountId, signatureContextForComposerMode(mode)),
       getAliasesForAccount(activeAccountId),
       getTemplatesForAccount(activeAccountId),
-    ]).then(([sig, dbAliases, templates]) => {
+    ]).then(([dbAliases, templates]) => {
       if (cancelled) return;
       const store = useComposerStore.getState();
-
-      // Respect a signature already chosen by the caller (e.g. pop-out restore).
-      if (!store.signatureId && sig) {
-        store.setSignatureHtml(sig.body_html);
-        store.setSignatureId(sig.id);
-      }
 
       // Account address first, then DB aliases, de-duplicated by email.
       const seen = new Set<string>();
@@ -433,6 +395,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     let cancelled = false;
     void win
       .onCloseRequested((event) => {
+        if (intentionalCloseRef.current) return; // we initiated this close — let it through
         const state = useComposerStore.getState();
         const bodyEmpty = (editor?.getText().trim() ?? '') === '';
         const untouched =
@@ -515,12 +478,26 @@ export function Composer({ windowed = false }: ComposerProps) {
   // unwrapped at the send boundary (services/composer/send strips it).
   const getFullHtml = useCallback(() => editor?.getHTML() ?? '', [editor]);
 
+  // Set when WE close the window intentionally (discard / save-draft / send).
+  // Tauri re-fires onCloseRequested for programmatic close() calls; without
+  // this flag the interceptor would preventDefault our own close, leaving a
+  // closed composer (null render) stuck open — the "white screen" bug.
+  const intentionalCloseRef = useRef(false);
+
   const closeWindowIfWindowed = useCallback(async () => {
     if (!windowed) return;
+    // Mutating a ref inside a callback is intentional (see comment above).
+    // eslint-disable-next-line react-hooks/immutability
+    intentionalCloseRef.current = true;
     try {
-      await getCurrentWindow().close();
-    } catch {
-      /* ignore in non-Tauri contexts */
+      // destroy() forces the close WITHOUT emitting closeRequested, so the
+      // unsaved-changes interceptor can never cancel our own intentional
+      // close (which previously left a closed composer stuck open as a
+      // white screen). Requires the core:window:allow-destroy capability —
+      // a missing capability rejects this promise, so never swallow the error.
+      await getCurrentWindow().destroy();
+    } catch (err) {
+      console.error('[Composer] window destroy failed:', err);
     }
   }, [windowed]);
 
@@ -708,11 +685,13 @@ export function Composer({ windowed = false }: ComposerProps) {
     windowed,
   ]);
 
+  // Returns an error message for the dialog to show inline, or null on success.
   const handleSchedule = useCallback(
-    async (scheduledAt: number) => {
-      if (!activeAccountId) return;
+    async (scheduledAt: number): Promise<string | null> => {
       const state = useComposerStore.getState();
-      if (state.to.length === 0) return;
+      // Never fail silently — a dead click reads as "no response".
+      if (state.to.length === 0) return 'Add at least one recipient before scheduling.';
+      if (!activeAccountId) return 'No account selected — cannot schedule.';
 
       const html = getFullHtml();
       // T7b: schedule metadata persists path-backed refs (no base64). The
@@ -730,32 +709,37 @@ export function Composer({ windowed = false }: ComposerProps) {
             )
           : null;
 
-      await insertScheduledEmail({
-        accountId: activeAccountId,
-        toAddresses: formatRecipients(state.to).join(', '),
-        ccAddresses: state.cc.length > 0 ? formatRecipients(state.cc).join(', ') : null,
-        bccAddresses: state.bcc.length > 0 ? formatRecipients(state.bcc).join(', ') : null,
-        subject: state.subject,
-        bodyHtml: html,
-        replyToMessageId: state.inReplyToMessageId,
-        threadId: state.threadId,
-        scheduledAt,
-        signatureId: state.signatureId,
-      });
+      try {
+        await insertScheduledEmail({
+          accountId: activeAccountId,
+          toAddresses: formatRecipients(state.to).join(', '),
+          ccAddresses: state.cc.length > 0 ? formatRecipients(state.cc).join(', ') : null,
+          bccAddresses: state.bcc.length > 0 ? formatRecipients(state.bcc).join(', ') : null,
+          subject: state.subject,
+          bodyHtml: html,
+          replyToMessageId: state.inReplyToMessageId,
+          threadId: state.threadId,
+          scheduledAt,
+          signatureId: state.signatureId ?? null,
+        });
 
-      // insertScheduledEmail has no attachment column setter, so persist the
-      // serialized attachments on the most recent scheduled row for this account.
-      if (attachmentData) {
-        const latest = await invoke<{ id: string } | null>(
-          'db_get_latest_scheduled_email_for_account',
-          { accountId: activeAccountId },
-        );
-        if (latest) {
-          await invoke<void>('db_set_scheduled_email_attachment_paths', {
-            id: latest.id,
-            attachmentPaths: attachmentData,
-          });
+        // insertScheduledEmail has no attachment column setter, so persist the
+        // serialized attachments on the most recent scheduled row for this account.
+        if (attachmentData) {
+          const latest = await invoke<{ id: string } | null>(
+            'db_get_latest_scheduled_email_for_account',
+            { accountId: activeAccountId },
+          );
+          if (latest) {
+            await invoke<void>('db_set_scheduled_email_attachment_paths', {
+              id: latest.id,
+              attachmentPaths: attachmentData,
+            });
+          }
         }
+      } catch (err) {
+        console.error('[Composer] schedule failed:', err);
+        return `Schedule failed: ${err instanceof Error ? err.message : String(err)}`;
       }
 
       stopAutoSave();
@@ -769,6 +753,7 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       setShowSchedule(false);
       closeComposer();
+      return null;
     },
     [activeAccountId, closeComposer, getFullHtml, setShowSchedule],
   );
@@ -781,8 +766,8 @@ export function Composer({ windowed = false }: ComposerProps) {
     if (currentDraftId) {
       try {
         await deleteDraft(currentDraftId);
-      } catch {
-        /* ignore */
+      } catch (err) {
+        console.error('[Composer] deleteDraft failed:', err);
       }
     }
     // T7b: best-effort cleanup of any staged attachment files. On send-success
@@ -791,8 +776,8 @@ export function Composer({ windowed = false }: ComposerProps) {
     // whole outbox folder at discard.
     try {
       await cleanupAttachments(currentStagingDraftId);
-    } catch {
-      /* ignore — best-effort */
+    } catch (err) {
+      console.error('[Composer] attachment cleanup failed:', err);
     }
     closeComposer();
     await closeWindowIfWindowed();
@@ -820,6 +805,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     try {
       await flushDraftSave();
     } catch (e) {
+      console.error('[Composer] flushDraftSave failed:', e);
       useToastStore
         .getState()
         .push(`Save draft failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
@@ -830,6 +816,37 @@ export function Composer({ windowed = false }: ComposerProps) {
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
 
+  // Print just the message body (not the composer chrome) via a hidden iframe.
+  const handlePrint = useCallback(() => {
+    const bodyHtml = editor?.getHTML() ?? '';
+    const frame = document.createElement('iframe');
+    frame.style.position = 'fixed';
+    frame.style.right = '0';
+    frame.style.bottom = '0';
+    frame.style.width = '0';
+    frame.style.height = '0';
+    frame.style.border = 'none';
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument;
+    if (!doc) {
+      frame.remove();
+      return;
+    }
+    doc.open();
+    doc.write(`<!DOCTYPE html>
+<html>
+<head>
+  <title>${subject.trim() || 'Message'}</title>
+  <style>body { font-family: sans-serif; padding: 24px; } img { max-width: 100%; }</style>
+</head>
+<body>${bodyHtml}</body>
+</html>`);
+    doc.close();
+    frame.contentWindow?.focus();
+    frame.contentWindow?.print();
+    setTimeout(() => frame.remove(), 1000);
+  }, [editor, subject]);
+
   // Windowed Send: delegate to handleSend. The popout window is now closed
   // INSIDE handleSend's undo-timer finally block (after sendEmail succeeds) —
   // closing here would destroy the window (and the pending timer) before the
@@ -837,6 +854,42 @@ export function Composer({ windowed = false }: ComposerProps) {
   const handleSendAndCloseWindow = useCallback(async () => {
     await handleSend();
   }, [handleSend]);
+
+  // Attach button: open the OS file picker, then stage each picked file via
+  // the backend `stage_picked_attachment` command. The frontend fs scope
+  // only covers appData, so the copy of an arbitrary picked path must go
+  // through Rust (std::fs has full access). The resulting `filePath` lives
+  // on the ComposerAttachment and is streamed into the MIME builder at send.
+  // Shared by the actions-row Attach button and the window event dispatched
+  // by the menu bar / main-window compose ribbon.
+  const handleAttach = useCallback(async () => {
+    try {
+      const selected = await open({ multiple: true });
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      if (paths.length === 0) return;
+      const stagingDraftId = useComposerStore.getState().stagingDraftId;
+      for (const path of paths) {
+        const filename = path.split(/[\\/]/).pop() ?? path;
+        const staged = await invoke<{ filePath: string; mimeType: string; size: number }>(
+          'stage_picked_attachment',
+          { srcPath: path, draftId: stagingDraftId, filename },
+        );
+        addAttachment({
+          id: newAttachmentId(),
+          filename,
+          mimeType: staged.mimeType,
+          size: staged.size,
+          filePath: staged.filePath,
+        });
+      }
+    } catch (err) {
+      console.error('[Composer] attach pick failed', err);
+      useToastStore
+        .getState()
+        .push(`Attach failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  }, [addAttachment]);
 
   // Listen for menubar/ribbon action requests so the same handlers work whether
   // the user clicks the panel footer, the compose ribbon, or the menu bar.
@@ -854,52 +907,19 @@ export function Composer({ windowed = false }: ComposerProps) {
     function handleInsertLink() {
       setShowLinkDialog(true);
     }
-    // Attach button: open the OS file picker, then stage each picked file via
-    // the backend `stage_picked_attachment` command. The frontend fs scope
-    // only covers appData, so the copy of an arbitrary picked path must go
-    // through Rust (std::fs has full access). The resulting `filePath` lives
-    // on the ComposerAttachment and is streamed into the MIME builder at send.
-    async function handleAttachRequested() {
-      try {
-        const selected = await open({ multiple: true });
-        if (!selected) return;
-        const paths = Array.isArray(selected) ? selected : [selected];
-        if (paths.length === 0) return;
-        const stagingDraftId = useComposerStore.getState().stagingDraftId;
-        for (const path of paths) {
-          const filename = path.split(/[\\/]/).pop() ?? path;
-          const staged = await invoke<{ filePath: string; mimeType: string; size: number }>(
-            'stage_picked_attachment',
-            { srcPath: path, draftId: stagingDraftId, filename },
-          );
-          addAttachment({
-            id: newAttachmentId(),
-            filename,
-            mimeType: staged.mimeType,
-            size: staged.size,
-            filePath: staged.filePath,
-          });
-        }
-      } catch (err) {
-        console.error('[Composer] attach pick failed', err);
-        useToastStore
-          .getState()
-          .push(`Attach failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
-      }
-    }
 
     window.addEventListener('composer:send-requested', handleSendRequested);
     window.addEventListener('composer:schedule-requested', handleScheduleRequested);
     window.addEventListener('composer:insert-link', handleInsertLink);
-    window.addEventListener('composer:attach-requested', handleAttachRequested);
+    window.addEventListener('composer:attach-requested', handleAttach);
 
     return () => {
       window.removeEventListener('composer:send-requested', handleSendRequested);
       window.removeEventListener('composer:schedule-requested', handleScheduleRequested);
       window.removeEventListener('composer:insert-link', handleInsertLink);
-      window.removeEventListener('composer:attach-requested', handleAttachRequested);
+      window.removeEventListener('composer:attach-requested', handleAttach);
     };
-  }, [handleSend, handleSendAndCloseWindow, windowed, addAttachment]);
+  }, [handleSend, handleSendAndCloseWindow, windowed, handleAttach]);
 
   const handleMoveRecipient = useCallback(
     (recipient: Recipient, from: 'to' | 'cc' | 'bcc' | 'replyTo', toField: MoveTarget) => {
@@ -937,7 +957,9 @@ export function Composer({ windowed = false }: ComposerProps) {
       if (state.inReplyToMessageId) params.set('inReplyToMessageId', state.inReplyToMessageId);
       if (state.draftId) params.set('draftId', state.draftId);
       if (state.fromEmail) params.set('fromEmail', state.fromEmail);
-      if (state.signatureId) params.set('signatureId', state.signatureId);
+      // Always set the param: absent would read as "undecided → apply default"
+      // in the pop-out; 'none' preserves an explicit no-signature choice.
+      params.set('signatureId', state.signatureId ?? 'none');
       if (state.classificationId) params.set('classificationId', state.classificationId);
       params.set('isEncrypted', state.isEncrypted ? '1' : '0');
       params.set('isSigned', state.isSigned ? '1' : '0');
@@ -982,15 +1004,22 @@ export function Composer({ windowed = false }: ComposerProps) {
   const handleAddressBlockBlur = (e: React.FocusEvent<HTMLDivElement>) => {
     if (alwaysShowCcBcc) return;
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    if (cc.length === 0 && bcc.length === 0 && replyTo.length === 0) {
-      setExtraHeadersExpanded(false);
-    }
+    // Collapse each expanded-but-empty field independently.
+    if (cc.length === 0) setCcExpanded(false);
+    if (bcc.length === 0) setBccExpanded(false);
   };
 
   if (!isOpen) return null;
 
   const isFullpage = windowed || viewMode === 'fullpage';
-  const savedLabel = isSaving ? 'Saving...' : lastSavedAt ? 'Draft saved' : null;
+  const savedLabel = isSaving
+    ? 'Saving…'
+    : lastSavedAt
+      ? `Draft saved · ${new Date(lastSavedAt).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}`
+      : null;
 
   const prominent = isProminent(currentLevel);
 
@@ -1024,16 +1053,7 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       {/* Header */}
       {windowed ? (
-        <>
-          <ComposerTitleBar title={subject.trim() || modeLabel} />
-          <ComposerActionsRow
-            canSend={to.length > 0}
-            sending={sendProgressActive}
-            onSend={() => void handleSendAndCloseWindow()}
-            onDiscard={() => void handleDiscard()}
-            onSchedule={() => setShowSchedule(true)}
-          />
-        </>
+        <ComposerTitleBar title={subject.trim() || modeLabel} />
       ) : (
         <div className="flex items-center justify-between rounded-t-2xl border-b border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
           <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
@@ -1062,53 +1082,49 @@ export function Composer({ windowed = false }: ComposerProps) {
           </div>
         </div>
       )}
+      <ComposerActionsRow
+        canSend={to.length > 0}
+        sending={sendProgressActive}
+        onSend={() => (windowed ? void handleSendAndCloseWindow() : void handleSend())}
+        onDiscard={() => setDiscardConfirmOpen(true)}
+        onSchedule={() => setShowSchedule(true)}
+        onAttach={() => void handleAttach()}
+        onSave={() => void flushDraftSave()}
+        onPrint={handlePrint}
+      />
 
-      {/* Command ribbon + address fields + subject (watermark overlays this area) */}
+      {/* Classification banner + address fields + subject (watermark overlays this area) */}
       <div
         className="relative shrink-0"
         style={{ backgroundColor: prominent ? `${currentLevel.color}08` : undefined }}
       >
         {prominent && <ClassificationWatermark level={currentLevel} />}
         <div className="relative z-20">
-          <div className="shrink-0" style={noDragStyle}>
-            <CommandRibbon mode="compose" />
+          {/* Classification banner — slim full-width strip above the fields */}
+          <div className="shrink-0 border-b border-[var(--border-subtle)]" style={noDragStyle}>
+            <ClassificationSelector />
           </div>
 
           {/* Address fields */}
           <div className="space-y-1.5 border-b border-[var(--border)] px-3 py-2">
-            <div className="flex items-start gap-2">
-              <div className="flex-1 min-w-0">
-                {aliases.length > 1 ? (
-                  <FromSelector
-                    aliases={aliases}
-                    selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
-                    onChange={(alias) => setFromEmail(alias.email)}
-                  />
-                ) : (
-                  <div className="flex items-center gap-2 text-sm text-[var(--foreground)]">
-                    <span className="w-8 shrink-0 text-xs font-medium text-[var(--muted-text)]">
-                      From
-                    </span>
-                    <span className="min-w-0 truncate">
-                      {aliases[0]?.displayName
-                        ? `${aliases[0].displayName} <${aliases[0].email}>`
-                        : (aliases[0]?.email ?? activeAccount?.email ?? '')}
-                    </span>
-                  </div>
-                )}
-              </div>
-              {!alwaysShowCcBcc && !showExtraHeaders && (
-                <div className="flex items-center gap-2 text-xs text-[var(--muted-text)]">
-                  <span className="text-[var(--border)]" aria-hidden="true">
-                    |
+            <div className="min-w-0">
+              {aliases.length > 1 ? (
+                <FromSelector
+                  aliases={aliases}
+                  selectedEmail={fromEmail ?? activeAccount?.email ?? ''}
+                  onChange={(alias) => setFromEmail(alias.email)}
+                />
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+                  <span className="w-8 shrink-0 text-xs font-medium text-[var(--muted-text)]">
+                    From
                   </span>
-                  <Button
-                    onPress={() => setExtraHeadersExpanded(true)}
-                    className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Show Cc, Bcc and Reply-To fields"
-                  >
-                    Cc
-                  </Button>
+                  <span className="min-w-0 truncate">
+                    {formatIdentity(
+                      aliases[0]?.displayName,
+                      aliases[0]?.email ?? activeAccount?.email ?? '',
+                    )}
+                  </span>
                 </div>
               )}
             </div>
@@ -1120,11 +1136,34 @@ export function Composer({ windowed = false }: ComposerProps) {
               moveTargets={[
                 { label: 'Cc', target: 'cc' },
                 { label: 'Bcc', target: 'bcc' },
-                { label: 'Reply-To', target: 'replyTo' },
               ]}
               onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
+              trailing={
+                !showCc || !showBcc ? (
+                  <div className="flex shrink-0 items-center gap-2 pt-1.5 text-xs">
+                    {!showCc && (
+                      <Button
+                        onPress={() => setCcExpanded(true)}
+                        className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="Show Cc field"
+                      >
+                        Cc
+                      </Button>
+                    )}
+                    {!showBcc && (
+                      <Button
+                        onPress={() => setBccExpanded(true)}
+                        className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="Show Bcc field"
+                      >
+                        Bcc
+                      </Button>
+                    )}
+                  </div>
+                ) : undefined
+              }
             />
-            {(showCc || showBcc || showReplyTo || alwaysShowCcBcc) && (
+            {(showCc || showBcc || alwaysShowCcBcc) && (
               <div className="space-y-1" onBlur={handleAddressBlockBlur}>
                 {showCc && (
                   <RecipientField
@@ -1135,7 +1174,6 @@ export function Composer({ windowed = false }: ComposerProps) {
                     moveTargets={[
                       { label: 'To', target: 'to' },
                       { label: 'Bcc', target: 'bcc' },
-                      { label: 'Reply-To', target: 'replyTo' },
                     ]}
                     onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
                   />
@@ -1149,43 +1187,25 @@ export function Composer({ windowed = false }: ComposerProps) {
                     moveTargets={[
                       { label: 'To', target: 'to' },
                       { label: 'Cc', target: 'cc' },
-                      { label: 'Reply-To', target: 'replyTo' },
                     ]}
                     onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-                  />
-                )}
-                {showReplyTo && (
-                  <RecipientField
-                    label="Reply-To"
-                    recipients={replyTo}
-                    onChange={setReplyTo}
-                    placeholder="Reply-To address"
-                    moveTargets={[
-                      { label: 'To', target: 'to' },
-                      { label: 'Cc', target: 'cc' },
-                      { label: 'Bcc', target: 'bcc' },
-                    ]}
-                    onMove={(r, target) => handleMoveRecipient(r, 'replyTo', target)}
                   />
                 )}
               </div>
             )}
           </div>
 
-          {/* Subject */}
+          {/* Subject (full width — classification moved to the banner above) */}
           <div className="border-b border-[var(--border)] px-3 py-1.5">
-            <div className="flex items-center gap-2">
-              <ClassificationSelector />
-              <TextField className="flex-1" aria-label="Subject">
-                <Input
-                  type="text"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  placeholder="Subject"
-                  className="w-full flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
-                />
-              </TextField>
-            </div>
+            <TextField className="flex-1" aria-label="Subject">
+              <Input
+                type="text"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="Subject"
+                className="w-full flex-1 bg-transparent text-[15px] font-medium text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+              />
+            </TextField>
           </div>
         </div>
       </div>
@@ -1216,51 +1236,14 @@ export function Composer({ windowed = false }: ComposerProps) {
         <AttachmentPicker />
       </div>
 
-      {/* Footer (inline) / status bar (windowed) */}
-      {windowed ? (
-        <ComposerStatusBar
-          editor={editor}
-          wordCount={wordStats.words}
-          charCount={wordStats.chars}
-        />
-      ) : (
-        <div className="flex items-center justify-between rounded-b-2xl border-t border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
-          <div className="flex items-center gap-3">
-            <div className="text-xs text-[var(--muted-foreground)]">
-              {fromEmail ?? activeAccount?.email ?? 'No account'}
-            </div>
-            {savedLabel && (
-              <span
-                className={`text-xs italic text-[var(--muted-foreground)] transition-opacity duration-200 ${
-                  isSaving ? 'animate-pulse' : ''
-                }`}
-              >
-                {savedLabel}
-              </span>
-            )}
-            <SignatureSelector />
-            <TemplatePicker editor={editor} />
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              onPress={handleDiscard}
-              isDisabled={sendProgressActive}
-              className="rounded border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            >
-              Discard
-            </Button>
-            <Button
-              onPress={windowed ? handleSendAndCloseWindow : handleSend}
-              isDisabled={to.length === 0 || sendProgressActive}
-              aria-label={undefined}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] shadow-[var(--shadow-sm)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {sendProgressActive ? <SpinnerIcon size={14} /> : <SendIcon size={14} />}
-              {sendProgressActive ? 'Sending…' : 'Send'}
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* Status bar (both modes) */}
+      <ComposerStatusBar
+        editor={editor}
+        wordCount={wordStats.words}
+        charCount={wordStats.chars}
+        draftLabel={savedLabel}
+        className={windowed ? undefined : 'rounded-b-2xl'}
+      />
 
       {windowed && (
         <CloseConfirmDialog
@@ -1277,8 +1260,36 @@ export function Composer({ windowed = false }: ComposerProps) {
         />
       )}
 
+      <DiscardConfirmDialog
+        isOpen={discardConfirmOpen}
+        onDiscard={() => {
+          setDiscardConfirmOpen(false);
+          void handleDiscard();
+        }}
+        onCancel={() => setDiscardConfirmOpen(false)}
+      />
+
       {showSchedule && (
-        <ScheduleSendDialog onSchedule={handleSchedule} onClose={() => setShowSchedule(false)} />
+        <ScheduleSendDialog
+          onSchedule={handleSchedule}
+          onPickCustom={() => {
+            // Gmail-style: the preset dialog closes, the dedicated date & time
+            // picker takes over the custom-selection flow.
+            setShowSchedule(false);
+            setShowDateTimePicker(true);
+          }}
+          onClose={() => setShowSchedule(false)}
+        />
+      )}
+
+      {showDateTimePicker && (
+        <DateTimePickerDialog
+          onSchedule={(ts) => {
+            setShowDateTimePicker(false);
+            return handleSchedule(ts);
+          }}
+          onClose={() => setShowDateTimePicker(false)}
+        />
       )}
 
       <InputDialog

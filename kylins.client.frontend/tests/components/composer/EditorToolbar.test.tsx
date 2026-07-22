@@ -55,14 +55,22 @@ describe('EditorToolbar', () => {
     render(<EditorToolbar editor={fakeEditor().editor} onRequestLink={() => {}} />);
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Bold' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Heading 1' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Bullet list' })).not.toBeInTheDocument();
+    // Lists stay visible; quote/code/link/image collapse into the More menu.
+    expect(screen.getByRole('button', { name: 'Bullet list' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Quote' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Insert image' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /more/i }));
-    expect(screen.getByRole('menuitem', { name: 'Heading 1' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Bullet list' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Quote' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Code block' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Insert link' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Insert image' })).toBeInTheDocument();
+  });
+
+  it('replaces the H1/H2/H3 buttons with a paragraph style dropdown', () => {
+    render(<EditorToolbar editor={fakeEditor().editor} onRequestLink={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Heading 1' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /paragraph style/i })).toBeInTheDocument();
   });
 
   it('hides the font/highlight cluster below 900px (into the More menu)', () => {
@@ -77,7 +85,7 @@ describe('EditorToolbar', () => {
     const { calls, editor } = fakeEditor();
     render(<EditorToolbar editor={editor} onRequestLink={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /more/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Bullet list' }));
-    expect(calls).toContain('toggleBulletList');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Quote' }));
+    expect(calls).toContain('toggleBlockquote');
   });
 });

@@ -77,8 +77,8 @@ export function TitleBar() {
       className="relative z-[var(--z-dropdown)] h-[var(--header-h)] flex items-center pl-2 pr-[148px] glass bg-gradient-to-b from-[var(--chrome-glass-start)] to-[var(--chrome-glass-end)] shadow-[var(--glass-shadow),var(--chrome-highlight)] select-none"
       style={dragStyle}
     >
-      {/* Signature iris hairline along the bottom edge */}
-      <span className="pointer-events-none absolute inset-x-0 bottom-0 h-px iris-line opacity-70" />
+      {/* Solid primary hairline along the bottom edge (no gradient) */}
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-[var(--primary)] opacity-40" />
       {/* Left: hamburger + menu bar */}
       <div className="flex items-center flex-shrink-0" style={noDragStyle}>
         <IconButton

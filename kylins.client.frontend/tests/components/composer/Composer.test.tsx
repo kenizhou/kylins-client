@@ -11,13 +11,21 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 
 const setTitle = vi.fn(() => Promise.resolve());
-const windowClose = vi.fn(() => Promise.resolve());
+// Real Tauri re-fires onCloseRequested for programmatic close() calls — mirror
+// that so the tests exercise the close-interceptor re-entry path. Intentional
+// closes use destroy(), which bypasses closeRequested entirely.
+const windowClose = vi.fn(() => {
+  closeRequestedHandler?.({ preventDefault: () => {} });
+  return Promise.resolve();
+});
+const windowDestroy = vi.fn(() => Promise.resolve());
 let closeRequestedHandler: ((event: { preventDefault: () => void }) => void) | null = null;
 
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: vi.fn(() => ({
     setTitle,
     close: windowClose,
+    destroy: windowDestroy,
     isMaximized: vi.fn(() => Promise.resolve(false)),
     onResized: vi.fn(() => Promise.resolve(() => {})),
     minimize: vi.fn(() => Promise.resolve()),
@@ -89,6 +97,7 @@ beforeEach(() => {
   setupAccount();
   setTitle.mockClear();
   windowClose.mockClear();
+  windowDestroy.mockClear();
   closeRequestedHandler = null;
   flushDraftSave.mockClear();
 });
@@ -98,18 +107,19 @@ describe('Composer default view', () => {
     render(<Composer />);
     expect(screen.getByLabelText(/^to$/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/^subject$/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /send/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^send$/i })).toBeInTheDocument();
     expect(screen.queryByLabelText(/^cc$/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^bcc$/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^reply-to$/i)).not.toBeInTheDocument();
   });
 
-  it('reveals Cc/Bcc/Reply-To when the Cc link is clicked', () => {
+  it('reveals Cc from the Cc link and Bcc from the Bcc link', () => {
     render(<Composer />);
-    fireEvent.click(screen.getByRole('button', { name: /cc/i }));
+    fireEvent.click(screen.getByRole('button', { name: /show cc field/i }));
     expect(screen.getByLabelText(/^cc$/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^bcc$/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /show bcc field/i }));
     expect(screen.getByLabelText(/^bcc$/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/^reply-to$/i)).toBeInTheDocument();
   });
 
   it('auto-expands Cc when a Cc value is present on open', async () => {
@@ -127,10 +137,12 @@ describe('Composer windowed (pop-out)', () => {
     expect(screen.getByText('Quarterly report')).toBeInTheDocument();
     expect(setTitle).toHaveBeenCalledWith('Quarterly report');
     expect(screen.getByRole('button', { name: /^send$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^schedule$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /discard/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /delivery options/i })).toBeInTheDocument();
     expect(screen.getByRole('contentinfo')).toBeInTheDocument();
     expect(screen.getByText(/words · /)).toBeInTheDocument();
+    // Discard lives in the overflow menu of the consolidated actions row.
+    fireEvent.click(screen.getByRole('button', { name: /more message options/i }));
+    expect(screen.getByRole('menuitem', { name: /discard/i })).toBeInTheDocument();
   });
 
   it('falls back to the mode label when the subject is empty', () => {
@@ -139,9 +151,9 @@ describe('Composer windowed (pop-out)', () => {
     expect(setTitle).toHaveBeenCalledWith('New Message');
   });
 
-  it('does not render the inline footer (no footer landmark when inline, status bar when windowed)', () => {
+  it('renders the shared status bar in both inline and windowed modes', () => {
     const { unmount } = render(<Composer />);
-    expect(screen.queryByRole('contentinfo')).not.toBeInTheDocument();
+    expect(screen.getByRole('contentinfo')).toBeInTheDocument();
     unmount();
     render(<Composer windowed />);
     expect(screen.getByRole('contentinfo')).toBeInTheDocument();
@@ -171,29 +183,29 @@ describe('Composer windowed (pop-out)', () => {
     // Cancel dismisses without closing.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByText('Save this draft?')).not.toBeInTheDocument();
-    expect(windowClose).not.toHaveBeenCalled();
+    expect(windowDestroy).not.toHaveBeenCalled();
   });
 
-  it("Don't Save discards and closes the window", async () => {
+  it("'No' discards and closes the window", async () => {
     useComposerStore.setState({ subject: 'Unsaved work' });
     render(<Composer windowed />);
     await act(async () => {
       await closeRequestedHandler!({ preventDefault: vi.fn() });
     });
-    fireEvent.click(screen.getByRole('button', { name: "Don't Save" }));
-    await waitFor(() => expect(windowClose).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'No' }));
+    await waitFor(() => expect(windowDestroy).toHaveBeenCalled());
   });
 
-  it('Save Draft flushes the draft and closes the window', async () => {
+  it("'Yes' flushes the draft and closes the window", async () => {
     const { flushDraftSave } = await import('../../../src/services/composer/draftAutoSave');
     useComposerStore.setState({ subject: 'Unsaved work' });
     render(<Composer windowed />);
     await act(async () => {
       await closeRequestedHandler!({ preventDefault: vi.fn() });
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Save Draft' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
     await waitFor(() => expect(flushDraftSave).toHaveBeenCalled());
-    await waitFor(() => expect(windowClose).toHaveBeenCalled());
+    await waitFor(() => expect(windowDestroy).toHaveBeenCalled());
   });
 
   it('intercepts close when only a Cc recipient is present', async () => {
@@ -207,7 +219,7 @@ describe('Composer windowed (pop-out)', () => {
     expect(screen.getByText('Save this draft?')).toBeInTheDocument();
   });
 
-  it('Save Draft keeps the window open and toasts when flushDraftSave fails', async () => {
+  it("'Yes' keeps the window open and toasts when flushDraftSave fails", async () => {
     vi.mocked(flushDraftSave).mockRejectedValueOnce(new Error('disk full'));
     const pushSpy = vi.spyOn(useToastStore.getState(), 'push');
     useComposerStore.setState({ subject: 'Unsaved work' });
@@ -215,12 +227,12 @@ describe('Composer windowed (pop-out)', () => {
     await act(async () => {
       await closeRequestedHandler!({ preventDefault: vi.fn() });
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Save Draft' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
     await waitFor(() => expect(flushDraftSave).toHaveBeenCalled());
     await waitFor(() =>
       expect(pushSpy).toHaveBeenCalledWith(expect.stringContaining('Save draft failed'), 'error'),
     );
-    expect(windowClose).not.toHaveBeenCalled();
+    expect(windowDestroy).not.toHaveBeenCalled();
     pushSpy.mockRestore();
   });
 });

@@ -123,7 +123,7 @@ function FolderRow({
         `}
       >
         {active && (
-          <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line" />
+          <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line-v" />
         )}
         <span className="shrink-0">{icon}</span>
         <span className="flex-1 truncate text-[13px]">{name}</span>
@@ -424,7 +424,7 @@ function AccountFolderTree({
                 }}
               >
                 {isSelected && (
-                  <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line" />
+                  <span className="absolute bottom-0 left-0 top-0 w-[3px] rounded-r-full iris-line-v" />
                 )}
                 {hasChildItems ? (
                   <Button

@@ -15,8 +15,8 @@ import {
   ArrowUpIcon,
   MinusIcon,
   ArrowDownIcon,
-  LockIcon,
-  ShieldCheckIcon,
+  EncryptIcon,
+  SignIcon,
   CaretDownIcon,
   MailOpenIcon,
   MailIcon,
@@ -175,14 +175,14 @@ export function ComposeRibbon() {
       {!compact && (
         <RibbonGroup>
           <RibbonToggle
-            icon={<LockIcon size={17} />}
+            icon={<EncryptIcon size={17} />}
             label="Encrypt"
             checked={isEncrypted}
             disabled={requiresCrypto}
             onChange={setIsEncrypted}
           />
           <RibbonToggle
-            icon={<ShieldCheckIcon size={17} />}
+            icon={<SignIcon size={17} />}
             label="Sign"
             checked={isSigned}
             disabled={requiresCrypto}
@@ -271,7 +271,7 @@ export function ComposeRibbon() {
                   onAction={() => setIsEncrypted(!isEncrypted)}
                   className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)] data-[disabled]:opacity-50"
                 >
-                  <LockIcon size={14} className="text-[var(--muted-text)]" />
+                  <EncryptIcon size={14} className="text-[var(--muted-text)]" />
                   <span className="flex-1 whitespace-nowrap">Encrypt</span>
                   {isEncrypted && <CheckIcon size={14} className="text-[var(--primary)]" />}
                 </MenuItem>
@@ -282,7 +282,7 @@ export function ComposeRibbon() {
                   onAction={() => setIsSigned(!isSigned)}
                   className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none data-[hovered]:bg-[var(--primary-subtle)] data-[focus-visible]:bg-[var(--primary-subtle)] data-[disabled]:opacity-50"
                 >
-                  <ShieldCheckIcon size={14} className="text-[var(--muted-text)]" />
+                  <SignIcon size={14} className="text-[var(--muted-text)]" />
                   <span className="flex-1 whitespace-nowrap">Sign</span>
                   {isSigned && <CheckIcon size={14} className="text-[var(--primary)]" />}
                 </MenuItem>
