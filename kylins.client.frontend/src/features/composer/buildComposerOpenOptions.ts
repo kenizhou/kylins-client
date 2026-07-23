@@ -1,25 +1,16 @@
 // Centralized seeding helper for the modal composer in reply / reply-all /
-// forward modes. Ports the logic already proven in InlineReply.tsx so every
-// entry point (ribbon, message list, reading pane, pop-out) produces the same
-// recipients, subject, quoted body, smart-From, and attachment flags.
+// forward modes. Thin adapter over draftFactory.buildDraftSeed (the single
+// seeding implementation shared with the inline composer) — every entry point
+// (ribbon, message list, reading pane, pop-out) produces the same recipients,
+// subject, quoted body, smart-From, and attachment flags.
 
 import type { MailMessage } from '@/features/view/viewStore';
 import type { ComposeWindowOptions } from '@/utils/composeWindow';
-import type { SendAsAlias } from '@/services/db/sendAsAliases';
-import { getAliasesForAccount, mapDbAlias, accountAsAlias } from '@/services/db/sendAsAliases';
-import { fetchInlineImages, cachedImageToDataUrl } from '@/services/db/attachments';
-import { buildReplyQuote, buildForwardQuote } from './prepareBodyForQuoting';
-import { participantsForReply, participantsForReplyAll } from './recipientsForReply';
-import { resolveFromForReply } from './fromResolution';
-import { subjectWithPrefix } from './subjectPrefix';
+import { buildDraftSeed, type DraftSeedAccount, type InlineIntent } from './draftFactory';
 
 export type ComposerOpenMode = 'reply' | 'replyAll' | 'forward';
 
-export interface ComposerAccountInfo {
-  id: string;
-  email: string;
-  displayName?: string;
-}
+export type ComposerAccountInfo = DraftSeedAccount;
 
 export interface BuildComposerOpenOptionsInput {
   account: ComposerAccountInfo;
@@ -29,16 +20,6 @@ export interface BuildComposerOpenOptionsInput {
   includeOriginalAttachments?: boolean;
   /** Forward the original as a .eml attachment (no inline quote). */
   forwardAsAttachment?: boolean;
-}
-
-function dedupAliases(aliases: SendAsAlias[]): SendAsAlias[] {
-  const seen = new Set<string>();
-  return aliases.filter((a) => {
-    const key = a.email.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 /**
@@ -53,74 +34,43 @@ export async function buildComposerOpenOptions(
   const { account, message, mode } = input;
   const isForward = mode === 'forward';
 
-  const dbAliases = (await getAliasesForAccount(account.id)).map(mapDbAlias);
-  const merged = dedupAliases([accountAsAlias(account), ...dbAliases]);
-  const selfEmails = merged.map((a) => a.email);
-
-  const defaultAlias = merged.find((a) => a.isDefault) ?? merged[0];
-  const fromEmail =
-    merged.length <= 1 || !defaultAlias
-      ? (defaultAlias?.email ?? account.email)
-      : resolveFromForReply(message, merged, defaultAlias).email;
-
-  let to: ComposeWindowOptions['to'];
-  let cc: ComposeWindowOptions['cc'];
-  if (isForward) {
-    to = [];
-    cc = undefined;
-  } else if (mode === 'replyAll') {
-    const all = participantsForReplyAll(message, selfEmails);
-    to = all.to;
-    cc = all.cc;
-  } else {
-    to = participantsForReply(message, selfEmails).to;
-    cc = undefined;
-  }
-
-  const subject = subjectWithPrefix(message.subject, isForward ? 'Fwd:' : 'Re:');
-
-  let bodyHtml: string;
-  let cidMap: Map<string, string> | undefined;
-  if (input.forwardAsAttachment) {
-    bodyHtml = '';
-  } else if (isForward) {
-    const inlineParts = await fetchInlineImages(account.id, message.id);
-    if (inlineParts.length > 0) {
-      // Forward path: the send pipeline's `extractInlineImages` matches `data:`
-      // URLs to re-attach inline images as CID parts, so we read each cached
-      // file into a data URL here (not convertFileSrc).
-      cidMap = new Map<string, string>();
-      for (const p of inlineParts) {
-        cidMap.set(p.contentId, await cachedImageToDataUrl(p.filePath, p.mimeType));
-      }
-    }
-    bodyHtml = buildForwardQuote(message, cidMap);
-  } else {
-    bodyHtml = buildReplyQuote(message);
-  }
+  const intent: InlineIntent = input.includeOriginalAttachments
+    ? mode === 'replyAll'
+      ? 'replyAllWithAttachments'
+      : mode === 'reply'
+        ? 'replyWithAttachments'
+        : 'forward'
+    : mode;
+  const seed = await buildDraftSeed({
+    account,
+    message,
+    intent,
+    // Forward-as-attachment carries no inline quote — the original goes along
+    // as a synthesized .eml instead, so skip the body (and its inline-image
+    // fetch) entirely.
+    skipBody: input.forwardAsAttachment,
+  });
 
   const originalMessageId =
     isForward || input.includeOriginalAttachments ? (message.messageId ?? null) : null;
 
   return {
     mode,
-    to,
-    cc,
+    to: seed.to,
+    cc: seed.cc.length > 0 ? seed.cc : undefined,
     bcc: [],
     replyTo: [],
-    subject,
-    bodyHtml,
-    fromEmail,
+    subject: seed.subject,
+    bodyHtml: seed.bodyHtml,
+    fromEmail: seed.fromEmail,
     accountId: account.id,
-    threadId: message.threadId ?? message.id,
-    inReplyToMessageId: isForward ? null : (message.messageId ?? null),
+    threadId: seed.threadId,
+    inReplyToMessageId: seed.inReplyToMessageId,
     classificationId: message.classificationId ?? undefined,
     isEncrypted: message.isEncrypted,
     isSigned: message.isSigned,
     originalMessageId,
-    includeOriginalAttachments: input.forwardAsAttachment
-      ? false
-      : !!(isForward || input.includeOriginalAttachments),
+    includeOriginalAttachments: input.forwardAsAttachment ? false : seed.includeOriginalAttachments,
     forwardAsAttachment: input.forwardAsAttachment,
     originalMessageSubject: input.forwardAsAttachment ? message.subject : undefined,
     originalMessageHtml: input.forwardAsAttachment ? message.html : undefined,

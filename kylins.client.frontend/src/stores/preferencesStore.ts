@@ -86,6 +86,7 @@ const STRING_FIELDS: Record<string, StringField> = {
   undoSendDuration: { key: SETTING_KEYS.undoSendDuration, defaultValue: '5' },
   sendNewMessagesFrom: { key: SETTING_KEYS.sendNewMessagesFrom, defaultValue: 'selected-account' },
   spellcheckLanguage: { key: SETTING_KEYS.spellcheckLanguage, defaultValue: 'system' },
+  quoteStyle: { key: SETTING_KEYS.quoteStyle, defaultValue: 'outlook' },
   appIconBadge: { key: SETTING_KEYS.appIconBadge, defaultValue: 'unread-count' },
 };
 
@@ -159,6 +160,10 @@ export interface PreferencesState {
   setSpellcheckLanguage: (value: string) => void;
   alwaysShowCcBcc: boolean;
   setAlwaysShowCcBcc: (value: boolean) => void;
+  /** Quote layout for reply/forward: 'outlook' (header block, no indent) or
+   *  'gmail' (indented blockquote). */
+  quoteStyle: string;
+  setQuoteStyle: (value: string) => void;
 
   // Notifications
   showNotificationsForNewUnread: boolean;
@@ -349,6 +354,10 @@ export const usePreferencesStore = create<PreferencesState>((set) => ({
   setAlwaysShowCcBcc: (value) => {
     set({ alwaysShowCcBcc: value });
     persist(SETTING_KEYS.alwaysShowCcBcc, value);
+  },
+  setQuoteStyle: (value) => {
+    set({ quoteStyle: value });
+    persist(SETTING_KEYS.quoteStyle, value);
   },
 
   setShowNotificationsForNewUnread: (value) => {

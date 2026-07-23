@@ -7,6 +7,7 @@ import { useAccountStore } from '../../stores/accountStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useThreadStore } from '../../stores/threadStore';
 import { useUIStore } from '../../stores/uiStore';
+import { useInlineComposerStore, useInlineComposerVisible } from '../../stores/inlineComposerStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
 import { fetchAttachment, fetchInlineImages, getAttachments } from '../../services/db/attachments';
@@ -40,11 +41,14 @@ export function ReadingPane() {
   const { getLevelById } = useClassification();
   const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
   const markThreadRead = useThreadStore((s) => s.markThreadRead);
-  // Inline reply/forward mode is held in viewStore (not local state) so the
-  // AppShell's CommandRibbon can observe it and flip to compose mode (Attach
-  // button reachable) while an inline reply is open in the reading pane.
-  const inlineReplyMode = useViewStore((s) => s.inlineReplyMode);
-  const setInlineReplyMode = useViewStore((s) => s.setInlineReplyMode);
+  // Inline composer session (takes over this pane while visible). Visibility
+  // is derived: the composer shows only while the session's message is
+  // selected; switching messages hides but PRESERVES the draft (retention —
+  // see inlineComposerStore). AppShell reads the same hook for the ribbon flip.
+  const inlineVisible = useInlineComposerVisible();
+  const inlineSession = useInlineComposerStore((s) => s.session);
+  const openInlineComposer = useInlineComposerStore((s) => s.open);
+  const discardInlineComposer = useInlineComposerStore((s) => s.discard);
   const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
   const [contactAdded, setContactAdded] = useState(false);
   const [inviteEvents, setInviteEvents] = useState<ParsedEvent[]>([]);
@@ -64,7 +68,8 @@ export function ReadingPane() {
   const [activeMsgId, setActiveMsgId] = useState<string | undefined>(message?.id);
   if (message?.id !== activeMsgId) {
     setActiveMsgId(message?.id);
-    setInlineReplyMode(null);
+    // NOTE: the inline composer session is deliberately NOT cleared here —
+    // retention across message switches is the whole point of the store.
     setCidMap(new Map());
     setInviteEvents([]);
     setDismissedTrustMsgId(undefined);
@@ -273,23 +278,16 @@ export function ReadingPane() {
     );
   }
 
-  // Inline reply / forward (Outlook-style) takes over the reading pane.
-  if (inlineReplyMode) {
-    return (
-      <InlineReply
-        message={message}
-        mode={inlineReplyMode}
-        accountId={activeAccountId}
-        accountEmail={accountEmail}
-        onClose={() => setInlineReplyMode(null)}
-        onSent={() => setInlineReplyMode(null)}
-      />
-    );
-  }
-
-  const handleReply = () => setInlineReplyMode('reply');
-  const handleReplyAll = () => setInlineReplyMode('replyAll');
-  const handleForward = () => setInlineReplyMode('forward');
+  // Inline reply / forward intents open a session in the docked composer.
+  const openInline = (intent: Parameters<typeof openInlineComposer>[0]) => {
+    if (!message || !account) return;
+    openInlineComposer(intent, message, account);
+  };
+  const handleReply = () => openInline('reply');
+  const handleReplyAll = () => openInline('replyAll');
+  const handleForward = () => openInline('forward');
+  const handleReplyWithAttachments = () => openInline('replyWithAttachments');
+  const handleReplyAllWithAttachments = () => openInline('replyAllWithAttachments');
 
   async function handleAddContact() {
     if (!message) return;
@@ -320,8 +318,45 @@ export function ReadingPane() {
   // normal body path.
   const decryptFailed = message.decryptState === 'no-key' || message.decryptState === 'failed';
 
-  return (
+  const messageContent = (
     <div className="reading-pane relative flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)]">
+      {/* Retained inline draft for another message: hidden, not lost. */}
+      {inlineSession && !inlineVisible && (
+        <div className="mx-5 mt-3 flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs">
+          <span className="min-w-0 flex-1 truncate text-[var(--foreground)]">
+            Unsent reply to “{inlineSession.message.subject}”
+          </span>
+          <Button
+            type="button"
+            onPress={() => {
+              // Resume through the normal thread-selection pipeline so the
+              // message is re-fetched (fresh body/crypto state) and
+              // threadStore.selectedThreadId stays in sync — thread-scoped
+              // actions (Archive/Delete/Junk) keep targeting the right
+              // thread. Fall back to the session's snapshot only when the
+              // thread isn't loaded.
+              const thread = useThreadStore
+                .getState()
+                .threads.find((t) => t.id === inlineSession.message.threadId);
+              if (thread) {
+                void useThreadStore.getState().selectThread(thread);
+              } else {
+                useViewStore.getState().setSelectedMessage(inlineSession.message);
+              }
+            }}
+            className="kylins-link shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Resume
+          </Button>
+          <Button
+            type="button"
+            onPress={() => discardInlineComposer()}
+            className="shrink-0 text-[var(--muted-text)] transition-colors hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Discard
+          </Button>
+        </div>
+      )}
       {prominent && level && <ClassificationBanner level={level} position="top" />}
 
       {isCryptoMessage && (
@@ -379,6 +414,8 @@ export function ReadingPane() {
         onReply={handleReply}
         onReplyAll={handleReplyAll}
         onForward={handleForward}
+        onReplyWithAttachments={handleReplyWithAttachments}
+        onReplyAllWithAttachments={handleReplyAllWithAttachments}
         onArchive={() => {
           if (!selectedThread) return;
           void archiveThread(selectedThread);
@@ -479,6 +516,19 @@ export function ReadingPane() {
       )}
     </div>
   );
+
+  // Inline composer takeover: while a session is visible the composer
+  // replaces the message view entirely. The draft is retained in the store
+  // when the user switches messages (see the resume chip in messageContent).
+  if (inlineVisible) {
+    return (
+      <div className="flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)]">
+        <InlineReply />
+      </div>
+    );
+  }
+
+  return messageContent;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

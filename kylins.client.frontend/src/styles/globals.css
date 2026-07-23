@@ -457,6 +457,12 @@
   color: var(--muted-text);
   margin: 0.5em 0;
 }
+/* Quote separator (Outlook-style reply/forward header block divider). */
+.kylins-editor :where(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.6em 0;
+}
 .kylins-editor :where(pre) {
   background: var(--secondary);
   border: 1px solid var(--border);

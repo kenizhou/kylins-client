@@ -22,6 +22,13 @@ export interface ComposerAttachment {
    * `services/composer/attachments.ts`.
    */
   filePath: string;
+  /**
+   * Where the attachment came from: 'seeded' = re-attached from the original
+   * message (forward / reply-with-attachment), 'picked' = added by the user.
+   * UI-only tag (chips, the forward "include original attachments" toggle) —
+   * never sent to the backend. Undefined is treated as 'picked'.
+   */
+  origin?: 'seeded' | 'picked';
 }
 
 /**
@@ -110,6 +117,14 @@ export interface ComposerState {
   originalMessageId: string | null;
   /** When true, seed the composer with the original message's attachments. */
   includeOriginalAttachments: boolean;
+  /**
+   * True when attachments were handed over from another surface (inline
+   * composer pop-out) — the modal's seed effect must NOT re-fetch/re-stage
+   * the original attachments, or every file would be duplicated. Reset by
+   * closeComposer and by the include-originals checkbox when the user
+   * explicitly re-requests seeding.
+   */
+  attachmentsTransferred: boolean;
   /** When true, attach the original message as a .eml file. */
   forwardAsAttachment: boolean;
   /** Cached original message subject for forward-as-attachment synthesis. */
@@ -145,6 +160,13 @@ export interface ComposerState {
     originalMessageSubject?: string;
     originalMessageHtml?: string | null;
     originalMessageText?: string | null;
+    /**
+     * Pop-out transfer: when an inline composer pops out, it hands over its
+     * staging directory (and already-staged attachment files) instead of
+     * starting a fresh one, so no files are orphaned or re-copied.
+     */
+    stagingDraftId?: string;
+    attachments?: ComposerAttachment[];
   }) => void;
   closeComposer: () => void;
   setTo: (to: RecipientInput) => void;
@@ -177,6 +199,7 @@ export interface ComposerState {
   setPreventCopy: (value: boolean) => void;
   setOriginalMessageId: (id: string | null) => void;
   setIncludeOriginalAttachments: (value: boolean) => void;
+  setAttachmentsTransferred: (value: boolean) => void;
   setForwardAsAttachment: (value: boolean) => void;
   setOriginalMessageSubject: (value: string) => void;
   setOriginalMessageHtml: (value: string | null) => void;
@@ -216,6 +239,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   preventCopy: false,
   originalMessageId: null,
   includeOriginalAttachments: false,
+  attachmentsTransferred: false,
   forwardAsAttachment: false,
   originalMessageSubject: '',
   originalMessageHtml: null,
@@ -238,13 +262,14 @@ export const useComposerStore = create<ComposerState>((set) => ({
         (opts?.bcc?.length ?? 0) > 0 ||
         (opts?.replyTo?.length ?? 0) > 0,
       draftId: opts?.draftId ?? null,
-      // Always start a fresh staging directory per compose session. Re-opening
-      // a persisted draft does NOT reuse its old staging folder (the backend
+      // Start a fresh staging directory per compose session — unless the
+      // caller hands one over (inline pop-out transfer). Re-opening a
+      // persisted draft does NOT reuse its old staging folder (the backend
       // may have already cleaned it up on a prior send); new picks stage anew.
-      stagingDraftId: newDraftId(),
+      stagingDraftId: opts?.stagingDraftId ?? newDraftId(),
       viewMode: 'modal',
       fromEmail: opts?.fromEmail ?? null,
-      attachments: [],
+      attachments: opts?.attachments ?? [],
       lastSavedAt: null,
       isSaving: false,
       // NOTE: no `?? null` — undefined is meaningful (apply default on open).
@@ -259,6 +284,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
       preventCopy: opts?.preventCopy ?? false,
       originalMessageId: opts?.originalMessageId ?? null,
       includeOriginalAttachments: opts?.includeOriginalAttachments ?? opts?.mode === 'forward',
+      attachmentsTransferred: (opts?.attachments?.length ?? 0) > 0,
       forwardAsAttachment: opts?.forwardAsAttachment ?? false,
       originalMessageSubject: opts?.originalMessageSubject ?? '',
       originalMessageHtml: opts?.originalMessageHtml ?? null,
@@ -295,6 +321,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
       preventCopy: false,
       originalMessageId: null,
       includeOriginalAttachments: false,
+      attachmentsTransferred: false,
       forwardAsAttachment: false,
       originalMessageSubject: '',
       originalMessageHtml: null,
@@ -332,6 +359,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setPreventCopy: (preventCopy) => set({ preventCopy }),
   setOriginalMessageId: (id) => set({ originalMessageId: id }),
   setIncludeOriginalAttachments: (value) => set({ includeOriginalAttachments: value }),
+  setAttachmentsTransferred: (value) => set({ attachmentsTransferred: value }),
   setForwardAsAttachment: (value) => set({ forwardAsAttachment: value }),
   setOriginalMessageSubject: (value) => set({ originalMessageSubject: value }),
   setOriginalMessageHtml: (value) => set({ originalMessageHtml: value }),

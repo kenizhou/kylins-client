@@ -1,6 +1,6 @@
 import { type Recipient } from '@/features/composer/contacts';
 import { formatRecipients } from '@/features/composer/contacts';
-import type { ComposerMode, Importance } from '@/stores/composerStore';
+import type { ComposerMode, ComposerAttachment, Importance } from '@/stores/composerStore';
 
 export interface ComposeWindowOptions {
   mode?: ComposerMode;
@@ -35,6 +35,12 @@ export interface ComposeWindowOptions {
   originalMessageSubject?: string;
   originalMessageHtml?: string | null;
   originalMessageText?: string | null;
+  /**
+   * Inline pop-out transfer: hand over the existing staging directory and
+   * already-staged attachment files (no re-copy, no orphaning).
+   */
+  stagingDraftId?: string;
+  attachments?: ComposerAttachment[];
 }
 
 /**
@@ -74,6 +80,8 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
       originalMessageSubject: opts.originalMessageSubject,
       originalMessageHtml: opts.originalMessageHtml,
       originalMessageText: opts.originalMessageText,
+      stagingDraftId: opts.stagingDraftId,
+      attachments: opts.attachments,
     });
     return;
   }
@@ -119,6 +127,15 @@ export async function openComposerWindow(opts: ComposeWindowOptions = {}): Promi
         'originalMessageText',
         btoa(unescape(encodeURIComponent(opts.originalMessageText))),
       );
+    if (opts.stagingDraftId) params.set('stagingDraftId', opts.stagingDraftId);
+    // Attachment metadata is small (filename/mime/size/path/origin) — the
+    // files themselves stay in the shared on-disk outbox dir.
+    if (opts.attachments && opts.attachments.length > 0) {
+      params.set(
+        'attachments',
+        btoa(unescape(encodeURIComponent(JSON.stringify(opts.attachments)))),
+      );
+    }
 
     const label = `compose-${Date.now()}`;
     const webview = new WebviewWindow(label, {
@@ -172,6 +189,19 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     ? decodeURIComponent(escape(atob(originalMessageTextParam)))
     : undefined;
 
+  const stagingDraftId = params.get('stagingDraftId') ?? undefined;
+  const attachmentsParam = params.get('attachments');
+  let attachments: ComposerAttachment[] | undefined;
+  if (attachmentsParam) {
+    try {
+      attachments = JSON.parse(
+        decodeURIComponent(escape(atob(attachmentsParam))),
+      ) as ComposerAttachment[];
+    } catch {
+      attachments = undefined;
+    }
+  }
+
   return {
     mode: (params.get('mode') as ComposerMode) ?? 'new',
     to: decodeRecipients('to'),
@@ -203,5 +233,7 @@ export function readComposeWindowParams(): ComposeWindowOptions | null {
     originalMessageSubject: params.get('originalMessageSubject') ?? undefined,
     originalMessageHtml,
     originalMessageText,
+    stagingDraftId,
+    attachments,
   };
 }

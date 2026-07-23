@@ -1,5 +1,6 @@
 import { useViewStore } from '../../features/view/viewStore';
 import { useUIStore } from '../../stores/uiStore';
+import { useInlineComposerVisible } from '../../stores/inlineComposerStore';
 import { TitleBar } from './TitleBar';
 import { CommandRibbon } from './CommandRibbon';
 import { ToolWindowBar } from './ToolWindowBar';
@@ -28,11 +29,12 @@ export function AppShell() {
   const folderPaneVisible = useViewStore((s) => s.folderPaneVisible);
   const commandRibbonVisible = useViewStore((s) => s.commandRibbonVisible);
   const statusBarVisible = useViewStore((s) => s.statusBarVisible);
-  // When an inline reply/forward is active in the ReadingPane, flip the main
-  // CommandRibbon to compose mode so the Attach button (and other compose
-  // actions) are reachable. The modal Composer renders its own internal
+  // When the docked inline composer is visible in the ReadingPane, flip the
+  // main CommandRibbon to compose mode so the compose actions (Attach,
+  // Importance, Encrypt, …) act on the inline draft via
+  // useActiveComposerTarget. The modal Composer renders its own internal
   // ComposeRibbon and does not affect this flag.
-  const inlineReplyMode = useViewStore((s) => s.inlineReplyMode);
+  const inlineComposerVisible = useInlineComposerVisible();
   const activeApp = useUIStore((s) => s.activeApp);
 
   return (
@@ -42,7 +44,7 @@ export function AppShell() {
         <ToolWindowBar />
         <MainContent>
           {commandRibbonVisible && activeApp !== 'contacts' && (
-            <CommandRibbon mode={inlineReplyMode ? 'compose' : 'read'} />
+            <CommandRibbon mode={inlineComposerVisible ? 'compose' : 'read'} />
           )}
           <div className="flex flex-1 overflow-hidden">
             {activeApp === 'calendar' ? (

@@ -3,6 +3,7 @@ import { buildComposerOpenOptions } from '../../../src/features/composer/buildCo
 import type { MailMessage } from '../../../src/features/view/viewStore';
 import type { Account } from '../../../src/types';
 import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
+import { usePreferencesStore } from '../../../src/stores/preferencesStore';
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
@@ -10,7 +11,11 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
 const { mockReadFile } = vi.hoisted(() => ({ mockReadFile: vi.fn() }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readFile: mockReadFile }));
 
-beforeEach(() => wireDefaultDbResults(mockInvoke));
+beforeEach(() => {
+  wireDefaultDbResults(mockInvoke);
+  // Tests assert the default (outlook) quote style; reset per test.
+  usePreferencesStore.setState({ quoteStyle: 'outlook' });
+});
 
 const account: Account = {
   id: 'acc-1',
@@ -51,7 +56,21 @@ describe('buildComposerOpenOptions', () => {
     const opts = await buildComposerOpenOptions({ account, message, mode: 'reply' });
     expect(opts.to).toEqual([{ name: 'Reply', email: 'reply@example.com' }]);
     expect(opts.subject).toBe('Re: Hello');
+    // Default outlook style: unindented header block + marked separator.
+    expect(opts.bodyHtml).toContain('<b>From:</b>');
+    expect(opts.bodyHtml).toContain('data-quote="original"');
+    expect(opts.bodyHtml).not.toContain('gmail_quote');
+    expect(opts.inReplyToMessageId).toBe('<mid-1@example.com>');
+    expect(opts.originalMessageId).toBeNull();
+    expect(opts.includeOriginalAttachments).toBe(false);
+  });
+
+  it('reply: honors the gmail quote-style preference', async () => {
+    usePreferencesStore.setState({ quoteStyle: 'gmail' });
+    const message = makeMessage();
+    const opts = await buildComposerOpenOptions({ account, message, mode: 'reply' });
     expect(opts.bodyHtml).toContain('gmail_quote');
+    expect(opts.bodyHtml).toContain('wrote:');
     expect(opts.inReplyToMessageId).toBe('<mid-1@example.com>');
     expect(opts.originalMessageId).toBeNull();
     expect(opts.includeOriginalAttachments).toBe(false);
@@ -101,7 +120,10 @@ describe('buildComposerOpenOptions', () => {
     });
     const opts = await buildComposerOpenOptions({ account, message, mode: 'forward' });
     expect(opts.subject).toBe('Fwd: Hello');
-    expect(opts.bodyHtml).toContain('gmail_quote');
+    // Outlook forward: unindented header block, no blockquote, marked hr.
+    expect(opts.bodyHtml).toContain('Forwarded message');
+    expect(opts.bodyHtml).toContain('data-quote="original"');
+    expect(opts.bodyHtml).not.toContain('gmail_quote');
     expect(opts.bodyHtml).toContain('data:image/png;base64,SEk=');
     expect(opts.originalMessageId).toBe('<mid-1@example.com>');
     expect(opts.includeOriginalAttachments).toBe(true);

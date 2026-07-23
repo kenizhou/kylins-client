@@ -46,6 +46,7 @@ import { archiveThread } from '../../../services/mail/actions';
 import { useViewStore } from '../../../features/view/viewStore';
 import { useAccountStore } from '../../../stores/accountStore';
 import { usePreferencesStore } from '../../../stores/preferencesStore';
+import { useInlineComposerStore } from '../../../stores/inlineComposerStore';
 import { useThreadStore } from '../../../stores/threadStore';
 import { useFolderStore } from '../../../stores/folderStore';
 import { useClassification } from '../../../features/classification/useClassification';
@@ -250,6 +251,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
   const accounts = useAccountStore((s) => s.accounts);
   const account = accounts.find((a) => a.id === activeAccountId) ?? null;
   const defaultReplyBehavior = usePreferencesStore((s) => s.defaultReplyBehavior);
+  const openInlineComposer = useInlineComposerStore((s) => s.open);
   const { levels, getDefaultLevel, getLevelById } = useClassification();
   const [moveOpen, setMoveOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -292,7 +294,14 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
 
   const handleReplyWithAttachments = () => {
     if (!selectedMessage || !account) return;
-    void openReplyComposerWithAttachments(selectedMessage, account);
+    // Reply-with-attachment opens the docked inline composer with the
+    // original's attachments pre-staged. The viewer window has no dock —
+    // fall back to the modal composer there.
+    if (!viewer) {
+      openInlineComposer('replyWithAttachments', selectedMessage, account);
+    } else {
+      void openReplyComposerWithAttachments(selectedMessage, account);
+    }
   };
 
   const handleReplyAll = () => {
@@ -302,7 +311,11 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
 
   const handleReplyAllWithAttachments = () => {
     if (!selectedMessage || !account) return;
-    void openReplyAllComposerWithAttachments(selectedMessage, account);
+    if (!viewer) {
+      openInlineComposer('replyAllWithAttachments', selectedMessage, account);
+    } else {
+      void openReplyAllComposerWithAttachments(selectedMessage, account);
+    }
   };
 
   const handleForward = () => {

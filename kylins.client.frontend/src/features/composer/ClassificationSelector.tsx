@@ -1,14 +1,18 @@
 import { Select, SelectValue, Button, Popover, ListBox, ListBoxItem } from 'react-aria-components';
-import { useComposerStore } from '@/stores/composerStore';
+import { useActiveComposerTarget } from './useActiveComposerTarget';
 import { useClassification } from '@/features/classification/useClassification';
 import { ClassificationIcon } from '@/components/icons';
 import type { ClassificationLevel } from '@/features/classification/classificationTypes';
 
+/**
+ * Classification level picker (slim full-width banner). Binds to whichever
+ * composer surface is live — the docked inline composer when visible, else
+ * the modal composerStore — via useActiveComposerTarget, so the same
+ * component works in both the modal Composer and the inline reply.
+ */
 export function ClassificationSelector() {
-  const classificationId = useComposerStore((s) => s.classificationId);
-  const setClassificationId = useComposerStore((s) => s.setClassificationId);
-  const setIsEncrypted = useComposerStore((s) => s.setIsEncrypted);
-  const setIsSigned = useComposerStore((s) => s.setIsSigned);
+  const { classificationId, setClassificationId, setIsEncrypted, setIsSigned } =
+    useActiveComposerTarget();
 
   const { levels, getLevelById, getDefaultLevel } = useClassification();
   const currentLevel = getLevelById(classificationId) ?? getDefaultLevel();

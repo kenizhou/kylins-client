@@ -90,13 +90,6 @@ export interface DecryptedCacheEntry {
 
 export interface ViewStore extends ViewState {
   selectedMessage: MailMessage | null;
-  /**
-   * Active inline-reply/forward mode in the ReadingPane, or null when not
-   * composing. Mirrored by AppShell so the main CommandRibbon can flip to
-   * compose mode (Attach button reachable) while an inline reply is open.
-   * Transient — never persisted (not part of ViewState).
-   */
-  inlineReplyMode: 'reply' | 'replyAll' | 'forward' | null;
   /** True once persisted settings have been loaded. */
   isHydrated: boolean;
   /** Transient thread selection for the status bar / future multi-select. */
@@ -108,7 +101,6 @@ export interface ViewStore extends ViewState {
    */
   decryptedCache: Record<string, DecryptedCacheEntry>;
   setSelectedMessage: (message: MailMessage | null) => void;
-  setInlineReplyMode: (mode: 'reply' | 'replyAll' | 'forward' | null) => void;
   setSelectedThreadIds: (ids: string[]) => void;
   toggleSelectedThreadId: (id: string) => void;
   setReadingPanePosition: (position: ReadingPanePosition) => void;
@@ -152,13 +144,11 @@ export interface ViewStore extends ViewState {
 export const useViewStore = create<ViewStore>((set) => ({
   ...DEFAULT_VIEW_STATE,
   selectedMessage: null,
-  inlineReplyMode: null,
   isHydrated: false,
   selectedThreadIds: [],
   decryptedCache: {},
 
   setSelectedMessage: (selectedMessage) => set({ selectedMessage }),
-  setInlineReplyMode: (inlineReplyMode) => set({ inlineReplyMode }),
   setSelectedThreadIds: (selectedThreadIds) => set({ selectedThreadIds }),
   toggleSelectedThreadId: (id) =>
     set((state) => ({
@@ -193,7 +183,6 @@ export const useViewStore = create<ViewStore>((set) => ({
     set({
       ...DEFAULT_VIEW_STATE,
       selectedMessage: null,
-      inlineReplyMode: null,
       selectedThreadIds: [],
       // Plaintext cache is session-only — wipe on reset so a UI reset cannot
       // leave decrypted S/MIME bodies in RAM.

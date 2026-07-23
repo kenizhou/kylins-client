@@ -33,6 +33,14 @@ const REPLY_BODY =
   '<div class="gmail_quote_attribution">On Jun 24, 2026, Kevin wrote:</div>' +
   '<blockquote class="gmail_quote"><p>original message</p></blockquote>';
 
+// Outlook-style quote: unindented header block + marked separator + original.
+const OUTLOOK_REPLY_BODY =
+  '<p>my reply</p>' +
+  '<p><b>From:</b> Kevin &lt;k@example.com&gt;<br/><b>Sent:</b> June 24, 2026 10:00 AM<br/>' +
+  '<b>To:</b> me@example.com<br/><b>Subject:</b> Hi</p>' +
+  '<hr data-quote="original"/>' +
+  '<p>original message</p>';
+
 describe('setSignatureInEditor', () => {
   it('appends the signature at the end when there is no quote', () => {
     const ed = createEditor('<p>Hello</p>');
@@ -120,6 +128,45 @@ describe('findQuoteInsertPos', () => {
     const html = ed.getHTML();
     expect(html.startsWith('<signature id="s1">')).toBe(true);
     expect(html.indexOf('<signature')).toBeLessThan(html.indexOf('<blockquote'));
+  });
+});
+
+describe('Outlook-style quote boundary (marked hr)', () => {
+  it('preserves the data-quote attribute through parse/serialize round-trips', () => {
+    const ed = createEditor(OUTLOOK_REPLY_BODY);
+    expect(ed.getHTML()).toContain('data-quote="original"');
+  });
+
+  it('places the signature above the whole header block', () => {
+    const ed = createEditor(OUTLOOK_REPLY_BODY);
+    setSignatureInEditor(ed, { id: 's1', html: '<p>sig</p>' });
+    const html = ed.getHTML();
+    expect(html.indexOf('my reply')).toBeLessThan(html.indexOf('<signature id="s1">'));
+    expect(html.indexOf('<signature id="s1">')).toBeLessThan(
+      html.indexOf('<strong>From:</strong>'),
+    );
+    expect(html.indexOf('<signature id="s1">')).toBeLessThan(html.indexOf('data-quote="original"'));
+  });
+
+  it('an unmarked user hr does not divert signature placement', () => {
+    // User-typed hr (---) above an Outlook quote: the marked separator still
+    // wins; without any marker the plain hr is ignored entirely.
+    const withUserHr = '<p>note</p><hr/>' + OUTLOOK_REPLY_BODY.slice('<p>my reply</p>'.length);
+    const ed = createEditor(withUserHr);
+    setSignatureInEditor(ed, { id: 's1', html: '<p>sig</p>' });
+    const html = ed.getHTML();
+    expect(html.indexOf('<signature id="s1">')).toBeLessThan(
+      html.indexOf('<strong>From:</strong>'),
+    );
+
+    const noQuote = createEditor('<p>text</p><hr/><p>more</p>');
+    expect(findQuoteInsertPos(noQuote.state.doc)).toBeNull();
+  });
+
+  it('inserts at position 0 when the marked separator leads the document', () => {
+    const ed = createEditor('<hr data-quote="original"/><p>orig</p>');
+    setSignatureInEditor(ed, { id: 's1', html: '<p>sig</p>' });
+    expect(ed.getHTML().startsWith('<signature id="s1">')).toBe(true);
   });
 });
 

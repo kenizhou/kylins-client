@@ -41,9 +41,10 @@ import { deleteDraft } from '@/services/composer/drafts';
 import { startAutoSave, stopAutoSave, flushDraftSave } from '@/services/composer/draftAutoSave';
 import {
   cleanupAttachments,
-  stageAttachment,
   stageAttachmentBytes,
+  newAttachmentId,
 } from '@/services/composer/attachments';
+import { seedOriginalAttachments } from '@/features/composer/draftFactory';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { upsertContact } from '@/services/db/contacts';
@@ -58,7 +59,6 @@ import { getTemplatesForAccount, type DbTemplate } from '@/services/db/templates
 import { interpolateVariables } from '@/utils/templateVariables';
 import { formatIdentity, formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
-import { getAttachments, fetchAttachment } from '@/services/db/attachments';
 import { MaximizeIcon, RestoreIcon, PopOutIcon, PlusIcon, CloseIcon } from '../icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { InputDialog } from '@/components/ui/InputDialog';
@@ -85,13 +85,6 @@ function htmlToPlainText(html: string): string {
 
 function buildMinimalEml(subject: string, body: string): string {
   return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
-}
-
-function newAttachmentId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 interface ComposerProps {
@@ -122,7 +115,9 @@ export function Composer({ windowed = false }: ComposerProps) {
   const setFromEmail = useComposerStore((s) => s.setFromEmail);
   const setViewMode = useComposerStore((s) => s.setViewMode);
   const setIncludeOriginalAttachments = useComposerStore((s) => s.setIncludeOriginalAttachments);
+  const setAttachmentsTransferred = useComposerStore((s) => s.setAttachmentsTransferred);
   const addAttachment = useComposerStore((s) => s.addAttachment);
+  const removeAttachment = useComposerStore((s) => s.removeAttachment);
   const originalMessageId = useComposerStore((s) => s.originalMessageId);
   const includeOriginalAttachments = useComposerStore((s) => s.includeOriginalAttachments);
   const forwardAsAttachment = useComposerStore((s) => s.forwardAsAttachment);
@@ -162,6 +157,21 @@ export function Composer({ windowed = false }: ComposerProps) {
   const templateShortcutsRef = useRef<DbTemplate[]>([]);
   const dragCounterRef = useRef(0);
 
+  // Include-original-attachments checkbox: unchecking removes ONLY the seeded
+  // originals (user-picked files stay); re-checking after a pop-out transfer
+  // or a prior seed re-runs the seed effect.
+  const handleIncludeOriginalsChange = (selected: boolean) => {
+    setIncludeOriginalAttachments(selected);
+    if (!selected) {
+      for (const a of useComposerStore.getState().attachments) {
+        if (a.origin === 'seeded') removeAttachment(a.id);
+      }
+    } else {
+      setAttachmentsTransferred(false);
+      attachmentSeededRef.current = false;
+    }
+  };
+
   // Seed reply/forward attachments from the original message when requested.
   useEffect(() => {
     if (!isOpen) {
@@ -170,6 +180,12 @@ export function Composer({ windowed = false }: ComposerProps) {
     }
     if (!originalMessageId || (!includeOriginalAttachments && !forwardAsAttachment)) return;
     if (attachmentSeededRef.current) return;
+    // Pop-out transfer: attachments were handed over already staged — seeding
+    // again would duplicate every file.
+    if (useComposerStore.getState().attachmentsTransferred) {
+      attachmentSeededRef.current = true;
+      return;
+    }
 
     const messageId = originalMessageId;
     let cancelled = false;
@@ -183,28 +199,14 @@ export function Composer({ windowed = false }: ComposerProps) {
 
       if (includeOriginalAttachments && activeAccountId) {
         try {
-          const rows = await getAttachments(activeAccountId, messageId);
-          for (const row of rows) {
-            if (cancelled) return;
-            const partId = row.imapPartId || row.id;
-            // sync_fetch_attachment returns a cached file path (no base64
-            // over IPC). Copy the cached file into the draft outbox so the
-            // backend MIME builder streams it at send time.
-            const fetched = await fetchAttachment(activeAccountId, messageId, partId);
-            if (cancelled) return;
-            const destPath = await stageAttachment(
-              stagingDraftId,
-              fetched.filePath,
-              row.filename || 'attachment',
-            );
-            addAttachment({
-              id: newAttachmentId(),
-              filename: row.filename || 'attachment',
-              mimeType: fetched.mimeType || row.mimeType || 'application/octet-stream',
-              size: row.size,
-              filePath: destPath,
-            });
-          }
+          const seeded = await seedOriginalAttachments(
+            activeAccountId,
+            messageId,
+            stagingDraftId,
+            () => cancelled,
+          );
+          if (cancelled) return;
+          for (const att of seeded) addAttachment(att);
         } catch (err) {
           console.error('[Composer] failed to seed original attachments', err);
         }
@@ -863,6 +865,11 @@ export function Composer({ windowed = false }: ComposerProps) {
   // Shared by the actions-row Attach button and the window event dispatched
   // by the menu bar / main-window compose ribbon.
   const handleAttach = useCallback(async () => {
+    // The Composer is mounted unconditionally in AppShell (early-return at
+    // render), so this listener would otherwise fire even while the composer
+    // is closed — competing with the docked inline composer's own Attach
+    // handler (double dialogs, files staged into a store nothing renders).
+    if (!useComposerStore.getState().isOpen && !windowed) return;
     try {
       const selected = await open({ multiple: true });
       if (!selected) return;
@@ -889,7 +896,7 @@ export function Composer({ windowed = false }: ComposerProps) {
         .getState()
         .push(`Attach failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
-  }, [addAttachment]);
+  }, [addAttachment, windowed]);
 
   // Listen for menubar/ribbon action requests so the same handlers work whether
   // the user clicks the panel footer, the compose ribbon, or the menu bar.
@@ -1226,7 +1233,7 @@ export function Composer({ windowed = false }: ComposerProps) {
           <div className="flex items-center gap-2 px-4 py-1.5">
             <Checkbox
               isSelected={includeOriginalAttachments}
-              onChange={setIncludeOriginalAttachments}
+              onChange={handleIncludeOriginalsChange}
               className="flex items-center gap-2 text-xs text-[var(--foreground)]"
             >
               Include original attachments

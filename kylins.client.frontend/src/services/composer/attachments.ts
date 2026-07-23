@@ -27,6 +27,18 @@ export function newDraftId(): string {
 }
 
 /**
+ * Generate a new opaque attachment-chip id (UI identity only — never sent to
+ * the backend). Shared by the modal composer, inline composer, and
+ * draftFactory seeding so the randomUUID-with-fallback pattern lives in one
+ * place.
+ */
+export function newAttachmentId(): string {
+  const c = globalThis.crypto as Crypto | undefined;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
  * Absolute path of the per-draft outbox directory under `<appData>`.
  * Callers should `mkdir({ recursive: true })` before writing.
  */

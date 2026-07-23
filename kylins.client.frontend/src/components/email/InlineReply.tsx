@@ -1,202 +1,158 @@
-// Inline reply / forward composer (Outlook/Mailspring-style): renders inside
-// the reading pane so the user can reply or forward without opening the modal
-// composer. Shares the Mailspring-faithful quoting + recipient + signature
-// modules with the modal composer (src/features/composer/*) and the full send
-// pipeline (services/composer/send).
+// Docked inline reply / forward composer (Outlook-style): renders at the top
+// of the reading pane with the original message visible below. All draft
+// state lives in inlineComposerStore (survives message switches — see the
+// store header); this component is just the editor surface:
+//   - seeds the TipTap editor from session.bodyHtml (seed quote on open,
+//     restored user edits when remounting after a message switch),
+//   - mirrors edits back into the store (dirty tracking + pop-out payload),
+//   - sends through the shared pipeline (services/composer/send).
 //
-// A "pop out to modal composer" affordance (like Mailspring's inline editor) is
-// planned and will give the modal its reply/forward entry point.
+// The dock renders a skeleton until the draftFactory seed resolves (aliases,
+// recipients, quoted body, forward CID map are all settled pre-mount — no
+// post-mount setContent, so typed text can never be wiped by seeding).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { Button, Input, TextField, Checkbox } from 'react-aria-components';
 import { EditorToolbar } from '@/components/composer/EditorToolbar';
 import { buildComposerExtensions } from '@/features/composer/editorExtensions';
-import { RecipientField } from '@/features/composer/RecipientField';
+import { RecipientField, type MoveTarget } from '@/features/composer/RecipientField';
+import { eqEmail, type Recipient } from '@/features/composer/contacts';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { sendEmail } from '@/services/composer/send';
-import { stageAttachment, newDraftId } from '@/services/composer/attachments';
-import {
-  getAttachments,
-  fetchAttachment,
-  fetchInlineImages,
-  cachedImageToDataUrl,
-} from '@/services/db/attachments';
+import { newAttachmentId } from '@/services/composer/attachments';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { ComposerAttachment } from '@/stores/composerStore';
-import { buildReplyQuote, buildForwardQuote } from '@/features/composer/prepareBodyForQuoting';
-import {
-  participantsForReply,
-  participantsForReplyAll,
-} from '@/features/composer/recipientsForReply';
-import { subjectWithPrefix } from '@/features/composer/subjectPrefix';
-import { resolveFromForReply } from '@/features/composer/fromResolution';
+import { intentFamily } from '@/features/composer/draftFactory';
 import { useComposerSignature } from '@/features/composer/useComposerSignature';
-import { getActiveSignatureId } from '@/features/composer/signatureCommands';
-import { SignatureSelector } from '@/components/composer/SignatureSelector';
-import type { Recipient } from '@/features/composer/contacts';
-import {
-  getAliasesForAccount,
-  mapDbAlias,
-  accountAsAlias,
-  type SendAsAlias,
-} from '@/services/db/sendAsAliases';
-import { useAccountStore } from '@/stores/accountStore';
-import { useComposerStore } from '@/stores/composerStore';
+import { ClassificationSelector } from '@/features/composer/ClassificationSelector';
+import { useInlineComposerStore, type InlineSession } from '@/stores/inlineComposerStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
-import { SendIcon, PopOutIcon, CloseIcon } from '@/components/icons';
-import type { MailMessage } from '@/features/view/viewStore';
+import { SendIcon, ExternalLinkIcon, DiscardIcon, CloseIcon } from '@/components/icons';
 
-type InlineMode = 'reply' | 'replyAll' | 'forward';
+type SendStatus = 'idle' | 'sending' | 'error';
 
-function newAttachmentId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
+/** Dock shell: skeleton while the seed resolves, editor surface after. */
+export function InlineReply() {
+  const session = useInlineComposerStore((s) => s.session);
+  const discard = useInlineComposerStore((s) => s.discard);
+  if (!session) return null;
+  if (!session.seed) {
+    return (
+      <div
+        className="flex h-full flex-col gap-2 bg-[var(--card)] px-4 py-3"
+        role="status"
+        aria-label="Preparing reply"
+      >
+        <div className="h-3 w-40 animate-pulse rounded bg-[var(--surface)]" />
+        <div className="h-3 w-full animate-pulse rounded bg-[var(--surface)]" />
+        <div className="h-3 w-2/3 animate-pulse rounded bg-[var(--surface)]" />
+        <div className="mt-2 h-24 w-full animate-pulse rounded bg-[var(--surface)]" />
+        {session.seedError && (
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-[var(--destructive)]">
+              Failed to prepare the draft: {session.seedError}
+            </p>
+            <Button
+              type="button"
+              onPress={() => discard({ skipConfirm: true })}
+              className="rounded px-2 py-1 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Discard
+            </Button>
+          </div>
+        )}
+      </div>
+    );
   }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return <InlineReplyEditor session={session} />;
 }
 
-interface InlineReplyProps {
-  message: MailMessage;
-  mode: InlineMode;
-  accountId: string | null;
-  accountEmail: string | null;
-  onClose: () => void;
-  onSent: () => void;
-}
+function InlineReplyEditor({ session }: { session: InlineSession }) {
+  const family = intentFamily(session.intent);
+  const isForward = family === 'forward';
 
-type SendStatus = 'idle' | 'sending' | 'sent' | 'error';
+  const setTo = useInlineComposerStore((s) => s.setTo);
+  const setCc = useInlineComposerStore((s) => s.setCc);
+  const setBcc = useInlineComposerStore((s) => s.setBcc);
+  const setSubject = useInlineComposerStore((s) => s.setSubject);
+  const setBodyHtml = useInlineComposerStore((s) => s.setBodyHtml);
+  const setSignatureId = useInlineComposerStore((s) => s.setSignatureId);
+  const addAttachment = useInlineComposerStore((s) => s.addAttachment);
+  const removeAttachment = useInlineComposerStore((s) => s.removeAttachment);
+  const setIncludeOriginalAttachments = useInlineComposerStore(
+    (s) => s.setIncludeOriginalAttachments,
+  );
+  const discard = useInlineComposerStore((s) => s.discard);
+  const clearAfterSend = useInlineComposerStore((s) => s.clearAfterSend);
+  const popOut = useInlineComposerStore((s) => s.popOut);
 
-export function InlineReply({
-  message,
-  mode,
-  accountId,
-  accountEmail,
-  onClose,
-  onSent,
-}: InlineReplyProps) {
-  const isForward = mode === 'forward';
-  const selfEmails = accountEmail ? [accountEmail] : [];
-
-  // Recipients are pre-filled for replies (To/Cc via participantsForReply*),
-  // empty for forward. The component remounts per message/mode (ReadingPane
-  // unmounts it when composeMode clears), so lazy initializers are correct.
-  const initial = useMemo<{ to: Recipient[]; cc: Recipient[] }>(() => {
-    if (mode === 'forward') return { to: [], cc: [] };
-    if (mode === 'replyAll') return participantsForReplyAll(message, selfEmails);
-    return { ...participantsForReply(message, selfEmails), cc: [] };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const [toRecipients, setToRecipients] = useState<Recipient[]>(initial.to);
-  const [ccRecipients, setCcRecipients] = useState<Recipient[]>(initial.cc);
-  const [bccRecipients, setBccRecipients] = useState<Recipient[]>([]);
-  const [replyToRecipients, setReplyToRecipients] = useState<Recipient[]>([]);
-  const [includeOriginalAttachments, setIncludeOriginalAttachments] = useState(true);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  // Single stagingDraftId for the component's lifetime: pick-time staging,
-  // forward-seed staging, and send-time SendDraft.draftId all share this id so
-  // backend cleanup (<appData>/outbox-attachments/{draftId}/) targets the right
-  // dir. Previously the forward-seed effect generated its own id and sendEmail
-  // generated yet another → staged files leaked.
-  const [stagingDraftId] = useState(() => newDraftId());
-  const attachmentSeededRef = useRef(false);
-  const inlineImagesSeededRef = useRef(false);
   const alwaysShowCcBcc = usePreferencesStore((s) => s.alwaysShowCcBcc);
-  const [ccExpanded, setCcExpanded] = useState(() => initial.cc.length > 0 || alwaysShowCcBcc);
+  const [ccExpanded, setCcExpanded] = useState(() => session.cc.length > 0 || alwaysShowCcBcc);
   const [bccExpanded, setBccExpanded] = useState(() => alwaysShowCcBcc);
-  const [replyToExpanded, setReplyToExpanded] = useState(() => alwaysShowCcBcc);
-  const showCc = ccExpanded || alwaysShowCcBcc || ccRecipients.length > 0;
-  const showBcc = bccExpanded || alwaysShowCcBcc || bccRecipients.length > 0;
-  const showReplyTo = replyToExpanded || alwaysShowCcBcc || replyToRecipients.length > 0;
+  const showCc = ccExpanded || alwaysShowCcBcc || session.cc.length > 0;
+  const showBcc = bccExpanded || alwaysShowCcBcc || session.bcc.length > 0;
 
   const handleAddressBlockBlur = (e: React.FocusEvent<HTMLDivElement>) => {
     if (alwaysShowCcBcc) return;
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    if (ccRecipients.length === 0) setCcExpanded(false);
-    if (bccRecipients.length === 0) setBccExpanded(false);
-    if (replyToRecipients.length === 0) setReplyToExpanded(false);
+    if (session.cc.length === 0) setCcExpanded(false);
+    if (session.bcc.length === 0) setBccExpanded(false);
   };
 
-  const [subject, setSubject] = useState(() =>
-    subjectWithPrefix(message.subject, isForward ? 'Fwd:' : 'Re:'),
+  // Move a recipient chip between To/Cc/Bcc (mirrors the modal Composer).
+  const handleMoveRecipient = useCallback(
+    (recipient: Recipient, from: MoveTarget, toField: MoveTarget) => {
+      if (from === 'replyTo' || toField === 'replyTo') return; // no Reply-To row inline
+      const lists = { to: session.to, cc: session.cc, bcc: session.bcc } as const;
+      const setters = { to: setTo, cc: setCc, bcc: setBcc } as const;
+      setters[from](lists[from].filter((r) => !eqEmail(r.email, recipient.email)));
+      if (!lists[toField].some((r) => eqEmail(r.email, recipient.email))) {
+        setters[toField]([...lists[toField], recipient]);
+      }
+    },
+    [session.to, session.cc, session.bcc, setTo, setCc, setBcc],
   );
 
-  const [dbAliases, setDbAliases] = useState<SendAsAlias[]>([]);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [status, setStatus] = useState<SendStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Load the account's send-as aliases (for smart-From).
-  useEffect(() => {
-    if (!accountId) return;
-    let cancelled = false;
-    getAliasesForAccount(accountId).then((aliases) => {
-      if (cancelled) return;
-      setDbAliases(aliases.map(mapDbAlias));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [accountId]);
+  // Seed the editor from the session body (seed quote on first open, restored
+  // edits when remounting after a message switch). Edits mirror back into the
+  // store; `hasFocus` distinguishes user typing from programmatic transactions
+  // (signature application) so only real edits clear the pristine flag.
+  const editor = useEditor({
+    extensions: buildComposerExtensions(
+      isForward ? 'Add a note to the forwarded message…' : 'Type your reply…',
+    ),
+    content: session.bodyHtml ?? '',
+    editorProps: {
+      attributes: {
+        class:
+          'kylins-editor max-w-none px-4 py-3 min-h-[120px] focus:outline-none text-[var(--foreground)]',
+      },
+    },
+    onUpdate: ({ editor: e }) => {
+      setBodyHtml(e.getHTML(), { userEdit: e.view.hasFocus() });
+    },
+  });
 
-  // Seed forwarded original-message attachments as file-backed refs. Inline
-  // images are intentionally re-attached as files rather than preserved as CID
-  // references, matching the modal composer forward path.
-  useEffect(() => {
-    if (!isForward || !accountId || !message.messageId || !includeOriginalAttachments) {
-      attachmentSeededRef.current = false;
-      return;
-    }
-    if (attachmentSeededRef.current) return;
+  // Signature block: loads the account default for reply/forward, swaps it as
+  // a dedicated editor block when the user picks another. The document is the
+  // source of truth — send/pop-out read signature.activeId directly.
+  const signature = useComposerSignature(editor, session.accountId, family, {
+    initialSignatureId: session.signatureId,
+    onChange: setSignatureId,
+  });
 
-    const messageId = message.messageId!;
-    const accountId_ = accountId!;
-    let cancelled = false;
-    async function seed() {
-      attachmentSeededRef.current = true;
-      try {
-        const rows = await getAttachments(accountId_, messageId);
-        const seeded: ComposerAttachment[] = [];
-        for (const row of rows) {
-          if (cancelled) return;
-          const partId = row.imapPartId || row.id;
-          // sync_fetch_attachment returns a cached file path (no base64
-          // over IPC). Copy the cached file into the draft outbox.
-          const fetched = await fetchAttachment(accountId_, messageId, partId);
-          if (cancelled) return;
-          const destPath = await stageAttachment(
-            stagingDraftId,
-            fetched.filePath,
-            row.filename || 'attachment',
-          );
-          seeded.push({
-            id: newAttachmentId(),
-            filename: row.filename || 'attachment',
-            mimeType: fetched.mimeType || row.mimeType || 'application/octet-stream',
-            size: row.size,
-            filePath: destPath,
-          });
-        }
-        if (!cancelled) setAttachments((prev) => [...prev, ...seeded]);
-      } catch (err) {
-        console.error('[InlineReply] failed to seed original attachments', err);
-      }
-    }
-    seed();
-    return () => {
-      cancelled = true;
-    };
-  }, [isForward, accountId, message.messageId, includeOriginalAttachments, stagingDraftId]);
-
-  // Attach-button bridge: while an inline reply is open, the main window's
-  // CommandRibbon flips to compose mode (driven by viewStore.inlineReplyMode),
-  // so its Attach button is reachable. ComposeRibbon dispatches the
-  // `composer:attach-requested` window event; this listener mirrors the modal
-  // Composer's handleAttachRequested (Composer.tsx) — opens the OS file picker,
-  // stages each picked file via the backend `stage_picked_attachment` command
-  // into this reply's stagingDraftId outbox dir, and adds a chip.
+  // Attach-button bridge: while the inline composer is visible, the main
+  // window's CommandRibbon is in compose mode, so its Attach button is
+  // reachable. ComposeRibbon dispatches the `composer:attach-requested`
+  // window event; this listener opens the OS file picker and stages each
+  // picked file into this session's outbox dir.
   useEffect(() => {
+    const stagingDraftId = session.stagingDraftId;
     const handleAttachRequested = async () => {
       try {
         const selected = await open({ multiple: true });
@@ -209,16 +165,14 @@ export function InlineReply({
             'stage_picked_attachment',
             { srcPath: path, draftId: stagingDraftId, filename },
           );
-          setAttachments((prev) => [
-            ...prev,
-            {
-              id: newAttachmentId(),
-              filename,
-              mimeType: staged.mimeType,
-              size: staged.size,
-              filePath: staged.filePath,
-            },
-          ]);
+          addAttachment({
+            id: newAttachmentId(),
+            filename,
+            mimeType: staged.mimeType,
+            size: staged.size,
+            filePath: staged.filePath,
+            origin: 'picked',
+          });
         }
       } catch (err) {
         console.error('[InlineReply] attach pick failed', err);
@@ -226,297 +180,210 @@ export function InlineReply({
     };
     window.addEventListener('composer:attach-requested', handleAttachRequested);
     return () => window.removeEventListener('composer:attach-requested', handleAttachRequested);
-  }, [stagingDraftId]);
+  }, [session.stagingDraftId, addAttachment]);
 
-  // _fromContactForReply). Falls back to the account address.
-  const accounts = useAccountStore((s) => s.accounts);
-  const openComposer = useComposerStore((s) => s.openComposer);
-  const fromEmail = useMemo(() => {
-    const fallback = accountEmail ?? undefined;
-    const account = accounts.find((a) => a.id === accountId);
-    if (!account) return fallback;
-    const seen = new Set<string>();
-    const merged = [accountAsAlias(account), ...dbAliases].filter((a) => {
-      const key = a.email.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    const defaultAlias = merged.find((a) => a.isDefault) ?? merged[0];
-    if (!defaultAlias || merged.length <= 1) return defaultAlias?.email ?? fallback;
-    return resolveFromForReply(message, merged, defaultAlias).email;
-  }, [accounts, accountId, accountEmail, dbAliases, message]);
-
-  // Seed the editor with the quoted original; the signature is a dedicated
-  // block applied by the shared hook below (document is the source of truth).
-  const baseQuote = useMemo(
-    () => (isForward ? buildForwardQuote(message) : buildReplyQuote(message)),
-    [isForward, message],
-  );
-  const editor = useEditor({
-    extensions: buildComposerExtensions(
-      isForward ? 'Add a note to the forwarded message…' : 'Type your reply…',
-    ),
-    content: baseQuote,
-    editorProps: {
-      attributes: {
-        class:
-          'kylins-editor max-w-none px-4 py-3 min-h-[120px] focus:outline-none text-[var(--foreground)]',
-      },
-    },
-  });
-
-  // Signature block: loads the account default for reply/forward, swaps it as
-  // a dedicated editor block when the user picks another. The document is the
-  // source of truth — send/pop-out read signature.activeId directly.
-  const signature = useComposerSignature(editor, accountId, mode);
-  const { setSignature } = signature;
-
-  // Forward inline images: fetch Content-ID parts and rewrite the quoted body
-  // so inline images render as data URLs. The send pipeline converts them back
-  // to CID attachments. Guarded by ref so user edits are not overwritten.
-  useEffect(() => {
-    if (!isForward || !accountId || !message.messageId) return;
-    if (inlineImagesSeededRef.current) return;
-    inlineImagesSeededRef.current = true;
-
-    const messageId = message.messageId!;
-    const accountId_ = accountId!;
-    let cancelled = false;
-    async function seed() {
-      try {
-        const parts = await fetchInlineImages(accountId_, messageId);
-        if (cancelled || parts.length === 0) return;
-        // Forward path: the send pipeline's `extractInlineImages` matches
-        // `data:` URLs to re-attach inline images as CID parts, so we read
-        // each cached file into a data URL here (not convertFileSrc).
-        const cidMap = new Map<string, string>();
-        for (const p of parts) {
-          cidMap.set(p.contentId, await cachedImageToDataUrl(p.filePath, p.mimeType));
-        }
-        const html = buildForwardQuote(message, cidMap);
-        // Read the active signature from the doc (not a closure variable) so a
-        // signature change made while the images loaded is preserved; then
-        // re-apply it after setContent rebuilds the quote.
-        const sigIdToRestore = editor ? getActiveSignatureId(editor.state.doc) : null;
-        editor?.commands.setContent(html, { emitUpdate: false });
-        if (sigIdToRestore) setSignature(sigIdToRestore);
-      } catch (err) {
-        console.error('[InlineReply] failed to seed inline images', err);
-      }
-    }
-    seed();
-    return () => {
-      cancelled = true;
-    };
-  }, [isForward, accountId, message.messageId, message, editor, setSignature]);
-
-  // Smart-From: pick the alias the message was addressed to (Mailspring
-  // _fromContactForReply). Falls back to the account address.
   const handleSend = useCallback(async () => {
     if (!editor || status === 'sending') return;
-    if (!accountId) {
-      setStatus('error');
-      setErrorMsg('No account configured to send from.');
-      return;
-    }
-    if (toRecipients.length === 0) {
+    if (session.to.length === 0) {
       setStatus('error');
       setErrorMsg('Add at least one recipient.');
       return;
     }
     setStatus('sending');
     setErrorMsg(null);
-    const result = await sendEmail(
-      accountId,
-      {
-        accountId,
-        to: toRecipients,
-        cc: ccRecipients.length > 0 ? ccRecipients : undefined,
-        bcc: bccRecipients.length > 0 ? bccRecipients : undefined,
-        replyTo: replyToRecipients.length > 0 ? replyToRecipients : undefined,
-        subject,
-        bodyHtml: editor.getHTML(),
-        fromEmail: fromEmail ?? accountEmail ?? undefined,
-        threadId: message.threadId ?? null,
-        // A forward is a new branch of the conversation, not a reply, so it
-        // carries no In-Reply-To header.
-        inReplyToMessageId: isForward ? null : (message.messageId ?? null),
-        classificationId: message.classificationId,
-        isEncrypted: message.isEncrypted,
-        isSigned: message.isSigned,
-        signatureId: signature.activeId,
-        attachments:
-          attachments.length > 0
-            ? attachments.map((a) => ({
-                filename: a.filename,
-                mimeType: a.mimeType,
-                filePath: a.filePath,
-                size: a.size,
-              }))
-            : undefined,
-      },
-      stagingDraftId,
-    );
-    if (result.success) {
-      setStatus('sent');
-      onSent();
-    } else {
+    try {
+      const result = await sendEmail(
+        session.accountId,
+        {
+          accountId: session.accountId,
+          to: session.to,
+          cc: session.cc.length > 0 ? session.cc : undefined,
+          bcc: session.bcc.length > 0 ? session.bcc : undefined,
+          replyTo: session.replyTo.length > 0 ? session.replyTo : undefined,
+          subject: session.subject,
+          bodyHtml: editor.getHTML(),
+          fromEmail: session.fromEmail ?? session.accountEmail,
+          // Threading fields from the seed (a forward starts a new branch —
+          // no In-Reply-To).
+          threadId: session.threadId ?? session.message.threadId ?? null,
+          inReplyToMessageId:
+            session.inReplyToMessageId ?? (isForward ? null : (session.message.messageId ?? null)),
+          classificationId: session.classificationId,
+          isEncrypted: session.isEncrypted,
+          isSigned: session.isSigned,
+          importance: session.importance,
+          requestReadReceipt: session.requestReadReceipt,
+          requestDeliveryReceipt: session.requestDeliveryReceipt,
+          deliverAt: session.deliverAt,
+          preventCopy: session.preventCopy,
+          signatureId: signature.activeId,
+          attachments:
+            session.attachments.length > 0
+              ? session.attachments.map((a) => ({
+                  filename: a.filename,
+                  mimeType: a.mimeType,
+                  filePath: a.filePath,
+                  size: a.size,
+                }))
+              : undefined,
+        },
+        session.stagingDraftId,
+      );
+      if (result.success) {
+        // The backend cleans the staging directory on send-success.
+        clearAfterSend();
+      } else {
+        setStatus('error');
+        setErrorMsg(result.message);
+      }
+    } catch (err) {
+      // buildSendDraft failures (staging/backfill/inline-image extraction)
+      // throw rather than returning a result — surface them instead of
+      // wedging the dock in "Sending…".
       setStatus('error');
-      setErrorMsg(result.message);
+      setErrorMsg(err instanceof Error ? err.message : String(err));
     }
-  }, [
-    editor,
-    status,
-    accountId,
-    toRecipients,
-    ccRecipients,
-    bccRecipients,
-    replyToRecipients,
-    subject,
-    attachments,
-    fromEmail,
-    accountEmail,
-    message.threadId,
-    message.messageId,
-    isForward,
-    onSent,
-    stagingDraftId,
-    signature.activeId,
-  ]);
+  }, [editor, status, session, isForward, signature.activeId, clearAfterSend]);
 
-  // Pop out to the full modal composer (Mailspring-style), carrying the inline
-  // state. The modal seeds its editor from bodyHtml, which already carries the
-  // quoted original + signature.
+  // Pop out to the full modal composer, handing over the staging directory
+  // and attachments (no files re-copied or orphaned).
   const handlePopOut = useCallback(() => {
-    openComposer({
-      mode,
-      to: toRecipients,
-      cc: ccRecipients.length > 0 ? ccRecipients : undefined,
-      bcc: bccRecipients.length > 0 ? bccRecipients : undefined,
-      replyTo: replyToRecipients.length > 0 ? replyToRecipients : undefined,
-      subject,
-      bodyHtml: editor?.getHTML() ?? '',
-      threadId: message.threadId ?? null,
-      inReplyToMessageId: isForward ? null : (message.messageId ?? null),
-      fromEmail: fromEmail ?? accountEmail ?? undefined,
+    popOut(
+      editor?.getHTML() ?? session.bodyHtml ?? '',
       // Three-state: null = explicitly removed (pop-out must not re-add the
       // default); undefined = hook not ready yet (pop-out applies default).
-      signatureId: signature.ready ? signature.activeId : undefined,
-      classificationId: message.classificationId,
-      isEncrypted: message.isEncrypted,
-      isSigned: message.isSigned,
-      originalMessageId: message.messageId ?? null,
-      includeOriginalAttachments: isForward ? true : undefined,
-    });
-    onClose();
-  }, [
-    openComposer,
-    mode,
-    toRecipients,
-    ccRecipients,
-    bccRecipients,
-    replyToRecipients,
-    subject,
-    editor,
-    message.threadId,
-    message.messageId,
-    isForward,
-    fromEmail,
-    accountEmail,
-    onClose,
-    signature.ready,
-    signature.activeId,
-  ]);
-
-  const sentLabel = isForward ? 'Forward sent.' : 'Reply sent.';
+      signature.ready ? signature.activeId : undefined,
+    );
+  }, [popOut, editor, session.bodyHtml, signature.ready, signature.activeId]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--card)]">
-      {/* Header: From, To/Cc/Bcc/Reply-To toggles, Subject */}
-      <div className="border-b border-[var(--border)] px-4 py-2 text-xs">
-        <div className="mb-0.5 flex items-start gap-2">
-          {fromEmail && fromEmail !== accountEmail && (
-            <div className="flex flex-1 min-w-0 gap-2">
-              <span className="w-8 shrink-0 text-[var(--muted-text)]">From</span>
-              <span className="min-w-0 break-words text-[var(--foreground)]">{fromEmail}</span>
-            </div>
-          )}
-          {!alwaysShowCcBcc && (
-            <div className="flex items-center gap-2 text-[var(--muted-text)]">
-              <span className="text-[var(--border)]" aria-hidden="true">
-                |
-              </span>
-              {!showCc && (
-                <Button
-                  type="button"
-                  onPress={() => setCcExpanded(true)}
-                  className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  Cc
-                </Button>
-              )}
-              {!showBcc && (
-                <Button
-                  type="button"
-                  onPress={() => setBccExpanded(true)}
-                  className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  Bcc
-                </Button>
-              )}
-              {!showReplyTo && (
-                <Button
-                  type="button"
-                  onPress={() => setReplyToExpanded(true)}
-                  className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  &gt;&gt;
-                </Button>
-              )}
-            </div>
-          )}
+      {/* Top action bar: Send + status left, Discard / Pop out right */}
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2">
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            onPress={handleSend}
+            isDisabled={status === 'sending'}
+            className="flex items-center gap-1.5 rounded bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <SendIcon size={12} />
+            {status === 'sending' ? 'Sending…' : 'Send'}
+          </Button>
+          <div className="min-h-4 text-xs">
+            {status === 'error' && errorMsg && (
+              <span className="text-[var(--destructive)]">{errorMsg}</span>
+            )}
+          </div>
         </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            onPress={() => discard()}
+            className="flex items-center gap-1.5 rounded px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            <DiscardIcon size={12} />
+            Discard
+          </Button>
+          <Button
+            type="button"
+            onPress={handlePopOut}
+            className="flex items-center gap-1.5 rounded px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+          >
+            <ExternalLinkIcon size={12} />
+            Pop out
+          </Button>
+        </div>
+      </div>
+
+      {/* Classification banner — slim full-width strip (mirrors the modal
+          Composer); binds to this inline session via useActiveComposerTarget. */}
+      <ClassificationSelector />
+
+      {/* Address block: From (aliases), To with trailing Cc/Bcc toggles
+          (mirrors the modal Composer), Subject */}
+      <div className="border-b border-[var(--border)] px-4 py-2 text-xs">
+        {session.fromEmail && session.fromEmail !== session.accountEmail && (
+          <div className="mb-0.5 flex min-w-0 gap-2">
+            <span className="w-8 shrink-0 text-[var(--muted-text)]">From</span>
+            <span className="min-w-0 break-words text-[var(--foreground)]">
+              {session.fromEmail}
+            </span>
+          </div>
+        )}
         <RecipientField
           label="To"
-          recipients={toRecipients}
-          onChange={setToRecipients}
+          recipients={session.to}
+          onChange={setTo}
           placeholder="Recipients"
+          moveTargets={[
+            { label: 'Cc', target: 'cc' },
+            { label: 'Bcc', target: 'bcc' },
+          ]}
+          onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
+          trailing={
+            !alwaysShowCcBcc && (!showCc || !showBcc) ? (
+              <div className="flex shrink-0 items-center gap-2 pt-1.5 text-xs">
+                {!showCc && (
+                  <Button
+                    type="button"
+                    onPress={() => setCcExpanded(true)}
+                    className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Show Cc field"
+                  >
+                    Cc
+                  </Button>
+                )}
+                {!showBcc && (
+                  <Button
+                    type="button"
+                    onPress={() => setBccExpanded(true)}
+                    className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Show Bcc field"
+                  >
+                    Bcc
+                  </Button>
+                )}
+              </div>
+            ) : undefined
+          }
         />
-        {(showCc || showBcc || showReplyTo || alwaysShowCcBcc) && (
+        {(showCc || showBcc) && (
           <div className="mt-1 space-y-1" onBlur={handleAddressBlockBlur}>
             {showCc && (
               <RecipientField
                 label="Cc"
-                recipients={ccRecipients}
-                onChange={setCcRecipients}
+                recipients={session.cc}
+                onChange={setCc}
                 placeholder="Cc recipients"
+                moveTargets={[
+                  { label: 'To', target: 'to' },
+                  { label: 'Bcc', target: 'bcc' },
+                ]}
+                onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
               />
             )}
             {showBcc && (
               <RecipientField
                 label="Bcc"
-                recipients={bccRecipients}
-                onChange={setBccRecipients}
+                recipients={session.bcc}
+                onChange={setBcc}
                 placeholder="Bcc recipients"
-              />
-            )}
-            {showReplyTo && (
-              <RecipientField
-                label="Reply-To"
-                recipients={replyToRecipients}
-                onChange={setReplyToRecipients}
-                placeholder="Reply-To address"
+                moveTargets={[
+                  { label: 'To', target: 'to' },
+                  { label: 'Cc', target: 'cc' },
+                ]}
+                onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
               />
             )}
           </div>
         )}
         <div className="mt-1 flex items-center gap-2">
-          <span className="w-8 shrink-0 text-[var(--muted-text)]">Sub</span>
+          <span className="w-14 shrink-0 text-[var(--muted-text)]">Subject</span>
           <TextField className="min-w-0 flex-1" aria-label="Subject">
             <Input
               type="text"
-              value={subject}
+              value={session.subject}
               onChange={(e) => setSubject(e.target.value)}
               className="w-full bg-transparent text-[var(--foreground)] outline-none"
             />
@@ -530,29 +397,22 @@ export function InlineReply({
         <EditorContent editor={editor} />
       </div>
 
-      {/* Attachments — mirrors the modal Composer layout (below editor, above
-          footer) so inline reply and popout composer stay visually consistent. */}
+      {/* Attachments — mirrors the modal Composer layout (below editor). */}
       <div className="border-t border-[var(--border)]">
         {isForward && (
           <div className="flex items-center gap-2 px-4 py-1.5">
             <Checkbox
-              isSelected={includeOriginalAttachments}
-              onChange={(selected) => {
-                setIncludeOriginalAttachments(selected);
-                if (!selected) {
-                  setAttachments([]);
-                  attachmentSeededRef.current = false;
-                }
-              }}
+              isSelected={session.includeOriginalAttachments}
+              onChange={(selected) => setIncludeOriginalAttachments(selected)}
               className="flex items-center gap-2 text-[var(--foreground)]"
             >
               <span className="text-xs">Include original attachments</span>
             </Checkbox>
           </div>
         )}
-        {attachments.length > 0 && (
+        {session.attachments.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 px-4 py-1.5">
-            {attachments.map((att) => (
+            {session.attachments.map((att) => (
               <span
                 key={att.id}
                 className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)]"
@@ -560,7 +420,7 @@ export function InlineReply({
                 <span className="max-w-[150px] truncate">{att.filename}</span>
                 <Button
                   type="button"
-                  onPress={() => setAttachments((prev) => prev.filter((a) => a.id !== att.id))}
+                  onPress={() => removeAttachment(att.id)}
                   className="text-[var(--muted-text)] outline-none hover:text-[var(--foreground)] focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label={`Remove ${att.filename}`}
                 >
@@ -570,50 +430,6 @@ export function InlineReply({
             ))}
           </div>
         )}
-      </div>
-
-      {/* Send bar */}
-      <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] bg-[var(--surface)] px-4 py-2">
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            onPress={handlePopOut}
-            aria-label="Pop out to window"
-            className="rounded p-1 text-[var(--muted-text)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          >
-            <PopOutIcon size={14} />
-          </Button>
-          <SignatureSelector
-            signatures={signature.signatures}
-            activeId={signature.activeId}
-            onSelect={signature.setSignature}
-            disabled={!signature.ready}
-          />
-          <div className="min-h-4 text-xs">
-            {status === 'error' && errorMsg && (
-              <span className="text-[var(--destructive)]">{errorMsg}</span>
-            )}
-            {status === 'sent' && <span className="text-[var(--green)]">{sentLabel}</span>}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            onPress={onClose}
-            className="rounded px-3 py-1.5 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          >
-            Discard
-          </Button>
-          <Button
-            type="button"
-            onPress={handleSend}
-            isDisabled={status === 'sending'}
-            className="flex items-center gap-1.5 rounded bg-[var(--primary)] px-4 py-1.5 text-xs font-medium text-[var(--primary-fg)] transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <SendIcon size={12} />
-            {status === 'sending' ? 'Sending…' : 'Send'}
-          </Button>
-        </div>
       </div>
 
       <InputDialog

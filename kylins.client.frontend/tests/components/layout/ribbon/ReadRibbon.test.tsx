@@ -5,9 +5,42 @@ import { useViewStore } from '../../../../src/features/view/viewStore';
 import { useThreadStore } from '../../../../src/stores/threadStore';
 import { useAccountStore } from '../../../../src/stores/accountStore';
 import { usePreferencesStore } from '../../../../src/stores/preferencesStore';
+import { useInlineComposerStore } from '../../../../src/stores/inlineComposerStore';
 import type { Thread } from '../../../../src/services/db/threads';
+import type { MailMessage } from '../../../../src/features/view/viewStore';
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }));
+
+vi.mock('@tauri-apps/api/path', () => ({
+  appDataDir: vi.fn(async () => '/appdata'),
+  join: vi.fn(async (...parts: string[]) => parts.join('/')),
+}));
+
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  exists: vi.fn(async () => false),
+  remove: vi.fn(async () => {}),
+  mkdir: vi.fn(async () => {}),
+  copyFile: vi.fn(async () => {}),
+}));
+
+vi.mock('../../../../src/services/db/attachments', () => ({
+  getAttachments: vi.fn(async () => []),
+  fetchAttachment: vi.fn(),
+  fetchInlineImages: vi.fn(async () => []),
+  cachedImageToDataUrl: vi.fn(async () => 'data:'),
+}));
+
+const { mockOpenReplyWithAttachments } = vi.hoisted(() => ({
+  mockOpenReplyWithAttachments: vi.fn(),
+}));
+vi.mock('../../../../src/utils/composerActions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/utils/composerActions')>();
+  return {
+    ...actual,
+    openReplyComposerWithAttachments: mockOpenReplyWithAttachments,
+  };
+});
 
 let originalResizeObserver: typeof globalThis.ResizeObserver;
 let originalGetBoundingClientRect: typeof Element.prototype.getBoundingClientRect;
@@ -42,7 +75,13 @@ beforeEach(() => {
   originalResizeObserver = globalThis.ResizeObserver;
   originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
 
-  useViewStore.setState({ selectedMessage: null, inlineReplyMode: null });
+  useViewStore.setState({ selectedMessage: null });
+  useInlineComposerStore.setState({ session: null });
+  mockInvoke.mockReset();
+  mockInvoke.mockImplementation(async (cmd: string) => {
+    if (cmd === 'db_get_aliases_for_account') return [];
+    return undefined;
+  });
   useThreadStore.setState({ threads: [], selectedThreadId: null });
   useAccountStore.setState({ accounts: [], activeAccountId: null });
   usePreferencesStore.setState({ defaultReplyBehavior: 'reply' });
@@ -258,5 +297,76 @@ describe('ReadRibbon', () => {
       expect(moveButton.querySelectorAll('svg')).toHaveLength(2);
       expect(markReadButton.querySelectorAll('svg')).toHaveLength(2);
     });
+  });
+});
+
+describe('ReadRibbon reply-with-attachment routing', () => {
+  const message: MailMessage = {
+    id: 'msg-1',
+    subject: 'Hi',
+    from: { name: 'Bob', address: 'bob@example.com' },
+    to: [{ name: 'Me', address: 'me@example.com' }],
+    date: new Date().toISOString(),
+    preview: '',
+    html: '<p>x</p>',
+    text: 'x',
+    threadId: 't1',
+    messageId: '<mid-1@example.com>',
+    classificationId: null,
+    isEncrypted: false,
+    isSigned: false,
+  };
+
+  function selectMessageAndAccount() {
+    useViewStore.setState({ selectedMessage: message });
+    useAccountStore.setState({
+      accounts: [{ id: 'a1', email: 'me@example.com' } as never],
+      activeAccountId: 'a1',
+    });
+  }
+
+  it('main window: opens the docked inline composer with the with-attachments intent', async () => {
+    selectMessageAndAccount();
+    setRibbonWidth(1024);
+    render(<ReadRibbon />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^reply options$/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /reply with attachment/i }));
+
+    await waitFor(() => {
+      const session = useInlineComposerStore.getState().session;
+      expect(session).not.toBeNull();
+      expect(session?.intent).toBe('replyWithAttachments');
+      expect(session?.messageId).toBe('msg-1');
+    });
+  });
+
+  it('main window: reply-all variant maps to replyAllWithAttachments', async () => {
+    selectMessageAndAccount();
+    setRibbonWidth(1024);
+    render(<ReadRibbon />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^reply all options$/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /reply all with attachment/i }));
+
+    await waitFor(() => {
+      expect(useInlineComposerStore.getState().session?.intent).toBe('replyAllWithAttachments');
+    });
+  });
+
+  it('viewer window: falls back to the modal composer, no inline session', async () => {
+    selectMessageAndAccount();
+    setRibbonWidth(1024);
+    mockOpenReplyWithAttachments.mockClear();
+    render(<ReadRibbon viewer />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^reply options$/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /reply with attachment/i }));
+
+    expect(mockOpenReplyWithAttachments).toHaveBeenCalledWith(
+      message,
+      expect.objectContaining({ id: 'a1' }),
+    );
+    expect(useInlineComposerStore.getState().session).toBeNull();
   });
 });

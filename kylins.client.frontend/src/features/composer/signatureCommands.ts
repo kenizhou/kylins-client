@@ -42,20 +42,36 @@ export function getActiveSignatureId(doc: PMNode): string | null {
 
 /**
  * Find the insertion position for the signature: just above the quoted
- * original. The quote region starts at the reply attribution paragraph
- * ("On <date>, <sender> wrote:") when present, otherwise at the first
- * top-level blockquote (reply + forward quotes are both blockquotes — see
- * prepareBodyForQuoting). Returns null when the body has no quote (append at
- * the end instead).
+ * original. Detection, in priority order:
+ *   1. The Outlook-style quote boundary: the first top-level `horizontalRule`
+ *      whose `quoteMarker` attr is `'original'` (see editorExtensions.ts) —
+ *      returns the position of the node BEFORE the preceding header block, so
+ *      the signature lands above the whole From/Sent/To/Subject block.
+ *   2. Legacy gmail-style: the reply attribution paragraph ("On <date>,
+ *      <sender> wrote:").
+ *   3. Legacy gmail-style: the first top-level blockquote.
+ * Returns null when the body has no quote (append at the end instead).
  *
  * Note: the `gmail_quote` class does not survive TipTap parsing (StarterKit's
- * Blockquote carries no attributes), so detection is by node type and the
- * attribution text, not by HTML class.
+ * Blockquote carries no attributes), so the gmail fallback is by node type
+ * and attribution text, not by HTML class. New Outlook-style drafts don't
+ * depend on English text at all.
  */
 export function findQuoteInsertPos(doc: PMNode): number | null {
   let attributionPos: number | null = null;
   let blockquotePos: number | null = null;
+  let prevOffset = 0;
+  let separatorInsertPos: number | null = null;
   doc.forEach((child, offset) => {
+    if (
+      separatorInsertPos === null &&
+      child.type.name === 'horizontalRule' &&
+      child.attrs.quoteMarker === 'original'
+    ) {
+      // Insert above the header block that precedes the separator (or at the
+      // separator itself when it's the first node).
+      separatorInsertPos = prevOffset < offset ? prevOffset : offset;
+    }
     if (
       attributionPos === null &&
       child.type.name === 'paragraph' &&
@@ -66,8 +82,9 @@ export function findQuoteInsertPos(doc: PMNode): number | null {
     if (blockquotePos === null && child.type.name === 'blockquote') {
       blockquotePos = offset;
     }
+    prevOffset = offset;
   });
-  return attributionPos ?? blockquotePos;
+  return separatorInsertPos ?? attributionPos ?? blockquotePos;
 }
 
 /** Parse signature body HTML into a `signature` node under the editor schema. */

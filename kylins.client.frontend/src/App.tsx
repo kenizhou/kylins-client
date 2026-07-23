@@ -286,6 +286,8 @@ export default function App() {
                 originalMessageSubject: composeParams.originalMessageSubject,
                 originalMessageHtml: composeParams.originalMessageHtml,
                 originalMessageText: composeParams.originalMessageText,
+                stagingDraftId: composeParams.stagingDraftId,
+                attachments: composeParams.attachments,
               });
             }
 

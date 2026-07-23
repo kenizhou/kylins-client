@@ -6,6 +6,7 @@
 // and tables from the quoted body.
 
 import StarterKit from '@tiptap/starter-kit';
+import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import Image from '@tiptap/extension-image';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
@@ -17,6 +18,28 @@ import Placeholder from '@tiptap/extension-placeholder';
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { SignatureNode } from './SignatureNode';
 
+// HorizontalRule extended to preserve the `data-quote` attribute. The
+// Outlook-style quote builders (prepareBodyForQuoting.ts) mark the separator
+// between the user's text and the quoted original with
+// `<hr data-quote="original">`; keeping the attribute through ProseMirror
+// parse/serialize gives signature placement (signatureCommands.ts) a robust
+// quote boundary that doesn't depend on matching English attribution text.
+const QuoteHorizontalRule = HorizontalRule.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      quoteMarker: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-quote'),
+        renderHTML: (attributes) => {
+          if (!attributes.quoteMarker) return {};
+          return { 'data-quote': attributes.quoteMarker };
+        },
+      },
+    };
+  },
+});
+
 /**
  * Build the composer editor extensions. `placeholder` is the only per-surface
  * difference (e.g. "Type your reply…" vs "Write your message…"); everything else
@@ -25,7 +48,13 @@ import { SignatureNode } from './SignatureNode';
  */
 export function buildComposerExtensions(placeholder: string) {
   return [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] }, link: { openOnClick: false } }),
+    StarterKit.configure({
+      heading: { levels: [1, 2, 3] },
+      link: { openOnClick: false },
+      // Replaced by QuoteHorizontalRule below (adds the data-quote attribute).
+      horizontalRule: false,
+    }),
+    QuoteHorizontalRule,
     Placeholder.configure({ placeholder }),
     // allowBase64 so pasted/quoted data: images render; inline so images can sit
     // in a text line (matches the modal composer).

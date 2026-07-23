@@ -30,6 +30,7 @@ export const SETTING_KEYS = {
   checkGrammar: 'check_grammar',
   spellcheckLanguage: 'spellcheck_language',
   alwaysShowCcBcc: 'always_show_cc_bcc',
+  quoteStyle: 'quote_style',
 
   // Notifications
   showNotificationsForNewUnread: 'show_notifications_for_new_unread',

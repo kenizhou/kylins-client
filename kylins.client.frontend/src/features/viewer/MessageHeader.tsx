@@ -23,6 +23,8 @@ interface MessageHeaderProps {
   onReply: () => void;
   onReplyAll: () => void;
   onForward: () => void;
+  onReplyWithAttachments?: () => void;
+  onReplyAllWithAttachments?: () => void;
   onArchive: () => void;
   onDelete: () => void;
   onJunk: () => void;
@@ -54,6 +56,8 @@ export function MessageHeader({
   onReply,
   onReplyAll,
   onForward,
+  onReplyWithAttachments,
+  onReplyAllWithAttachments,
   onArchive,
   onDelete,
   onJunk,
@@ -71,6 +75,26 @@ export function MessageHeader({
       icon: <ReplyAllFilledIcon size={14} />,
       onAction: onReplyAll,
     },
+    ...(onReplyWithAttachments
+      ? [
+          {
+            key: 'replyWithAttachments',
+            label: 'Reply with attachment',
+            icon: <ReplyFilledIcon size={14} />,
+            onAction: onReplyWithAttachments,
+          },
+        ]
+      : []),
+    ...(onReplyAllWithAttachments
+      ? [
+          {
+            key: 'replyAllWithAttachments',
+            label: 'Reply all with attachment',
+            icon: <ReplyAllFilledIcon size={14} />,
+            onAction: onReplyAllWithAttachments,
+          },
+        ]
+      : []),
     { key: 'forward', label: 'Forward', icon: <MailSendIcon size={14} />, onAction: onForward },
     { key: 'archive', label: 'Archive', icon: <ArchiveIcon size={14} />, onAction: onArchive },
     { key: 'delete', label: 'Delete', icon: <DeleteIcon size={14} />, onAction: onDelete },

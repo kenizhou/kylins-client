@@ -7,6 +7,10 @@ import { useAccountStore } from '../../../src/stores/accountStore';
 import { usePreferencesStore } from '../../../src/stores/preferencesStore';
 import { useUIStore } from '../../../src/stores/uiStore';
 import { useClassificationStore } from '../../../src/features/classification/classificationStore';
+import {
+  useInlineComposerStore,
+  type InlineSession,
+} from '../../../src/stores/inlineComposerStore';
 import { getAttachments, fetchAttachment } from '../../../src/services/db/attachments';
 import type { MailMessage } from '../../../src/features/view/viewStore';
 
@@ -34,6 +38,13 @@ vi.mock('../../../src/features/viewer/RsvpCard', () => ({
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readTextFile: vi.fn(),
+  exists: vi.fn(async () => false),
+  remove: vi.fn(async () => {}),
+}));
+
+vi.mock('@tauri-apps/api/path', () => ({
+  appDataDir: vi.fn(async () => '/appdata'),
+  join: vi.fn(async (...parts: string[]) => parts.join('/')),
 }));
 
 vi.mock('../../../src/services/db/attachments', () => ({
@@ -63,6 +74,7 @@ describe('ReadingPane', () => {
     vi.mocked(getAttachments).mockReset().mockResolvedValue([]);
     vi.mocked(fetchAttachment).mockReset();
     useViewStore.setState({ selectedMessage: null });
+    useInlineComposerStore.setState({ session: null });
     useAccountStore.setState({
       accounts: [
         { id: 'acc-1', email: 'you@example.com' } as unknown as Parameters<
@@ -268,5 +280,82 @@ describe('ReadingPane', () => {
       expect(screen.queryByTestId('crypto-badge')).not.toBeInTheDocument();
       expect(screen.queryByTestId('decrypt-failure-panel')).not.toBeInTheDocument();
     });
+  });
+
+  // ── Docked inline composer ─────────────────────────────────────────────
+
+  function makeSession(messageId: string): InlineSession {
+    return {
+      messageId,
+      message,
+      accountId: 'acc-1',
+      accountEmail: 'you@example.com',
+      intent: 'reply',
+      seed: null,
+      seedError: null,
+      stagingDraftId: 'draft-1',
+      pristine: false,
+      bodyHtml: '<p>draft</p>',
+      signatureId: undefined,
+      classificationId: null,
+      fromEmail: 'you@example.com',
+      selfEmails: ['you@example.com'],
+      includeOriginalAttachments: false,
+      to: [],
+      cc: [],
+      bcc: [],
+      replyTo: [],
+      subject: 'Re: Test subject',
+      attachments: [],
+      importance: 'normal',
+      requestReadReceipt: false,
+      requestDeliveryReceipt: false,
+      deliverAt: null,
+      preventCopy: false,
+      isEncrypted: false,
+      isSigned: false,
+    };
+  }
+
+  it('replaces the message view with the inline composer when a session matches', async () => {
+    useViewStore.setState({ selectedMessage: message });
+    useInlineComposerStore.setState({ session: makeSession('msg-1') });
+    render(<ReadingPane />);
+
+    await waitFor(() => {
+      // Full takeover: the composer renders; the message body does not.
+      expect(screen.getByTestId('inline-reply')).toBeInTheDocument();
+      expect(screen.queryByTestId('email-renderer')).not.toBeInTheDocument();
+      // No retention chip while the session's own message is selected.
+      expect(screen.queryByText(/unsent reply to/i)).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows a retention chip (not the dock) when the session belongs to another message', async () => {
+    useViewStore.setState({ selectedMessage: message });
+    useInlineComposerStore.setState({ session: makeSession('msg-other') });
+    render(<ReadingPane />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('inline-reply')).not.toBeInTheDocument();
+      expect(screen.getByTestId('email-renderer')).toBeInTheDocument();
+      expect(screen.getByText(/unsent reply to/i)).toBeInTheDocument();
+    });
+  });
+
+  it('retention chip Discard confirms, then clears the session', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    useViewStore.setState({ selectedMessage: message });
+    useInlineComposerStore.setState({ session: makeSession('msg-other') });
+    render(<ReadingPane />);
+
+    const discard = await screen.findByRole('button', { name: /discard/i });
+    discard.click();
+    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(useInlineComposerStore.getState().session).toBeNull();
+      expect(screen.queryByText(/unsent reply to/i)).not.toBeInTheDocument();
+    });
+    confirmSpy.mockRestore();
   });
 });

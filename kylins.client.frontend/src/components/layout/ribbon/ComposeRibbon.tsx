@@ -21,18 +21,20 @@ import {
   MailOpenIcon,
   MailIcon,
   CheckIcon,
-  WarningIcon,
-  BellIcon,
+  ImportanceIcon,
+  TrackingIcon,
   MoreIcon,
 } from '../../icons';
 import { useElementWidth } from '../../../hooks/useElementWidth';
-import { useComposerStore } from '../../../stores/composerStore';
+import { useActiveComposerTarget } from '../../../features/composer/useActiveComposerTarget';
 import type { Importance } from '../../../stores/composerStore';
 import { useClassification } from '../../../features/classification/useClassification';
 import { RibbonButton, RibbonGroup, RibbonToggle } from './RibbonPrimitives';
 import { RibbonShell } from './RibbonShell';
 
 export function ComposeRibbon() {
+  // Binds to the LIVE composer surface (inline dock when visible, else the
+  // modal composerStore) — see useActiveComposerTarget.
   const {
     classificationId,
     isEncrypted,
@@ -48,7 +50,8 @@ export function ComposeRibbon() {
     setRequestReadReceipt,
     setRequestDeliveryReceipt,
     setPreventCopy,
-  } = useComposerStore();
+    supports,
+  } = useActiveComposerTarget();
   const { getLevelById, getDefaultLevel } = useClassification();
   const currentLevel = getLevelById(classificationId) ?? getDefaultLevel();
   const requiresCrypto = currentLevel.id === 'confidential' || currentLevel.id === 'restricted';
@@ -69,20 +72,22 @@ export function ComposeRibbon() {
 
   return (
     <RibbonShell ref={ribbonRef}>
-      <RibbonGroup>
-        <RibbonButton
-          icon={<ClockIcon size={17} />}
-          split
-          iconOnly={iconOnly}
-          title={
-            scheduleActive ? new Date(deliverAt).toLocaleString() : 'Schedule / Delay delivery'
-          }
-          className={scheduleActive ? 'text-[var(--primary)]' : undefined}
-          onClick={() => window.dispatchEvent(new Event('composer:schedule-requested'))}
-        >
-          {!iconOnly && (scheduleActive ? 'Scheduled' : 'Delay Delivery')}
-        </RibbonButton>
-      </RibbonGroup>
+      {supports.delayDelivery && (
+        <RibbonGroup>
+          <RibbonButton
+            icon={<ClockIcon size={17} />}
+            split
+            iconOnly={iconOnly}
+            title={
+              scheduleActive ? new Date(deliverAt).toLocaleString() : 'Schedule / Delay delivery'
+            }
+            className={scheduleActive ? 'text-[var(--primary)]' : undefined}
+            onClick={() => window.dispatchEvent(new Event('composer:schedule-requested'))}
+          >
+            {!iconOnly && (scheduleActive ? 'Scheduled' : 'Delay Delivery')}
+          </RibbonButton>
+        </RibbonGroup>
+      )}
 
       {!compact && (
         <RibbonGroup>
@@ -91,7 +96,7 @@ export function ComposeRibbon() {
               className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               aria-label="Importance"
             >
-              <WarningIcon size={17} />
+              <ImportanceIcon size={17} />
               {!iconOnly && (
                 <span className="whitespace-nowrap">Importance: {importanceLabel}</span>
               )}
@@ -133,7 +138,7 @@ export function ComposeRibbon() {
               className="flex items-center gap-1.5 rounded px-2.5 h-11 my-auto text-sm text-[var(--text)] transition-colors hover:bg-[var(--primary-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
               aria-label="Tracking"
             >
-              <BellIcon size={17} />
+              <TrackingIcon size={17} />
               {!iconOnly && <span className="whitespace-nowrap">Tracking</span>}
               {(requestReadReceipt || requestDeliveryReceipt) && (
                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--primary)]" />
