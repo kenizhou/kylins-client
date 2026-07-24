@@ -5,89 +5,36 @@
 // via the provider on every save. Kylins persists the editable DraftInput to
 // the local `local_drafts` table (local-first); raw MIME is only built at send
 // time. The debounce (3s) and store-subscription shape are preserved verbatim.
+//
+// The save algorithm (debounce, staleness token, draftId write-back) lives in
+// `draftAutoSaveEngine.ts`; this is the OS-compose-window policy: which store,
+// which fields count as content, the isSaving/lastSavedAt flags, and the
+// skip-empty-drafts gate. The state→DraftInput mapping is the SHARED
+// `draftSessionToDraftInput` (features/composer/draftSession.ts) — before the
+// unification this file's private mapper silently dropped classification,
+// crypto flags, importance, receipts, deliverAt, preventCopy, and replyTo.
 
-import { useComposerStore } from '@/stores/composerStore';
+import { useComposerStore, type ComposerState } from '@/stores/composerStore';
 import { useAccountStore } from '@/stores/accountStore';
-import { saveDraft, type DraftInput, type StoredAttachment } from './drafts';
+import {
+  draftSessionContentChanged,
+  draftSessionToDraftInput,
+} from '@/features/composer/draftSession';
+import { createDraftAutoSave, type DraftAutoSaveHandle } from './draftAutoSaveEngine';
 
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let unsubscribe: (() => void) | null = null;
-let currentAccountId: string | null = null;
+let handle: DraftAutoSaveHandle | null = null;
 
-const DEBOUNCE_MS = 3000;
-
-function composerStateToDraftInput(
-  state: ReturnType<typeof useComposerStore.getState>,
-  accountId: string,
-): DraftInput {
-  // Persist path-backed attachment refs (T7b). The staged file lives under
-  // `<appData>/outbox-attachments/{stagingDraftId}/` and remains valid across
-  // app restarts, so a restored draft's `filePath` still points at real bytes.
-  const attachments: StoredAttachment[] = state.attachments.map((a) => ({
-    filename: a.filename,
-    mimeType: a.mimeType,
-    filePath: a.filePath,
-    size: a.size,
-  }));
-
-  return {
-    accountId,
-    to: state.to,
-    cc: state.cc,
-    bcc: state.bcc,
-    subject: state.subject,
-    bodyHtml: state.bodyHtml,
-    fromEmail: state.fromEmail,
-    threadId: state.threadId,
-    inReplyToMessageId: state.inReplyToMessageId,
-    signatureId: state.signatureId,
-    attachments,
-  };
-}
-
-async function saveDraftNow(): Promise<boolean> {
-  const state = useComposerStore.getState();
-  // Capture the accountId at save time to avoid a mismatch if the user switches
-  // accounts during the debounce window.
-  const accountId = currentAccountId;
-  if (!state.isOpen || !accountId) return true;
-
-  const account = useAccountStore.getState().accounts.find((a) => a.id === accountId);
-  if (!account) return true;
-
-  // Don't save empty drafts.
-  if (
-    !state.bodyHtml &&
-    !state.subject &&
-    state.to.length === 0 &&
-    state.cc.length === 0 &&
-    state.bcc.length === 0 &&
-    state.replyTo.length === 0 &&
-    state.attachments.length === 0
-  )
-    return true;
-
-  state.setIsSaving(true);
-
-  try {
-    const input = composerStateToDraftInput(state, accountId);
-    const id = await saveDraft(input, state.draftId);
-    if (id !== state.draftId) {
-      state.setDraftId(id);
-    }
-    state.setLastSavedAt(Date.now());
-    return true;
-  } catch (err) {
-    console.error('Failed to auto-save draft:', err);
-    return false;
-  } finally {
-    state.setIsSaving(false);
-  }
-}
-
-function scheduleSave(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(saveDraftNow, DEBOUNCE_MS);
+/** The empty-draft gate (preserved from the pre-engine implementation). */
+function isBlank(s: ComposerState): boolean {
+  return (
+    !s.bodyHtml &&
+    !s.subject &&
+    s.to.length === 0 &&
+    s.cc.length === 0 &&
+    s.bcc.length === 0 &&
+    s.replyTo.length === 0 &&
+    s.attachments.length === 0
+  );
 }
 
 /**
@@ -96,50 +43,57 @@ function scheduleSave(): void {
  */
 export function startAutoSave(accountId: string): void {
   stopAutoSave();
-  currentAccountId = accountId;
 
-  unsubscribe = useComposerStore.subscribe((state, prevState) => {
-    if (!state.isOpen) return;
-    // Only save when content-relevant fields change.
-    if (
-      state.bodyHtml !== prevState.bodyHtml ||
-      state.subject !== prevState.subject ||
-      state.to !== prevState.to ||
-      state.cc !== prevState.cc ||
-      state.bcc !== prevState.bcc ||
-      state.attachments !== prevState.attachments
-    ) {
-      scheduleSave();
-    }
+  handle = createDraftAutoSave<ComposerState>({
+    subscribe: (listener) =>
+      useComposerStore.subscribe((state, prev) =>
+        listener(state.isOpen ? state : null, prev.isOpen ? prev : null),
+      ),
+    getSession: () => {
+      const s = useComposerStore.getState();
+      return s.isOpen ? s : null;
+    },
+    sessionToken: (s) => s.stagingDraftId,
+    shouldSave: (s) => {
+      // The account must still exist (guards against mid-save account removal).
+      if (isBlank(s)) return false;
+      return useAccountStore.getState().accounts.some((a) => a.id === accountId);
+    },
+    contentChanged: (a, b) =>
+      draftSessionContentChanged({ ...a, intent: a.mode }, { ...b, intent: b.mode }),
+    // The account id is captured at start time to avoid a mismatch if the
+    // user switches accounts during the debounce window. The window's `mode`
+    // maps to the persisted `intent` (base family — no with-attachments
+    // variants on this surface).
+    toInput: (s) => draftSessionToDraftInput({ ...s, intent: s.mode }, accountId),
+    draftId: (s) => s.draftId,
+    onSaved: (s, id) => {
+      if (id !== s.draftId) s.setDraftId(id);
+      s.setLastSavedAt(Date.now());
+    },
+    onError: (err) => console.error('Failed to auto-save draft:', err),
+    onSaveStart: (s) => s.setIsSaving(true),
+    onSettled: () => useComposerStore.getState().setIsSaving(false),
   });
+  handle.start();
 }
 
 /**
  * Stop auto-saving and clean up the subscription + pending timer.
  */
 export function stopAutoSave(): void {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
-  }
-  if (unsubscribe) {
-    unsubscribe();
-    unsubscribe = null;
-  }
-  currentAccountId = null;
+  handle?.stop();
+  handle = null;
 }
 
 /**
  * Immediately persist the current draft, cancelling any pending debounced
  * save. Used by the pop-out window's close confirmation ("Save Draft").
- * Safe to call when auto-save was never started (saveDraftNow no-ops).
+ * Safe to call when auto-save was never started (flush no-ops).
  */
 export async function flushDraftSave(): Promise<void> {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
-  }
-  const ok = await saveDraftNow();
+  if (!handle) return;
+  const ok = await handle.flush();
   if (!ok) {
     throw new Error('Draft save failed');
   }

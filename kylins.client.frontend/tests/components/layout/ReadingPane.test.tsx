@@ -286,14 +286,14 @@ describe('ReadingPane', () => {
 
   function makeSession(messageId: string): InlineSession {
     return {
-      messageId,
-      message,
+      anchor: { kind: 'reply', message: { ...message, id: messageId } },
       accountId: 'acc-1',
       accountEmail: 'you@example.com',
       intent: 'reply',
       seed: null,
       seedError: null,
       stagingDraftId: 'draft-1',
+      draftId: null,
       pristine: false,
       bodyHtml: '<p>draft</p>',
       signatureId: undefined,
@@ -326,12 +326,10 @@ describe('ReadingPane', () => {
       // Full takeover: the composer renders; the message body does not.
       expect(screen.getByTestId('inline-reply')).toBeInTheDocument();
       expect(screen.queryByTestId('email-renderer')).not.toBeInTheDocument();
-      // No retention chip while the session's own message is selected.
-      expect(screen.queryByText(/unsent reply to/i)).not.toBeInTheDocument();
     });
   });
 
-  it('shows a retention chip (not the dock) when the session belongs to another message', async () => {
+  it('keeps showing the message (not the dock) when the session belongs to another message', async () => {
     useViewStore.setState({ selectedMessage: message });
     useInlineComposerStore.setState({ session: makeSession('msg-other') });
     render(<ReadingPane />);
@@ -339,23 +337,9 @@ describe('ReadingPane', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('inline-reply')).not.toBeInTheDocument();
       expect(screen.getByTestId('email-renderer')).toBeInTheDocument();
-      expect(screen.getByText(/unsent reply to/i)).toBeInTheDocument();
-    });
-  });
-
-  it('retention chip Discard confirms, then clears the session', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    useViewStore.setState({ selectedMessage: message });
-    useInlineComposerStore.setState({ session: makeSession('msg-other') });
-    render(<ReadingPane />);
-
-    const discard = await screen.findByRole('button', { name: /discard/i });
-    discard.click();
-    expect(confirmSpy).toHaveBeenCalled();
-    await waitFor(() => {
-      expect(useInlineComposerStore.getState().session).toBeNull();
+      // The retained session is tracked via the [Draft] chip / Drafts folder —
+      // no banner in the reading pane.
       expect(screen.queryByText(/unsent reply to/i)).not.toBeInTheDocument();
     });
-    confirmSpy.mockRestore();
   });
 });

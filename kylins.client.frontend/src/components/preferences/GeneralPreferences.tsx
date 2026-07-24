@@ -54,17 +54,6 @@ export function GeneralPreferences() {
             onChange={s.setDefaultReplyBehavior}
           />
           <SelectRow
-            label="After sending, enable undo for"
-            value={s.undoSendDuration}
-            options={[
-              { value: '0', label: 'Off' },
-              { value: '5', label: '5 seconds' },
-              { value: '10', label: '10 seconds' },
-              { value: '30', label: '30 seconds' },
-            ]}
-            onChange={s.setUndoSendDuration}
-          />
-          <SelectRow
             label="Send new messages from"
             value={s.sendNewMessagesFrom}
             options={[

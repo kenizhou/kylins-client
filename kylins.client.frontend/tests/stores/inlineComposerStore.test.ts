@@ -40,7 +40,7 @@ vi.mock('../../src/services/db/attachments', () => ({
   cachedImageToDataUrl: vi.fn(async () => 'data:image/png;base64,x'),
 }));
 
-import { useInlineComposerStore } from '../../src/stores/inlineComposerStore';
+import { useInlineComposerStore, anchorMessage } from '../../src/stores/inlineComposerStore';
 import { useComposerStore } from '../../src/stores/composerStore';
 import { usePreferencesStore } from '../../src/stores/preferencesStore';
 import type { InlineIntent } from '../../src/features/composer/draftFactory';
@@ -85,6 +85,42 @@ function aliasRow(email: string) {
   };
 }
 
+/** Minimal persisted draft row; override per test. */
+function draftRow(over: Record<string, unknown> = {}) {
+  return {
+    id: 'row-1',
+    account_id: 'acc-1',
+    to_addresses: JSON.stringify(['Bob <bob@example.com>']),
+    cc_addresses: null,
+    bcc_addresses: null,
+    reply_to_addresses: null,
+    subject: 'Re: Hello',
+    body_html: '<p>typed</p>',
+    reply_to_message_id: '<mid-1@example.com>',
+    thread_id: 't1',
+    from_email: 'me@example.com',
+    signature_id: null,
+    remote_draft_id: null,
+    attachments: null,
+    classification_id: null,
+    is_encrypted: 0,
+    is_signed: 0,
+    importance: 'normal',
+    request_read_receipt: 0,
+    request_delivery_receipt: 0,
+    deliver_at: null,
+    prevent_copy: 0,
+    extra_headers: null,
+    intent: null,
+    original_message_id: null,
+    include_original_attachments: 0,
+    created_at: 100,
+    updated_at: 200,
+    sync_status: 'local',
+    ...over,
+  } as never;
+}
+
 async function openAndSettle(intent: InlineIntent, message: MailMessage) {
   useInlineComposerStore.getState().open(intent, message, account);
   await waitFor(() => {
@@ -114,7 +150,7 @@ describe('inlineComposerStore', () => {
   it('open creates a pristine session and resolves the seed (recipients, subject, outlook body)', async () => {
     const s = await openAndSettle('reply', makeMessage());
     expect(s.pristine).toBe(true);
-    expect(s.messageId).toBe('msg-1');
+    expect(anchorMessage(s)?.id).toBe('msg-1');
     expect(s.to).toEqual([{ name: 'Bob', email: 'bob@example.com' }]);
     expect(s.subject).toBe('Re: Hello');
     expect(s.bodyHtml).toContain('<b>From:</b>');
@@ -177,26 +213,26 @@ describe('inlineComposerStore', () => {
     expect(s2.subject).toBe('Re: edited');
   });
 
-  it('a non-pristine session for a DIFFERENT message confirms before being discarded', async () => {
-    mockExists.mockResolvedValue(true);
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('replacing a session for a DIFFERENT message preserves the outgoing draft (no confirm, no delete)', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
     const s1 = await openAndSettle('reply', makeMessage());
     useInlineComposerStore.getState().setSubject('dirty');
+    useInlineComposerStore.setState({
+      session: { ...useInlineComposerStore.getState().session!, draftId: 'row-old' },
+    });
 
-    useInlineComposerStore.getState().open('reply', makeMessage({ id: 'msg-2' }), account);
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(useInlineComposerStore.getState().session?.messageId).toBe('msg-1');
+    await useInlineComposerStore.getState().open('reply', makeMessage({ id: 'msg-2' }), account);
 
-    confirmSpy.mockReturnValue(true);
-    useInlineComposerStore.getState().open('reply', makeMessage({ id: 'msg-2' }), account);
-    await waitFor(() => expect(useInlineComposerStore.getState().session?.messageId).toBe('msg-2'));
-    // Old session's staging dir was cleaned on replacement (fire-and-forget).
+    // No confirm, no row deletion, no staging cleanup: the outgoing draft
+    // lives on in the Drafts folder with its [Draft] chip.
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalledWith('db_delete_draft', { id: 'row-old' });
+    expect(mockRemove).not.toHaveBeenCalled();
     await waitFor(() =>
-      expect(mockRemove).toHaveBeenCalledWith(
-        expect.stringContaining(s1.stagingDraftId),
-        expect.objectContaining({ recursive: true }),
-      ),
+      expect(anchorMessage(useInlineComposerStore.getState().session)?.id).toBe('msg-2'),
     );
+    expect(useInlineComposerStore.getState().session!.stagingDraftId).not.toBe(s1.stagingDraftId);
+    confirmSpy.mockRestore();
   });
 
   it('discard clears the session and deletes the staging directory', async () => {
@@ -243,6 +279,102 @@ describe('inlineComposerStore', () => {
     useInlineComposerStore.getState().clearAfterSend();
     expect(useInlineComposerStore.getState().session).toBeNull();
     expect(mockRemove).not.toHaveBeenCalled();
+  });
+
+  it('clearAfterSend deletes the persisted draft row (frontend-owned cleanup)', async () => {
+    const s = await openAndSettle('reply', makeMessage());
+    useInlineComposerStore.setState({ session: { ...s, draftId: 'row-8' } });
+    useInlineComposerStore.getState().clearAfterSend();
+    expect(useInlineComposerStore.getState().session).toBeNull();
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith('db_delete_draft', { id: 'row-8' }),
+    );
+  });
+
+  it('discard deletes the persisted draft row alongside the staging dir', async () => {
+    mockExists.mockResolvedValue(true);
+    const s = await openAndSettle('reply', makeMessage());
+    useInlineComposerStore.setState({ session: { ...s, draftId: 'row-7' } });
+    useInlineComposerStore.getState().discard({ skipConfirm: true });
+    expect(useInlineComposerStore.getState().session).toBeNull();
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith('db_delete_draft', { id: 'row-7' }),
+    );
+  });
+
+  it('popOut deletes the persisted draft row (ownership moved to the pop-out)', async () => {
+    const s = await openAndSettle('reply', makeMessage());
+    useInlineComposerStore.setState({ session: { ...s, draftId: 'row-9' } });
+    useInlineComposerStore.getState().popOut('<p>typed body</p>', undefined);
+    await waitFor(() => expect(useComposerStore.getState().isOpen).toBe(true));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith('db_delete_draft', { id: 'row-9' }),
+    );
+  });
+
+  it('restoreFromDraft rebuilds a session from a persisted row (app-reload resume)', () => {
+    useInlineComposerStore.getState().restoreFromDraft(
+      {
+        id: 'row-1',
+        account_id: 'acc-1',
+        to_addresses: JSON.stringify(['Bob <bob@example.com>']),
+        cc_addresses: null,
+        bcc_addresses: null,
+        subject: 'Re: Hello',
+        body_html: '<p>typed</p>',
+        reply_to_message_id: '<mid-1@example.com>',
+        thread_id: 't1',
+        from_email: 'me@example.com',
+        signature_id: null,
+        remote_draft_id: null,
+        attachments: JSON.stringify([
+          {
+            filename: 'a.txt',
+            mimeType: 'text/plain',
+            filePath: '/appdata/outbox-attachments/stage-9/a.txt',
+            size: 5,
+          },
+        ]),
+        classification_id: null,
+        is_encrypted: 0,
+        is_signed: 0,
+        importance: 'normal',
+        request_read_receipt: 0,
+        deliver_at: null,
+        prevent_copy: 0,
+        extra_headers: null,
+        created_at: 100,
+        updated_at: 200,
+        sync_status: 'local',
+      },
+      makeMessage(),
+      account,
+    );
+    const s = useInlineComposerStore.getState().session!;
+    expect(s.draftId).toBe('row-1');
+    expect(s.pristine).toBe(true);
+    expect(s.intent).toBe('reply');
+    expect(s.to).toEqual([{ name: 'Bob', email: 'bob@example.com' }]);
+    expect(s.subject).toBe('Re: Hello');
+    expect(s.bodyHtml).toBe('<p>typed</p>');
+    expect(s.threadId).toBe('t1');
+    expect(s.inReplyToMessageId).toBe('<mid-1@example.com>');
+    // Staging dir is recovered from the attachment path (no orphans on send).
+    expect(s.stagingDraftId).toBe('stage-9');
+    expect(s.attachments[0]).toMatchObject({ filename: 'a.txt', origin: 'picked' });
+    // Seed is synthesized so the dock skips the skeleton.
+    expect(s.seed).not.toBeNull();
+    expect(s.seed?.bodyHtml).toBe('<p>typed</p>');
+  });
+
+  it('restoreFromDraft is a no-op when a session already exists', async () => {
+    const existing = await openAndSettle('reply', makeMessage());
+    useInlineComposerStore
+      .getState()
+      .restoreFromDraft({ id: 'row-1', thread_id: 't1' } as never, makeMessage(), account);
+    const s = useInlineComposerStore.getState().session!;
+    expect(s.stagingDraftId).toBe(existing.stagingDraftId);
+    expect(s.draftId).toBeNull();
   });
 
   it('switchReplyKind upgrades to reply-all adding missing participants, downgrade keeps manual ones', async () => {
@@ -308,15 +440,15 @@ describe('inlineComposerStore', () => {
     expect(cur.attachments[0]?.filename).toBe('mine.txt');
   });
 
-  it('same message, forward ↔ reply family change replaces the session (with confirm when dirty)', async () => {
-    mockExists.mockResolvedValue(true);
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('same message, forward ↔ reply family change replaces the session (no confirm; outgoing draft preserved)', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
     const s1 = await openAndSettle('reply', makeMessage());
     useInlineComposerStore.getState().setSubject('dirty');
 
     // Clicking Forward with a reply dock open must replace, not silently
     // ignore (bug: the family boundary used to be a no-op).
-    useInlineComposerStore.getState().open('forward', makeMessage(), account);
+    await useInlineComposerStore.getState().open('forward', makeMessage(), account);
+    expect(confirmSpy).not.toHaveBeenCalled();
     await waitFor(() => expect(useInlineComposerStore.getState().session?.intent).toBe('forward'));
     const s2 = useInlineComposerStore.getState().session!;
     expect(s2.stagingDraftId).not.toBe(s1.stagingDraftId);
@@ -376,5 +508,117 @@ describe('inlineComposerStore', () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(useInlineComposerStore.getState().session).toBeNull();
     confirmSpy.mockRestore();
+  });
+
+  it('discard of a restored (persisted) draft confirms even when unedited', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    await openAndSettle('reply', makeMessage());
+    useInlineComposerStore.setState({
+      session: { ...useInlineComposerStore.getState().session!, draftId: 'row-1', pristine: true },
+    });
+    useInlineComposerStore.getState().discard();
+    // The row is the only copy — discarding it always confirms.
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(useInlineComposerStore.getState().session).not.toBeNull();
+    confirmSpy.mockRestore();
+  });
+
+  // ── Anchor model: standalone (message-less) sessions + resumeDraft ──────
+
+  it('resumeDraft without a message builds a standalone new-message session', () => {
+    useInlineComposerStore.getState().resumeDraft(draftRow({ thread_id: null }), account);
+    const s = useInlineComposerStore.getState().session!;
+    expect(s.anchor.kind).toBe('standalone');
+    expect(anchorMessage(s)).toBeNull();
+    expect(s.intent).toBe('new');
+    expect(s.draftId).toBe('row-1');
+    expect(s.pristine).toBe(true);
+    expect(s.to).toEqual([{ name: 'Bob', email: 'bob@example.com' }]);
+    expect(s.bodyHtml).toBe('<p>typed</p>');
+    expect(s.threadId).toBeNull();
+    expect(s.seed).not.toBeNull();
+  });
+
+  it('resumeDraft with a resolved message builds a reply-anchored session', () => {
+    useInlineComposerStore.getState().resumeDraft(draftRow(), account, { message: makeMessage() });
+    const s = useInlineComposerStore.getState().session!;
+    expect(s.anchor.kind).toBe('reply');
+    expect(anchorMessage(s)?.id).toBe('msg-1');
+    expect(s.intent).toBe('reply');
+    expect(s.threadId).toBe('t1');
+  });
+
+  it('resumeDraft on the SAME draft is a focus no-op (edits preserved)', async () => {
+    useInlineComposerStore.getState().resumeDraft(draftRow(), account, {
+      message: makeMessage(),
+    });
+    useInlineComposerStore.getState().setBodyHtml('<p>edited</p>', { userEdit: true });
+    const before = useInlineComposerStore.getState().session!;
+    useInlineComposerStore.getState().resumeDraft(draftRow(), account, {
+      message: makeMessage(),
+    });
+    const after = useInlineComposerStore.getState().session!;
+    expect(after.stagingDraftId).toBe(before.stagingDraftId);
+    expect(after.bodyHtml).toBe('<p>edited</p>');
+  });
+
+  it('resumeDraft for a DIFFERENT draft replaces without confirming and preserves the outgoing row', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    await useInlineComposerStore.getState().resumeDraft(draftRow({ id: 'row-a' }), account);
+    await useInlineComposerStore.getState().resumeDraft(draftRow({ id: 'row-b' }), account);
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(useInlineComposerStore.getState().session?.draftId).toBe('row-b');
+    // The outgoing draft's row is preserved — switching drafts must not
+    // destroy the previous one.
+    expect(mockInvoke).not.toHaveBeenCalledWith('db_delete_draft', { id: 'row-a' });
+    confirmSpy.mockRestore();
+  });
+
+  it('resumeDraft restores the persisted forward intent (reply-anchored)', () => {
+    useInlineComposerStore
+      .getState()
+      .resumeDraft(draftRow({ intent: 'forward' }), account, { message: makeMessage() });
+    const s = useInlineComposerStore.getState().session!;
+    expect(s.intent).toBe('forward');
+    expect(s.anchor.kind).toBe('reply');
+  });
+
+  it('standalone resume keeps forward but downgrades reply intents to new', () => {
+    useInlineComposerStore
+      .getState()
+      .resumeDraft(draftRow({ intent: 'forward', thread_id: null }), account);
+    expect(useInlineComposerStore.getState().session?.intent).toBe('forward');
+    expect(useInlineComposerStore.getState().session?.anchor.kind).toBe('standalone');
+
+    useInlineComposerStore.getState().discard({ skipConfirm: true });
+    useInlineComposerStore
+      .getState()
+      .resumeDraft(draftRow({ intent: 'reply', thread_id: null }), account);
+    // A reply intent with no source message can't be honored standalone.
+    expect(useInlineComposerStore.getState().session?.intent).toBe('new');
+  });
+
+  it('switchReplyKind is a no-op for standalone sessions', () => {
+    useInlineComposerStore.getState().resumeDraft(draftRow({ thread_id: null }), account);
+    const before = useInlineComposerStore.getState().session!;
+    useInlineComposerStore.getState().switchReplyKind('replyAll');
+    const after = useInlineComposerStore.getState().session!;
+    expect(after.intent).toBe('new');
+    expect(after.to).toEqual(before.to);
+  });
+
+  it('popOut of a standalone session targets mode=new with no threading', async () => {
+    useInlineComposerStore
+      .getState()
+      .resumeDraft(draftRow({ thread_id: null, reply_to_message_id: null }), account);
+    useInlineComposerStore.getState().popOut('<p>typed</p>', undefined);
+    // Non-Tauri fallback hydrates the composer store via a dynamic import.
+    await waitFor(() => expect(useComposerStore.getState().isOpen).toBe(true));
+    const modal = useComposerStore.getState();
+    expect(modal.mode).toBe('new');
+    expect(modal.threadId).toBeNull();
+    expect(modal.inReplyToMessageId).toBeNull();
+    expect(modal.subject).toBe('Re: Hello');
   });
 });

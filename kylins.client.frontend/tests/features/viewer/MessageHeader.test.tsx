@@ -41,10 +41,6 @@ describe('MessageHeader', () => {
         onReply={noop}
         onReplyAll={noop}
         onForward={noop}
-        onArchive={noop}
-        onDelete={noop}
-        onJunk={noop}
-        onMarkUnread={noop}
         onAddContact={noop}
         contactAdded={false}
       />,
@@ -60,10 +56,6 @@ describe('MessageHeader', () => {
         onReply={noop}
         onReplyAll={noop}
         onForward={noop}
-        onArchive={noop}
-        onDelete={noop}
-        onJunk={noop}
-        onMarkUnread={noop}
         onAddContact={noop}
         contactAdded={false}
       />,
@@ -80,10 +72,6 @@ describe('MessageHeader', () => {
         onReply={noop}
         onReplyAll={noop}
         onForward={noop}
-        onArchive={noop}
-        onDelete={noop}
-        onJunk={noop}
-        onMarkUnread={noop}
         onAddContact={noop}
         contactAdded={false}
       />,

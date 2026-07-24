@@ -9,8 +9,6 @@ import { MessageList } from './MessageList';
 import { ReadingPane } from './ReadingPane';
 import { StatusBar } from './StatusBar';
 import { ReadingPaneLayout } from '../../features/view/components/ReadingPaneLayout';
-import { Composer } from '../composer/Composer';
-import { UndoSendToast } from '../composer/UndoSendToast';
 import { CalendarPage } from '../calendar/CalendarPage';
 import { CalendarPane } from '../calendar/CalendarPane';
 import { CalendarLayout } from '../../features/view/components/CalendarLayout';
@@ -32,7 +30,7 @@ export function AppShell() {
   // When the docked inline composer is visible in the ReadingPane, flip the
   // main CommandRibbon to compose mode so the compose actions (Attach,
   // Importance, Encrypt, …) act on the inline draft via
-  // useActiveComposerTarget. The modal Composer renders its own internal
+  // useActiveComposerTarget. The OS compose window renders its own internal
   // ComposeRibbon and does not affect this flag.
   const inlineComposerVisible = useInlineComposerVisible();
   const activeApp = useUIStore((s) => s.activeApp);
@@ -67,8 +65,6 @@ export function AppShell() {
         </MainContent>
       </div>
       {statusBarVisible && <StatusBar />}
-      <Composer />
-      <UndoSendToast />
     </div>
   );
 }

@@ -562,18 +562,6 @@
     transform: translate(-50%, 0);
   }
 }
-/* Undo-send countdown bar (fixed 5s; matches the default undo_send_delay_seconds). */
-.composer-countdown {
-  animation: composer-countdown 5s linear forwards;
-}
-@keyframes composer-countdown {
-  from {
-    width: 100%;
-  }
-  to {
-    width: 0%;
-  }
-}
 
 /* ---- Reading pane action labels: show text only when the pane is wide enough ---- */
 .reading-pane {

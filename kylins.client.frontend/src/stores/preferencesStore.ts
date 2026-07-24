@@ -83,7 +83,6 @@ const STRING_FIELDS: Record<string, StringField> = {
   markAsReadDelay: { key: SETTING_KEYS.markAsReadDelay, defaultValue: '0.5' },
   defaultSendBehavior: { key: SETTING_KEYS.defaultSendBehavior, defaultValue: 'send' },
   defaultReplyBehavior: { key: SETTING_KEYS.defaultReplyBehavior, defaultValue: 'reply-all' },
-  undoSendDuration: { key: SETTING_KEYS.undoSendDuration, defaultValue: '5' },
   sendNewMessagesFrom: { key: SETTING_KEYS.sendNewMessagesFrom, defaultValue: 'selected-account' },
   spellcheckLanguage: { key: SETTING_KEYS.spellcheckLanguage, defaultValue: 'system' },
   quoteStyle: { key: SETTING_KEYS.quoteStyle, defaultValue: 'outlook' },
@@ -144,8 +143,6 @@ export interface PreferencesState {
   setDefaultSendBehavior: (value: string) => void;
   defaultReplyBehavior: string;
   setDefaultReplyBehavior: (value: string) => void;
-  undoSendDuration: string;
-  setUndoSendDuration: (value: string) => void;
   sendNewMessagesFrom: string;
   setSendNewMessagesFrom: (value: string) => void;
 
@@ -325,10 +322,6 @@ export const usePreferencesStore = create<PreferencesState>((set) => ({
   setDefaultReplyBehavior: (value) => {
     set({ defaultReplyBehavior: value });
     persist(SETTING_KEYS.defaultReplyBehavior, value);
-  },
-  setUndoSendDuration: (value) => {
-    set({ undoSendDuration: value });
-    persist(SETTING_KEYS.undoSendDuration, value);
   },
   setSendNewMessagesFrom: (value) => {
     set({ sendNewMessagesFrom: value });

@@ -17,6 +17,19 @@ import type { Importance } from '@/stores/composerStore';
 import { formatRecipients, type Recipient } from '@/features/composer/contacts';
 
 /**
+ * Window event fired after any successful draft create/update/delete. The
+ * message list subscribes while the Drafts folder is selected so saved drafts
+ * appear (and disappear) live without a folder re-select.
+ */
+export const DRAFTS_CHANGED_EVENT = 'kylins:drafts-changed';
+
+function emitDraftsChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(DRAFTS_CHANGED_EVENT));
+  }
+}
+
+/**
  * Serializable attachment shape stored in `local_drafts.attachments` as JSON.
  *
  * T7b: the canonical shape is **path-backed** — the bytes live on disk under
@@ -66,6 +79,17 @@ export interface DraftInput {
   deliverAt?: number | null;
   preventCopy?: boolean;
   /**
+   * Compose intent ('new' | 'reply' | 'replyAll' | 'forward' |
+   * 'replyWithAttachments' | 'replyAllWithAttachments') — the dock persists
+   * its exact intent, the OS compose window its base mode. Resume restores
+   * forward/reply semantics instead of inferring (badly) from the threading
+   * columns.
+   */
+  intent?: string | null;
+  /** Source message for reply/forward attachment seeding + forward chrome. */
+  originalMessageId?: string | null;
+  includeOriginalAttachments?: boolean;
+  /**
    * Best-effort headers to emit at send time. Stored on the draft so they
    * survive app restarts and can be previewed before sending.
    */
@@ -79,6 +103,7 @@ export interface DbDraft {
   to_addresses: string | null;
   cc_addresses: string | null;
   bcc_addresses: string | null;
+  reply_to_addresses: string | null;
   subject: string | null;
   body_html: string | null;
   reply_to_message_id: string | null;
@@ -93,9 +118,14 @@ export interface DbDraft {
   /** 'low' | 'normal' | 'high' */
   importance: string | null;
   request_read_receipt: number;
+  request_delivery_receipt: number;
   deliver_at: number | null;
   prevent_copy: number;
   extra_headers: string | null;
+  /** 'new' | 'reply' | 'replyAll' | 'forward' | with-attachments variants. */
+  intent: string | null;
+  original_message_id: string | null;
+  include_original_attachments: number;
   created_at: number;
   updated_at: number;
   sync_status: string;
@@ -125,6 +155,10 @@ function toRustInput(input: DraftInput) {
     to: JSON.stringify(formatRecipients(input.to ?? [])),
     cc: input.cc && input.cc.length > 0 ? JSON.stringify(formatRecipients(input.cc)) : null,
     bcc: input.bcc && input.bcc.length > 0 ? JSON.stringify(formatRecipients(input.bcc)) : null,
+    replyTo:
+      input.replyTo && input.replyTo.length > 0
+        ? JSON.stringify(formatRecipients(input.replyTo))
+        : null,
     subject: input.subject ?? '',
     bodyHtml: input.bodyHtml ?? '',
     fromEmail: input.fromEmail ?? null,
@@ -138,18 +172,25 @@ function toRustInput(input: DraftInput) {
     isSigned: input.isSigned ?? false,
     importance: input.importance ?? 'normal',
     requestReadReceipt: input.requestReadReceipt ?? false,
+    requestDeliveryReceipt: input.requestDeliveryReceipt ?? false,
     deliverAt: input.deliverAt ?? null,
     preventCopy: input.preventCopy ?? false,
+    intent: input.intent ?? null,
+    originalMessageId: input.originalMessageId ?? null,
+    includeOriginalAttachments: input.includeOriginalAttachments ?? false,
     extraHeaders: Object.keys(extraHeaders).length > 0 ? JSON.stringify(extraHeaders) : null,
   };
 }
 
 export async function createDraft(input: DraftInput): Promise<string> {
-  return invoke<string>('db_create_draft', { input: toRustInput(input) });
+  const id = await invoke<string>('db_create_draft', { input: toRustInput(input) });
+  emitDraftsChanged();
+  return id;
 }
 
 export async function updateDraft(id: string, input: DraftInput): Promise<void> {
   await invoke<void>('db_update_draft', { id, input: toRustInput(input) });
+  emitDraftsChanged();
 }
 
 /**
@@ -169,6 +210,7 @@ export async function saveDraft(input: DraftInput, existingId?: string | null): 
 
 export async function deleteDraft(id: string): Promise<void> {
   await invoke<void>('db_delete_draft', { id });
+  emitDraftsChanged();
 }
 
 export async function getDraft(id: string): Promise<DbDraft | null> {

@@ -34,7 +34,7 @@ import { RibbonShell } from './RibbonShell';
 
 export function ComposeRibbon() {
   // Binds to the LIVE composer surface (inline dock when visible, else the
-  // modal composerStore) — see useActiveComposerTarget.
+  // compose-window composerStore) — see useActiveComposerTarget.
   const {
     classificationId,
     isEncrypted,

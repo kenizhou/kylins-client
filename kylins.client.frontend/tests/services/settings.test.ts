@@ -67,16 +67,16 @@ describe('settings', () => {
   });
 
   it('round-trips number values via db_set_setting_number', async () => {
-    await setSettingNumber('undo_send_duration_seconds', 30);
+    await setSettingNumber('sync_period_days', 30);
     expect(mockInvoke).toHaveBeenCalledWith('db_set_setting_number', {
-      key: 'undo_send_duration_seconds',
+      key: 'sync_period_days',
       value: 30,
     });
   });
 
   it('parses number from db_get_setting_number', async () => {
     mockInvoke.mockResolvedValueOnce(10);
-    const value = await getSettingNumber('undo_send_duration_seconds');
+    const value = await getSettingNumber('sync_period_days');
     expect(value).toBe(10);
   });
 });

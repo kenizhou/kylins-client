@@ -48,7 +48,16 @@ import { useUIStore } from '../stores/uiStore';
 import { getUncachedBodyMessageIds } from '../services/db/messages';
 import type { Thread } from '../services/db/threads';
 
-type ListItem = { kind: 'group'; label: string } | { kind: 'thread'; thread: Thread };
+// Shared item shape for the message list. `draft` rows (saved local drafts
+// surfaced in the Drafts folder) are ignored by the prefetch — only real
+// threads have server bodies to fetch. `draft: unknown` keeps the hook
+// decoupled from the drafts service; MessageList narrows it to DbDraft.
+export type MessageListItem =
+  | { kind: 'group'; label: string }
+  | { kind: 'thread'; thread: Thread }
+  | { kind: 'draft'; draft: unknown };
+
+type ListItem = MessageListItem;
 
 interface Options {
   virtualizer: Virtualizer<HTMLDivElement, Element>;

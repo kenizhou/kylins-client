@@ -296,7 +296,7 @@ export function ReadRibbon({ viewer = false }: { viewer?: boolean }) {
     if (!selectedMessage || !account) return;
     // Reply-with-attachment opens the docked inline composer with the
     // original's attachments pre-staged. The viewer window has no dock —
-    // fall back to the modal composer there.
+    // fall back to the OS compose window there.
     if (!viewer) {
       openInlineComposer('replyWithAttachments', selectedMessage, account);
     } else {

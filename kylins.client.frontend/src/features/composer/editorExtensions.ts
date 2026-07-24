@@ -1,4 +1,4 @@
-// Shared TipTap extension set for the composer editors (modal Composer + inline
+// Shared TipTap extension set for the composer editors (OS compose window + inline
 // reply/forward). Keeping one factory prevents the two editors from drifting,
 // and — importantly — includes `Image` and `Table` nodes so the quoted
 // original's <img>/<table> survive ProseMirror's schema filter when the quote is
@@ -57,7 +57,7 @@ export function buildComposerExtensions(placeholder: string) {
     QuoteHorizontalRule,
     Placeholder.configure({ placeholder }),
     // allowBase64 so pasted/quoted data: images render; inline so images can sit
-    // in a text line (matches the modal composer).
+    // in a text line (matches the windowed composer).
     Image.configure({ inline: true, allowBase64: true }),
     TextStyle,
     Color,

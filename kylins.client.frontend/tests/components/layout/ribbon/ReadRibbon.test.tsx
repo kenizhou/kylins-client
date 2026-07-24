@@ -5,7 +5,7 @@ import { useViewStore } from '../../../../src/features/view/viewStore';
 import { useThreadStore } from '../../../../src/stores/threadStore';
 import { useAccountStore } from '../../../../src/stores/accountStore';
 import { usePreferencesStore } from '../../../../src/stores/preferencesStore';
-import { useInlineComposerStore } from '../../../../src/stores/inlineComposerStore';
+import { anchorMessage, useInlineComposerStore } from '../../../../src/stores/inlineComposerStore';
 import type { Thread } from '../../../../src/services/db/threads';
 import type { MailMessage } from '../../../../src/features/view/viewStore';
 
@@ -337,7 +337,7 @@ describe('ReadRibbon reply-with-attachment routing', () => {
       const session = useInlineComposerStore.getState().session;
       expect(session).not.toBeNull();
       expect(session?.intent).toBe('replyWithAttachments');
-      expect(session?.messageId).toBe('msg-1');
+      expect(anchorMessage(session)?.id).toBe('msg-1');
     });
   });
 

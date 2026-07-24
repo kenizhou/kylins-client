@@ -10,6 +10,7 @@ import {
   saveDraft,
   deleteDraft,
   getDraft,
+  DRAFTS_CHANGED_EVENT,
   type DraftInput,
 } from '../../../src/services/composer/drafts';
 import { wireDefaultDbResults } from '../../../src/test/mockInvoke';
@@ -42,6 +43,21 @@ const baseInput: DraftInput = {
 };
 
 describe('composer/drafts', () => {
+  it('fires DRAFTS_CHANGED_EVENT after create/update/delete so views refresh', async () => {
+    const seen: string[] = [];
+    const listener = () => seen.push('change');
+    window.addEventListener(DRAFTS_CHANGED_EVENT, listener);
+    try {
+      mockInvoke.mockResolvedValueOnce('draft-9');
+      await createDraft(baseInput);
+      await updateDraft('draft-9', baseInput);
+      await deleteDraft('draft-9');
+      expect(seen).toHaveLength(3);
+    } finally {
+      window.removeEventListener(DRAFTS_CHANGED_EVENT, listener);
+    }
+  });
+
   it('createDraft forwards a serialized payload and returns the new id', async () => {
     mockInvoke.mockResolvedValueOnce('draft-1');
     const id = await createDraft(baseInput);

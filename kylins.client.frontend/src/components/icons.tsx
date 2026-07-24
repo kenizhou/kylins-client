@@ -93,7 +93,7 @@ import {
   TextCheckIcon,
   ExternalLinkIcon as ExternalLinkIconData,
   Delete02Icon as Delete02IconData,
-  AlertSquareIcon as AlertSquareIconData,
+  ClockAlertIcon as ClockAlertIconData,
 } from '@hugeicons/core-free-icons';
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'ref'> {
@@ -314,7 +314,7 @@ export const PrintIcon = makeIcon(PrinterIcon);
 export const SaveIcon = makeIcon(FloppyDiskIcon);
 export const MailAddIcon = makeIcon(MailAdd02Icon);
 export const MailSendIcon = makeIcon(MailSend01Icon);
-export const ImportanceIcon = makeIcon(AlertSquareIconData);
+export const ImportanceIcon = makeIcon(ClockAlertIconData);
 export const TrackingIcon = makeIcon(TextCheckIcon);
 export const ExternalLinkIcon = makeIcon(ExternalLinkIconData);
 export const DiscardIcon = makeIcon(Delete02IconData);

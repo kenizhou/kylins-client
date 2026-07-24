@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/react';
 import { ContactDetail } from '../../../src/components/contacts/ContactDetail';
 import { useContactStore } from '../../../src/stores/contactStore';
+import { useAccountStore } from '../../../src/stores/accountStore';
 import * as contactsModule from '../../../src/services/db/contacts';
-import * as composerModule from '../../../src/stores/composerStore';
+import * as composeWindowModule from '../../../src/utils/composeWindow';
 
 const contact = {
   id: 'c-1',
@@ -34,14 +35,9 @@ vi.mock('../../../src/services/db/contacts', async () => {
   };
 });
 
-vi.mock('../../../src/stores/composerStore', () => {
-  const openComposer = vi.fn();
-  return {
-    useComposerStore: {
-      getState: vi.fn(() => ({ openComposer })),
-    },
-  };
-});
+vi.mock('../../../src/utils/composeWindow', () => ({
+  openComposerWindow: vi.fn(),
+}));
 
 describe('ContactDetail', () => {
   beforeEach(() => {
@@ -105,16 +101,17 @@ describe('ContactDetail', () => {
     });
   });
 
-  it('opens composer when Compose is clicked', async () => {
+  it('opens the composer window when Compose is clicked', async () => {
+    useAccountStore.setState({ activeAccountId: 'a1' });
     const { getByText } = render(
       <ContactDetail contact={contact} groups={groups} onUpdate={vi.fn()} />,
     );
     fireEvent.click(getByText('Compose'));
-    const composer = composerModule.useComposerStore.getState();
-    expect(composer.openComposer).toHaveBeenCalledWith(
+    expect(composeWindowModule.openComposerWindow).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: 'new',
         to: [{ name: 'Ada Lovelace', email: 'ada@example.com' }],
+        accountId: 'a1',
       }),
     );
   });

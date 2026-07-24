@@ -28,7 +28,7 @@ export function newDraftId(): string {
 
 /**
  * Generate a new opaque attachment-chip id (UI identity only — never sent to
- * the backend). Shared by the modal composer, inline composer, and
+ * the backend). Shared by the OS compose window, inline dock, and
  * draftFactory seeding so the randomUUID-with-fallback pattern lives in one
  * place.
  */

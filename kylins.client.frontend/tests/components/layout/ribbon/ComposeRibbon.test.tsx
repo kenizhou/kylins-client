@@ -34,14 +34,14 @@ const ribbonMessage: MailMessage = {
 
 function inlineSession(): InlineSession {
   return {
-    messageId: 'msg-1',
-    message: ribbonMessage,
+    anchor: { kind: 'reply', message: ribbonMessage },
     accountId: 'acc-1',
     accountEmail: 'me@example.com',
     intent: 'reply',
     seed: null,
     seedError: null,
     stagingDraftId: 'draft-1',
+    draftId: null,
     pristine: true,
     bodyHtml: null,
     signatureId: undefined,
@@ -172,7 +172,10 @@ describe('ComposeRibbon with the inline composer docked', () => {
   it('a retained (hidden) session does NOT capture the ribbon', () => {
     // Session belongs to another message → dock not visible → modal target.
     useInlineComposerStore.setState({
-      session: { ...inlineSession(), messageId: 'msg-other' },
+      session: {
+        ...inlineSession(),
+        anchor: { kind: 'reply', message: { ...ribbonMessage, id: 'msg-other' } },
+      },
     });
     render(<ComposeRibbon />);
     fireEvent.click(screen.getByRole('checkbox', { name: /encrypt/i }));

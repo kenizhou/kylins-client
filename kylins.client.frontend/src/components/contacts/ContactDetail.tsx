@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useComposerStore } from '../../stores/composerStore';
+import { useAccountStore } from '../../stores/accountStore';
+import { openComposerWindow } from '../../utils/composeWindow';
 import { useContactStore } from '../../stores/contactStore';
 import { ContactAvatar } from './ContactAvatar';
 import { SourceBadge } from './SourceBadge';
@@ -105,9 +106,10 @@ export function ContactDetail({ contact, groups, onUpdate }: ContactDetailProps)
   }
 
   function handleCompose() {
-    useComposerStore.getState().openComposer({
+    openComposerWindow({
       mode: 'new',
       to: [{ name: contact.displayName || contact.email, email: contact.email }],
+      accountId: useAccountStore.getState().activeAccountId ?? undefined,
     });
   }
 

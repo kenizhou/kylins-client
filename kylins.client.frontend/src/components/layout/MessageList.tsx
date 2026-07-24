@@ -7,10 +7,20 @@ import type { ColumnDef } from '../../features/view/types';
 import { useThreadStore } from '../../stores/threadStore';
 import { useFolderStore } from '../../stores/folderStore';
 import { useAccountStore } from '../../stores/accountStore';
+import { useInlineComposerStore, anchorMessage } from '../../stores/inlineComposerStore';
+import { useDraftIndexStore } from '../../stores/draftIndexStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useViewportBodyPrefetch } from '../../hooks/useViewportBodyPrefetch';
 import { useAutoHideScrollbar } from '../../hooks/useAutoHideScrollbar';
 import type { Thread } from '../../services/db/threads';
+import { DRAFTS_CHANGED_EVENT, type DbDraft } from '../../services/composer/drafts';
+import { listDraftsForAccount } from '../../services/composer/drafts';
+import {
+  deleteLocalDraft,
+  draftToThread,
+  openDraftInWindow,
+} from '../../features/drafts/localDrafts';
+import { resumeDraftInline, type DraftAccountInfo } from '../../features/drafts/resumeDraft';
 import { formatMessageTime } from '../../data/demoMessages';
 import { openViewerWindow } from '../../utils/viewerWindow';
 import { useClassification } from '../../features/classification/useClassification';
@@ -19,6 +29,7 @@ import { ClassificationBadge } from '../../features/classification/components/Cl
 import { SecurityChips } from '../../features/classification/components/SecurityChips';
 import {
   MailIcon,
+  ExternalLinkIcon,
   FlagIcon,
   WarningIcon,
   AttachmentIcon,
@@ -49,6 +60,8 @@ interface MessageRowProps {
   selected?: boolean;
   density: 'compact' | 'normal' | 'comfortable';
   visibleColumns: ColumnDef[];
+  /** Saved local draft row (Drafts folder): [Draft] chip, no thread actions. */
+  isLocalDraft?: boolean;
   onClick?: (e: React.MouseEvent) => void;
   onDoubleClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -131,6 +144,7 @@ const MessageRow = memo(function MessageRow({
   selected,
   density,
   visibleColumns,
+  isLocalDraft = false,
   ...handlers
 }: MessageRowProps) {
   const { getLevelById } = useClassification();
@@ -142,6 +156,17 @@ const MessageRow = memo(function MessageRow({
 
   const sender = thread.fromName ?? thread.fromAddress ?? 'Unknown';
   const unread = !thread.isRead;
+  // A retained inline-composer session for this conversation (docked reply /
+  // forward the user navigated away from) surfaces as Outlook/Gmail's red
+  // "[Draft]" chip next to the sender. The selector returns a boolean, so the
+  // memoized row only re-renders when the draft state actually flips. Saved
+  // local drafts carry the same chip — via isLocalDraft on Drafts-folder rows,
+  // and via the draft index on conversation rows (survives app reloads).
+  const hasInlineDraft = useInlineComposerStore(
+    (s) => anchorMessage(s.session)?.threadId === thread.id,
+  );
+  const hasSavedDraft = useDraftIndexStore((s) => s.threadIds.has(thread.id));
+  const showDraftChip = isLocalDraft || hasInlineDraft || hasSavedDraft;
   const cols = visibleColumnIdsSet(visibleColumns);
   const showImportance = cols.has('importance');
   const showCategory = cols.has('category');
@@ -166,12 +191,16 @@ const MessageRow = memo(function MessageRow({
       <div className="flex items-stretch pr-1">
         {/* Left state ribbon — double-width static hit area: the left half
             carries the state color, the right half stays transparent and
-            fills with primary on bar hover. Click toggles read/unread. */}
+            fills with primary on bar hover. Click toggles read/unread.
+            Draft rows have no read state: the ribbon is display-only. */}
         <button
           type="button"
           aria-label={unread ? 'Mark as read' : 'Mark as unread'}
+          aria-hidden={isLocalDraft || undefined}
+          tabIndex={isLocalDraft ? -1 : undefined}
           onClick={(e) => {
             e.stopPropagation();
+            if (isLocalDraft) return;
             void markThreadRead(thread, !thread.isRead);
           }}
           className="group/bar relative z-10 my-[0.5px] flex w-2 shrink-0 cursor-pointer self-stretch"
@@ -198,6 +227,18 @@ const MessageRow = memo(function MessageRow({
               <span className={`truncate text-[var(--text)] ${unread ? 'font-semibold' : ''}`}>
                 {sender}
               </span>
+              {showDraftChip && (
+                <span
+                  className="shrink-0 text-xs font-medium text-[var(--destructive)]"
+                  title={
+                    isLocalDraft
+                      ? 'Saved draft — click to resume editing'
+                      : 'Unsent draft for this conversation'
+                  }
+                >
+                  [Draft]
+                </span>
+              )}
               {showImportance && thread.isImportant && (
                 <span title="Important" aria-label="Important" className="text-[var(--warning)]">
                   <WarningIcon size={14} />
@@ -214,7 +255,7 @@ const MessageRow = memo(function MessageRow({
               />
             </div>
             <span className="flex shrink-0 items-center gap-2">
-              <MessageRowQuickActions thread={thread} visible={isHovered} />
+              {!isLocalDraft && <MessageRowQuickActions thread={thread} visible={isHovered} />}
               <span className="text-[11px] tabular-nums text-[var(--muted-text)]">
                 {thread.lastMessageAt != null
                   ? formatMessageTime(new Date(thread.lastMessageAt * 1000).toISOString())
@@ -232,7 +273,7 @@ const MessageRow = memo(function MessageRow({
 
         {/* Right metadata indicators */}
         <div className="flex shrink-0 flex-col items-end justify-center gap-1 pr-2">
-          {showFlag && (
+          {showFlag && !isLocalDraft && (
             <button
               type="button"
               title={thread.isStarred ? 'Unflag' : 'Flag'}
@@ -269,7 +310,10 @@ const MessageRow = memo(function MessageRow({
   );
 });
 
-type ListItem = { kind: 'group'; label: string } | { kind: 'thread'; thread: Thread };
+type ListItem =
+  | { kind: 'group'; label: string }
+  | { kind: 'thread'; thread: Thread }
+  | { kind: 'draft'; draft: DbDraft };
 
 const EMPTY_FOLDERS: MailFolder[] = [];
 
@@ -318,6 +362,47 @@ export function MessageList() {
   const isInbox = selectedRole === 'inbox';
   const [inboxTab, setInboxTab] = useState<'all' | 'unread'>('all');
 
+  // Saved local drafts surfaced in the Drafts folder (local-first drafts —
+  // services/composer/drafts.ts). Reloaded whenever the drafts service fires
+  // DRAFTS_CHANGED_EVENT (autosave, manual save, delete, send cleanup), so a
+  // draft appears in the list as soon as it is saved. Rows are only rendered
+  // while a drafts-role folder is selected; stale state is harmless otherwise.
+  const isDraftsFolder = selectedRole === 'drafts';
+  const [localDrafts, setLocalDrafts] = useState<DbDraft[]>([]);
+
+  // Keep the saved-draft thread index fresh: it drives the [Draft] chips on
+  // conversation rows (persisted drafts — survives app reloads, unlike the
+  // in-memory inline session). Refreshes on account switch and on every
+  // drafts-service change event (autosave / save / delete / send cleanup).
+  const activeAccountId = useAccountStore((s) => s.activeAccountId);
+  const refreshDraftIndex = useDraftIndexStore((s) => s.refresh);
+  useEffect(() => {
+    if (!activeAccountId) return;
+    void refreshDraftIndex(activeAccountId);
+    const onChanged = () => void refreshDraftIndex(activeAccountId);
+    window.addEventListener(DRAFTS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(DRAFTS_CHANGED_EVENT, onChanged);
+  }, [activeAccountId, refreshDraftIndex]);
+
+  useEffect(() => {
+    if (!isDraftsFolder || !selectedFolder) return;
+    const accountId = selectedFolder.accountId;
+    let cancelled = false;
+    const load = () => {
+      listDraftsForAccount(accountId)
+        .then((rows) => {
+          if (!cancelled) setLocalDrafts(rows);
+        })
+        .catch((e) => console.error('[message-list] listDraftsForAccount failed', e));
+    };
+    load();
+    window.addEventListener(DRAFTS_CHANGED_EVENT, load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(DRAFTS_CHANGED_EVENT, load);
+    };
+  }, [isDraftsFolder, selectedFolder]);
+
   useEffect(() => {
     setInboxTab('all');
   }, [selectedFolder?.labelId]);
@@ -338,6 +423,22 @@ export function MessageList() {
   const deleteThreads = useThreadStore((s) => s.deleteThreads);
   const moveThreads = useThreadStore((s) => s.moveThreads);
 
+  // Draft-row highlight state: the standalone-row selection and the draft the
+  // live dock session is editing (covers reply-anchored resumes, where the
+  // reading-pane target is the message rather than the draft row).
+  const selectedDraftId = useViewStore((s) => s.selectedDraftId);
+  const liveDraftId = useInlineComposerStore((s) => s.session?.draftId ?? null);
+
+  /** Resolve the account a draft belongs to (fallback: active, then a bare
+   *  id shell so resume never crashes on a stale account reference). */
+  const draftAccount = (draft: DbDraft): DraftAccountInfo => {
+    const found = accounts.find((a) => a.id === draft.account_id);
+    if (found) return { id: found.id, email: found.email, displayName: found.displayName };
+    const active = accounts.find((a) => a.id === activeAccountId);
+    if (active) return { id: active.id, email: active.email, displayName: active.displayName };
+    return { id: draft.account_id, email: '', displayName: null };
+  };
+
   const visibleColumns = useMemo(
     () =>
       visibleColumnIds
@@ -355,7 +456,14 @@ export function MessageList() {
     }
   }, [selectedFolder, loadThreads]);
 
-  const items = useMemo(() => buildItems(threads), [threads]);
+  const items = useMemo(() => {
+    const threadItems = buildItems(threads);
+    // Drafts folder: saved local drafts first (newest save first — the
+    // backend query already orders by updated_at DESC), then any server-side
+    // drafts that synced down as regular threads.
+    if (!isDraftsFolder || localDrafts.length === 0) return threadItems;
+    return [...localDrafts.map((d): ListItem => ({ kind: 'draft', draft: d })), ...threadItems];
+  }, [threads, isDraftsFolder, localDrafts]);
 
   const filteredItems = useMemo(() => {
     if (!isInbox || inboxTab === 'all') return items;
@@ -366,6 +474,9 @@ export function MessageList() {
         pendingGroup = item;
         continue;
       }
+      // Draft rows only exist in the Drafts folder (never the inbox), but the
+      // filter must still skip them — they have no read state.
+      if (item.kind === 'draft') continue;
       const t = item.thread;
       if (!t.isRead) {
         if (pendingGroup) {
@@ -478,6 +589,7 @@ export function MessageList() {
   const [moveMenu, setMoveMenu] = useState<{ threads: Thread[]; x: number; y: number } | null>(
     null,
   );
+  const [draftMenu, setDraftMenu] = useState<{ draft: DbDraft; x: number; y: number } | null>(null);
   const [activeDescendantId, setActiveDescendantId] = useState<string | null>(null);
 
   // Keep the active descendant in sync with the selected thread so screen
@@ -756,6 +868,25 @@ export function MessageList() {
                     >
                       {item.label}
                     </div>
+                  ) : item.kind === 'draft' ? (
+                    <MessageRow
+                      thread={draftToThread(item.draft)}
+                      isLocalDraft
+                      // Highlight while the draft is the reading-pane target —
+                      // either the selected standalone draft row or the draft
+                      // the live dock session is editing.
+                      selected={selectedDraftId === item.draft.id || liveDraftId === item.draft.id}
+                      density={density}
+                      visibleColumns={visibleColumns}
+                      // Single click: resume in the reading pane (composing mode).
+                      onClick={() => void resumeDraftInline(item.draft, draftAccount(item.draft))}
+                      // Double click: open in the OS composer window.
+                      onDoubleClick={() => openDraftInWindow(item.draft)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setDraftMenu({ draft: item.draft, x: e.clientX, y: e.clientY });
+                      }}
+                    />
                   ) : (
                     <MessageRow
                       thread={item.thread}
@@ -776,6 +907,44 @@ export function MessageList() {
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
+      {draftMenu && (
+        <ContextMenu
+          x={draftMenu.x}
+          y={draftMenu.y}
+          items={[
+            {
+              label: 'Open',
+              icon: MailIcon,
+              onSelect: () =>
+                void resumeDraftInline(draftMenu.draft, draftAccount(draftMenu.draft)),
+            },
+            {
+              label: 'Open in New Window',
+              icon: ExternalLinkIcon,
+              onSelect: () => openDraftInWindow(draftMenu.draft),
+            },
+            {
+              label: 'Delete Draft',
+              icon: TrashIcon,
+              danger: true,
+              onSelect: () => {
+                // If the draft is live in the dock, drop that session FIRST —
+                // otherwise its next autosave would resurrect the deleted row.
+                const session = useInlineComposerStore.getState().session;
+                if (session?.draftId === draftMenu.draft.id) {
+                  useInlineComposerStore.getState().discard({ skipConfirm: true });
+                }
+                if (useViewStore.getState().selectedDraftId === draftMenu.draft.id) {
+                  // Clears the draft-row selection (the row is going away).
+                  useViewStore.getState().setSelectedMessage(null);
+                }
+                void deleteLocalDraft(draftMenu.draft);
+              },
+            },
+          ]}
+          onClose={() => setDraftMenu(null)}
+        />
       )}
       {moveMenu && (
         <FolderPickerMenu

@@ -129,10 +129,10 @@ describe('Composer default view', () => {
   });
 });
 
-describe('Composer windowed (pop-out)', () => {
+describe('Composer (OS compose window)', () => {
   it('renders the glass titlebar with the subject, the actions row, and the status bar', () => {
     useComposerStore.setState({ subject: 'Quarterly report' });
-    render(<Composer windowed />);
+    render(<Composer />);
     expect(screen.getByTestId('composer-title-bar-drag-region')).toBeInTheDocument();
     expect(screen.getByText('Quarterly report')).toBeInTheDocument();
     expect(setTitle).toHaveBeenCalledWith('Quarterly report');
@@ -146,21 +146,21 @@ describe('Composer windowed (pop-out)', () => {
   });
 
   it('falls back to the mode label when the subject is empty', () => {
-    render(<Composer windowed />);
+    render(<Composer />);
     expect(screen.getByText('New Message')).toBeInTheDocument();
     expect(setTitle).toHaveBeenCalledWith('New Message');
   });
 
-  it('renders the shared status bar in both inline and windowed modes', () => {
+  it('renders the status bar', () => {
     const { unmount } = render(<Composer />);
     expect(screen.getByRole('contentinfo')).toBeInTheDocument();
     unmount();
-    render(<Composer windowed />);
+    render(<Composer />);
     expect(screen.getByRole('contentinfo')).toBeInTheDocument();
   });
 
   it('lets an untouched empty compose close without prompting', async () => {
-    render(<Composer windowed />);
+    render(<Composer />);
     expect(closeRequestedHandler).not.toBeNull();
     const event = { preventDefault: vi.fn() };
     await act(async () => {
@@ -172,7 +172,7 @@ describe('Composer windowed (pop-out)', () => {
 
   it('intercepts close with unsaved content and shows the confirm dialog', async () => {
     useComposerStore.setState({ subject: 'Unsaved work' });
-    render(<Composer windowed />);
+    render(<Composer />);
     const event = { preventDefault: vi.fn() };
     await act(async () => {
       await closeRequestedHandler!(event);
@@ -188,7 +188,7 @@ describe('Composer windowed (pop-out)', () => {
 
   it("'No' discards and closes the window", async () => {
     useComposerStore.setState({ subject: 'Unsaved work' });
-    render(<Composer windowed />);
+    render(<Composer />);
     await act(async () => {
       await closeRequestedHandler!({ preventDefault: vi.fn() });
     });
@@ -199,7 +199,7 @@ describe('Composer windowed (pop-out)', () => {
   it("'Yes' flushes the draft and closes the window", async () => {
     const { flushDraftSave } = await import('../../../src/services/composer/draftAutoSave');
     useComposerStore.setState({ subject: 'Unsaved work' });
-    render(<Composer windowed />);
+    render(<Composer />);
     await act(async () => {
       await closeRequestedHandler!({ preventDefault: vi.fn() });
     });
@@ -210,7 +210,7 @@ describe('Composer windowed (pop-out)', () => {
 
   it('intercepts close when only a Cc recipient is present', async () => {
     useComposerStore.setState({ cc: [{ email: 'c@x.com', name: '' }] });
-    render(<Composer windowed />);
+    render(<Composer />);
     const event = { preventDefault: vi.fn() };
     await act(async () => {
       await closeRequestedHandler!(event);
@@ -223,7 +223,7 @@ describe('Composer windowed (pop-out)', () => {
     vi.mocked(flushDraftSave).mockRejectedValueOnce(new Error('disk full'));
     const pushSpy = vi.spyOn(useToastStore.getState(), 'push');
     useComposerStore.setState({ subject: 'Unsaved work' });
-    render(<Composer windowed />);
+    render(<Composer />);
     await act(async () => {
       await closeRequestedHandler!({ preventDefault: vi.fn() });
     });

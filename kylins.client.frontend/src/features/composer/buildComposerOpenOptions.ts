@@ -1,4 +1,4 @@
-// Centralized seeding helper for the modal composer in reply / reply-all /
+// Centralized seeding helper for the OS compose window in reply / reply-all /
 // forward modes. Thin adapter over draftFactory.buildDraftSeed (the single
 // seeding implementation shared with the inline composer) — every entry point
 // (ribbon, message list, reading pane, pop-out) produces the same recipients,
@@ -23,7 +23,7 @@ export interface BuildComposerOpenOptionsInput {
 }
 
 /**
- * Build the complete payload needed to open the modal composer for a reply,
+ * Build the complete payload needed to open the compose window for a reply,
  * reply-all, or forward. The result carries enough context that the modal
  * composer can render the full body, seed attachments, and place the signature
  * above the quoted original.

@@ -8,11 +8,15 @@ import { useThreadStore } from '../../../src/stores/threadStore';
 import { useFolderStore } from '../../../src/stores/folderStore';
 import { useAccountStore } from '../../../src/stores/accountStore';
 import { useComposerStore } from '../../../src/stores/composerStore';
+import { useInlineComposerStore } from '../../../src/stores/inlineComposerStore';
+import { useDraftIndexStore } from '../../../src/stores/draftIndexStore';
 import { usePreferencesStore } from '../../../src/stores/preferencesStore';
 import { useViewStore } from '../../../src/features/view/viewStore';
 import { DEFAULT_VIEW_STATE } from '../../../src/features/view/defaults';
 import { getThreads, getMessagesForThread } from '../../../src/services/db/threads';
 import { getMessageBody } from '../../../src/services/db/messageBodies';
+import { listDraftsForAccount, type DbDraft } from '../../../src/services/composer/drafts';
+import { invoke } from '@tauri-apps/api/core';
 import type { Thread, DbMessageRow } from '../../../src/services/db/threads';
 import type { MailFolder } from '../../../src/services/mail/folders/folderModel';
 import type { Account } from '../../../src/types';
@@ -41,6 +45,15 @@ vi.mock('../../../src/services/db/messageBodies', () => ({
   setMessageBody: vi.fn(),
   evictBody: vi.fn(),
 }));
+
+// Keep the real drafts service (event constant, deleteDraft) but stub the
+// account listing so the Drafts-folder rows are test-controlled.
+vi.mock('../../../src/services/composer/drafts', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/services/composer/drafts')>(
+    '../../../src/services/composer/drafts',
+  );
+  return { ...actual, listDraftsForAccount: vi.fn() };
+});
 
 const thread = (over: Partial<Thread> = {}): Thread => ({
   id: 't1',
@@ -95,10 +108,55 @@ const account = (over: Partial<Account> = {}): Account => ({
   ...over,
 });
 
+const dbDraft = (over: Partial<DbDraft> = {}): DbDraft => ({
+  id: 'd1',
+  account_id: 'a1',
+  to_addresses: JSON.stringify(['Alice <alice@x.com>']),
+  cc_addresses: null,
+  bcc_addresses: null,
+  reply_to_addresses: null,
+  subject: 'Saved draft subject',
+  body_html: '<p>draft body preview</p>',
+  reply_to_message_id: null,
+  thread_id: null,
+  from_email: 'me@x.com',
+  signature_id: null,
+  remote_draft_id: null,
+  attachments: null,
+  classification_id: null,
+  is_encrypted: 0,
+  is_signed: 0,
+  importance: 'normal',
+  request_read_receipt: 0,
+  request_delivery_receipt: 0,
+  deliver_at: null,
+  prevent_copy: 0,
+  extra_headers: null,
+  intent: null,
+  original_message_id: null,
+  include_original_attachments: 0,
+  created_at: 100,
+  updated_at: 200,
+  sync_status: 'local',
+  ...over,
+});
+
+/** Select the Drafts folder (role-mapped) so local drafts surface. */
+function selectDraftsFolder() {
+  useFolderStore.setState({
+    selected: { accountId: 'a1', labelId: 'drafts' },
+    byAccount: {
+      a1: [{ id: 'drafts', accountId: 'a1', role: 'drafts' } as MailFolder],
+    },
+  });
+}
+
 beforeEach(() => {
   vi.mocked(getThreads).mockReset();
   vi.mocked(getMessagesForThread).mockReset();
   vi.mocked(getMessageBody).mockReset();
+  vi.mocked(listDraftsForAccount).mockReset();
+  vi.mocked(listDraftsForAccount).mockResolvedValue([]);
   useViewStore.setState({
     ...DEFAULT_VIEW_STATE,
     selectedMessage: null,
@@ -128,6 +186,8 @@ beforeEach(() => {
     defaultAccountId: null,
   });
   useComposerStore.getState().closeComposer();
+  useInlineComposerStore.setState({ session: null });
+  useDraftIndexStore.setState({ accountId: null, threadIds: new Set() });
 });
 
 describe('MessageList', () => {
@@ -178,6 +238,168 @@ describe('MessageList', () => {
     expect(getByText('Another preview')).toBeInTheDocument();
     expect(getByLabelText('Flagged')).toBeInTheDocument();
     expect(queryAllByLabelText('Flagged')).toHaveLength(1);
+  });
+
+  it('shows a [Draft] marker only on the thread with a retained inline draft', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [
+        thread({ id: 't1', subject: 'Hello', snippet: 'Preview text' }),
+        thread({ id: 't2', subject: 'World', snippet: 'Another preview' }),
+      ],
+      nextCursor: null,
+    });
+    // Retained docked-composer session for t1 (user switched away mid-reply).
+    useInlineComposerStore.setState({
+      session: { anchor: { kind: 'reply', message: { threadId: 't1' } } } as never,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    const markers = screen.getAllByText('[Draft]');
+    expect(markers).toHaveLength(1);
+    const draftedRow = screen.getByRole('option', { name: /Hello/ });
+    expect(within(draftedRow).getByText('[Draft]')).toBeInTheDocument();
+    // Snippet still renders after the marker.
+    expect(within(draftedRow).getByText(/Preview text/)).toBeInTheDocument();
+
+    // Clearing the session removes the marker.
+    useInlineComposerStore.setState({ session: null });
+    await waitFor(() => expect(screen.queryByText('[Draft]')).not.toBeInTheDocument());
+  });
+
+  it('shows the [Draft] marker even when the thread has no snippet', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello', snippet: '' })],
+      nextCursor: null,
+    });
+    useInlineComposerStore.setState({
+      session: { anchor: { kind: 'reply', message: { threadId: 't1' } } } as never,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('[Draft]')).toBeInTheDocument());
+  });
+
+  it('shows the [Draft] marker on threads with a saved local draft (persists across reloads)', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' }), thread({ id: 't2', subject: 'World' })],
+      nextCursor: null,
+    });
+    // The draft index is what survives an app restart: the inline session is
+    // memory-only, but the persisted local_drafts row maps thread → chip.
+    useDraftIndexStore.setState({ accountId: 'a1', threadIds: new Set(['t1']) });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+
+    const markers = screen.getAllByText('[Draft]');
+    expect(markers).toHaveLength(1);
+    const draftedRow = screen.getByRole('option', { name: /Hello/ });
+    expect(within(draftedRow).getByText('[Draft]')).toBeInTheDocument();
+
+    // Removing the thread from the index clears the chip.
+    useDraftIndexStore.setState({ accountId: 'a1', threadIds: new Set() });
+    await waitFor(() => expect(screen.queryByText('[Draft]')).not.toBeInTheDocument());
+  });
+
+  it('lists saved local drafts in the Drafts folder with a [Draft] chip', async () => {
+    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+    vi.mocked(listDraftsForAccount).mockResolvedValue([dbDraft()]);
+    selectDraftsFolder();
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Saved draft subject')).toBeInTheDocument());
+    expect(screen.getByText('[Draft]')).toBeInTheDocument();
+    // Recipients take the sender slot; the body becomes the snippet.
+    expect(screen.getByText('Alice <alice@x.com>')).toBeInTheDocument();
+    expect(screen.getByText('draft body preview')).toBeInTheDocument();
+  });
+
+  it('does not load local drafts outside the Drafts folder', async () => {
+    vi.mocked(getThreads).mockResolvedValue({
+      threads: [thread({ id: 't1', subject: 'Hello' })],
+      nextCursor: null,
+    });
+    useFolderStore.setState({ selected: { accountId: 'a1', labelId: 'inbox' } });
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
+    expect(listDraftsForAccount).not.toHaveBeenCalled();
+  });
+
+  it('single click resumes the saved draft in the reading pane (inline dock)', async () => {
+    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+    vi.mocked(listDraftsForAccount).mockResolvedValue([dbDraft()]);
+    selectDraftsFolder();
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Saved draft subject')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Saved draft subject'));
+    await waitFor(() => expect(useInlineComposerStore.getState().session).not.toBeNull());
+    const session = useInlineComposerStore.getState().session!;
+    expect(session?.draftId).toBe('d1');
+    expect(session?.subject).toBe('Saved draft subject');
+    expect(session?.bodyHtml).toBe('<p>draft body preview</p>');
+    expect(session?.to.map((r) => r.email)).toEqual(['alice@x.com']);
+    // No thread on the fixture → standalone anchor; the draft row is the
+    // reading-pane target (and no modal/window composer was opened).
+    expect(session?.anchor.kind).toBe('standalone');
+    expect(useViewStore.getState().selectedDraftId).toBe('d1');
+    expect(useComposerStore.getState().isOpen).toBe(false);
+  });
+
+  it('double click opens the saved draft in the composer window', async () => {
+    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+    vi.mocked(listDraftsForAccount).mockResolvedValue([dbDraft()]);
+    selectDraftsFolder();
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Saved draft subject')).toBeInTheDocument());
+
+    fireEvent.doubleClick(screen.getByText('Saved draft subject'));
+    // No live dock session → plain window open (non-Tauri fallback hydrates
+    // the composer store). The inline dock stays empty.
+    await waitFor(() => expect(useComposerStore.getState().isOpen).toBe(true));
+    expect(useComposerStore.getState().draftId).toBe('d1');
+    expect(useComposerStore.getState().subject).toBe('Saved draft subject');
+    expect(useInlineComposerStore.getState().session).toBeNull();
+  });
+
+  it('deletes a saved draft from the context menu and removes the row', async () => {
+    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+    vi.mocked(listDraftsForAccount).mockResolvedValueOnce([dbDraft()]).mockResolvedValue([]); // reload after DRAFTS_CHANGED
+    selectDraftsFolder();
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Saved draft subject')).toBeInTheDocument());
+
+    fireEvent.contextMenu(screen.getByText('Saved draft subject'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Draft' }));
+
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith('db_delete_draft', { id: 'd1' }),
+    );
+    await waitFor(() => expect(screen.queryByText('Saved draft subject')).not.toBeInTheDocument());
+  });
+
+  it('Delete Draft also discards the live dock session (no resurrection)', async () => {
+    vi.mocked(getThreads).mockResolvedValue({ threads: [], nextCursor: null });
+    vi.mocked(listDraftsForAccount).mockResolvedValueOnce([dbDraft()]).mockResolvedValue([]); // reload after DRAFTS_CHANGED
+    selectDraftsFolder();
+    render(<MessageList />);
+    await waitFor(() => expect(screen.getByText('Saved draft subject')).toBeInTheDocument());
+
+    // Resume the draft into the dock first.
+    fireEvent.click(screen.getByText('Saved draft subject'));
+    await waitFor(() => expect(useInlineComposerStore.getState().session).not.toBeNull());
+
+    fireEvent.contextMenu(screen.getByText('Saved draft subject'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Draft' }));
+
+    // The dock session is gone (its autosave can no longer resurrect the row)
+    // and the row was deleted.
+    expect(useInlineComposerStore.getState().session).toBeNull();
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith('db_delete_draft', { id: 'd1' }),
+    );
+    await waitFor(() => expect(screen.queryByText('Saved draft subject')).not.toBeInTheDocument());
   });
 
   it('reloads threads when the folder selection changes', async () => {
@@ -325,7 +547,7 @@ describe('MessageList', () => {
     setThreadsStarred.mockRestore();
   });
 
-  it('opens the composer in reply mode from the context menu', async () => {
+  it('opens the composer window in reply mode from the context menu', async () => {
     vi.mocked(getThreads).mockResolvedValue({
       threads: [thread({ id: 't1', subject: 'Hello' })],
       nextCursor: null,
@@ -353,6 +575,8 @@ describe('MessageList', () => {
     await waitFor(() => expect(useComposerStore.getState().isOpen).toBe(true));
     expect(useComposerStore.getState().mode).toBe('reply');
     expect(useComposerStore.getState().threadId).toBe('t1');
+    // Ribbon/context-menu replies open the composer window — no dock session.
+    expect(useInlineComposerStore.getState().session).toBeNull();
   });
 
   it('shows All/Unread tabs in the inbox and filters threads', async () => {

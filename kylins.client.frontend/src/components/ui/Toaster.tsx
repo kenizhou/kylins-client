@@ -1,5 +1,5 @@
 // Renders the global toast stack (mounted once in App.tsx). Styled to match
-// the composer's UndoSendToast.
+// general app notifications.
 
 import { useToastStore } from '../../stores/toastStore';
 

@@ -38,7 +38,6 @@ beforeEach(() => {
     messageSentSound: true,
     defaultSendBehavior: 'send',
     defaultReplyBehavior: 'reply-all',
-    undoSendDuration: '5',
     sendNewMessagesFrom: 'selected-account',
     enableRichText: true,
     checkSpelling: true,
@@ -64,7 +63,6 @@ describe('preferencesStore', () => {
       const values: Record<string, string> = {
         launch_on_system_start: 'false',
         show_notifications_for_new_unread: 'false',
-        undo_send_duration: '10',
         interface_language: 'zh',
       };
       return Promise.resolve(values[key] ?? null);
@@ -76,7 +74,6 @@ describe('preferencesStore', () => {
     expect(state.isHydrated).toBe(true);
     expect(state.launchOnSystemStart).toBe(false);
     expect(state.showNotificationsForNewUnread).toBe(false);
-    expect(state.undoSendDuration).toBe('10');
     expect(state.interfaceLanguage).toBe('zh');
   });
 
@@ -87,7 +84,6 @@ describe('preferencesStore', () => {
     const state = usePreferencesStore.getState();
     expect(state.launchOnSystemStart).toBe(true);
     expect(state.automaticallyLoadImages).toBe(true);
-    expect(state.undoSendDuration).toBe('5');
   });
 
   it('persists changes to settings', async () => {
@@ -98,10 +94,13 @@ describe('preferencesStore', () => {
   });
 
   it('persists string changes to settings', async () => {
-    usePreferencesStore.getState().setUndoSendDuration('30');
+    usePreferencesStore.getState().setSendNewMessagesFrom('default-account');
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(settingsModule.setSetting).toHaveBeenCalledWith('undo_send_duration', '30');
-    expect(usePreferencesStore.getState().undoSendDuration).toBe('30');
+    expect(settingsModule.setSetting).toHaveBeenCalledWith(
+      'send_new_messages_from',
+      'default-account',
+    );
+    expect(usePreferencesStore.getState().sendNewMessagesFrom).toBe('default-account');
   });
 
   it('persists alwaysShowCcBcc changes to settings', async () => {

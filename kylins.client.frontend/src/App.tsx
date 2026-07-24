@@ -6,6 +6,7 @@ import { PreferencesDialog } from './components/preferences/PreferencesDialog';
 import { Composer } from './components/composer/Composer';
 import { Modal } from './components/ui/Modal';
 import { getSetting } from './services/settings';
+import { startInlineDraftAutoSave } from './services/composer/inlineDraftAutoSave';
 import { getAllAccounts, deleteAccountByEmail } from './services/accounts';
 import { themeManager } from './services/theme/themeManager';
 import { onAppearanceChange } from './services/theme/appearanceSync';
@@ -339,6 +340,10 @@ export default function App() {
             await pluginManager.loadInstalledPlugins();
             activateBuiltInPlugins();
 
+            // Persist docked inline-composer drafts to local_drafts (debounced)
+            // so they survive an app reload and show in the Drafts folder.
+            startInlineDraftAutoSave();
+
             // Load existing accounts into the store so the UI reflects any
             // already-configured accounts on startup.
             if (isMounted.current) {
@@ -427,7 +432,7 @@ export default function App() {
     <I18nProvider locale={interfaceLanguage === 'automatic' ? undefined : interfaceLanguage}>
       {isComposeWindow ? (
         <>
-          <Composer windowed />
+          <Composer />
           <Toaster />
         </>
       ) : isViewerWindow ? (

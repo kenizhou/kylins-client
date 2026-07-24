@@ -7,8 +7,8 @@ import type { ClassificationLevel } from '@/features/classification/classificati
 /**
  * Classification level picker (slim full-width banner). Binds to whichever
  * composer surface is live — the docked inline composer when visible, else
- * the modal composerStore — via useActiveComposerTarget, so the same
- * component works in both the modal Composer and the inline reply.
+ * the compose-window composerStore — via useActiveComposerTarget, so the same
+ * component works in both the OS compose window and the inline dock.
  */
 export function ClassificationSelector() {
   const { classificationId, setClassificationId, setIsEncrypted, setIsSigned } =

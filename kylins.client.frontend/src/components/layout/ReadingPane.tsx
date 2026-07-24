@@ -7,7 +7,12 @@ import { useAccountStore } from '../../stores/accountStore';
 import { usePreferencesStore } from '../../stores/preferencesStore';
 import { useThreadStore } from '../../stores/threadStore';
 import { useUIStore } from '../../stores/uiStore';
-import { useInlineComposerStore, useInlineComposerVisible } from '../../stores/inlineComposerStore';
+import {
+  anchorMessage,
+  useInlineComposerStore,
+  useInlineComposerVisible,
+} from '../../stores/inlineComposerStore';
+import { useDraftIndexStore } from '../../stores/draftIndexStore';
 import { AttachmentList } from '../email/AttachmentList';
 import { EmailRenderer } from '../email/EmailRenderer';
 import { fetchAttachment, fetchInlineImages, getAttachments } from '../../services/db/attachments';
@@ -16,7 +21,7 @@ import { InlineReply } from '../email/InlineReply';
 import { MessageHeader } from '../../features/viewer/MessageHeader';
 import { RsvpCard } from '../../features/viewer/RsvpCard';
 import { readTextFile, readFile } from '@tauri-apps/plugin-fs';
-import { archiveThread, trashThread, junkThread } from '../../services/mail/actions';
+import { findDraftForThread } from '../../features/drafts/localDrafts';
 import { useClassification } from '../../features/classification/useClassification';
 import { isProminent } from '../../features/classification/classificationStyle';
 import { ClassificationBanner } from '../../features/classification/components/ClassificationBanner';
@@ -40,15 +45,13 @@ export function ReadingPane() {
   const readerZoom = useUIStore((s) => s.readerZoom);
   const { getLevelById } = useClassification();
   const selectedThread = useThreadStore((s) => s.threads.find((t) => t.id === s.selectedThreadId));
-  const markThreadRead = useThreadStore((s) => s.markThreadRead);
   // Inline composer session (takes over this pane while visible). Visibility
-  // is derived: the composer shows only while the session's message is
-  // selected; switching messages hides but PRESERVES the draft (retention —
-  // see inlineComposerStore). AppShell reads the same hook for the ribbon flip.
+  // is derived: the composer shows only while the session's anchor target is
+  // selected; switching targets hides but PRESERVES the draft (retention —
+  // see inlineComposerStore; resumed via the [Draft] chip / Drafts folder).
+  // AppShell reads the same hook for the ribbon flip.
   const inlineVisible = useInlineComposerVisible();
-  const inlineSession = useInlineComposerStore((s) => s.session);
   const openInlineComposer = useInlineComposerStore((s) => s.open);
-  const discardInlineComposer = useInlineComposerStore((s) => s.discard);
   const [cidMap, setCidMap] = useState<Map<string, string>>(new Map());
   const [contactAdded, setContactAdded] = useState(false);
   const [inviteEvents, setInviteEvents] = useState<ParsedEvent[]>([]);
@@ -258,6 +261,53 @@ export function ReadingPane() {
     };
   }, [message?.id, activeAccountId]);
 
+  // Resume the persisted draft for the SELECTED conversation (Gmail rule: a
+  // conversation's own draft always shows when you open it). The autosaved
+  // local_drafts row survives reloads; a live session for THIS message is
+  // already showing it; a live session for ANOTHER target is preserved
+  // (flushed — its row stays in the Drafts folder) and replaced by this
+  // message's draft. A selected message with NO saved draft leaves any
+  // retained session alone (hidden, reachable via its [Draft] chip).
+  // The index is a hook dep so a late-arriving refresh still triggers the
+  // restore for an already-selected message.
+  const draftThreadIds = useDraftIndexStore((s) => s.threadIds);
+  useEffect(() => {
+    const threadKey = message?.threadId ?? message?.id;
+    if (!message || !threadKey || !account) return;
+    // Cheap pre-check against the account's saved-draft index — avoids a DB
+    // round-trip on every message select for threads with no draft.
+    if (!draftThreadIds.has(threadKey)) return;
+    const session = useInlineComposerStore.getState().session;
+    // Already showing this message's draft — nothing to do.
+    if (session && anchorMessage(session)?.id === message.id) return;
+    let cancelled = false;
+    findDraftForThread(account.id, threadKey)
+      .then(async (draft) => {
+        if (cancelled || !draft) return;
+        // resumeDraft (not the passive restoreFromDraft): when a retained
+        // session for another target is live, this message's own draft WINS —
+        // the outgoing session is preserved, never deleted.
+        await useInlineComposerStore.getState().resumeDraft(draft, account, { message });
+      })
+      .catch((e) => console.error('[reading-pane] draft restore lookup failed', e));
+    return () => {
+      cancelled = true;
+    };
+  }, [message, account, draftThreadIds]);
+
+  // Dock-first render precedence: a visible inline session takes over the
+  // pane WHETHER OR NOT a message is selected (standalone draft sessions have
+  // none — their target is the selected draft row). The draft is retained in
+  // the store when the user switches targets (see the resume chip in
+  // messageContent).
+  if (inlineVisible) {
+    return (
+      <div className="flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)]">
+        <InlineReply />
+      </div>
+    );
+  }
+
   if (!message) {
     return (
       <div className="flex h-full flex-col items-center justify-center min-w-0 text-[var(--muted-text)]">
@@ -286,8 +336,6 @@ export function ReadingPane() {
   const handleReply = () => openInline('reply');
   const handleReplyAll = () => openInline('replyAll');
   const handleForward = () => openInline('forward');
-  const handleReplyWithAttachments = () => openInline('replyWithAttachments');
-  const handleReplyAllWithAttachments = () => openInline('replyAllWithAttachments');
 
   async function handleAddContact() {
     if (!message) return;
@@ -320,43 +368,6 @@ export function ReadingPane() {
 
   const messageContent = (
     <div className="reading-pane relative flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)]">
-      {/* Retained inline draft for another message: hidden, not lost. */}
-      {inlineSession && !inlineVisible && (
-        <div className="mx-5 mt-3 flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-1.5 text-xs">
-          <span className="min-w-0 flex-1 truncate text-[var(--foreground)]">
-            Unsent reply to “{inlineSession.message.subject}”
-          </span>
-          <Button
-            type="button"
-            onPress={() => {
-              // Resume through the normal thread-selection pipeline so the
-              // message is re-fetched (fresh body/crypto state) and
-              // threadStore.selectedThreadId stays in sync — thread-scoped
-              // actions (Archive/Delete/Junk) keep targeting the right
-              // thread. Fall back to the session's snapshot only when the
-              // thread isn't loaded.
-              const thread = useThreadStore
-                .getState()
-                .threads.find((t) => t.id === inlineSession.message.threadId);
-              if (thread) {
-                void useThreadStore.getState().selectThread(thread);
-              } else {
-                useViewStore.getState().setSelectedMessage(inlineSession.message);
-              }
-            }}
-            className="kylins-link shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Resume
-          </Button>
-          <Button
-            type="button"
-            onPress={() => discardInlineComposer()}
-            className="shrink-0 text-[var(--muted-text)] transition-colors hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Discard
-          </Button>
-        </div>
-      )}
       {prominent && level && <ClassificationBanner level={level} position="top" />}
 
       {isCryptoMessage && (
@@ -414,24 +425,6 @@ export function ReadingPane() {
         onReply={handleReply}
         onReplyAll={handleReplyAll}
         onForward={handleForward}
-        onReplyWithAttachments={handleReplyWithAttachments}
-        onReplyAllWithAttachments={handleReplyAllWithAttachments}
-        onArchive={() => {
-          if (!selectedThread) return;
-          void archiveThread(selectedThread);
-        }}
-        onDelete={() => {
-          if (!selectedThread) return;
-          void trashThread(selectedThread);
-        }}
-        onJunk={() => {
-          if (!selectedThread) return;
-          void junkThread(selectedThread);
-        }}
-        onMarkUnread={() => {
-          if (!selectedThread) return;
-          void markThreadRead(selectedThread, false);
-        }}
         onAddContact={handleAddContact}
         contactAdded={contactAdded}
       />
@@ -516,17 +509,6 @@ export function ReadingPane() {
       )}
     </div>
   );
-
-  // Inline composer takeover: while a session is visible the composer
-  // replaces the message view entirely. The draft is retained in the store
-  // when the user switches messages (see the resume chip in messageContent).
-  if (inlineVisible) {
-    return (
-      <div className="flex h-full min-w-0 flex-col border-l border-[var(--border-subtle)]">
-        <InlineReply />
-      </div>
-    );
-  }
 
   return messageContent;
 }

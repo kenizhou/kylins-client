@@ -7,7 +7,18 @@ import { usePreferencesStore } from '../../../src/stores/preferencesStore';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
-vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: vi.fn(() => ({})) }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: vi.fn(() => ({
+    isMaximized: vi.fn(async () => false),
+    onResized: vi.fn(async () => () => {}),
+    onCloseRequested: vi.fn(async () => () => {}),
+    setTitle: vi.fn(async () => {}),
+    minimize: vi.fn(async () => {}),
+    toggleMaximize: vi.fn(async () => {}),
+    close: vi.fn(async () => {}),
+    destroy: vi.fn(async () => {}),
+  })),
+}));
 
 vi.mock('../../../src/services/db/signatures', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/services/db/signatures')>();
@@ -59,9 +70,11 @@ beforeEach(() => {
 });
 
 describe('Composer accessibility', () => {
-  it('gives icon-only buttons accessible names', () => {
+  it('gives the window title-bar controls accessible names', () => {
     render(<Composer />);
-    expect(screen.getByRole('button', { name: /close composer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^minimize$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^maximize$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^close window$/i })).toBeInTheDocument();
   });
 
   it('marks the send button with a clear role and label', () => {

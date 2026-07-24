@@ -21,7 +21,6 @@ export const SETTING_KEYS = {
   messageSentSound: 'message_sent_sound',
   defaultSendBehavior: 'default_send_behavior',
   defaultReplyBehavior: 'default_reply_behavior',
-  undoSendDuration: 'undo_send_duration',
   sendNewMessagesFrom: 'send_new_messages_from',
 
   // Composing

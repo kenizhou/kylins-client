@@ -1,6 +1,6 @@
 // DraftFactory — the single place that turns (account, message, intent) into a
 // fully-resolved composer seed. Ports Mailspring's draft-factory role: UI
-// surfaces (inline composer, modal composer) never build reply bodies or
+// surfaces (inline dock, OS compose window) never build reply bodies or
 // recipient lists themselves; they fire an intent and consume a DraftSeed.
 //
 // Every async step happens BEFORE any editor exists: send-as alias merge
@@ -200,7 +200,7 @@ export async function buildDraftSeed(input: BuildDraftSeedInput): Promise<DraftS
  * (so the UI can distinguish them from user-picked files). Used for forwards
  * and the reply-with-attachment intents. Inline images are intentionally
  * re-attached as regular files rather than preserved as CID references,
- * matching the modal composer's forward path.
+ * matching the windowed composer's forward path.
  *
  * `shouldAbort` is checked between every async step: when it returns true
  * (session discarded/replaced mid-flight), staging stops immediately so no

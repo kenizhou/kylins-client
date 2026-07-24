@@ -90,6 +90,13 @@ export interface DecryptedCacheEntry {
 
 export interface ViewStore extends ViewState {
   selectedMessage: MailMessage | null;
+  /** Selected local-draft row (Drafts folder). Reading-pane target invariant:
+   *  at most ONE of `selectedMessage` / `selectedDraftId` is set —
+   *  `setSelectedMessage` always clears the draft selection and
+   *  `setSelectedDraft` always clears the message. Code that selects a
+   *  reading-pane target MUST go through these two setters (never set the
+   *  fields directly) or the invariant breaks. */
+  selectedDraftId: string | null;
   /** True once persisted settings have been loaded. */
   isHydrated: boolean;
   /** Transient thread selection for the status bar / future multi-select. */
@@ -101,6 +108,7 @@ export interface ViewStore extends ViewState {
    */
   decryptedCache: Record<string, DecryptedCacheEntry>;
   setSelectedMessage: (message: MailMessage | null) => void;
+  setSelectedDraft: (draftId: string) => void;
   setSelectedThreadIds: (ids: string[]) => void;
   toggleSelectedThreadId: (id: string) => void;
   setReadingPanePosition: (position: ReadingPanePosition) => void;
@@ -144,11 +152,13 @@ export interface ViewStore extends ViewState {
 export const useViewStore = create<ViewStore>((set) => ({
   ...DEFAULT_VIEW_STATE,
   selectedMessage: null,
+  selectedDraftId: null,
   isHydrated: false,
   selectedThreadIds: [],
   decryptedCache: {},
 
-  setSelectedMessage: (selectedMessage) => set({ selectedMessage }),
+  setSelectedMessage: (selectedMessage) => set({ selectedMessage, selectedDraftId: null }),
+  setSelectedDraft: (selectedDraftId) => set({ selectedDraftId, selectedMessage: null }),
   setSelectedThreadIds: (selectedThreadIds) => set({ selectedThreadIds }),
   toggleSelectedThreadId: (id) =>
     set((state) => ({
@@ -183,6 +193,7 @@ export const useViewStore = create<ViewStore>((set) => ({
     set({
       ...DEFAULT_VIEW_STATE,
       selectedMessage: null,
+      selectedDraftId: null,
       selectedThreadIds: [],
       // Plaintext cache is session-only — wipe on reset so a UI reset cannot
       // leave decrypted S/MIME bodies in RAM.

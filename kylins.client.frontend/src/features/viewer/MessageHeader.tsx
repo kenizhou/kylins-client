@@ -1,16 +1,7 @@
 import { useState } from 'react';
-import { Button, Popover, Menu, MenuItem, DialogTrigger } from 'react-aria-components';
+import { Button } from 'react-aria-components';
 import type { MailMessage } from '@/features/view/viewStore';
-import {
-  ReplyFilledIcon,
-  ReplyAllFilledIcon,
-  MailSendIcon,
-  MoreIcon,
-  ArchiveIcon,
-  DeleteIcon,
-  WarningIcon,
-  MailIcon,
-} from '@/components/icons';
+import { ReplyFilledIcon, ReplyAllFilledIcon, MailSendIcon } from '@/components/icons';
 import { SecurityChips } from '@/features/classification/components/SecurityChips';
 import { IconButton } from '@/components/ui/IconButton';
 import { formatFullDate, formatDateTimeMinutes } from '@/utils/formatDate';
@@ -23,12 +14,6 @@ interface MessageHeaderProps {
   onReply: () => void;
   onReplyAll: () => void;
   onForward: () => void;
-  onReplyWithAttachments?: () => void;
-  onReplyAllWithAttachments?: () => void;
-  onArchive: () => void;
-  onDelete: () => void;
-  onJunk: () => void;
-  onMarkUnread: () => void;
   onAddContact: () => void;
   contactAdded: boolean;
 }
@@ -56,51 +41,10 @@ export function MessageHeader({
   onReply,
   onReplyAll,
   onForward,
-  onReplyWithAttachments,
-  onReplyAllWithAttachments,
-  onArchive,
-  onDelete,
-  onJunk,
-  onMarkUnread,
   onAddContact,
   contactAdded,
 }: MessageHeaderProps) {
   const [expanded, setExpanded] = useState(false);
-
-  const menuItems = [
-    { key: 'reply', label: 'Reply', icon: <ReplyFilledIcon size={14} />, onAction: onReply },
-    {
-      key: 'replyAll',
-      label: 'Reply all',
-      icon: <ReplyAllFilledIcon size={14} />,
-      onAction: onReplyAll,
-    },
-    ...(onReplyWithAttachments
-      ? [
-          {
-            key: 'replyWithAttachments',
-            label: 'Reply with attachment',
-            icon: <ReplyFilledIcon size={14} />,
-            onAction: onReplyWithAttachments,
-          },
-        ]
-      : []),
-    ...(onReplyAllWithAttachments
-      ? [
-          {
-            key: 'replyAllWithAttachments',
-            label: 'Reply all with attachment',
-            icon: <ReplyAllFilledIcon size={14} />,
-            onAction: onReplyAllWithAttachments,
-          },
-        ]
-      : []),
-    { key: 'forward', label: 'Forward', icon: <MailSendIcon size={14} />, onAction: onForward },
-    { key: 'archive', label: 'Archive', icon: <ArchiveIcon size={14} />, onAction: onArchive },
-    { key: 'delete', label: 'Delete', icon: <DeleteIcon size={14} />, onAction: onDelete },
-    { key: 'junk', label: 'Junk', icon: <WarningIcon size={14} />, onAction: onJunk },
-    { key: 'unread', label: 'Mark unread', icon: <MailIcon size={14} />, onAction: onMarkUnread },
-  ];
 
   return (
     <div className="reading-pane-header border-b border-[var(--border-subtle)] px-5 pt-4 pb-3">
@@ -219,32 +163,6 @@ export function MessageHeader({
               }
             />
 
-            <DialogTrigger>
-              <Button
-                aria-label="More actions"
-                className="inline-flex h-8 w-8 items-center justify-center rounded text-[var(--muted-text)] transition-colors hover:bg-[var(--primary-subtle)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-              >
-                <MoreIcon size={18} />
-              </Button>
-              <Popover className="min-w-[180px] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-floating)] py-1 shadow-[var(--shadow-lg)]">
-                <Menu
-                  aria-label="More actions"
-                  items={menuItems}
-                  onAction={(key) => menuItems.find((i) => i.key === key)?.onAction()}
-                  className="outline-none"
-                >
-                  {(item) => (
-                    <MenuItem
-                      id={item.key}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--primary-subtle)] focus-visible:bg-[var(--primary-subtle)]"
-                    >
-                      {item.icon}
-                      <span>{item.label}</span>
-                    </MenuItem>
-                  )}
-                </Menu>
-              </Popover>
-            </DialogTrigger>
             {extraActions}
           </div>
           <span className="group/tooltip relative whitespace-nowrap type-caption tabular-nums text-[var(--muted-text)]">

@@ -69,4 +69,23 @@ describe('viewStore', () => {
     useViewStore.getState().setHydrated(true);
     expect(useViewStore.getState().isHydrated).toBe(true);
   });
+
+  it('keeps at most one reading-pane target: selectedMessage XOR selectedDraftId', () => {
+    useViewStore.getState().setSelectedDraft('d1');
+    expect(useViewStore.getState().selectedDraftId).toBe('d1');
+    expect(useViewStore.getState().selectedMessage).toBeNull();
+
+    // Selecting a message clears the draft selection.
+    useViewStore.getState().setSelectedMessage({ id: 'm1' } as never);
+    expect(useViewStore.getState().selectedDraftId).toBeNull();
+
+    // …and selecting a draft clears the message again.
+    useViewStore.getState().setSelectedDraft('d2');
+    expect(useViewStore.getState().selectedMessage).toBeNull();
+    expect(useViewStore.getState().selectedDraftId).toBe('d2');
+
+    // Clearing the message target keeps the invariant (and clears the draft).
+    useViewStore.getState().setSelectedMessage(null);
+    expect(useViewStore.getState().selectedDraftId).toBeNull();
+  });
 });

@@ -69,6 +69,7 @@ import { useAccountStore } from '../../../src/stores/accountStore';
 import { useThreadStore } from '../../../src/stores/threadStore';
 import { usePreferencesStore } from '../../../src/stores/preferencesStore';
 import { useInlineComposerStore } from '../../../src/stores/inlineComposerStore';
+import { useDraftIndexStore } from '../../../src/stores/draftIndexStore';
 import { useClassificationStore } from '../../../src/features/classification/classificationStore';
 import type { MailMessage } from '../../../src/features/view/viewStore';
 
@@ -107,6 +108,7 @@ describe('ReadingPane + InlineReply integration', () => {
       alwaysShowCcBcc: false,
     } as never);
     useInlineComposerStore.setState({ session: null });
+    useDraftIndexStore.setState({ accountId: null, threadIds: new Set() });
     useClassificationStore.setState({ levels: [], loaded: true } as never);
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (cmd: string) => {
@@ -170,5 +172,287 @@ describe('ReadingPane + InlineReply integration', () => {
     fireEvent.click(screen.getByRole('button', { name: /^send$/i }));
     await waitFor(() => expect(mockSendEmail).toHaveBeenCalled());
     await waitFor(() => expect(useInlineComposerStore.getState().session).toBeNull());
+  });
+
+  it('resumes a persisted inline draft on message select (app-reload path)', async () => {
+    // Post-restart state: no inline session, but local_drafts has a row for
+    // this conversation and the draft index already knows the thread.
+    const draftRow = {
+      id: 'row-1',
+      account_id: 'acc-1',
+      to_addresses: JSON.stringify(['David <david@example.com>']),
+      cc_addresses: null,
+      bcc_addresses: null,
+      subject: 'Re: Q2 IT Infrastructure Upgrade',
+      body_html: '<p>typed before restart</p>',
+      reply_to_message_id: '<mid-1@example.com>',
+      thread_id: 't1',
+      from_email: 'me@example.com',
+      signature_id: null,
+      remote_draft_id: null,
+      attachments: null,
+      classification_id: null,
+      is_encrypted: 0,
+      is_signed: 0,
+      importance: 'normal',
+      request_read_receipt: 0,
+      deliver_at: null,
+      prevent_copy: 0,
+      extra_headers: null,
+      created_at: 100,
+      updated_at: 200,
+      sync_status: 'local',
+    };
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'db_list_drafts_for_account') return [draftRow];
+      if (cmd === 'db_get_aliases_for_account') return [];
+      if (cmd === 'db_get_signatures_for_account') return [];
+      if (cmd === 'db_get_default_signature') return null;
+      return undefined;
+    });
+    useDraftIndexStore.setState({ accountId: 'acc-1', threadIds: new Set(['t1']) });
+
+    render(<ReadingPane />);
+
+    // The dock takes over with the saved content — no Reply click needed.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^send$/i })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(document.querySelector('.kylins-editor')?.innerHTML).toContain('typed before restart'),
+    );
+    expect(screen.getByDisplayValue('Re: Q2 IT Infrastructure Upgrade')).toBeInTheDocument();
+    const s = useInlineComposerStore.getState().session!;
+    expect(s.draftId).toBe('row-1');
+    expect(s.pristine).toBe(true);
+    expect(s.intent).toBe('reply');
+    expect(s.to).toEqual([{ name: 'David', email: 'david@example.com' }]);
+  });
+
+  it('replaces a retained session with the selected message’s OWN draft (outgoing preserved)', async () => {
+    const draftRow = {
+      id: 'row-1',
+      account_id: 'acc-1',
+      to_addresses: JSON.stringify(['David <david@example.com>']),
+      cc_addresses: null,
+      bcc_addresses: null,
+      subject: 'Re: Q2 IT Infrastructure Upgrade',
+      body_html: '<p>typed before restart</p>',
+      reply_to_message_id: '<mid-1@example.com>',
+      thread_id: 't1',
+      from_email: 'me@example.com',
+      signature_id: null,
+      remote_draft_id: null,
+      attachments: null,
+      classification_id: null,
+      is_encrypted: 0,
+      is_signed: 0,
+      importance: 'normal',
+      request_read_receipt: 0,
+      deliver_at: null,
+      prevent_copy: 0,
+      extra_headers: null,
+      created_at: 100,
+      updated_at: 200,
+      sync_status: 'local',
+    };
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'db_list_drafts_for_account') return [draftRow];
+      if (cmd === 'db_get_aliases_for_account') return [];
+      if (cmd === 'db_get_signatures_for_account') return [];
+      if (cmd === 'db_get_default_signature') return null;
+      return undefined;
+    });
+    useDraftIndexStore.setState({ accountId: 'acc-1', threadIds: new Set(['t1']) });
+    // A retained session for ANOTHER message is live…
+    useInlineComposerStore.setState({
+      session: {
+        stagingDraftId: 'other-stage',
+        draftId: 'row-elsewhere',
+        anchor: {
+          kind: 'reply',
+          message: { id: 'msg-elsewhere', subject: 'Elsewhere', threadId: 't-other' },
+        },
+      } as never,
+    });
+
+    render(<ReadingPane />);
+
+    // …but this message has its OWN saved draft: it wins (the retained
+    // session is preserved, not deleted), and the dock takes over.
+    await waitFor(() => expect(useInlineComposerStore.getState().session?.draftId).toBe('row-1'));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^send$/i })).toBeInTheDocument(),
+    );
+    expect(mockInvoke).not.toHaveBeenCalledWith('db_delete_draft', { id: 'row-elsewhere' });
+  });
+
+  it('restores the LATEST draft version for a thread with multiple drafts', async () => {
+    const mk = (id: string, updatedAt: number, body: string) => ({
+      id,
+      account_id: 'acc-1',
+      to_addresses: null,
+      cc_addresses: null,
+      bcc_addresses: null,
+      subject: 'Re: Q2 IT Infrastructure Upgrade',
+      body_html: body,
+      reply_to_message_id: '<mid-1@example.com>',
+      thread_id: 't1',
+      from_email: 'me@example.com',
+      signature_id: null,
+      remote_draft_id: null,
+      attachments: null,
+      classification_id: null,
+      is_encrypted: 0,
+      is_signed: 0,
+      importance: 'normal',
+      request_read_receipt: 0,
+      deliver_at: null,
+      prevent_copy: 0,
+      extra_headers: null,
+      created_at: 100,
+      updated_at: updatedAt,
+      sync_status: 'local',
+    });
+    // Backend returns updated_at DESC: newest first.
+    const rows = [mk('row-latest', 300, '<p>456</p>'), mk('row-older', 200, '<p>123</p>')];
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'db_list_drafts_for_account') return rows;
+      if (cmd === 'db_get_aliases_for_account') return [];
+      if (cmd === 'db_get_signatures_for_account') return [];
+      if (cmd === 'db_get_default_signature') return null;
+      return undefined;
+    });
+    useDraftIndexStore.setState({ accountId: 'acc-1', threadIds: new Set(['t1']) });
+
+    render(<ReadingPane />);
+
+    await waitFor(() =>
+      expect(useInlineComposerStore.getState().session?.draftId).toBe('row-latest'),
+    );
+    await waitFor(() =>
+      expect(document.querySelector('.kylins-editor')?.innerHTML).toContain('456'),
+    );
+  });
+
+  it('a message WITHOUT a saved draft keeps the retained session hidden (no restore)', async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'db_list_drafts_for_account') return [];
+      if (cmd === 'db_get_aliases_for_account') return [];
+      if (cmd === 'db_get_signatures_for_account') return [];
+      if (cmd === 'db_get_default_signature') return null;
+      return undefined;
+    });
+    // Index has no thread for this message.
+    useDraftIndexStore.setState({ accountId: 'acc-1', threadIds: new Set() });
+    useInlineComposerStore.setState({
+      session: {
+        stagingDraftId: 'other-stage',
+        draftId: 'row-elsewhere',
+        anchor: {
+          kind: 'reply',
+          message: { id: 'msg-elsewhere', subject: 'Elsewhere', threadId: 't-other' },
+        },
+      } as never,
+    });
+
+    render(<ReadingPane />);
+    await waitFor(() =>
+      expect(screen.getByText('Q2 IT Infrastructure Upgrade')).toBeInTheDocument(),
+    );
+    // Give the restore effect a chance to (wrongly) fire.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(useInlineComposerStore.getState().session?.stagingDraftId).toBe('other-stage');
+    expect(screen.queryByRole('button', { name: /^send$/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the dock for a standalone (new-message) draft with no message selected', async () => {
+    const row = {
+      id: 'row-new',
+      account_id: 'acc-1',
+      to_addresses: JSON.stringify(['Bob <bob@example.com>']),
+      cc_addresses: null,
+      bcc_addresses: null,
+      reply_to_addresses: null,
+      subject: 'Brand new message',
+      body_html: '<p>brand new body</p>',
+      reply_to_message_id: null,
+      thread_id: null,
+      from_email: 'me@example.com',
+      signature_id: null,
+      remote_draft_id: null,
+      attachments: null,
+      classification_id: null,
+      is_encrypted: 0,
+      is_signed: 0,
+      importance: 'normal',
+      request_read_receipt: 0,
+      request_delivery_receipt: 0,
+      deliver_at: null,
+      prevent_copy: 0,
+      extra_headers: null,
+      created_at: 100,
+      updated_at: 200,
+      sync_status: 'local',
+    } as never;
+    useInlineComposerStore
+      .getState()
+      .resumeDraft(row, { id: 'acc-1', email: 'me@example.com', displayName: 'Me' });
+    // No selected message — the draft row is the reading-pane target.
+    useViewStore.setState({ selectedMessage: null, selectedDraftId: 'row-new' });
+
+    render(<ReadingPane />);
+
+    // Takeover fires even with selectedMessage null (dock-first precedence).
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^send$/i })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(document.querySelector('.kylins-editor')?.innerHTML).toContain('brand new body'),
+    );
+    expect(screen.getByDisplayValue('Brand new message')).toBeInTheDocument();
+    expect(screen.queryByText('No message selected')).not.toBeInTheDocument();
+    expect(useInlineComposerStore.getState().session?.anchor.kind).toBe('standalone');
+  });
+
+  it('hides the standalone dock when a different draft row is selected', async () => {
+    const row = {
+      id: 'row-new',
+      account_id: 'acc-1',
+      to_addresses: null,
+      cc_addresses: null,
+      bcc_addresses: null,
+      reply_to_addresses: null,
+      subject: 'Brand new message',
+      body_html: '<p>brand new body</p>',
+      reply_to_message_id: null,
+      thread_id: null,
+      from_email: 'me@example.com',
+      signature_id: null,
+      remote_draft_id: null,
+      attachments: null,
+      classification_id: null,
+      is_encrypted: 0,
+      is_signed: 0,
+      importance: 'normal',
+      request_read_receipt: 0,
+      request_delivery_receipt: 0,
+      deliver_at: null,
+      prevent_copy: 0,
+      extra_headers: null,
+      created_at: 100,
+      updated_at: 200,
+      sync_status: 'local',
+    } as never;
+    useInlineComposerStore
+      .getState()
+      .resumeDraft(row, { id: 'acc-1', email: 'me@example.com', displayName: 'Me' });
+    useViewStore.setState({ selectedMessage: null, selectedDraftId: 'row-other' });
+
+    render(<ReadingPane />);
+
+    // Session exists but is anchored to another draft row: no takeover.
+    await waitFor(() => expect(screen.getByText('No message selected')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /^send$/i })).not.toBeInTheDocument();
   });
 });

@@ -1,21 +1,30 @@
-// Routes the compose ribbon to whichever composer surface is actually live.
+// Routes the compose ribbon / classification selector to whichever composer
+// surface is actually live.
 //
 // Previously ComposeRibbon always read/wrote composerStore — but the docked
 // inline composer never reads that store, so while an inline reply was open
 // the ribbon's Encrypt/Sign/Importance/Tracking toggles mutated state nobody
 // sent from (and the mutation leaked into the next modal compose session).
 //
+// Post drafting-flow redesign there are exactly two surfaces, each in its own
+// window/JS context:
+//   - the reading-pane dock (inlineComposerStore) — main window,
+//   - the OS compose window (composerStore) — `compose-*` WebviewWindow.
+// In the main window composerStore.isOpen is never true (the in-app modal was
+// removed), so the inline branch drives the ribbon whenever the dock shows;
+// in a compose window there is no inline session, so the composerStore branch
+// always drives that window's ClassificationSelector.
+//
 // The hook returns the option fields + setters both stores share (the
-// InlineDraftFields shape), sourced from the inline session when the dock is
-// visible and from the modal composerStore otherwise, plus a `supports`
-// capability set so controls a surface can't honor are hidden rather than
-// dead (e.g. Delay Delivery's dialog lives in the modal Composer).
+// InlineDraftFields shape), plus a `supports` capability set so controls a
+// surface can't honor are hidden rather than dead (e.g. Delay Delivery's
+// dialog lives only in the compose window's Composer).
 
 import { useComposerStore, type Importance } from '@/stores/composerStore';
 import { useInlineComposerStore, useInlineComposerVisible } from '@/stores/inlineComposerStore';
 
 export interface ComposerTargetCapabilities {
-  /** Schedule/delay-delivery picker (modal Composer only). */
+  /** Schedule/delay-delivery picker (OS compose window only). */
   delayDelivery: boolean;
 }
 
@@ -43,9 +52,11 @@ export function useActiveComposerTarget(): ComposerTarget {
   const session = useInlineComposerStore((s) => s.session);
   const modal = useComposerStore();
 
-  // The modal wins when it's actually open (e.g. a draft reopened from the
-  // Drafts folder while an inline session is retained in the background) —
-  // it's the foreground surface the user is interacting with.
+  // The inline branch drives the ribbon whenever the dock is visible. In the
+  // main window composerStore.isOpen is never true (the in-app modal popup
+  // was removed), so there is no competing foreground surface; in a compose
+  // window there is no inline session, so the composerStore branch always
+  // drives that window's selector.
   if (!modal.isOpen && inlineVisible && session) {
     // Zustand actions are stable — safe to read via getState().
     const actions = useInlineComposerStore.getState();

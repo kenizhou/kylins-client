@@ -59,8 +59,7 @@ import { getTemplatesForAccount, type DbTemplate } from '@/services/db/templates
 import { interpolateVariables } from '@/utils/templateVariables';
 import { formatIdentity, formatRecipients } from '@/features/composer/contacts';
 import type { Recipient } from '@/features/composer/contacts';
-import { MaximizeIcon, RestoreIcon, PopOutIcon, PlusIcon, CloseIcon } from '../icons';
-import { IconButton } from '@/components/ui/IconButton';
+import { PlusIcon } from '../icons';
 import { InputDialog } from '@/components/ui/InputDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ClassificationWatermark } from '@/features/classification/components/ClassificationWatermark';
@@ -87,11 +86,10 @@ function buildMinimalEml(subject: string, body: string): string {
   return `Subject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${body}`;
 }
 
-interface ComposerProps {
-  windowed?: boolean;
-}
-
-export function Composer({ windowed = false }: ComposerProps) {
+// The composer is windowed-only: the in-app modal popup was removed in the
+// drafting-flow redesign. This component renders exclusively inside the
+// dedicated OS compose window (`compose-*` WebviewWindow).
+export function Composer() {
   // Individual selectors — only re-render when each value changes.
   const isOpen = useComposerStore((s) => s.isOpen);
   const mode = useComposerStore((s) => s.mode);
@@ -101,7 +99,6 @@ export function Composer({ windowed = false }: ComposerProps) {
   const replyTo = useComposerStore((s) => s.replyTo);
   const subject = useComposerStore((s) => s.subject);
   const fromEmail = useComposerStore((s) => s.fromEmail);
-  const viewMode = useComposerStore((s) => s.viewMode);
   const classificationId = useComposerStore((s) => s.classificationId);
   const isSaving = useComposerStore((s) => s.isSaving);
   const lastSavedAt = useComposerStore((s) => s.lastSavedAt);
@@ -113,7 +110,6 @@ export function Composer({ windowed = false }: ComposerProps) {
   const setReplyTo = useComposerStore((s) => s.setReplyTo);
   const setSubject = useComposerStore((s) => s.setSubject);
   const setFromEmail = useComposerStore((s) => s.setFromEmail);
-  const setViewMode = useComposerStore((s) => s.setViewMode);
   const setIncludeOriginalAttachments = useComposerStore((s) => s.setIncludeOriginalAttachments);
   const setAttachmentsTransferred = useComposerStore((s) => s.setAttachmentsTransferred);
   const addAttachment = useComposerStore((s) => s.addAttachment);
@@ -134,7 +130,6 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const enableRichText = usePreferencesStore((s) => s.enableRichText);
   const checkSpelling = usePreferencesStore((s) => s.checkSpelling);
-  const undoSendDuration = usePreferencesStore((s) => s.undoSendDuration);
   const messageSentSound = usePreferencesStore((s) => s.messageSentSound);
   const alwaysShowCcBcc = usePreferencesStore((s) => s.alwaysShowCcBcc);
 
@@ -380,17 +375,15 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   // Keep the OS window title (taskbar / alt-tab) in sync with the subject.
   useEffect(() => {
-    if (!windowed) return;
     try {
       void getCurrentWindow().setTitle(subject.trim() || modeLabel);
     } catch {
       // Ignore in non-Tauri contexts.
     }
-  }, [windowed, subject, modeLabel]);
+  }, [subject, modeLabel]);
 
   // Intercept the window close with unsaved content → confirm dialog.
   useEffect(() => {
-    if (!windowed) return;
     const win = getCurrentWindow();
     if (typeof win.onCloseRequested !== 'function') return;
     let unlisten: (() => void) | undefined;
@@ -421,7 +414,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       cancelled = true;
       unlisten?.();
     };
-  }, [windowed, editor]);
+  }, [editor]);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -487,7 +480,6 @@ export function Composer({ windowed = false }: ComposerProps) {
   const intentionalCloseRef = useRef(false);
 
   const closeWindowIfWindowed = useCallback(async () => {
-    if (!windowed) return;
     // Mutating a ref inside a callback is intentional (see comment above).
     // eslint-disable-next-line react-hooks/immutability
     intentionalCloseRef.current = true;
@@ -501,7 +493,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     } catch (err) {
       console.error('[Composer] window destroy failed:', err);
     }
-  }, [windowed]);
+  }, []);
 
   const handleSend = useCallback(async () => {
     console.log(
@@ -511,8 +503,6 @@ export function Composer({ windowed = false }: ComposerProps) {
       useComposerStore.getState().to.length,
       'sendingRef=',
       sendingRef.current,
-      'windowed=',
-      windowed,
       'hasLocation=',
       typeof window !== 'undefined' ? window.location.search : 'no-window',
     );
@@ -587,8 +577,7 @@ export function Composer({ windowed = false }: ComposerProps) {
     };
 
     // Core send: enqueue + delete the persisted draft + upsert recipients.
-    // Returns true on success. Shared by the immediate (windowed) path and the
-    // deferred (inline undo) path.
+    // Returns true on success.
     const performSend = async (): Promise<boolean> => {
       console.log('[send-fe] handleSend performSend calling sendEmail accountId=', activeAccountId);
       try {
@@ -636,55 +625,24 @@ export function Composer({ windowed = false }: ComposerProps) {
       }
     };
 
-    if (windowed) {
-      // Popout: send NOW and close on success (no undo timer — matches Outlook).
-      // Undo-send is a main-window/inline feature (the UndoSendToast lives in
-      // AppShell, which the popout doesn't render), and deferring the send is
-      // unsafe in a window that's about to close. Keep the window open on
-      // failure so the user can retry.
-      console.log('[send-fe] handleSend IMMEDIATE (windowed) — no undo timer');
-      const ok = await performSend();
-      sendingRef.current = false;
-      console.log('[send-fe] handleSend immediate done ok=', ok);
-      if (ok) {
-        console.log('[send-fe] handleSend windowed send succeeded → closing popout');
-        await closeWindowIfWindowed();
-      }
-      return;
+    // Send NOW and close the window on success (matches Outlook; keep the
+    // window open on failure so the user can retry).
+    console.log('[send-fe] handleSend IMMEDIATE — sending now');
+    const ok = await performSend();
+    sendingRef.current = false;
+    console.log('[send-fe] handleSend immediate done ok=', ok);
+    if (ok) {
+      console.log('[send-fe] handleSend send succeeded → closing composer window');
+      await closeWindowIfWindowed();
     }
-
-    // Inline (main window): defer the send by the undo window so the user can
-    // cancel via the UndoSendToast (rendered in AppShell, which persists).
-    const delay = parseInt(undoSendDuration ?? '5', 10) * 1000;
-    state.setUndoSendVisible(true);
-    state.setUndoStagingDraftId(currentStagingDraftId);
-    console.log(
-      '[send-fe] handleSend undoSendVisible=true delayMs=',
-      delay,
-      'stagingDraftId=',
-      currentStagingDraftId,
-    );
-    const timer = setTimeout(async () => {
-      console.log('[send-fe] handleSend undo-timer FIRED');
-      await performSend();
-      useComposerStore.getState().setUndoSendVisible(false);
-      sendingRef.current = false;
-      console.log('[send-fe] handleSend undo-timer done');
-    }, delay);
-    state.setUndoSendTimer(timer);
-    console.log('[send-fe] handleSend undo-timer SCHEDULED; closing composer');
-    closeComposer();
   }, [
     activeAccountId,
     activeAccount,
     aliases,
-    closeComposer,
     closeWindowIfWindowed,
     getFullHtml,
     getDefaultLevel,
     messageSentSound,
-    undoSendDuration,
-    windowed,
   ]);
 
   // Returns an error message for the dialog to show inline, or null on success.
@@ -785,24 +743,6 @@ export function Composer({ windowed = false }: ComposerProps) {
     await closeWindowIfWindowed();
   }, [closeComposer, closeWindowIfWindowed]);
 
-  const handleClose = useCallback(async () => {
-    stopAutoSave();
-    const state = useComposerStore.getState();
-    const currentDraftId = state.draftId;
-    const currentStagingDraftId = state.stagingDraftId;
-    // Best-effort cleanup of staged attachments for unsaved drafts. Saved drafts
-    // keep their filePath references, so we leave the outbox directory alone.
-    if (!currentDraftId) {
-      try {
-        await cleanupAttachments(currentStagingDraftId);
-      } catch {
-        /* ignore — best-effort */
-      }
-    }
-    closeComposer();
-    await closeWindowIfWindowed();
-  }, [closeComposer, closeWindowIfWindowed]);
-
   const handleSaveDraftAndClose = useCallback(async () => {
     try {
       await flushDraftSave();
@@ -849,14 +789,6 @@ export function Composer({ windowed = false }: ComposerProps) {
     setTimeout(() => frame.remove(), 1000);
   }, [editor, subject]);
 
-  // Windowed Send: delegate to handleSend. The popout window is now closed
-  // INSIDE handleSend's undo-timer finally block (after sendEmail succeeds) —
-  // closing here would destroy the window (and the pending timer) before the
-  // deferred send fires.
-  const handleSendAndCloseWindow = useCallback(async () => {
-    await handleSend();
-  }, [handleSend]);
-
   // Attach button: open the OS file picker, then stage each picked file via
   // the backend `stage_picked_attachment` command. The frontend fs scope
   // only covers appData, so the copy of an arbitrary picked path must go
@@ -865,11 +797,10 @@ export function Composer({ windowed = false }: ComposerProps) {
   // Shared by the actions-row Attach button and the window event dispatched
   // by the menu bar / main-window compose ribbon.
   const handleAttach = useCallback(async () => {
-    // The Composer is mounted unconditionally in AppShell (early-return at
-    // render), so this listener would otherwise fire even while the composer
-    // is closed — competing with the docked inline composer's own Attach
-    // handler (double dialogs, files staged into a store nothing renders).
-    if (!useComposerStore.getState().isOpen && !windowed) return;
+    // The compose window mounts this component unconditionally (early-return
+    // at render), so guard against a stale attach event while the composer
+    // state is closed.
+    if (!useComposerStore.getState().isOpen) return;
     try {
       const selected = await open({ multiple: true });
       if (!selected) return;
@@ -896,17 +827,13 @@ export function Composer({ windowed = false }: ComposerProps) {
         .getState()
         .push(`Attach failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
-  }, [addAttachment, windowed]);
+  }, [addAttachment]);
 
   // Listen for menubar/ribbon action requests so the same handlers work whether
   // the user clicks the panel footer, the compose ribbon, or the menu bar.
   useEffect(() => {
     function handleSendRequested() {
-      if (windowed) {
-        void handleSendAndCloseWindow();
-      } else {
-        void handleSend();
-      }
+      void handleSend();
     }
     function handleScheduleRequested() {
       setShowSchedule(true);
@@ -926,7 +853,7 @@ export function Composer({ windowed = false }: ComposerProps) {
       window.removeEventListener('composer:insert-link', handleInsertLink);
       window.removeEventListener('composer:attach-requested', handleAttach);
     };
-  }, [handleSend, handleSendAndCloseWindow, windowed, handleAttach]);
+  }, [handleSend, handleAttach]);
 
   const handleMoveRecipient = useCallback(
     (recipient: Recipient, from: 'to' | 'cc' | 'bcc' | 'replyTo', toField: MoveTarget) => {
@@ -947,67 +874,6 @@ export function Composer({ windowed = false }: ComposerProps) {
     [to, cc, bcc, replyTo, setTo, setCc, setBcc, setReplyTo],
   );
 
-  const handlePopOutComposer = useCallback(async () => {
-    try {
-      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-      const state = useComposerStore.getState();
-      const params = new URLSearchParams();
-      params.set('compose', 'true');
-      params.set('mode', state.mode);
-      if (state.to.length > 0) params.set('to', formatRecipients(state.to).join(','));
-      if (state.cc.length > 0) params.set('cc', formatRecipients(state.cc).join(','));
-      if (state.bcc.length > 0) params.set('bcc', formatRecipients(state.bcc).join(','));
-      if (state.replyTo.length > 0)
-        params.set('replyTo', formatRecipients(state.replyTo).join(','));
-      if (state.subject) params.set('subject', state.subject);
-      if (state.threadId) params.set('threadId', state.threadId);
-      if (state.inReplyToMessageId) params.set('inReplyToMessageId', state.inReplyToMessageId);
-      if (state.draftId) params.set('draftId', state.draftId);
-      if (state.fromEmail) params.set('fromEmail', state.fromEmail);
-      // Always set the param: absent would read as "undecided → apply default"
-      // in the pop-out; 'none' preserves an explicit no-signature choice.
-      params.set('signatureId', state.signatureId ?? 'none');
-      if (state.classificationId) params.set('classificationId', state.classificationId);
-      params.set('isEncrypted', state.isEncrypted ? '1' : '0');
-      params.set('isSigned', state.isSigned ? '1' : '0');
-      params.set('importance', state.importance);
-      params.set('requestReadReceipt', state.requestReadReceipt ? '1' : '0');
-      params.set('requestDeliveryReceipt', state.requestDeliveryReceipt ? '1' : '0');
-      if (state.deliverAt != null) params.set('deliverAt', state.deliverAt.toString());
-      params.set('preventCopy', state.preventCopy ? '1' : '0');
-      const bodyHtml = editor?.getHTML() ?? '';
-      if (bodyHtml) params.set('body', btoa(unescape(encodeURIComponent(bodyHtml))));
-
-      const windowLabel = `compose-${Date.now()}`;
-      const webview = new WebviewWindow(windowLabel, {
-        url: `index.html?${params.toString()}`,
-        title: state.subject || 'New Message',
-        width: 700,
-        height: 650,
-        minWidth: 600,
-        minHeight: 480,
-        center: true,
-        decorations: false,
-        resizable: true,
-        maximizable: true,
-        minimizable: true,
-        closable: true,
-      });
-
-      webview.once('tauri://created', () => {
-        console.log('[Composer] popped out', windowLabel);
-      });
-      webview.once('tauri://error', (e) => {
-        console.error('[Composer] pop-out failed', e);
-      });
-
-      stopAutoSave();
-      closeComposer();
-    } catch (err) {
-      console.error('Failed to pop out composer:', err);
-    }
-  }, [editor, closeComposer]);
-
   const handleAddressBlockBlur = (e: React.FocusEvent<HTMLDivElement>) => {
     if (alwaysShowCcBcc) return;
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
@@ -1018,7 +884,6 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   if (!isOpen) return null;
 
-  const isFullpage = windowed || viewMode === 'fullpage';
   const savedLabel = isSaving
     ? 'Saving…'
     : lastSavedAt
@@ -1032,16 +897,9 @@ export function Composer({ windowed = false }: ComposerProps) {
 
   const composerPanel = (
     <div
-      className={`composer-panel pointer-events-auto relative flex flex-col rounded-2xl border bg-[var(--background)] shadow-2xl ${
-        windowed
-          ? 'h-full w-full rounded-none border-0 shadow-none'
-          : isFullpage
-            ? 'h-full max-w-5xl w-full'
-            : 'h-[min(760px,85vh)] w-[min(900px,92vw)]'
-      } ${isDragging ? 'border-2 border-[var(--primary)]' : 'border-[var(--border)]'}`}
-      style={{
-        ...(windowed ? {} : { borderTopWidth: '3px', borderTopColor: currentLevel.color }),
-      }}
+      className={`composer-panel pointer-events-auto relative flex h-full w-full flex-col bg-[var(--background)] ${
+        isDragging ? 'border-2 border-[var(--primary)]' : ''
+      }`}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -1059,40 +917,11 @@ export function Composer({ windowed = false }: ComposerProps) {
       )}
 
       {/* Header */}
-      {windowed ? (
-        <ComposerTitleBar title={subject.trim() || modeLabel} />
-      ) : (
-        <div className="flex items-center justify-between rounded-t-2xl border-b border-[var(--border-subtle)] bg-[var(--chrome-tint)] px-4 py-2.5">
-          <span className="text-sm font-medium text-[var(--foreground)]">{modeLabel}</span>
-          <div className="flex items-center gap-0.5">
-            <IconButton
-              size="sm"
-              icon={isFullpage ? <RestoreIcon size={14} /> : <MaximizeIcon size={14} />}
-              title={isFullpage ? 'Collapse' : 'Expand'}
-              aria-label={isFullpage ? 'Collapse composer' : 'Maximize composer'}
-              onClick={() => setViewMode(isFullpage ? 'modal' : 'fullpage')}
-            />
-            <IconButton
-              size="sm"
-              icon={<PopOutIcon size={14} />}
-              title="Open in new window"
-              aria-label="Pop out composer"
-              onClick={handlePopOutComposer}
-            />
-            <IconButton
-              size="sm"
-              icon={<CloseIcon size={14} />}
-              title="Close composer"
-              aria-label="Close composer"
-              onClick={handleClose}
-            />
-          </div>
-        </div>
-      )}
+      <ComposerTitleBar title={subject.trim() || modeLabel} />
       <ComposerActionsRow
         canSend={to.length > 0}
         sending={sendProgressActive}
-        onSend={() => (windowed ? void handleSendAndCloseWindow() : void handleSend())}
+        onSend={() => void handleSend()}
         onDiscard={() => setDiscardConfirmOpen(true)}
         onSchedule={() => setShowSchedule(true)}
         onAttach={() => void handleAttach()}
@@ -1243,29 +1072,26 @@ export function Composer({ windowed = false }: ComposerProps) {
         <AttachmentPicker />
       </div>
 
-      {/* Status bar (both modes) */}
+      {/* Status bar */}
       <ComposerStatusBar
         editor={editor}
         wordCount={wordStats.words}
         charCount={wordStats.chars}
         draftLabel={savedLabel}
-        className={windowed ? undefined : 'rounded-b-2xl'}
       />
 
-      {windowed && (
-        <CloseConfirmDialog
-          isOpen={closeConfirmOpen}
-          onSaveDraft={() => {
-            setCloseConfirmOpen(false);
-            void handleSaveDraftAndClose();
-          }}
-          onDiscard={() => {
-            setCloseConfirmOpen(false);
-            void handleDiscard();
-          }}
-          onCancel={() => setCloseConfirmOpen(false)}
-        />
-      )}
+      <CloseConfirmDialog
+        isOpen={closeConfirmOpen}
+        onSaveDraft={() => {
+          setCloseConfirmOpen(false);
+          void handleSaveDraftAndClose();
+        }}
+        onDiscard={() => {
+          setCloseConfirmOpen(false);
+          void handleDiscard();
+        }}
+        onCancel={() => setCloseConfirmOpen(false)}
+      />
 
       <DiscardConfirmDialog
         isOpen={discardConfirmOpen}
@@ -1312,23 +1138,11 @@ export function Composer({ windowed = false }: ComposerProps) {
     </div>
   );
 
-  if (windowed) {
-    return (
-      <WindowErrorBoundary>
-        <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
-          {composerPanel}
-        </div>
-      </WindowErrorBoundary>
-    );
-  }
-
   return (
-    <div className="fixed inset-0 z-[var(--z-modal-backdrop)] flex items-center justify-center p-4 pointer-events-none">
-      <div
-        className="pointer-events-auto absolute inset-0 bg-[var(--backdrop)]"
-        onClick={handleClose}
-      />
-      {composerPanel}
-    </div>
+    <WindowErrorBoundary>
+      <div className="flex h-screen w-screen flex-col overflow-hidden bg-[var(--background)]">
+        {composerPanel}
+      </div>
+    </WindowErrorBoundary>
   );
 }

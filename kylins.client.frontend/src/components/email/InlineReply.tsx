@@ -23,10 +23,17 @@ import { sendEmail } from '@/services/composer/send';
 import { newAttachmentId } from '@/services/composer/attachments';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { intentFamily } from '@/features/composer/draftFactory';
+import { intentFamily, type InlineIntent } from '@/features/composer/draftFactory';
 import { useComposerSignature } from '@/features/composer/useComposerSignature';
 import { ClassificationSelector } from '@/features/composer/ClassificationSelector';
-import { useInlineComposerStore, type InlineSession } from '@/stores/inlineComposerStore';
+import { useClassification } from '@/features/classification/useClassification';
+import { isProminent } from '@/features/classification/classificationStyle';
+import { ClassificationWatermark } from '@/features/classification/components/ClassificationWatermark';
+import {
+  anchorMessage,
+  useInlineComposerStore,
+  type InlineSession,
+} from '@/stores/inlineComposerStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
 import { SendIcon, ExternalLinkIcon, DiscardIcon, CloseIcon } from '@/components/icons';
 
@@ -69,8 +76,12 @@ export function InlineReply() {
 }
 
 function InlineReplyEditor({ session }: { session: InlineSession }) {
-  const family = intentFamily(session.intent);
+  // Standalone (new-message draft) sessions compose like a fresh message:
+  // no quote, no forward affordances, 'new' signature family.
+  const isNew = session.intent === 'new';
+  const family = isNew ? 'new' : intentFamily(session.intent as InlineIntent);
   const isForward = family === 'forward';
+  const anchorMsg = anchorMessage(session);
 
   const setTo = useInlineComposerStore((s) => s.setTo);
   const setCc = useInlineComposerStore((s) => s.setCc);
@@ -100,7 +111,7 @@ function InlineReplyEditor({ session }: { session: InlineSession }) {
     if (session.bcc.length === 0) setBccExpanded(false);
   };
 
-  // Move a recipient chip between To/Cc/Bcc (mirrors the modal Composer).
+  // Move a recipient chip between To/Cc/Bcc (mirrors the windowed Composer).
   const handleMoveRecipient = useCallback(
     (recipient: Recipient, from: MoveTarget, toField: MoveTarget) => {
       if (from === 'replyTo' || toField === 'replyTo') return; // no Reply-To row inline
@@ -118,13 +129,25 @@ function InlineReplyEditor({ session }: { session: InlineSession }) {
   const [status, setStatus] = useState<SendStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Classification watermark — mirrors the windowed Composer: a prominent level
+  // stamps a diagonal watermark over the header area (selector + address
+  // fields + subject). Bound to this inline session because
+  // ClassificationSelector writes through useActiveComposerTarget.
+  const { getLevelById, getDefaultLevel } = useClassification();
+  const currentLevel = getLevelById(session.classificationId) ?? getDefaultLevel();
+  const prominent = isProminent(currentLevel);
+
   // Seed the editor from the session body (seed quote on first open, restored
   // edits when remounting after a message switch). Edits mirror back into the
   // store; `hasFocus` distinguishes user typing from programmatic transactions
   // (signature application) so only real edits clear the pristine flag.
   const editor = useEditor({
     extensions: buildComposerExtensions(
-      isForward ? 'Add a note to the forwarded message…' : 'Type your reply…',
+      isNew
+        ? 'Compose your message…'
+        : isForward
+          ? 'Add a note to the forwarded message…'
+          : 'Type your reply…',
     ),
     content: session.bodyHtml ?? '',
     editorProps: {
@@ -203,11 +226,12 @@ function InlineReplyEditor({ session }: { session: InlineSession }) {
           subject: session.subject,
           bodyHtml: editor.getHTML(),
           fromEmail: session.fromEmail ?? session.accountEmail,
-          // Threading fields from the seed (a forward starts a new branch —
-          // no In-Reply-To).
-          threadId: session.threadId ?? session.message.threadId ?? null,
+          // Threading fields from the seed (a forward or a new message starts
+          // a new branch — no In-Reply-To).
+          threadId: session.threadId ?? anchorMsg?.threadId ?? null,
           inReplyToMessageId:
-            session.inReplyToMessageId ?? (isForward ? null : (session.message.messageId ?? null)),
+            session.inReplyToMessageId ??
+            (isForward || isNew ? null : (anchorMsg?.messageId ?? null)),
           classificationId: session.classificationId,
           isEncrypted: session.isEncrypted,
           isSigned: session.isSigned,
@@ -245,7 +269,7 @@ function InlineReplyEditor({ session }: { session: InlineSession }) {
     }
   }, [editor, status, session, isForward, signature.activeId, clearAfterSend]);
 
-  // Pop out to the full modal composer, handing over the staging directory
+  // Pop out to the OS compose window, handing over the staging directory
   // and attachments (no files re-copied or orphaned).
   const handlePopOut = useCallback(() => {
     popOut(
@@ -258,8 +282,11 @@ function InlineReplyEditor({ session }: { session: InlineSession }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--card)]">
-      {/* Top action bar: Send + status left, Discard / Pop out right */}
-      <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-2">
+      {/* Top action bar: Send + status left, Discard / Pop out right. Sits on
+          the same opaque card surface as the composer body — --surface reads
+          as a transparent gap against the window background (and is identical
+          to --card in dark mode); the border-b alone carries the separation. */}
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--card)] px-4 py-2">
         <div className="flex items-center gap-2">
           <Button
             type="button"
@@ -296,98 +323,117 @@ function InlineReplyEditor({ session }: { session: InlineSession }) {
         </div>
       </div>
 
-      {/* Classification banner — slim full-width strip (mirrors the modal
-          Composer); binds to this inline session via useActiveComposerTarget. */}
-      <ClassificationSelector />
-
-      {/* Address block: From (aliases), To with trailing Cc/Bcc toggles
-          (mirrors the modal Composer), Subject */}
-      <div className="border-b border-[var(--border)] px-4 py-2 text-xs">
-        {session.fromEmail && session.fromEmail !== session.accountEmail && (
-          <div className="mb-0.5 flex min-w-0 gap-2">
-            <span className="w-8 shrink-0 text-[var(--muted-text)]">From</span>
-            <span className="min-w-0 break-words text-[var(--foreground)]">
-              {session.fromEmail}
-            </span>
+      {/* Classification banner + address block + subject (watermark overlays
+          this area, mirroring the windowed Composer). */}
+      <div
+        className="relative shrink-0"
+        style={{ backgroundColor: prominent ? `${currentLevel.color}08` : undefined }}
+      >
+        {/* The watermark stamps ABOVE the header content (z-30), not as the
+            windowed underlay: the classification strip paints its own tinted
+            background, which would hide an underlaid watermark over exactly
+            the classification selection area. pointer-events:none keeps the
+            strip and fields fully interactive. */}
+        {prominent && (
+          <div className="pointer-events-none absolute inset-0 z-30">
+            <ClassificationWatermark level={currentLevel} />
           </div>
         )}
-        <RecipientField
-          label="To"
-          recipients={session.to}
-          onChange={setTo}
-          placeholder="Recipients"
-          moveTargets={[
-            { label: 'Cc', target: 'cc' },
-            { label: 'Bcc', target: 'bcc' },
-          ]}
-          onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
-          trailing={
-            !alwaysShowCcBcc && (!showCc || !showBcc) ? (
-              <div className="flex shrink-0 items-center gap-2 pt-1.5 text-xs">
-                {!showCc && (
-                  <Button
-                    type="button"
-                    onPress={() => setCcExpanded(true)}
-                    className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Show Cc field"
-                  >
-                    Cc
-                  </Button>
+        <div className="relative z-20">
+          {/* Classification banner — slim full-width strip (mirrors the modal
+              Composer); binds to this inline session via useActiveComposerTarget. */}
+          <ClassificationSelector />
+
+          {/* Address block: From (aliases), To with trailing Cc/Bcc toggles
+              (mirrors the windowed Composer), Subject */}
+          <div className="border-b border-[var(--border)] px-4 py-2 text-xs">
+            {session.fromEmail && session.fromEmail !== session.accountEmail && (
+              <div className="mb-0.5 flex min-w-0 gap-2">
+                <span className="w-8 shrink-0 text-[var(--muted-text)]">From</span>
+                <span className="min-w-0 break-words text-[var(--foreground)]">
+                  {session.fromEmail}
+                </span>
+              </div>
+            )}
+            <RecipientField
+              label="To"
+              recipients={session.to}
+              onChange={setTo}
+              placeholder="Recipients"
+              moveTargets={[
+                { label: 'Cc', target: 'cc' },
+                { label: 'Bcc', target: 'bcc' },
+              ]}
+              onMove={(r, target) => handleMoveRecipient(r, 'to', target)}
+              trailing={
+                !alwaysShowCcBcc && (!showCc || !showBcc) ? (
+                  <div className="flex shrink-0 items-center gap-2 pt-1.5 text-xs">
+                    {!showCc && (
+                      <Button
+                        type="button"
+                        onPress={() => setCcExpanded(true)}
+                        className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="Show Cc field"
+                      >
+                        Cc
+                      </Button>
+                    )}
+                    {!showBcc && (
+                      <Button
+                        type="button"
+                        onPress={() => setBccExpanded(true)}
+                        className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="Show Bcc field"
+                      >
+                        Bcc
+                      </Button>
+                    )}
+                  </div>
+                ) : undefined
+              }
+            />
+            {(showCc || showBcc) && (
+              <div className="mt-1 space-y-1" onBlur={handleAddressBlockBlur}>
+                {showCc && (
+                  <RecipientField
+                    label="Cc"
+                    recipients={session.cc}
+                    onChange={setCc}
+                    placeholder="Cc recipients"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Bcc', target: 'bcc' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
+                  />
                 )}
-                {!showBcc && (
-                  <Button
-                    type="button"
-                    onPress={() => setBccExpanded(true)}
-                    className="kylins-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Show Bcc field"
-                  >
-                    Bcc
-                  </Button>
+                {showBcc && (
+                  <RecipientField
+                    label="Bcc"
+                    recipients={session.bcc}
+                    onChange={setBcc}
+                    placeholder="Bcc recipients"
+                    moveTargets={[
+                      { label: 'To', target: 'to' },
+                      { label: 'Cc', target: 'cc' },
+                    ]}
+                    onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
+                  />
                 )}
               </div>
-            ) : undefined
-          }
-        />
-        {(showCc || showBcc) && (
-          <div className="mt-1 space-y-1" onBlur={handleAddressBlockBlur}>
-            {showCc && (
-              <RecipientField
-                label="Cc"
-                recipients={session.cc}
-                onChange={setCc}
-                placeholder="Cc recipients"
-                moveTargets={[
-                  { label: 'To', target: 'to' },
-                  { label: 'Bcc', target: 'bcc' },
-                ]}
-                onMove={(r, target) => handleMoveRecipient(r, 'cc', target)}
-              />
             )}
-            {showBcc && (
-              <RecipientField
-                label="Bcc"
-                recipients={session.bcc}
-                onChange={setBcc}
-                placeholder="Bcc recipients"
-                moveTargets={[
-                  { label: 'To', target: 'to' },
-                  { label: 'Cc', target: 'cc' },
-                ]}
-                onMove={(r, target) => handleMoveRecipient(r, 'bcc', target)}
-              />
-            )}
+            <div className="mt-1 flex items-center gap-2">
+              <span className="w-14 shrink-0 text-[var(--muted-text)]">Subject</span>
+              <TextField className="min-w-0 flex-1" aria-label="Subject">
+                <Input
+                  type="text"
+                  value={session.subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="w-full bg-transparent text-[var(--foreground)] outline-none"
+                />
+              </TextField>
+            </div>
           </div>
-        )}
-        <div className="mt-1 flex items-center gap-2">
-          <span className="w-14 shrink-0 text-[var(--muted-text)]">Subject</span>
-          <TextField className="min-w-0 flex-1" aria-label="Subject">
-            <Input
-              type="text"
-              value={session.subject}
-              onChange={(e) => setSubject(e.target.value)}
-              className="w-full bg-transparent text-[var(--foreground)] outline-none"
-            />
-          </TextField>
         </div>
       </div>
 
@@ -397,7 +443,7 @@ function InlineReplyEditor({ session }: { session: InlineSession }) {
         <EditorContent editor={editor} />
       </div>
 
-      {/* Attachments — mirrors the modal Composer layout (below editor). */}
+      {/* Attachments — mirrors the windowed Composer layout (below editor). */}
       <div className="border-t border-[var(--border)]">
         {isForward && (
           <div className="flex items-center gap-2 px-4 py-1.5">

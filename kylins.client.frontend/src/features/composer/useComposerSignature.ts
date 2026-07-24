@@ -1,4 +1,4 @@
-// Shared signature controller for both composer surfaces (modal Composer via
+// Shared signature controller for both composer surfaces (OS compose window via
 // ComposerStatusBar, and InlineReply). It owns:
 //   - loading the account's signatures,
 //   - applying the context-appropriate default once when the composer opens
@@ -10,7 +10,7 @@
 //   - swapping/removing the block via setSignatureInEditor.
 //
 // The consumer keeps only the active id (composerStore.signatureId for the
-// modal composer, local state for the inline reply) for send/draft/pop-out
+// window composer, local state for the inline dock) for send/draft/pop-out
 // persistence, synced through `onChange`.
 
 import { useCallback, useEffect, useRef, useState } from 'react';

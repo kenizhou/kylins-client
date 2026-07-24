@@ -1,5 +1,11 @@
 // Ported from velo (https://github.com/avihaymenahem/velo) — Apache-2.0.
 // See ATTRIBUTIONS.md. Adapted for Kylins Client.
+//
+// Role (post drafting-flow redesign): state bus for the dedicated OS compose
+// window (`compose-*` WebviewWindow) — hydrated once from URL params (or the
+// non-Tauri test fallback), mutated by the Composer component tree, dying
+// with the window. The in-app modal popup was removed; the reading-pane dock
+// uses inlineComposerStore instead.
 
 import { create } from 'zustand';
 import { parseRecipients, type Recipient } from '@/features/composer/contacts';
@@ -7,7 +13,6 @@ import { newDraftId } from '@/services/composer/attachments';
 
 export type Importance = 'low' | 'normal' | 'high';
 export type ComposerMode = 'new' | 'reply' | 'replyAll' | 'forward';
-export type ComposerViewMode = 'modal' | 'fullpage';
 
 export interface ComposerAttachment {
   id: string;
@@ -77,18 +82,10 @@ export interface ComposerState {
    *  - `closeComposer` / discard calls `cleanupAttachments(stagingDraftId)`.
    */
   stagingDraftId: string;
-  undoSendTimer: ReturnType<typeof setTimeout> | null;
-  undoSendVisible: boolean;
-  /**
-   * The stagingDraftId associated with the message currently in the undo-send
-   * window. Needed so clicking Undo can clean up staged attachment files.
-   */
-  undoStagingDraftId: string | null;
   attachments: ComposerAttachment[];
   lastSavedAt: number | null;
   isSaving: boolean;
   fromEmail: string | null;
-  viewMode: ComposerViewMode;
   /**
    * Id of the signature currently in the editor document. Only a persistence
    * mirror (drafts / scheduled sends / pop-out) — the source of truth is the
@@ -119,7 +116,7 @@ export interface ComposerState {
   includeOriginalAttachments: boolean;
   /**
    * True when attachments were handed over from another surface (inline
-   * composer pop-out) — the modal's seed effect must NOT re-fetch/re-stage
+   * composer pop-out) — the window's seed effect must NOT re-fetch/re-stage
    * the original attachments, or every file would be duplicated. Reset by
    * closeComposer and by the include-originals checkbox when the user
    * explicitly re-requests seeding.
@@ -178,16 +175,12 @@ export interface ComposerState {
   setShowCcBcc: (showCcBcc: boolean) => void;
   setDraftId: (id: string | null) => void;
   setStagingDraftId: (id: string) => void;
-  setUndoSendTimer: (timer: ReturnType<typeof setTimeout> | null) => void;
-  setUndoSendVisible: (visible: boolean) => void;
-  setUndoStagingDraftId: (id: string | null) => void;
   addAttachment: (attachment: ComposerAttachment) => void;
   removeAttachment: (id: string) => void;
   clearAttachments: () => void;
   setLastSavedAt: (ts: number | null) => void;
   setIsSaving: (saving: boolean) => void;
   setFromEmail: (fromEmail: string | null) => void;
-  setViewMode: (mode: ComposerViewMode) => void;
   setSignatureId: (id: string | null | undefined) => void;
   setClassificationId: (id: string | null) => void;
   setIsEncrypted: (value: boolean) => void;
@@ -220,11 +213,7 @@ export const useComposerStore = create<ComposerState>((set) => ({
   showCcBcc: false,
   draftId: null,
   stagingDraftId: newDraftId(),
-  undoSendTimer: null,
-  undoSendVisible: false,
-  undoStagingDraftId: null,
   attachments: [],
-  viewMode: 'modal',
   fromEmail: null,
   lastSavedAt: null,
   isSaving: false,
@@ -267,7 +256,6 @@ export const useComposerStore = create<ComposerState>((set) => ({
       // persisted draft does NOT reuse its old staging folder (the backend
       // may have already cleaned it up on a prior send); new picks stage anew.
       stagingDraftId: opts?.stagingDraftId ?? newDraftId(),
-      viewMode: 'modal',
       fromEmail: opts?.fromEmail ?? null,
       attachments: opts?.attachments ?? [],
       lastSavedAt: null,
@@ -305,7 +293,6 @@ export const useComposerStore = create<ComposerState>((set) => ({
       showCcBcc: false,
       draftId: null,
       stagingDraftId: newDraftId(),
-      viewMode: 'modal',
       fromEmail: null,
       attachments: [],
       lastSavedAt: null,
@@ -336,9 +323,6 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setShowCcBcc: (showCcBcc) => set({ showCcBcc }),
   setDraftId: (draftId) => set({ draftId }),
   setStagingDraftId: (stagingDraftId) => set({ stagingDraftId }),
-  setUndoSendTimer: (undoSendTimer) => set({ undoSendTimer }),
-  setUndoSendVisible: (undoSendVisible) => set({ undoSendVisible }),
-  setUndoStagingDraftId: (undoStagingDraftId) => set({ undoStagingDraftId }),
   addAttachment: (attachment) =>
     set((state) => ({ attachments: [...state.attachments, attachment] })),
   removeAttachment: (id) =>
@@ -347,7 +331,6 @@ export const useComposerStore = create<ComposerState>((set) => ({
   setLastSavedAt: (lastSavedAt) => set({ lastSavedAt }),
   setIsSaving: (isSaving) => set({ isSaving }),
   setFromEmail: (fromEmail) => set({ fromEmail }),
-  setViewMode: (viewMode) => set({ viewMode }),
   setSignatureId: (signatureId) => set({ signatureId }),
   setClassificationId: (classificationId) => set({ classificationId }),
   setIsEncrypted: (isEncrypted) => set({ isEncrypted }),

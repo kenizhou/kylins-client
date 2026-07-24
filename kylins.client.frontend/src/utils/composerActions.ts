@@ -9,6 +9,12 @@ import {
   type ComposerOpenMode,
 } from '../features/composer/buildComposerOpenOptions';
 
+// Reply/forward helpers that open the dedicated OS composer window.
+// Post drafting-flow redesign these are used from surfaces that have no
+// reading-pane dock: the viewer pop-out window and forward-as-attachment.
+// Main-window replies dock the inline composer instead (ReadRibbon /
+// MessageList call inlineComposerStore.open directly).
+
 export type ComposerMode = ComposerOpenMode;
 
 export type ComposerAccountInfo = Pick<Account, 'id' | 'email' | 'displayName'>;
